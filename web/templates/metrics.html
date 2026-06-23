@@ -1,0 +1,17 @@
+{{define "metrics.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Investor demo</p><h1>Operational metrics</h1></div><span class="test-badge">PAYSTACK TEST MODE</span></header>
+<section class="metrics">
+  <article><span>Users</span><strong>{{.Metrics.Users}}</strong></article>
+  <article><span>Payments</span><strong>{{.Metrics.Payments}}</strong></article>
+  <article><span>Successful</span><strong>{{.Metrics.Succeeded}}</strong></article>
+  <article><span>Success rate</span><strong>{{percent .Metrics.SuccessRate}}</strong></article>
+  <article><span>Test volume</span><strong>{{money .Metrics.VolumeKobo}}</strong></article>
+  <article><span>Webhook failures</span><strong>{{.Metrics.WebhookFailures}}</strong></article>
+</section>
+<section class="panel"><h2>Safety boundary</h2><p>This environment accepts Paystack test cards only. The application stores no PAN, CVV, PIN, OTP, balance, or reusable authorization.</p></section>
+</main></body></html>
+{{end}}

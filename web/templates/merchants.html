@@ -1,0 +1,8 @@
+{{define "merchants.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Curated fixtures</p><h1>Merchants</h1></div></header>
+<section class="cards">{{range .Merchants}}<article class="merchant-card"><span class="category">{{.Category}}</span><h2>{{.Name}}</h2><p>{{.Description}}</p><small>{{if .Active}}Active{{else}}Disabled{{end}} · {{.Slug}}</small></article>{{end}}</section>
+</main></body></html>
+{{end}}

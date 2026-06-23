@@ -1,0 +1,8 @@
+.env
+bin/
+coverage.out
+*.log
+.idea/
+.vscode/
+db_password.txt
+Whatsapp Business Token.txt

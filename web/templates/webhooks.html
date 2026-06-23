@@ -1,0 +1,9 @@
+{{define "webhooks.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Provider events</p><h1>Webhooks</h1></div></header>
+<div class="table-wrap"><table><thead><tr><th>Provider</th><th>Event key</th><th>Signature</th><th>Processing</th><th>Error</th><th>Received</th></tr></thead><tbody>
+{{range .Webhooks}}<tr><td>{{.Provider}}</td><td class="mono">{{.EventKey}}</td><td>{{if .SignatureValid}}Valid{{else}}Rejected{{end}}</td><td>{{.ProcessingStatus}}</td><td>{{.ErrorMessage}}</td><td>{{.ReceivedAt.Format "02 Jan 2006 15:04:05"}}</td></tr>
+{{else}}<tr><td colspan="6">No webhook deliveries yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
+{{end}}

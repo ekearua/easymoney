@@ -1,0 +1,654 @@
+// Package app assembles the HTTP server, background workers, and CLI commands.
+package app
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html/template"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/crypto/bcrypt"
+
+	"whatsapp-payment-demo/internal/config"
+	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/providers/paystack"
+	"whatsapp-payment-demo/internal/providers/whatsapp"
+	"whatsapp-payment-demo/internal/service"
+	"whatsapp-payment-demo/internal/store"
+	"whatsapp-payment-demo/web"
+)
+
+const adminCookieName = "wpd_admin"
+
+// App is the fully assembled payment demo.
+type App struct {
+	cfg          config.Config
+	logger       *slog.Logger
+	store        *store.Store
+	paystack     *paystack.Client
+	whatsapp     *whatsapp.Client
+	payments     *service.PaymentService
+	conversation *service.ConversationService
+	templates    *template.Template
+	limiter      *loginLimiter
+}
+
+// New creates all application dependencies.
+func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
+	repository, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return nil, err
+	}
+	paystackClient := paystack.New(cfg.PaystackSecretKey, cfg.PaystackBaseURL)
+	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
+	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
+	templates, err := template.New("").Funcs(template.FuncMap{
+		"money":       domain.FormatNGN,
+		"maskPII":     maskPII,
+		"statusClass": func(status domain.PaymentStatus) string { return strings.ReplaceAll(string(status), "_", "-") },
+		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
+	}).ParseFS(web.Assets, "templates/*.html")
+	if err != nil {
+		repository.Close()
+		return nil, fmt.Errorf("parse templates: %w", err)
+	}
+	return &App{
+		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
+		whatsapp: whatsappClient, payments: paymentService,
+		conversation: service.NewConversationService(cfg, repository, paymentService, whatsappClient),
+		templates:    templates, limiter: newLoginLimiter(),
+	}, nil
+}
+
+// Close releases persistent resources.
+func (a *App) Close() {
+	a.store.Close()
+}
+
+// Migrate applies the embedded PostgreSQL schema.
+func (a *App) Migrate(ctx context.Context) error {
+	return a.store.Migrate(ctx)
+}
+
+// Seed refreshes the fictional merchant fixtures.
+func (a *App) Seed(ctx context.Context) error {
+	return a.store.Seed(ctx)
+}
+
+// Reconcile verifies unresolved Paystack transactions.
+func (a *App) Reconcile(ctx context.Context) error {
+	return a.payments.Reconcile(ctx)
+}
+
+// PurgeExpiredData enforces the configured demo retention period.
+func (a *App) PurgeExpiredData(ctx context.Context) error {
+	count, err := a.store.PurgeBefore(ctx, time.Now().Add(-a.cfg.RetentionPeriod))
+	if err == nil {
+		a.logger.Info("retention completed", "users_purged", count)
+	}
+	return err
+}
+
+// Health checks whether the application can reach its database.
+func (a *App) Health(ctx context.Context) error {
+	return a.store.Ping(ctx)
+}
+
+// RunServer starts HTTP handling and bounded background workers.
+func (a *App) RunServer(ctx context.Context) error {
+	server := &http.Server{
+		Addr:              a.cfg.HTTPAddr,
+		Handler:           a.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	go a.runWorkers(ctx)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	}()
+	a.logger.Info("server listening", "addr", a.cfg.HTTPAddr, "base_url", a.cfg.BaseURL)
+	err := server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func (a *App) routes() http.Handler {
+	router := chi.NewRouter()
+	router.Use(middleware.RequestID)
+	router.Use(middleware.RealIP)
+	router.Use(middleware.Recoverer)
+	router.Use(a.securityHeaders)
+	router.Get("/health/live", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	router.Get("/health/ready", a.handleReady)
+	router.Get("/webhooks/whatsapp", a.verifyWhatsAppWebhook)
+	router.Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
+	router.Post("/webhooks/paystack", a.receivePaystackWebhook)
+	router.Get("/payments/return", a.paymentReturn)
+	router.Get("/receipts/{token}", a.receipt)
+	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
+
+	router.Get("/admin/login", a.loginPage)
+	router.With(a.limitLogin).Post("/admin/login", a.login)
+	router.Group(func(admin chi.Router) {
+		admin.Use(a.requireAdmin)
+		admin.Get("/admin", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
+		})
+		admin.Get("/admin/metrics", a.adminMetrics)
+		admin.Get("/admin/users", a.adminUsers)
+		admin.Get("/admin/merchants", a.adminMerchants)
+		admin.Get("/admin/payments", a.adminPayments)
+		admin.Get("/admin/webhooks", a.adminWebhooks)
+		admin.Post("/admin/logout", a.logout)
+	})
+	return router
+}
+
+func (a *App) runWorkers(ctx context.Context) {
+	outboxTicker := time.NewTicker(2 * time.Second)
+	reconcileTicker := time.NewTicker(1 * time.Minute)
+	retentionTicker := time.NewTicker(24 * time.Hour)
+	defer outboxTicker.Stop()
+	defer reconcileTicker.Stop()
+	defer retentionTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-outboxTicker.C:
+			a.processInboundMessages(ctx)
+			a.processPaystackWebhooks(ctx)
+			a.deliverOutbox(ctx)
+		case <-reconcileTicker.C:
+			if err := a.payments.Reconcile(ctx); err != nil {
+				a.logger.Warn("scheduled reconciliation failed", "error", err)
+			}
+		case <-retentionTicker.C:
+			if err := a.PurgeExpiredData(ctx); err != nil {
+				a.logger.Warn("scheduled retention failed", "error", err)
+			}
+		}
+	}
+}
+
+func (a *App) processInboundMessages(ctx context.Context) {
+	messages, err := a.store.ClaimInboundMessages(ctx, 20)
+	if err != nil {
+		a.logger.Warn("claim inbound WhatsApp messages", "error", err)
+		return
+	}
+	for _, message := range messages {
+		inbound := whatsapp.InboundMessage{
+			ID: message.ID, From: message.Sender, Text: message.Text, Interactive: message.Interactive,
+		}
+		if err := a.conversation.Handle(ctx, inbound); err != nil {
+			a.logger.Error("process WhatsApp message", "message_id", message.ID, "error", err)
+			_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())
+			continue
+		}
+		_ = a.store.CompleteInboundMessage(ctx, message.ID)
+	}
+}
+
+func (a *App) processPaystackWebhooks(ctx context.Context) {
+	events, err := a.store.ClaimPaystackWebhooks(ctx, 20)
+	if err != nil {
+		a.logger.Warn("claim Paystack webhooks", "error", err)
+		return
+	}
+	for _, event := range events {
+		if event.Event != "charge.success" {
+			_ = a.store.CompleteWebhook(ctx, event.ID, "ignored", "")
+			continue
+		}
+		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, "paystack.webhook")
+		if processErr != nil {
+			a.logger.Error("process Paystack webhook", "reference", event.Reference, "error", processErr)
+			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
+			continue
+		}
+		_ = a.store.CompleteWebhook(ctx, event.ID, "processed", "")
+	}
+}
+
+func (a *App) deliverOutbox(ctx context.Context) {
+	messages, err := a.store.ClaimOutbox(ctx, 20)
+	if err != nil {
+		a.logger.Warn("claim outbox", "error", err)
+		return
+	}
+	for _, message := range messages {
+		var sendErr error
+		switch message.Kind {
+		case "text":
+			var payload struct {
+				Body string `json:"body"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				sendErr = err
+			} else {
+				sendErr = a.whatsapp.SendText(ctx, message.Recipient, payload.Body)
+			}
+		case "template":
+			var payload struct {
+				Name       string   `json:"name"`
+				Parameters []string `json:"parameters"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				sendErr = err
+			} else {
+				sendErr = a.whatsapp.SendTemplate(ctx, message.Recipient, payload.Name, payload.Parameters)
+			}
+		default:
+			sendErr = fmt.Errorf("unsupported outbox kind %q", message.Kind)
+		}
+		if sendErr == nil {
+			_ = a.store.CompleteOutbox(ctx, message.ID)
+		} else {
+			_ = a.store.RetryOutbox(ctx, message.ID, message.Attempts, sendErr.Error())
+		}
+	}
+}
+
+func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := a.store.Ping(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (a *App) verifyWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("hub.mode") != "subscribe" ||
+		r.URL.Query().Get("hub.verify_token") != a.cfg.WhatsAppVerifyToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte(r.URL.Query().Get("hub.challenge")))
+}
+
+func (a *App) receiveWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	eventKey := digest(body)
+	validationErr := a.whatsapp.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
+	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), "whatsapp", eventKey, validationErr == nil, json.RawMessage(`{}`))
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	messages, err := whatsapp.ParseInbound(body)
+	if err != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	for _, message := range messages {
+		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
+			ID: message.ID, Sender: message.From, Text: message.Text, Interactive: message.Interactive,
+		}); err != nil {
+			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+			http.Error(w, "storage error", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	event, validationErr := a.paystack.ValidateWebhook(body, r.Header.Get("X-Paystack-Signature"))
+	eventKey := digest(body)
+	if event.Reference != "" {
+		eventKey = event.Event + ":" + event.Reference
+	}
+	payload := json.RawMessage(`{}`)
+	if validationErr == nil {
+		payload, _ = json.Marshal(store.GatewayEvent{Event: event.Event, Reference: event.Reference})
+	}
+	deliveryID, fresh, err := a.store.RecordWebhook(r.Context(), "paystack", eventKey, validationErr == nil, payload)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if !fresh || event.Event != "charge.success" {
+		if fresh {
+			_ = a.store.CompleteWebhook(context.Background(), deliveryID, "ignored", "")
+		}
+		return
+	}
+}
+
+func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
+	reference := strings.TrimSpace(r.URL.Query().Get("reference"))
+	if reference == "" {
+		http.Error(w, "missing reference", http.StatusBadRequest)
+		return
+	}
+	payment, _, err := a.payments.VerifyAndApply(r.Context(), reference, "paystack.callback")
+	if err != nil {
+		a.logger.Warn("callback verification failed", "reference", reference, "error", err)
+		http.Error(w, "Payment is still being verified. Return to WhatsApp or refresh your receipt shortly.", http.StatusAccepted)
+		return
+	}
+	http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+}
+
+func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	payment, err := a.store.PaymentByReceiptToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment})
+}
+
+func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
+	a.render(w, "login.html", map[string]any{"AppName": a.cfg.AppName})
+}
+
+func (a *App) login(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	password := r.FormValue("password")
+	if email != a.cfg.AdminEmail || a.cfg.AdminPasswordHash == "" ||
+		bcrypt.CompareHashAndPassword([]byte(a.cfg.AdminPasswordHash), []byte(password)) != nil {
+		a.limiter.fail(clientIP(r))
+		a.renderStatus(w, "login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
+		return
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	csrf, err := randomToken(24)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateAdminSession(r.Context(), token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	a.limiter.success(clientIP(r))
+	http.SetCookie(w, &http.Cookie{
+		Name: adminCookieName, Value: token, Path: "/admin", HttpOnly: true,
+		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
+	})
+	http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
+}
+
+func (a *App) logout(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if cookie, err := r.Cookie(adminCookieName); err == nil {
+		_ = a.store.DeleteAdminSession(r.Context(), cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Path: "/admin", MaxAge: -1, HttpOnly: true})
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
+func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
+	metrics, err := a.store.Metrics(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{"Metrics": metrics})
+}
+
+func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := a.store.ListUsers(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "users.html", r, "Users", map[string]any{"Users": users})
+}
+
+func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
+	merchants, err := a.store.ListMerchants(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants})
+}
+
+func (a *App) adminPayments(w http.ResponseWriter, r *http.Request) {
+	payments, err := a.store.ListPayments(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "payments.html", r, "Payments", map[string]any{"Payments": payments})
+}
+
+func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {
+	webhooks, err := a.store.ListWebhooks(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "webhooks.html", r, "Webhooks", map[string]any{"Webhooks": webhooks})
+}
+
+type contextKey string
+
+const csrfContextKey contextKey = "csrf"
+
+func (a *App) requireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(adminCookieName)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+		csrf, err := a.store.ValidateAdminSession(r.Context(), cookie.Value)
+		if err != nil {
+			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), csrfContextKey, csrf)))
+	})
+}
+
+func csrfFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(csrfContextKey).(string)
+	return value
+}
+
+func (a *App) limitLogin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if retryAfter := a.limiter.retryAfter(clientIP(r)); retryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+			http.Error(w, "too many login attempts", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; form-action 'self'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) renderAdmin(w http.ResponseWriter, name string, r *http.Request, title string, data map[string]any) {
+	data["AppName"] = a.cfg.AppName
+	data["Title"] = title
+	data["CSRF"] = csrfFromContext(r.Context())
+	a.render(w, name, data)
+}
+
+func (a *App) render(w http.ResponseWriter, name string, data any) {
+	a.renderStatus(w, name, data, http.StatusOK)
+}
+
+func (a *App) renderStatus(w http.ResponseWriter, name string, data any, status int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := a.templates.ExecuteTemplate(w, name, data); err != nil {
+		a.logger.Error("render template", "template", name, "error", err)
+	}
+}
+
+func readBody(r *http.Request, limit int64) ([]byte, error) {
+	defer r.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, errors.New("request body is too large")
+	}
+	return body, nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func digest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func randomToken(size int) (string, error) {
+	raw := make([]byte, size)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func maskPII(value string) string {
+	if strings.Contains(value, "@") {
+		parts := strings.SplitN(value, "@", 2)
+		if len(parts[0]) <= 2 {
+			return "**@" + parts[1]
+		}
+		return parts[0][:2] + "***@" + parts[1]
+	}
+	if len(value) > 7 {
+		return value[:4] + "****" + value[len(value)-3:]
+	}
+	return "****"
+}
+
+type loginAttempt struct {
+	failures int
+	until    time.Time
+}
+
+type loginLimiter struct {
+	mu       sync.Mutex
+	attempts map[string]loginAttempt
+}
+
+func newLoginLimiter() *loginLimiter {
+	return &loginLimiter{attempts: map[string]loginAttempt{}}
+}
+
+func (l *loginLimiter) fail(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	attempt := l.attempts[ip]
+	attempt.failures++
+	if attempt.failures >= 5 {
+		attempt.until = time.Now().Add(15 * time.Minute)
+	}
+	l.attempts[ip] = attempt
+}
+
+func (l *loginLimiter) success(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, ip)
+}
+
+func (l *loginLimiter) retryAfter(ip string) time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	attempt := l.attempts[ip]
+	if time.Now().After(attempt.until) {
+		if !attempt.until.IsZero() {
+			delete(l.attempts, ip)
+		}
+		return 0
+	}
+	return time.Until(attempt.until)
+}
