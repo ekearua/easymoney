@@ -46,15 +46,15 @@ func (s *ConversationService) Handle(ctx context.Context, message whatsapp.Inbou
 	if strings.EqualFold(input, "help") {
 		return s.sendHelp(ctx, user.WhatsAppNumber)
 	}
+	if !user.OnboardingComplete || !user.NumberConfirmedAt.Valid {
+		return s.handleOnboarding(ctx, user, session, input)
+	}
 	if strings.EqualFold(input, "cancel") || input == "cancel_payment" {
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, user.WhatsAppNumber)
-	}
-	if !user.OnboardingComplete {
-		return s.handleOnboarding(ctx, user, session, input)
 	}
 
 	switch session.State {
@@ -70,7 +70,14 @@ func (s *ConversationService) Handle(ctx context.Context, message whatsapp.Inbou
 }
 
 func (s *ConversationService) handleOnboarding(ctx context.Context, user store.User, session store.Session, input string) error {
-	if session.State != "onboard_name" && session.State != "onboard_email" {
+	if user.OnboardingComplete && !user.NumberConfirmedAt.Valid && session.State != "onboard_confirm_number" {
+		session.State, session.Data = "onboard_confirm_number", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
+	}
+	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_confirm_number" {
 		session.State = "onboard_name"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -92,21 +99,42 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, user store.U
 		}
 		return s.messenger.SendText(ctx, user.WhatsAppNumber, "Thanks. Enter an email address for Paystack test checkout and receipts.")
 	}
+	if session.State == "onboard_confirm_number" {
+		switch {
+		case input == "confirm_number" || strings.EqualFold(input, "confirm"):
+			if err := s.store.ConfirmUserNumber(ctx, user.ID); err != nil {
+				return err
+			}
+			session.State, session.Data = "menu", map[string]string{}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			if err := s.messenger.SendText(ctx, user.WhatsAppNumber, "Profile saved. Your WhatsApp number is confirmed for this test-mode demo."); err != nil {
+				return err
+			}
+			return s.sendMenu(ctx, user.WhatsAppNumber)
+		case input == "cancel_number" || strings.EqualFold(input, "cancel"):
+			session.State, session.Data = "onboard_name", map[string]string{}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.messenger.SendText(ctx, user.WhatsAppNumber, "No problem. Let's restart onboarding. What name should we use for your receipts?")
+		default:
+			return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
+		}
+	}
 	address, err := mail.ParseAddress(input)
 	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
 		return s.messenger.SendText(ctx, user.WhatsAppNumber, "That email does not look valid. Please try again.")
 	}
-	if err := s.store.CompleteUserOnboarding(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
+	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
 		return err
 	}
-	session.State, session.Data = "menu", map[string]string{}
+	session.State, session.Data = "onboard_confirm_number", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	if err := s.messenger.SendText(ctx, user.WhatsAppNumber, "Profile saved. Remember: every payment here uses Paystack test mode."); err != nil {
-		return err
-	}
-	return s.sendMenu(ctx, user.WhatsAppNumber)
+	return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
 }
 
 func (s *ConversationService) handleMenu(ctx context.Context, user store.User, session store.Session, input string) error {
@@ -214,6 +242,17 @@ func (s *ConversationService) sendMenu(ctx context.Context, to string) error {
 				{ID: "menu_help", Title: "Help", Description: "Learn how the demo works"},
 			},
 		}},
+	})
+}
+
+func (s *ConversationService) sendNumberConfirmation(ctx context.Context, to string) error {
+	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
+		To:   to,
+		Body: fmt.Sprintf("We will use %s as your account identity for this Paystack test-mode demo. Confirm this WhatsApp number?", to),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_number", Title: "Confirm"},
+			{ID: "cancel_number", Title: "Cancel"},
+		},
 	})
 }
 

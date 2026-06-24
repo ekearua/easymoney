@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,10 @@ type User struct {
 	DisplayName        string
 	Email              string
 	OnboardingComplete bool
+	WhatsAppVerifiedAt sql.NullTime
+	NumberConfirmedAt  sql.NullTime
+	EmailVerifiedAt    sql.NullTime
+	VerificationLevel  string
 	LastInboundAt      time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
@@ -216,13 +221,25 @@ func (s *Store) Seed(ctx context.Context) error {
 // GetOrCreateUser resolves a customer by normalized WhatsApp number.
 func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error) {
 	const query = `
-		INSERT INTO users (whatsapp_number) VALUES ($1)
-		ON CONFLICT (whatsapp_number) DO UPDATE SET updated_at = now(), last_inbound_at = now()
-		RETURNING id, whatsapp_number, display_name, email, onboarding_complete, last_inbound_at, created_at, updated_at`
+		INSERT INTO users (whatsapp_number, whatsapp_verified_at, verification_level) VALUES ($1, now(), 'whatsapp_inbound')
+		ON CONFLICT (whatsapp_number) DO UPDATE SET
+			updated_at = now(),
+			last_inbound_at = now(),
+			whatsapp_verified_at = COALESCE(users.whatsapp_verified_at, now()),
+			verification_level = CASE
+				WHEN users.number_confirmed_at IS NOT NULL THEN users.verification_level
+				WHEN users.verification_level = 'unverified' THEN 'whatsapp_inbound'
+				ELSE users.verification_level
+			END
+		RETURNING id, whatsapp_number, display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
-		&user.OnboardingComplete, &user.LastInboundAt, &user.CreatedAt, &user.UpdatedAt,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
 	)
 	return user, err
 }
@@ -233,16 +250,33 @@ func (s *Store) UpdateUserName(ctx context.Context, id uuid.UUID, name string) e
 	return err
 }
 
-// CompleteUserOnboarding stores the gateway email and marks onboarding complete.
-func (s *Store) CompleteUserOnboarding(ctx context.Context, id uuid.UUID, email string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET email=$2, onboarding_complete=true, updated_at=now() WHERE id=$1`, id, email)
+// UpdateUserEmail stores the Paystack checkout and receipt email without
+// treating it as verified. Email verification can be added later as a separate
+// proof, but this MVP only confirms the WhatsApp number.
+func (s *Store) UpdateUserEmail(ctx context.Context, id uuid.UUID, email string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET email=$2, updated_at=now() WHERE id=$1`, id, email)
+	return err
+}
+
+// ConfirmUserNumber records the user's explicit confirmation that their
+// WhatsApp number should be used as the demo account identity.
+func (s *Store) ConfirmUserNumber(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET onboarding_complete=true,
+			number_confirmed_at=COALESCE(number_confirmed_at, now()),
+			verification_level='whatsapp_confirmed',
+			updated_at=now()
+		WHERE id=$1`, id)
 	return err
 }
 
 // ListUsers returns recent customers for the read-only dashboard.
 func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, whatsapp_number, display_name, email, onboarding_complete, last_inbound_at, created_at, updated_at
+		SELECT id, whatsapp_number, display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -251,7 +285,10 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email, &user.OnboardingComplete, &user.LastInboundAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if err := rows.Scan(&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+			&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+			&user.EmailVerifiedAt, &user.VerificationLevel, &user.LastInboundAt,
+			&user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, user)

@@ -41,7 +41,10 @@ func TestPostgresPaymentLifecycleAndDeduplication(t *testing.T) {
 	if err := repository.UpdateUserName(ctx, user.ID, "Demo User"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CompleteUserOnboarding(ctx, user.ID, "demo@example.com"); err != nil {
+	if err := repository.UpdateUserEmail(ctx, user.ID, "demo@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ConfirmUserNumber(ctx, user.ID); err != nil {
 		t.Fatal(err)
 	}
 	fresh, err := repository.EnqueueInboundMessage(ctx, InboundMessage{ID: "wamid.1", Sender: user.WhatsAppNumber, Text: "hello"})

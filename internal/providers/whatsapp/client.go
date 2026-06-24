@@ -123,7 +123,7 @@ func (c *Client) SendText(ctx context.Context, to, body string) error {
 	return c.send(ctx, map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    "individual",
-		"to":                to,
+		"to":                recipientForCloudAPI(to),
 		"type":              "text",
 		"text":              map[string]any{"preview_url": false, "body": body},
 	})
@@ -134,7 +134,7 @@ func (c *Client) SendCheckout(ctx context.Context, to, body, url string) error {
 	return c.send(ctx, map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    "individual",
-		"to":                to,
+		"to":                recipientForCloudAPI(to),
 		"type":              "interactive",
 		"interactive": map[string]any{
 			"type": "cta_url",
@@ -178,7 +178,7 @@ func (c *Client) SendInteractive(ctx context.Context, message ports.InteractiveM
 	return c.send(ctx, map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    "individual",
-		"to":                message.To,
+		"to":                recipientForCloudAPI(message.To),
 		"type":              "interactive",
 		"interactive":       interactive,
 	})
@@ -192,7 +192,7 @@ func (c *Client) SendTemplate(ctx context.Context, to, name string, parameters [
 	}
 	return c.send(ctx, map[string]any{
 		"messaging_product": "whatsapp",
-		"to":                to,
+		"to":                recipientForCloudAPI(to),
 		"type":              "template",
 		"template": map[string]any{
 			"name":     name,
@@ -225,11 +225,20 @@ func (c *Client) send(ctx context.Context, payload map[string]any) error {
 		return fmt.Errorf("WhatsApp request: %w", err)
 	}
 	defer response.Body.Close()
-	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20)); err != nil {
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
 		return err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("WhatsApp returned %s", response.Status)
+		return fmt.Errorf("WhatsApp returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
 	}
 	return nil
+}
+
+// recipientForCloudAPI converts our stored E.164 identity into the Cloud API
+// recipient format. We keep phone numbers in the database as +234... for human
+// clarity, but Meta message sends expect digits only, including country code.
+func recipientForCloudAPI(to string) string {
+	replacer := strings.NewReplacer("+", "", " ", "", "-", "", "(", "", ")", "")
+	return replacer.Replace(strings.TrimSpace(to))
 }
