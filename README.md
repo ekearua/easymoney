@@ -1,6 +1,6 @@
-# WhatsApp Payment Demo
+# Xego
 
-A Nigeria-focused merchant checkout demo that uses WhatsApp Cloud API as the customer interface and Paystack hosted checkout in test mode. It does not hold money, issue balances, settle merchants, or receive card data.
+Xego is a Nigeria-focused merchant checkout demo that uses WhatsApp Cloud API as the customer interface, Paystack hosted checkout in test mode, and a simulated bank-to-bank transfer rail. It does not hold money, issue balances, settle merchants, or receive card data.
 
 ## Architecture
 
@@ -18,7 +18,7 @@ Go service ─────── PostgreSQL
    └─ read-only admin + tokenized receipts
 ```
 
-Payment success is written only after the backend calls Paystack verification and confirms the reference, amount, currency, test domain, card channel, and available payment/merchant metadata.
+Card payment success is written only after the backend calls Paystack verification and confirms the reference, amount, currency, test domain, card channel, and available payment/merchant metadata. Bank-transfer success is demo-only and is written only after the customer taps **I have transferred** against generated transfer instructions.
 
 ## Local development
 
@@ -103,11 +103,12 @@ The callback never marks a transaction successful by itself. Both callback and w
 1. Message the configured WhatsApp number.
 2. Enter a name and email.
 3. Choose **Make payment**, a fictional merchant, and an amount from ₦100 to ₦100,000.
-4. Confirm the test-mode summary.
-5. Open Paystack checkout and use an official Paystack test card.
-6. Confirm that WhatsApp reports the final verified result and the receipt URL displays the same status.
-7. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
-8. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
+4. Choose **Card checkout** or **Bank transfer**.
+5. For card checkout, confirm the test-mode summary, open Paystack checkout, and use an official Paystack test card.
+6. For bank transfer, choose a Nigerian collection bank, review the demo account details, then tap **I have transferred**. Do not send real money.
+7. Confirm that WhatsApp reports the final result and the receipt URL displays the same status and provider.
+8. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
+9. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
 
 ## Security and retention
 

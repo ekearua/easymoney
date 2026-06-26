@@ -26,6 +26,13 @@ type PaymentService struct {
 	logger  *slog.Logger
 }
 
+const (
+	// ProviderPaystack identifies card checkout attempts handled by Paystack.
+	ProviderPaystack = "paystack"
+	// ProviderBankTransfer identifies the in-app simulated bank-transfer rail.
+	ProviderBankTransfer = "bank_transfer"
+)
+
 // NewPaymentService creates the provider-neutral payment coordinator.
 func NewPaymentService(cfg config.Config, repository *store.Store, gateway ports.PaymentGateway, logger *slog.Logger) *PaymentService {
 	return &PaymentService{cfg: cfg, store: repository, gateway: gateway, logger: logger}
@@ -33,6 +40,14 @@ func NewPaymentService(cfg config.Config, repository *store.Store, gateway ports
 
 // CreateDraft creates a payment capability and moves it to customer confirmation.
 func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64) (store.PaymentView, error) {
+	return s.CreateDraftForProvider(ctx, user, merchant, amountKobo, ProviderPaystack)
+}
+
+// CreateDraftForProvider creates a payment attempt for the selected rail.
+func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider string) (store.PaymentView, error) {
+	if provider != ProviderPaystack && provider != ProviderBankTransfer {
+		return store.PaymentView{}, fmt.Errorf("unsupported payment provider %q", provider)
+	}
 	token, err := domain.NewReceiptToken()
 	if err != nil {
 		return store.PaymentView{}, err
@@ -44,7 +59,7 @@ func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merch
 		AmountKobo:        amountKobo,
 		Currency:          "NGN",
 		Status:            domain.StatusDraft,
-		Provider:          "paystack",
+		Provider:          provider,
 		ProviderReference: domain.NewProviderReference(),
 		ReceiptToken:      token,
 	}
@@ -59,6 +74,9 @@ func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merch
 
 // InitializeCheckout calls Paystack only after explicit customer confirmation.
 func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.PaymentView) (store.PaymentView, error) {
+	if payment.Provider != ProviderPaystack {
+		return store.PaymentView{}, fmt.Errorf("payment provider %q cannot use Paystack checkout", payment.Provider)
+	}
 	if payment.Status != domain.StatusAwaitingConfirmation {
 		return store.PaymentView{}, fmt.Errorf("payment is not awaiting confirmation")
 	}
@@ -86,11 +104,51 @@ func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.P
 	return s.store.PaymentByID(ctx, payment.ID)
 }
 
+// InitializeBankTransferSimulation prepares demo transfer details for a chosen
+// collection bank and moves the payment into pending.
+func (s *PaymentService) InitializeBankTransferSimulation(ctx context.Context, payment store.PaymentView, account store.BankTransferAccount) (store.PaymentView, store.BankTransferInstruction, error) {
+	if payment.Provider != ProviderBankTransfer {
+		return store.PaymentView{}, store.BankTransferInstruction{}, fmt.Errorf("payment provider %q cannot use bank transfer", payment.Provider)
+	}
+	if payment.Status != domain.StatusAwaitingConfirmation {
+		return store.PaymentView{}, store.BankTransferInstruction{}, fmt.Errorf("payment is not awaiting confirmation")
+	}
+	instruction, err := s.store.InitializeBankTransferSimulation(ctx, payment.ID, account.ID, payment.ProviderReference)
+	if err != nil {
+		return store.PaymentView{}, store.BankTransferInstruction{}, err
+	}
+	updated, err := s.store.PaymentByID(ctx, payment.ID)
+	if err != nil {
+		return store.PaymentView{}, store.BankTransferInstruction{}, err
+	}
+	return updated, instruction, nil
+}
+
+// ConfirmBankTransferSimulation treats the customer's WhatsApp confirmation as
+// the demo's simulated bank verification signal.
+func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, payment store.PaymentView) (store.PaymentView, bool, error) {
+	if payment.Provider != ProviderBankTransfer {
+		return store.PaymentView{}, false, fmt.Errorf("payment provider %q cannot confirm bank transfer", payment.Provider)
+	}
+	changed, err := s.store.ConfirmBankTransferSimulation(ctx, payment.ID, s.resultOutbox(payment, domain.StatusSucceeded))
+	if err != nil {
+		return payment, false, err
+	}
+	updated, err := s.store.PaymentByID(ctx, payment.ID)
+	if err != nil {
+		return payment, changed, err
+	}
+	return updated, changed, nil
+}
+
 // VerifyAndApply is the sole path that can mark a payment successful.
 func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source string) (store.PaymentView, bool, error) {
 	payment, err := s.store.PaymentByReference(ctx, reference)
 	if err != nil {
 		return store.PaymentView{}, false, err
+	}
+	if payment.Provider != ProviderPaystack {
+		return payment, false, fmt.Errorf("provider %q does not support Paystack verification", payment.Provider)
 	}
 	verification, err := s.gateway.Verify(ctx, reference)
 	if err != nil {
@@ -171,7 +229,7 @@ func isTerminal(status domain.PaymentStatus) bool {
 func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue domain.PaymentStatus) store.OutboxSpec {
 	status := strings.ToUpper(string(statusValue))
 	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
-	body := fmt.Sprintf("%s payment of %s to %s. Receipt: %s", status, domain.FormatNGN(payment.AmountKobo), payment.MerchantName, receiptURL)
+	body := fmt.Sprintf("Xego payment update\n\nStatus: %s\nMerchant: %s\nAmount: %s\nReceipt: %s", status, payment.MerchantName, domain.FormatNGN(payment.AmountKobo), receiptURL)
 	kind := "text"
 	payload, _ := json.Marshal(map[string]any{"body": body})
 	if time.Since(payment.LastInboundAt) < 23*time.Hour {

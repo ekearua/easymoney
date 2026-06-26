@@ -46,7 +46,7 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		Environment:            env("APP_ENV", "development"),
-		AppName:                env("APP_NAME", "WhatsApp Payment Demo"),
+		AppName:                env("APP_NAME", "Xego"),
 		BaseURL:                strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
 		HTTPAddr:               env("HTTP_ADDR", ":8080"),
 		DatabaseURL:            os.Getenv("DATABASE_URL"),

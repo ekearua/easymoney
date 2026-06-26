@@ -3,7 +3,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Read only</p><h1>Payments</h1></div></header>
-<div class="table-wrap"><table><thead><tr><th>Reference</th><th>User</th><th>Merchant</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>
-{{range .Payments}}<tr><td class="mono">{{.ProviderReference}}</td><td>{{.UserName}}</td><td>{{.MerchantName}}</td><td>{{money .AmountKobo}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
-{{else}}<tr><td colspan="6">No payments yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
+<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Provider</th><th>User</th><th>Merchant</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>
+{{range .Payments}}<tr><td class="mono">{{.ProviderReference}}</td><td>{{.Provider}}</td><td>{{.UserName}}</td><td>{{.MerchantName}}</td><td>{{money .AmountKobo}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
+{{else}}<tr><td colspan="7">No payments yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
 {{end}}

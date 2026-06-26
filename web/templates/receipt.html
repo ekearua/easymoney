@@ -2,18 +2,19 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Payment receipt · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<title>Payment receipt - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt">
-  <div class="receipt-mark">✓</div>
-  <p class="eyebrow">Paystack test mode</p>
+  <div class="receipt-mark">OK</div>
+  <p class="eyebrow">{{if eq .Payment.Provider "bank_transfer"}}Bank transfer simulation{{else}}Paystack test mode{{end}}</p>
   <h1>Payment {{.Payment.Status}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   <dl>
     <div><dt>Merchant</dt><dd>{{.Payment.MerchantName}}</dd></div>
+    <div><dt>Provider</dt><dd>{{.Payment.Provider}}</dd></div>
     <div><dt>Reference</dt><dd class="mono">{{.Payment.ProviderReference}}</dd></div>
     <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
-    <div><dt>Environment</dt><dd>TEST — no real money moved</dd></div>
+    <div><dt>Environment</dt><dd>TEST - no real money moved</dd></div>
   </dl>
-  <p class="muted">Payment status is shown only after server-side Paystack verification.</p>
+  <p class="muted">{{if eq .Payment.Provider "bank_transfer"}}This receipt reflects a simulated bank-transfer confirmation for demo purposes only.{{else}}Payment status is shown only after server-side Paystack verification.{{end}}</p>
 </main></body></html>
 {{end}}
