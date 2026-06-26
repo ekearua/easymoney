@@ -1,6 +1,6 @@
 # Xego
 
-Xego is a Nigeria-focused merchant checkout demo that uses WhatsApp Cloud API as the customer interface, Paystack hosted checkout in test mode, and a simulated bank-to-bank transfer rail. It does not hold money, issue balances, settle merchants, or receive card data.
+Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API as the customer interface, hosted card checkout, and a bank-transfer payment path. It does not store card data in WhatsApp.
 
 ## Architecture
 
@@ -13,12 +13,12 @@ Go service ─────── PostgreSQL
    │                   ├─ durable webhook/inbound queues
    │                   └─ transactional message outbox
    │
-   ├─ initialize/verify ── Paystack test API
+   ├─ initialize/verify ── card checkout provider API
    ├─ outbound messages ─ WhatsApp Cloud API
    └─ read-only admin + tokenized receipts
 ```
 
-Card payment success is written only after the backend calls Paystack verification and confirms the reference, amount, currency, test domain, card channel, and available payment/merchant metadata. Bank-transfer success is demo-only and is written only after the customer taps **I have transferred** against generated transfer instructions.
+Card payment success is written only after the backend calls provider verification and confirms the reference, amount, currency, channel, and available payment/merchant metadata. Bank-transfer success is written only after the customer taps **I have transferred** against generated transfer instructions.
 
 ## Local development
 
@@ -102,10 +102,10 @@ The callback never marks a transaction successful by itself. Both callback and w
 
 1. Message the configured WhatsApp number.
 2. Enter a name and email.
-3. Choose **Make payment**, a fictional merchant, and an amount from ₦100 to ₦100,000.
+3. Choose **Make payment**, a merchant, and an amount from ₦100 to ₦100,000.
 4. Choose **Card checkout** or **Bank transfer**.
-5. For card checkout, confirm the test-mode summary, open Paystack checkout, and use an official Paystack test card.
-6. For bank transfer, choose a Nigerian collection bank, review the demo account details, then tap **I have transferred**. Do not send real money.
+5. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
+6. For bank transfer, choose a Nigerian collection bank, review the account details, then tap **I have transferred**.
 7. Confirm that WhatsApp reports the final result and the receipt URL displays the same status and provider.
 8. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
 9. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
@@ -115,9 +115,9 @@ The callback never marks a transaction successful by itself. Both callback and w
 - Card number, CVV, PIN, OTP, balances, and reusable authorization data are never stored.
 - Webhook bodies are read once for signature verification; only normalized Paystack event/reference data and normalized WhatsApp message fields are queued.
 - Admin sessions store only token hashes and use secure, HTTP-only, same-site cookies in production.
-- Personally identifiable demo records are removed after 90 days by the daily retention worker or `retain` command.
+- Personally identifiable records are removed after 90 days by the daily retention worker or `retain` command.
 - Receipt URLs are unguessable bearer capabilities. Do not publish them.
 
 ## Production limitations
 
-This is an investor demo, not a licensed payment processor. It has no KYC, AML monitoring, merchant onboarding, disputes, refunds, payouts, ledger, settlement, reconciliation reports, or live-money authorization.
+This build is not a licensed payment processor. Before live-money use, add KYC, AML monitoring, merchant onboarding, disputes, refunds, payouts, ledger, settlement, reconciliation reports, and live-money authorization controls.

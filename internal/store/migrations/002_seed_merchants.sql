@@ -1,8 +1,8 @@
 INSERT INTO merchants (slug, name, category, description)
 VALUES
-    ('lagos-lunchbox', 'Lagos Lunchbox', 'Food', 'Fictional weekday meals and catering merchant.'),
-    ('kora-books', 'Kora Books', 'Books', 'Fictional independent bookseller for the payment demo.'),
-    ('bright-fix-ng', 'BrightFix NG', 'Services', 'Fictional household repair and maintenance merchant.')
+    ('lagos-lunchbox', 'Lagos Lunchbox', 'Food', 'Weekday meals, lunch packs, and catering.'),
+    ('kora-books', 'Kora Books', 'Books', 'Books, stationery, and reading accessories.'),
+    ('bright-fix-ng', 'BrightFix NG', 'Services', 'Home repair, maintenance, and installation services.')
 ON CONFLICT (slug) DO UPDATE SET
     name = EXCLUDED.name,
     category = EXCLUDED.category,

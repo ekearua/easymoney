@@ -5,7 +5,7 @@
 <title>Payment receipt - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt">
   <div class="receipt-mark">OK</div>
-  <p class="eyebrow">{{if eq .Payment.Provider "bank_transfer"}}Bank transfer simulation{{else}}Paystack test mode{{end}}</p>
+  <p class="eyebrow">{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
   <h1>Payment {{.Payment.Status}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   <dl>
@@ -13,8 +13,8 @@
     <div><dt>Provider</dt><dd>{{.Payment.Provider}}</dd></div>
     <div><dt>Reference</dt><dd class="mono">{{.Payment.ProviderReference}}</dd></div>
     <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
-    <div><dt>Environment</dt><dd>TEST - no real money moved</dd></div>
+    <div><dt>Channel</dt><dd>{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</dd></div>
   </dl>
-  <p class="muted">{{if eq .Payment.Provider "bank_transfer"}}This receipt reflects a simulated bank-transfer confirmation for demo purposes only.{{else}}Payment status is shown only after server-side Paystack verification.{{end}}</p>
+  <p class="muted">{{if eq .Payment.Provider "bank_transfer"}}Payment status is shown after transfer confirmation is recorded.{{else}}Payment status is shown only after server-side card checkout verification.{{end}}</p>
 </main></body></html>
 {{end}}

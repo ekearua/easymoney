@@ -91,7 +91,7 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, user store.U
 			return err
 		}
 		return s.messenger.SendText(ctx, user.WhatsAppNumber,
-			"Welcome to "+s.cfg.AppName+" — a simple way to pay merchants from WhatsApp.\n\nThis demo runs in Paystack test mode, so no real money moves.\n\nWhat name should we use on your receipts?")
+			"Welcome to "+s.cfg.AppName+" — a simple way to pay merchants from WhatsApp.\n\nWhat name should we use on your receipts?")
 	}
 	if session.State == "onboard_name" {
 		name := strings.TrimSpace(input)
@@ -117,7 +117,7 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, user store.U
 			if err := s.saveSession(ctx, session); err != nil {
 				return err
 			}
-			if err := s.messenger.SendText(ctx, user.WhatsAppNumber, "You’re all set. Your WhatsApp number is confirmed for Xego test payments."); err != nil {
+			if err := s.messenger.SendText(ctx, user.WhatsAppNumber, "You’re all set. Your WhatsApp number is confirmed for Xego payments."); err != nil {
 				return err
 			}
 			return s.sendMenu(ctx, user.WhatsAppNumber)
@@ -265,7 +265,7 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, user store
 func (s *ConversationService) sendCardReview(ctx context.Context, to string, merchant store.Merchant, amount int64) error {
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To:   to,
-		Body: fmt.Sprintf("Review your Xego test payment:\n\nMerchant: %s\nAmount: %s\n\nNo real money will move. Continue to Paystack test checkout?", merchant.Name, domain.FormatNGN(amount)),
+		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount)),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Continue"},
 			{ID: "cancel_payment", Title: "Cancel"},
@@ -296,7 +296,7 @@ func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.messenger.SendText(ctx, user.WhatsAppNumber, "Thanks. Xego is simulating bank confirmation now. You’ll receive the final update shortly.")
+	return s.messenger.SendText(ctx, user.WhatsAppNumber, "Thanks. Xego has received your transfer confirmation. You’ll receive the final update shortly.")
 }
 
 func (s *ConversationService) handleConfirmation(ctx context.Context, user store.User, session store.Session, input string) error {
@@ -309,14 +309,14 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, user store
 	}
 	payment, err = s.payments.InitializeCheckout(ctx, payment)
 	if err != nil {
-		return s.resetWithMessage(ctx, user, session, "Xego couldn’t start Paystack test checkout right now. Please try again in a moment.")
+		return s.resetWithMessage(ctx, user, session, "Xego couldn’t start secure card checkout right now. Please try again in a moment.")
 	}
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.messenger.SendCheckout(ctx, user.WhatsAppNumber,
-		fmt.Sprintf("Your secure Paystack test checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
+		fmt.Sprintf("Your secure card checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
 		payment.CheckoutURL)
 }
 
@@ -328,10 +328,10 @@ func (s *ConversationService) sendMenu(ctx context.Context, to string) error {
 		Sections: []ports.InteractiveSection{{
 			Title: "Xego",
 			Rows: []ports.InteractiveRow{
-				{ID: "menu_pay", Title: "Make payment", Description: "Pay a demo merchant securely"},
+				{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
 				{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
 				{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
-				{ID: "menu_help", Title: "Help", Description: "How Xego test payments work"},
+				{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
 			},
 		}},
 	})
@@ -351,7 +351,7 @@ func (s *ConversationService) sendPaymentMethods(ctx context.Context, to string,
 func (s *ConversationService) sendNumberConfirmation(ctx context.Context, to string) error {
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To:   to,
-		Body: fmt.Sprintf("Xego will use %s as your account number for this demo.\n\nConfirm this WhatsApp number?", to),
+		Body: fmt.Sprintf("Xego will use %s as your account identity.\n\nConfirm this WhatsApp number?", to),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_number", Title: "Confirm"},
 			{ID: "cancel_number", Title: "Cancel"},
@@ -374,7 +374,7 @@ func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) 
 	}
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To:          to,
-		Body:        "Choose the Xego collection bank you want to simulate transferring to.",
+		Body:        "Choose the Xego collection bank you want to transfer to.",
 		ButtonLabel: "Choose bank",
 		Sections:    []ports.InteractiveSection{{Title: "Nigerian banks", Rows: rows}},
 	})
@@ -383,7 +383,7 @@ func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) 
 func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, to string, payment store.PaymentView, instruction store.BankTransferInstruction) error {
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To: to,
-		Body: fmt.Sprintf("Bank transfer simulation\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nUse these as demo instructions only. No real money should be sent.",
+		Body: fmt.Sprintf("Bank transfer details\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nUse the reference exactly as shown so Xego can match your payment.",
 			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_bank_transfer", Title: "I have transferred"},
@@ -433,7 +433,7 @@ func (s *ConversationService) sendHistory(ctx context.Context, user store.User) 
 	if len(payments) == 0 {
 		return s.messenger.SendText(ctx, user.WhatsAppNumber, "You don’t have any Xego payments yet.")
 	}
-	lines := []string{"Your recent Xego test payments:"}
+	lines := []string{"Your recent Xego payments:"}
 	for _, payment := range payments {
 		lines = append(lines, fmt.Sprintf("• %s — %s — %s", payment.MerchantName, domain.FormatNGN(payment.AmountKobo), strings.ToUpper(string(payment.Status))))
 	}
@@ -442,7 +442,7 @@ func (s *ConversationService) sendHistory(ctx context.Context, user store.User) 
 
 func (s *ConversationService) sendHelp(ctx context.Context, to string) error {
 	return s.messenger.SendText(ctx, to,
-		"Xego lets you choose a merchant, enter an NGN amount, and complete a secure Paystack test checkout.\n\nWe never ask for card details, PINs, OTPs, or CVVs in WhatsApp. Type MENU anytime to return to the main menu.")
+		"Xego lets you choose a merchant, enter an NGN amount, and pay by secure card checkout or bank transfer.\n\nWe never ask for card details, PINs, OTPs, or CVVs in WhatsApp. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, user store.User, session store.Session, body string) error {
