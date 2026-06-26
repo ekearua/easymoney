@@ -340,7 +340,7 @@ func (s *ConversationService) sendMenu(ctx context.Context, to string) error {
 func (s *ConversationService) sendPaymentMethods(ctx context.Context, to string, merchant store.Merchant, amount int64) error {
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To:   to,
-		Body: fmt.Sprintf("How would you like to pay %s to %s?", domain.FormatNGN(amount), merchant.Name),
+		Body: fmt.Sprintf("How would you like to pay %s to %s?\n\nFor bank transfer, Xego will give you collection account details and a unique reference to enter in your bank app.", domain.FormatNGN(amount), merchant.Name),
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
@@ -374,7 +374,7 @@ func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) 
 	}
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To:          to,
-		Body:        "Choose the Xego collection bank you want to transfer to.",
+		Body:        "Choose the Xego collection bank you want to transfer to. Pick the bank that is easiest for you to pay into.",
 		ButtonLabel: "Choose bank",
 		Sections:    []ports.InteractiveSection{{Title: "Nigerian banks", Rows: rows}},
 	})
@@ -383,7 +383,7 @@ func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) 
 func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, to string, payment store.PaymentView, instruction store.BankTransferInstruction) error {
 	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
 		To: to,
-		Body: fmt.Sprintf("Bank transfer details\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nUse the reference exactly as shown so Xego can match your payment.",
+		Body: fmt.Sprintf("Bank transfer details\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above to this account.\n3. Put the reference exactly as shown in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nThe reference is how Xego matches your transfer to this payment.",
 			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_bank_transfer", Title: "I have transferred"},
@@ -442,7 +442,7 @@ func (s *ConversationService) sendHistory(ctx context.Context, user store.User) 
 
 func (s *ConversationService) sendHelp(ctx context.Context, to string) error {
 	return s.messenger.SendText(ctx, to,
-		"Xego lets you choose a merchant, enter an NGN amount, and pay by secure card checkout or bank transfer.\n\nWe never ask for card details, PINs, OTPs, or CVVs in WhatsApp. Type MENU anytime to return to the main menu.")
+		"Xego lets you choose a merchant, enter an NGN amount, and pay by secure card checkout or bank transfer.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nWe never ask for card details, PINs, OTPs, or CVVs in WhatsApp. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, user store.User, session store.Session, body string) error {
