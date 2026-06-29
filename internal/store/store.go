@@ -31,18 +31,23 @@ type Store struct {
 
 // User is a WhatsApp customer profile.
 type User struct {
-	ID                 uuid.UUID
-	WhatsAppNumber     string
-	DisplayName        string
-	Email              string
-	OnboardingComplete bool
-	WhatsAppVerifiedAt sql.NullTime
-	NumberConfirmedAt  sql.NullTime
-	EmailVerifiedAt    sql.NullTime
-	VerificationLevel  string
-	LastInboundAt      time.Time
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                  uuid.UUID
+	WhatsAppNumber      string
+	DisplayName         string
+	Email               string
+	OnboardingComplete  bool
+	WhatsAppVerifiedAt  sql.NullTime
+	NumberConfirmedAt   sql.NullTime
+	EmailVerifiedAt     sql.NullTime
+	VerificationLevel   string
+	TelegramChatID      sql.NullString
+	TelegramUserID      sql.NullString
+	TelegramUsername    string
+	TelegramVerifiedAt  sql.NullTime
+	TelegramConfirmedAt sql.NullTime
+	LastInboundAt       time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // Merchant is a curated payment recipient.
@@ -103,6 +108,7 @@ type Metrics struct {
 // OutboxMessage is one durable outbound WhatsApp operation.
 type OutboxMessage struct {
 	ID        int64
+	Channel   string
 	Recipient string
 	Kind      string
 	Payload   json.RawMessage
@@ -112,6 +118,7 @@ type OutboxMessage struct {
 // OutboxSpec describes an outbound message inserted in a payment transaction.
 type OutboxSpec struct {
 	UserID    uuid.UUID
+	Channel   string
 	Recipient string
 	Kind      string
 	Payload   json.RawMessage
@@ -120,9 +127,12 @@ type OutboxSpec struct {
 // InboundMessage is one durable normalized WhatsApp message.
 type InboundMessage struct {
 	ID          string
+	Channel     string
 	Sender      string
+	Recipient   string
 	Text        string
 	Interactive string
+	Username    string
 	Attempts    int
 }
 
@@ -253,14 +263,49 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 				WHEN users.verification_level = 'unverified' THEN 'whatsapp_inbound'
 				ELSE users.verification_level
 			END
-		RETURNING id, whatsapp_number, display_name, email, onboarding_complete,
+		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
-		&user.EmailVerifiedAt, &user.VerificationLevel, &user.LastInboundAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt, &user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	return user, err
+}
+
+// GetOrCreateTelegramUser resolves a Telegram customer by stable chat ID.
+func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, username string) (User, error) {
+	const query = `
+		INSERT INTO users (telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, verification_level)
+		VALUES ($1,$2,$3,now(),'telegram_inbound')
+		ON CONFLICT (telegram_chat_id) DO UPDATE SET
+			telegram_user_id=EXCLUDED.telegram_user_id,
+			telegram_username=EXCLUDED.telegram_username,
+			telegram_verified_at=COALESCE(users.telegram_verified_at, now()),
+			last_inbound_at=now(),
+			updated_at=now(),
+			verification_level = CASE
+				WHEN users.telegram_confirmed_at IS NOT NULL THEN users.verification_level
+				WHEN users.verification_level IN ('unverified','whatsapp_inbound') THEN 'telegram_inbound'
+				ELSE users.verification_level
+			END
+		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			last_inbound_at, created_at, updated_at`
+	var user User
+	err := s.pool.QueryRow(ctx, query, chatID, userID, username).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt, &user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	return user, err
@@ -293,11 +338,24 @@ func (s *Store) ConfirmUserNumber(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// ConfirmTelegramAccount records the customer's explicit Telegram confirmation.
+func (s *Store) ConfirmTelegramAccount(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET onboarding_complete=true,
+			telegram_confirmed_at=COALESCE(telegram_confirmed_at, now()),
+			verification_level='telegram_confirmed',
+			updated_at=now()
+		WHERE id=$1`, id)
+	return err
+}
+
 // ListUsers returns recent customers for the read-only dashboard.
 func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, whatsapp_number, display_name, email, onboarding_complete,
+		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
@@ -309,7 +367,9 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 		var user User
 		if err := rows.Scan(&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
 			&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
-			&user.EmailVerifiedAt, &user.VerificationLevel, &user.LastInboundAt,
+			&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+			&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+			&user.TelegramConfirmedAt, &user.LastInboundAt,
 			&user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -436,13 +496,19 @@ func (s *Store) SaveSession(ctx context.Context, session Session) error {
 
 // EnqueueInboundMessage persists a normalized WhatsApp message before webhook acknowledgement.
 func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessage) (bool, error) {
-	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive})
+	if message.Channel == "" {
+		message.Channel = "whatsapp"
+	}
+	if message.Recipient == "" {
+		message.Recipient = message.Sender
+	}
+	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username})
 	if err != nil {
 		return false, err
 	}
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO inbound_messages (provider_message_id, sender, payload)
-		VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, message.ID, message.Sender, payload)
+		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, payload)
 	return tag.RowsAffected() == 1, err
 }
 
@@ -454,7 +520,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		SELECT provider_message_id,sender,payload,attempts
+		SELECT provider_message_id,channel,sender,recipient,payload,attempts
 		FROM inbound_messages
 		WHERE status IN ('pending','processing') AND available_at <= now()
 		ORDER BY received_at
@@ -466,7 +532,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	for rows.Next() {
 		var message InboundMessage
 		var payload []byte
-		if err := rows.Scan(&message.ID, &message.Sender, &payload, &message.Attempts); err != nil {
+		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -477,6 +543,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 		}
 		message.Text = normalized["text"]
 		message.Interactive = normalized["interactive"]
+		message.Username = normalized["username"]
 		messages = append(messages, message)
 	}
 	rows.Close()
@@ -520,12 +587,12 @@ func (s *Store) CreatePayment(ctx context.Context, payment domain.Payment) (doma
 	defer tx.Rollback(ctx)
 	const insert = `
 		INSERT INTO payments
-			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,receipt_token)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,channel,recipient,receipt_token)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING created_at, updated_at`
 	err = tx.QueryRow(ctx, insert,
 		payment.ID, payment.UserID, payment.MerchantID, payment.AmountKobo, payment.Currency,
-		payment.Status, payment.Provider, payment.ProviderReference, payment.ReceiptToken,
+		payment.Status, payment.Provider, payment.ProviderReference, payment.Channel, payment.Recipient, payment.ReceiptToken,
 	).Scan(&payment.CreatedAt, &payment.UpdatedAt)
 	if err != nil {
 		return domain.Payment{}, err
@@ -584,9 +651,12 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		return false, err
 	}
 	if outbox != nil {
+		if outbox.Channel == "" {
+			outbox.Channel = "whatsapp"
+		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO message_outbox(user_id,recipient,kind,payload)
-			VALUES($1,$2,$3,$4)`, outbox.UserID, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+			INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
 			return false, err
 		}
 	}
@@ -747,9 +817,12 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 		VALUES($1,$2,$3,'bank_transfer.user_confirmation',$4)`, paymentID, from, domain.StatusSucceeded, detail); err != nil {
 		return false, err
 	}
+	if outbox.Channel == "" {
+		outbox.Channel = "whatsapp"
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO message_outbox(user_id,recipient,kind,payload)
-		VALUES($1,$2,$3,$4)`, outbox.UserID, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -773,9 +846,9 @@ func (s *Store) PaymentByReceiptToken(ctx context.Context, token string) (Paymen
 func (s *Store) paymentBy(ctx context.Context, predicate string, value any) (PaymentView, error) {
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
-		       p.provider_reference,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
-		       u.display_name,u.email,u.whatsapp_number,m.name,m.slug,u.last_inbound_at
+		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
 		JOIN users u ON u.id=p.user_id
 		JOIN merchants m ON m.id=p.merchant_id
@@ -783,7 +856,7 @@ func (s *Store) paymentBy(ctx context.Context, predicate string, value any) (Pay
 	var view PaymentView
 	err := s.pool.QueryRow(ctx, query, value).Scan(
 		&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
-		&view.Status, &view.Provider, &view.ProviderReference, &view.CheckoutURL,
+		&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
 		&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 		&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 	)
@@ -803,9 +876,9 @@ func (s *Store) ListPayments(ctx context.Context, limit int) ([]PaymentView, err
 func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([]PaymentView, error) {
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
-		       p.provider_reference,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
-		       u.display_name,u.email,u.whatsapp_number,m.name,m.slug,u.last_inbound_at
+		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
 		JOIN users u ON u.id=p.user_id
 		JOIN merchants m ON m.id=p.merchant_id ` + suffix
@@ -819,7 +892,7 @@ func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([
 		var view PaymentView
 		if err := rows.Scan(
 			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
-			&view.Status, &view.Provider, &view.ProviderReference, &view.CheckoutURL,
+			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
 			&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 		); err != nil {
@@ -953,8 +1026,8 @@ func (s *Store) ListWebhooks(ctx context.Context, limit int) ([]WebhookView, err
 func (s *Store) EnqueueText(ctx context.Context, userID uuid.UUID, recipient, body string) error {
 	payload, _ := json.Marshal(map[string]any{"body": body})
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO message_outbox(user_id,recipient,kind,payload)
-		VALUES($1,$2,'text',$3)`, userID, recipient, payload)
+		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+		VALUES($1,'whatsapp',$2,'text',$3)`, userID, recipient, payload)
 	return err
 }
 
@@ -962,8 +1035,8 @@ func (s *Store) EnqueueText(ctx context.Context, userID uuid.UUID, recipient, bo
 func (s *Store) EnqueueTemplate(ctx context.Context, userID uuid.UUID, recipient, name, locale string, parameters []string) error {
 	payload, _ := json.Marshal(map[string]any{"name": name, "locale": locale, "parameters": parameters})
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO message_outbox(user_id,recipient,kind,payload)
-		VALUES($1,$2,'template',$3)`, userID, recipient, payload)
+		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+		VALUES($1,'whatsapp',$2,'template',$3)`, userID, recipient, payload)
 	return err
 }
 
@@ -975,7 +1048,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, limit int) ([]OutboxMessage, er
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		SELECT id,recipient,kind,payload,attempts
+		SELECT id,channel,recipient,kind,payload,attempts
 		FROM message_outbox
 		WHERE status IN ('pending','sending') AND available_at <= now()
 		ORDER BY id
@@ -987,7 +1060,7 @@ func (s *Store) ClaimOutbox(ctx context.Context, limit int) ([]OutboxMessage, er
 	var messages []OutboxMessage
 	for rows.Next() {
 		var message OutboxMessage
-		if err := rows.Scan(&message.ID, &message.Recipient, &message.Kind, &message.Payload, &message.Attempts); err != nil {
+		if err := rows.Scan(&message.ID, &message.Channel, &message.Recipient, &message.Kind, &message.Payload, &message.Attempts); err != nil {
 			rows.Close()
 			return nil, err
 		}

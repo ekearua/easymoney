@@ -13,26 +13,33 @@ import (
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
-	"whatsapp-payment-demo/internal/providers/whatsapp"
 	"whatsapp-payment-demo/internal/store"
 )
 
-// ConversationService implements the WhatsApp onboarding and payment state machine.
+const (
+	// ChannelWhatsApp identifies customer conversations received through WhatsApp Cloud API.
+	ChannelWhatsApp = "whatsapp"
+	// ChannelTelegram identifies customer conversations received through Telegram Bot API.
+	ChannelTelegram = "telegram"
+)
+
+// ConversationService implements the customer onboarding and payment state machine.
 type ConversationService struct {
-	cfg       config.Config
-	store     *store.Store
-	payments  *PaymentService
-	messenger *whatsapp.Client
+	cfg        config.Config
+	store      *store.Store
+	payments   *PaymentService
+	messengers map[string]ports.Messenger
 }
 
 // NewConversationService constructs the customer-facing workflow.
-func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, messenger *whatsapp.Client) *ConversationService {
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, messenger: messenger}
+func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, messengers map[string]ports.Messenger) *ConversationService {
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, messengers: messengers}
 }
 
-// Handle processes one deduplicated inbound WhatsApp message.
-func (s *ConversationService) Handle(ctx context.Context, message whatsapp.InboundMessage) error {
-	user, err := s.store.GetOrCreateUser(ctx, normalizePhone(message.From))
+// Handle processes one deduplicated inbound customer message from any supported channel.
+func (s *ConversationService) Handle(ctx context.Context, message store.InboundMessage) error {
+	message.Channel = normalizeChannel(message.Channel)
+	user, recipient, err := s.resolveUser(ctx, message)
 	if err != nil {
 		return err
 	}
@@ -44,11 +51,17 @@ func (s *ConversationService) Handle(ctx context.Context, message whatsapp.Inbou
 	if message.Interactive != "" {
 		input = message.Interactive
 	}
-	if strings.EqualFold(input, "help") {
-		return s.sendHelp(ctx, user.WhatsAppNumber)
+	if strings.EqualFold(input, "/start") || strings.EqualFold(input, "start") {
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
 	}
-	if !user.OnboardingComplete || !user.NumberConfirmedAt.Valid {
-		return s.handleOnboarding(ctx, user, session, input)
+	if strings.EqualFold(input, "help") || strings.EqualFold(input, "/help") {
+		return s.sendHelp(ctx, message.Channel, recipient)
+	}
+	if !s.onboardingCompleteForChannel(user, message.Channel) {
+		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
 	}
 	if strings.EqualFold(input, "cancel") || input == "cancel_payment" {
 		s.abandonSessionPayment(ctx, user, session)
@@ -56,47 +69,73 @@ func (s *ConversationService) Handle(ctx context.Context, message whatsapp.Inbou
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, user.WhatsAppNumber)
+		return s.sendMenu(ctx, message.Channel, recipient)
 	}
 
 	switch session.State {
 	case "select_merchant":
-		return s.handleMerchant(ctx, user, session, input)
+		return s.handleMerchant(ctx, message.Channel, recipient, user, session, input)
 	case "enter_amount":
-		return s.handleAmount(ctx, user, session, input)
+		return s.handleAmount(ctx, message.Channel, recipient, user, session, input)
 	case "select_payment_method":
-		return s.handlePaymentMethod(ctx, user, session, input)
+		return s.handlePaymentMethod(ctx, message.Channel, recipient, user, session, input)
 	case "select_transfer_bank":
-		return s.handleTransferBank(ctx, user, session, input)
+		return s.handleTransferBank(ctx, message.Channel, recipient, user, session, input)
 	case "confirm_payment":
-		return s.handleConfirmation(ctx, user, session, input)
+		return s.handleConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "await_bank_transfer":
-		return s.handleBankTransferConfirmation(ctx, user, session, input)
+		return s.handleBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	default:
-		return s.handleMenu(ctx, user, session, input)
+		return s.handleMenu(ctx, message.Channel, recipient, user, session, input)
 	}
 }
 
-func (s *ConversationService) handleOnboarding(ctx context.Context, user store.User, session store.Session, input string) error {
-	if user.OnboardingComplete && !user.NumberConfirmedAt.Valid && session.State != "onboard_confirm_number" {
-		session.State, session.Data = "onboard_confirm_number", map[string]string{}
+func (s *ConversationService) resolveUser(ctx context.Context, message store.InboundMessage) (store.User, string, error) {
+	switch message.Channel {
+	case ChannelTelegram:
+		recipient := strings.TrimSpace(message.Recipient)
+		if recipient == "" {
+			recipient = strings.TrimSpace(message.Sender)
+		}
+		user, err := s.store.GetOrCreateTelegramUser(ctx, recipient, message.Sender, message.Username)
+		return user, recipient, err
+	default:
+		number := normalizePhone(message.Sender)
+		user, err := s.store.GetOrCreateUser(ctx, number)
+		return user, number, err
+	}
+}
+
+func (s *ConversationService) onboardingCompleteForChannel(user store.User, channel string) bool {
+	if !user.OnboardingComplete {
+		return false
+	}
+	if channel == ChannelTelegram {
+		return user.TelegramConfirmedAt.Valid
+	}
+	return user.NumberConfirmedAt.Valid
+}
+
+func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) && session.State != "onboard_confirm_account" {
+		session.State, session.Data = "onboard_confirm_account", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
+		return s.sendAccountConfirmation(ctx, channel, recipient)
 	}
-	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_confirm_number" {
+	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_confirm_account" {
 		session.State = "onboard_name"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.messenger.SendText(ctx, user.WhatsAppNumber,
-			"Welcome to "+s.cfg.AppName+" — a simple way to pay merchants from WhatsApp.\n\nWhat name should we use on your receipts?")
+		return s.sendText(ctx, channel, recipient,
+			"Welcome to "+s.cfg.AppName+" — a simple way to pay merchants.\n\nWhat name should we use on your receipts?")
 	}
 	if session.State == "onboard_name" {
 		name := strings.TrimSpace(input)
 		if len(name) < 2 || len(name) > 80 {
-			return s.messenger.SendText(ctx, user.WhatsAppNumber, "Please send the name you would like on receipts. It should be between 2 and 80 characters.")
+			return s.sendText(ctx, channel, recipient, "Please send the name you would like on receipts. It should be between 2 and 80 characters.")
 		}
 		if err := s.store.UpdateUserName(ctx, user.ID, name); err != nil {
 			return err
@@ -105,47 +144,53 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, user store.U
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, "Thanks. What email address should we use for checkout and receipts?")
+		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts?")
 	}
-	if session.State == "onboard_confirm_number" {
+	if session.State == "onboard_confirm_account" {
 		switch {
-		case input == "confirm_number" || strings.EqualFold(input, "confirm"):
-			if err := s.store.ConfirmUserNumber(ctx, user.ID); err != nil {
+		case input == "confirm_number" || input == "confirm_account" || strings.EqualFold(input, "confirm"):
+			var err error
+			if channel == ChannelTelegram {
+				err = s.store.ConfirmTelegramAccount(ctx, user.ID)
+			} else {
+				err = s.store.ConfirmUserNumber(ctx, user.ID)
+			}
+			if err != nil {
 				return err
 			}
 			session.State, session.Data = "menu", map[string]string{}
 			if err := s.saveSession(ctx, session); err != nil {
 				return err
 			}
-			if err := s.messenger.SendText(ctx, user.WhatsAppNumber, "You’re all set. Your WhatsApp number is confirmed for Xego payments."); err != nil {
+			if err := s.sendText(ctx, channel, recipient, "You’re all set. Your account is confirmed for Xego payments."); err != nil {
 				return err
 			}
-			return s.sendMenu(ctx, user.WhatsAppNumber)
-		case input == "cancel_number" || strings.EqualFold(input, "cancel"):
+			return s.sendMenu(ctx, channel, recipient)
+		case input == "cancel_number" || input == "cancel_account" || strings.EqualFold(input, "cancel"):
 			session.State, session.Data = "onboard_name", map[string]string{}
 			if err := s.saveSession(ctx, session); err != nil {
 				return err
 			}
-			return s.messenger.SendText(ctx, user.WhatsAppNumber, "No problem. Let’s restart your Xego setup.\n\nWhat name should we use on your receipts?")
+			return s.sendText(ctx, channel, recipient, "No problem. Let’s restart your Xego setup.\n\nWhat name should we use on your receipts?")
 		default:
-			return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
+			return s.sendAccountConfirmation(ctx, channel, recipient)
 		}
 	}
 	address, err := mail.ParseAddress(input)
 	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, "That email doesn’t look quite right. Please send a valid address, like name@example.com.")
+		return s.sendText(ctx, channel, recipient, "That email doesn’t look quite right. Please send a valid address, like name@example.com.")
 	}
 	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
 		return err
 	}
-	session.State, session.Data = "onboard_confirm_number", map[string]string{}
+	session.State, session.Data = "onboard_confirm_account", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendNumberConfirmation(ctx, user.WhatsAppNumber)
+	return s.sendAccountConfirmation(ctx, channel, recipient)
 }
 
-func (s *ConversationService) handleMenu(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	switch strings.ToLower(input) {
 	case "pay", "menu_pay", "make payment":
 		session.State = "select_merchant"
@@ -153,64 +198,64 @@ func (s *ConversationService) handleMenu(ctx context.Context, user store.User, s
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMerchants(ctx, user.WhatsAppNumber)
+		return s.sendMerchants(ctx, channel, recipient)
 	case "status", "menu_status", "check payment status":
-		return s.sendLatestStatus(ctx, user)
+		return s.sendLatestStatus(ctx, channel, recipient, user)
 	case "history", "menu_history", "recent transactions":
-		return s.sendHistory(ctx, user)
+		return s.sendHistory(ctx, channel, recipient, user)
 	case "help", "menu_help":
-		return s.sendHelp(ctx, user.WhatsAppNumber)
+		return s.sendHelp(ctx, channel, recipient)
 	default:
-		return s.sendMenu(ctx, user.WhatsAppNumber)
+		return s.sendMenu(ctx, channel, recipient)
 	}
 }
 
-func (s *ConversationService) handleMerchant(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleMerchant(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	slug := strings.TrimPrefix(input, "merchant:")
 	merchant, err := s.store.MerchantBySlug(ctx, slug)
 	if err != nil {
-		return s.sendMerchants(ctx, user.WhatsAppNumber)
+		return s.sendMerchants(ctx, channel, recipient)
 	}
 	session.State = "enter_amount"
 	session.Data["merchant_slug"] = merchant.Slug
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.messenger.SendText(ctx, user.WhatsAppNumber,
+	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("How much would you like to pay %s?\n\nEnter an amount between %s and %s. Example: 2500",
 			merchant.Name,
 			domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
 }
 
-func (s *ConversationService) handleAmount(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	amount, err := domain.ParseNGNAmount(input, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo)
 	if err != nil {
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, err.Error())
+		return s.sendText(ctx, channel, recipient, err.Error())
 	}
 	merchant, err := s.store.MerchantBySlug(ctx, session.Data["merchant_slug"])
 	if err != nil {
 		session.State = "select_merchant"
 		_ = s.saveSession(ctx, session)
-		return s.sendMerchants(ctx, user.WhatsAppNumber)
+		return s.sendMerchants(ctx, channel, recipient)
 	}
 	session.State = "select_payment_method"
 	session.Data["amount_kobo"] = strconv.FormatInt(amount, 10)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendPaymentMethods(ctx, user.WhatsAppNumber, merchant, amount)
+	return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 }
 
-func (s *ConversationService) handlePaymentMethod(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
 	if err != nil {
 		session.State = "select_merchant"
 		_ = s.saveSession(ctx, session)
-		return s.sendMerchants(ctx, user.WhatsAppNumber)
+		return s.sendMerchants(ctx, channel, recipient)
 	}
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack)
+		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -219,34 +264,34 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, user stor
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendCardReview(ctx, user.WhatsAppNumber, merchant, amount)
+		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		session.State = "select_transfer_bank"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBanks(ctx, user.WhatsAppNumber)
+		return s.sendTransferBanks(ctx, channel, recipient)
 	default:
-		return s.sendPaymentMethods(ctx, user.WhatsAppNumber, merchant, amount)
+		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
 }
 
-func (s *ConversationService) handleTransferBank(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleTransferBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
 	if err != nil {
 		session.State = "select_merchant"
 		_ = s.saveSession(ctx, session)
-		return s.sendMerchants(ctx, user.WhatsAppNumber)
+		return s.sendMerchants(ctx, channel, recipient)
 	}
 	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
 	if err != nil {
-		return s.sendTransferBanks(ctx, user.WhatsAppNumber)
+		return s.sendTransferBanks(ctx, channel, recipient)
 	}
 	account, err := s.store.BankTransferAccountByID(ctx, accountID)
 	if err != nil {
-		return s.sendTransferBanks(ctx, user.WhatsAppNumber)
+		return s.sendTransferBanks(ctx, channel, recipient)
 	}
-	payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer)
+	payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 	if err != nil {
 		return err
 	}
@@ -259,12 +304,12 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, user store
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendBankTransferInstructions(ctx, user.WhatsAppNumber, payment, instruction)
+	return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 }
 
-func (s *ConversationService) sendCardReview(ctx context.Context, to string, merchant store.Merchant, amount int64) error {
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To:   to,
+func (s *ConversationService) sendCardReview(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
 		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount)),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Continue"},
@@ -273,21 +318,21 @@ func (s *ConversationService) sendCardReview(ctx context.Context, to string, mer
 	})
 }
 
-func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
 		payment, err := s.paymentFromSession(ctx, user, session)
 		if err != nil {
-			return s.resetWithMessage(ctx, user, session, "That transfer session expired. Please start again.")
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
 		}
 		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
 		if err != nil {
-			return s.resetWithMessage(ctx, user, session, "That transfer session expired. Please start again.")
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
 		}
-		return s.sendBankTransferInstructions(ctx, user.WhatsAppNumber, payment, instruction)
+		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 	}
 	payment, err := s.paymentFromSession(ctx, user, session)
 	if err != nil {
-		return s.resetWithMessage(ctx, user, session, "That transfer session expired. Please start again.")
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
 	}
 	if _, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment); err != nil {
 		return err
@@ -296,33 +341,33 @@ func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.messenger.SendText(ctx, user.WhatsAppNumber, "Thanks. Xego has received your transfer confirmation. You’ll receive the final update shortly.")
+	return s.sendText(ctx, channel, recipient, "Thanks. Xego has received your transfer confirmation. You’ll receive the final update shortly.")
 }
 
-func (s *ConversationService) handleConfirmation(ctx context.Context, user store.User, session store.Session, input string) error {
+func (s *ConversationService) handleConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "confirm_payment" && !strings.EqualFold(input, "confirm") && !strings.EqualFold(input, "continue") {
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, "Choose Continue or Cancel to proceed.")
+		return s.sendText(ctx, channel, recipient, "Choose Continue or Cancel to proceed.")
 	}
 	payment, err := s.paymentFromSession(ctx, user, session)
 	if err != nil {
-		return s.resetWithMessage(ctx, user, session, "That payment session expired. Please start again.")
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
 	}
 	payment, err = s.payments.InitializeCheckout(ctx, payment)
 	if err != nil {
-		return s.resetWithMessage(ctx, user, session, "Xego couldn’t start secure card checkout right now. Please try again in a moment.")
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn’t start secure card checkout right now. Please try again in a moment.")
 	}
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.messenger.SendCheckout(ctx, user.WhatsAppNumber,
+	return s.sendCheckout(ctx, channel, recipient,
 		fmt.Sprintf("Your secure card checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
 		payment.CheckoutURL)
 }
 
-func (s *ConversationService) sendMenu(ctx context.Context, to string) error {
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To:          to,
+func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
 		Body:        "Welcome back to Xego. What would you like to do?",
 		ButtonLabel: "Open menu",
 		Sections: []ports.InteractiveSection{{
@@ -337,9 +382,9 @@ func (s *ConversationService) sendMenu(ctx context.Context, to string) error {
 	})
 }
 
-func (s *ConversationService) sendPaymentMethods(ctx context.Context, to string, merchant store.Merchant, amount int64) error {
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To:   to,
+func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
 		Body: fmt.Sprintf("How would you like to pay %s to %s?\n\nFor bank transfer, Xego will give you collection account details and a unique reference to enter in your bank app.", domain.FormatNGN(amount), merchant.Name),
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
@@ -348,18 +393,22 @@ func (s *ConversationService) sendPaymentMethods(ctx context.Context, to string,
 	})
 }
 
-func (s *ConversationService) sendNumberConfirmation(ctx context.Context, to string) error {
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To:   to,
-		Body: fmt.Sprintf("Xego will use %s as your account identity.\n\nConfirm this WhatsApp number?", to),
+func (s *ConversationService) sendAccountConfirmation(ctx context.Context, channel, recipient string) error {
+	label := "WhatsApp number"
+	if channel == ChannelTelegram {
+		label = "Telegram account"
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: fmt.Sprintf("Xego will use this %s as your account identity.\n\nConfirm this account?", label),
 		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_number", Title: "Confirm"},
-			{ID: "cancel_number", Title: "Cancel"},
+			{ID: "confirm_account", Title: "Confirm"},
+			{ID: "cancel_account", Title: "Cancel"},
 		},
 	})
 }
 
-func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) error {
+func (s *ConversationService) sendTransferBanks(ctx context.Context, channel, recipient string) error {
 	accounts, err := s.store.ListActiveBankTransferAccounts(ctx)
 	if err != nil {
 		return err
@@ -372,17 +421,17 @@ func (s *ConversationService) sendTransferBanks(ctx context.Context, to string) 
 			Description: account.AccountName + " · " + account.AccountNumber,
 		})
 	}
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To:          to,
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
 		Body:        "Choose the Xego collection bank you want to transfer to. Pick the bank that is easiest for you to pay into.",
 		ButtonLabel: "Choose bank",
 		Sections:    []ports.InteractiveSection{{Title: "Nigerian banks", Rows: rows}},
 	})
 }
 
-func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, to string, payment store.PaymentView, instruction store.BankTransferInstruction) error {
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To: to,
+func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, instruction store.BankTransferInstruction) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
 		Body: fmt.Sprintf("Bank transfer details\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above to this account.\n3. Put the reference exactly as shown in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nThe reference is how Xego matches your transfer to this payment.",
 			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference),
 		Buttons: []ports.InteractiveButton{
@@ -392,7 +441,7 @@ func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, 
 	})
 }
 
-func (s *ConversationService) sendMerchants(ctx context.Context, to string) error {
+func (s *ConversationService) sendMerchants(ctx context.Context, channel, recipient string) error {
 	merchants, err := s.store.ListActiveMerchants(ctx)
 	if err != nil {
 		return err
@@ -400,57 +449,58 @@ func (s *ConversationService) sendMerchants(ctx context.Context, to string) erro
 	rows := make([]ports.InteractiveRow, 0, len(merchants))
 	for _, merchant := range merchants {
 		rows = append(rows, ports.InteractiveRow{
-			ID: "merchant:" + merchant.Slug, Title: merchant.Name,
+			ID:          "merchant:" + merchant.Slug,
+			Title:       merchant.Name,
 			Description: merchant.Category + " · " + merchant.Description,
 		})
 	}
-	return s.messenger.SendInteractive(ctx, ports.InteractiveMessage{
-		To: to, Body: "Choose who you’d like to pay.", ButtonLabel: "View merchants",
-		Sections: []ports.InteractiveSection{{Title: "Demo merchants", Rows: rows}},
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient, Body: "Choose who you’d like to pay.", ButtonLabel: "View merchants",
+		Sections: []ports.InteractiveSection{{Title: "Merchants", Rows: rows}},
 	})
 }
 
-func (s *ConversationService) sendLatestStatus(ctx context.Context, user store.User) error {
+func (s *ConversationService) sendLatestStatus(ctx context.Context, channel, recipient string, user store.User) error {
 	payments, err := s.store.RecentPaymentsForUser(ctx, user.ID, 1)
 	if err != nil {
 		return err
 	}
 	if len(payments) == 0 {
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, "You don’t have any Xego payments yet. Choose Make payment to try one.")
+		return s.sendText(ctx, channel, recipient, "You don’t have any Xego payments yet. Choose Make payment to try one.")
 	}
 	payment := payments[0]
-	return s.messenger.SendText(ctx, user.WhatsAppNumber,
+	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("Latest Xego payment\n\nMerchant: %s\nAmount: %s\nStatus: %s\nReceipt/status: %s/receipts/%s",
 			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), strings.ToUpper(string(payment.Status)),
 			s.cfg.BaseURL, payment.ReceiptToken))
 }
 
-func (s *ConversationService) sendHistory(ctx context.Context, user store.User) error {
+func (s *ConversationService) sendHistory(ctx context.Context, channel, recipient string, user store.User) error {
 	payments, err := s.store.RecentPaymentsForUser(ctx, user.ID, 5)
 	if err != nil {
 		return err
 	}
 	if len(payments) == 0 {
-		return s.messenger.SendText(ctx, user.WhatsAppNumber, "You don’t have any Xego payments yet.")
+		return s.sendText(ctx, channel, recipient, "You don’t have any Xego payments yet.")
 	}
 	lines := []string{"Your recent Xego payments:"}
 	for _, payment := range payments {
 		lines = append(lines, fmt.Sprintf("• %s — %s — %s", payment.MerchantName, domain.FormatNGN(payment.AmountKobo), strings.ToUpper(string(payment.Status))))
 	}
-	return s.messenger.SendText(ctx, user.WhatsAppNumber, strings.Join(lines, "\n"))
+	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
 }
 
-func (s *ConversationService) sendHelp(ctx context.Context, to string) error {
-	return s.messenger.SendText(ctx, to,
-		"Xego lets you choose a merchant, enter an NGN amount, and pay by secure card checkout or bank transfer.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nWe never ask for card details, PINs, OTPs, or CVVs in WhatsApp. Type MENU anytime to return to the main menu.")
+func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
+	return s.sendText(ctx, channel, recipient,
+		"Xego lets you choose a merchant, enter an NGN amount, and pay by secure card checkout or bank transfer.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
 }
 
-func (s *ConversationService) resetWithMessage(ctx context.Context, user store.User, session store.Session, body string) error {
+func (s *ConversationService) resetWithMessage(ctx context.Context, channel, recipient string, user store.User, session store.Session, body string) error {
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.messenger.SendText(ctx, user.WhatsAppNumber, body)
+	return s.sendText(ctx, channel, recipient, body)
 }
 
 func (s *ConversationService) sessionMerchantAndAmount(ctx context.Context, session store.Session) (store.Merchant, int64, error) {
@@ -491,6 +541,38 @@ func (s *ConversationService) abandonSessionPayment(ctx context.Context, user st
 	}
 }
 
+func (s *ConversationService) sendText(ctx context.Context, channel, recipient, body string) error {
+	messenger, err := s.messengerFor(channel)
+	if err != nil {
+		return err
+	}
+	return messenger.SendText(ctx, recipient, body)
+}
+
+func (s *ConversationService) sendInteractive(ctx context.Context, channel string, message ports.InteractiveMessage) error {
+	messenger, err := s.messengerFor(channel)
+	if err != nil {
+		return err
+	}
+	return messenger.SendInteractive(ctx, message)
+}
+
+func (s *ConversationService) sendCheckout(ctx context.Context, channel, recipient, body, url string) error {
+	messenger, err := s.messengerFor(channel)
+	if err != nil {
+		return err
+	}
+	return messenger.SendCheckout(ctx, recipient, body, url)
+}
+
+func (s *ConversationService) messengerFor(channel string) (ports.Messenger, error) {
+	messenger, ok := s.messengers[normalizeChannel(channel)]
+	if !ok || messenger == nil {
+		return nil, fmt.Errorf("messenger channel %q is not configured", channel)
+	}
+	return messenger, nil
+}
+
 func (s *ConversationService) saveSession(ctx context.Context, session store.Session) error {
 	session.ExpiresAt = time.Now().Add(s.cfg.SessionTTL)
 	return s.store.SaveSession(ctx, session)
@@ -502,4 +584,11 @@ func normalizePhone(value string) string {
 		return value
 	}
 	return "+" + value
+}
+
+func normalizeChannel(channel string) string {
+	if strings.EqualFold(channel, ChannelTelegram) {
+		return ChannelTelegram
+	}
+	return ChannelWhatsApp
 }

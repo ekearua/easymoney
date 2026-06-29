@@ -40,13 +40,19 @@ func NewPaymentService(cfg config.Config, repository *store.Store, gateway ports
 
 // CreateDraft creates a payment capability and moves it to customer confirmation.
 func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64) (store.PaymentView, error) {
-	return s.CreateDraftForProvider(ctx, user, merchant, amountKobo, ProviderPaystack)
+	return s.CreateDraftForProvider(ctx, user, merchant, amountKobo, ProviderPaystack, ChannelWhatsApp, user.WhatsAppNumber)
 }
 
 // CreateDraftForProvider creates a payment attempt for the selected rail.
-func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider string) (store.PaymentView, error) {
+func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
 	if provider != ProviderPaystack && provider != ProviderBankTransfer {
 		return store.PaymentView{}, fmt.Errorf("unsupported payment provider %q", provider)
+	}
+	if channel == "" {
+		channel = ChannelWhatsApp
+	}
+	if strings.TrimSpace(recipient) == "" {
+		return store.PaymentView{}, errors.New("payment recipient is required")
 	}
 	token, err := domain.NewReceiptToken()
 	if err != nil {
@@ -61,6 +67,8 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 		Status:            domain.StatusDraft,
 		Provider:          provider,
 		ProviderReference: domain.NewProviderReference(),
+		Channel:           channel,
+		Recipient:         recipient,
 		ReceiptToken:      token,
 	}
 	if _, err := s.store.CreatePayment(ctx, payment); err != nil {
@@ -241,7 +249,15 @@ func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue dom
 			"parameters": []string{status, domain.FormatNGN(payment.AmountKobo), payment.MerchantName, receiptURL},
 		})
 	}
-	return store.OutboxSpec{UserID: payment.UserID, Recipient: payment.WhatsAppNumber, Kind: kind, Payload: payload}
+	recipient := payment.Recipient
+	if recipient == "" {
+		recipient = payment.WhatsAppNumber
+	}
+	channel := payment.Channel
+	if channel == "" {
+		channel = ChannelWhatsApp
+	}
+	return store.OutboxSpec{UserID: payment.UserID, Channel: channel, Recipient: recipient, Kind: kind, Payload: payload}
 }
 
 // Reconcile verifies stale unresolved transactions in bounded batches.

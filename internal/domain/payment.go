@@ -112,6 +112,8 @@ type Payment struct {
 	Status            PaymentStatus
 	Provider          string
 	ProviderReference string
+	Channel           string
+	Recipient         string
 	CheckoutURL       string
 	ReceiptToken      string
 	FailureReason     string

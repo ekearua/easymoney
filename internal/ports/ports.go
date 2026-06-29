@@ -82,5 +82,6 @@ type InteractiveButton struct {
 type Messenger interface {
 	SendText(context.Context, string, string) error
 	SendInteractive(context.Context, InteractiveMessage) error
+	SendCheckout(context.Context, string, string, string) error
 	SendTemplate(context.Context, string, string, []string) error
 }

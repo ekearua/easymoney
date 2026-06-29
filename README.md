@@ -1,21 +1,21 @@
 # Xego
 
-Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API as the customer interface, hosted card checkout, and a bank-transfer payment path. It does not store card data in WhatsApp.
+Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API and Telegram Bot API as customer interfaces, hosted card checkout, and a bank-transfer payment path. It does not store card data in chat.
 
 ## Architecture
 
 ```text
-Customer WhatsApp
-       │ signed webhook
-       ▼
-Go service ─────── PostgreSQL
-   │                   ├─ payment state and audit events
-   │                   ├─ durable webhook/inbound queues
-   │                   └─ transactional message outbox
-   │
-   ├─ initialize/verify ── card checkout provider API
-   ├─ outbound messages ─ WhatsApp Cloud API
-   └─ read-only admin + tokenized receipts
+Customer WhatsApp / Telegram
+       | signed webhooks
+       v
+Go service -------- PostgreSQL
+   |                 |- payment state and audit events
+   |                 |- durable webhook/inbound queues
+   |                 `- transactional message outbox
+   |
+   |- initialize/verify -> card checkout provider API
+   |- outbound messages -> WhatsApp Cloud API / Telegram Bot API
+   `- read-only admin + tokenized receipts
 ```
 
 Card payment success is written only after the backend calls provider verification and confirms the reference, amount, currency, channel, and available payment/merchant metadata. Bank-transfer success is written only after the customer taps **I have transferred** against generated transfer instructions.
@@ -57,20 +57,14 @@ go run ./cmd/demo retain
 1. Reserve the VM's public IPv4 address.
 2. Create the hostname by replacing dots with hyphens: `203.0.113.10` becomes `203-0-113-10.sslip.io`.
 3. In the Oracle VCN security list and the VM firewall, allow inbound TCP 80/443 and UDP 443.
-4. Install Docker Engine and the Compose plugin on the VPS.
+4. Install Docker Engine and the Compose plugin on the VPS, or deploy the native systemd binary if using the existing non-Docker setup.
 5. Copy the repository and create `.env` from `.env.example`.
 6. Set `PUBLIC_HOST` to the sslip.io hostname and `BASE_URL` to its HTTPS URL.
-7. Start the stack:
+7. Start or restart the service.
 
-```bash
-docker compose up -d --build
-docker compose ps
-docker compose logs -f app caddy
-```
+Caddy obtains and renews TLS automatically. If the reserved public IP or hostname changes, update `PUBLIC_HOST`, `BASE_URL`, Meta's callback URL, Telegram's webhook URL, Paystack's webhook URL, and the approved WhatsApp template link policy as applicable.
 
-Caddy obtains and renews TLS automatically. If the reserved public IP or hostname changes, update `PUBLIC_HOST`, `BASE_URL`, Meta's callback URL, Paystack's webhook URL, and the approved WhatsApp template link policy as applicable.
-
-Back up the `postgres_data` Docker volume before upgrades. Keep the database port private; only Caddy exposes public ports.
+Back up PostgreSQL before upgrades. Keep the database port private; only Caddy exposes public ports.
 
 ## Provider setup
 
@@ -89,6 +83,22 @@ Back up the `postgres_data` Docker volume before upgrades. Keep the database por
 
 The service validates `X-Hub-Signature-256` against the unmodified request body.
 
+### Telegram Bot API
+
+- Create a bot with BotFather and set `TELEGRAM_ENABLED=true`.
+- Store `TELEGRAM_BOT_TOKEN` and a random `TELEGRAM_WEBHOOK_SECRET`.
+- Webhook URL: `https://<host>/webhooks/telegram`
+- Register the webhook:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -d "url=$BASE_URL/webhooks/telegram" \
+  -d "secret_token=$TELEGRAM_WEBHOOK_SECRET" \
+  -d "drop_pending_updates=true"
+```
+
+The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegram updates.
+
 ### Paystack
 
 - Use only an `sk_test_...` secret.
@@ -100,20 +110,21 @@ The callback never marks a transaction successful by itself. Both callback and w
 
 ## Manual acceptance script
 
-1. Message the configured WhatsApp number.
+1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.
 2. Enter a name and email.
-3. Choose **Make payment**, a merchant, and an amount from ₦100 to ₦100,000.
-4. Choose **Card checkout** or **Bank transfer**.
-5. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
-6. For bank transfer, choose a Nigerian collection bank, review the account details, then tap **I have transferred**.
-7. Confirm that WhatsApp reports the final result and the receipt URL displays the same status and provider.
-8. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
-9. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
+3. Confirm the WhatsApp number or Telegram account.
+4. Choose **Make payment**, a merchant, and an amount from ₦100 to ₦100,000.
+5. Choose **Card checkout** or **Bank transfer**.
+6. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
+7. For bank transfer, choose a Nigerian collection bank, review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
+8. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
+9. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
+10. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
 
 ## Security and retention
 
 - Card number, CVV, PIN, OTP, balances, and reusable authorization data are never stored.
-- Webhook bodies are read once for signature verification; only normalized Paystack event/reference data and normalized WhatsApp message fields are queued.
+- Webhook bodies are read once for signature verification; only normalized provider event/reference data and normalized chat message fields are queued.
 - Admin sessions store only token hashes and use secure, HTTP-only, same-site cookies in production.
 - Personally identifiable records are removed after 90 days by the daily retention worker or `retain` command.
 - Receipt URLs are unguessable bearer capabilities. Do not publish them.

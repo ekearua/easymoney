@@ -35,6 +35,11 @@ type Config struct {
 	WhatsAppTemplateName   string
 	WhatsAppTemplateLocale string
 
+	TelegramEnabled       bool
+	TelegramBotToken      string
+	TelegramWebhookSecret string
+	TelegramAPIBase       string
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -61,6 +66,10 @@ func Load() (Config, error) {
 		WhatsAppGraphVersion:   strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
 		WhatsAppTemplateName:   env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
 		WhatsAppTemplateLocale: env("WHATSAPP_TEMPLATE_LOCALE", "en"),
+		TelegramEnabled:        envBool("TELEGRAM_ENABLED", false),
+		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:  os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
+		TelegramAPIBase:        strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
 		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),
@@ -97,6 +106,16 @@ func Load() (Config, error) {
 		if !strings.HasPrefix(cfg.PaystackSecretKey, "sk_test_") {
 			return Config{}, fmt.Errorf("PAYSTACK_SECRET_KEY must be a Paystack test key")
 		}
+		if cfg.TelegramEnabled {
+			for name, value := range map[string]string{
+				"TELEGRAM_BOT_TOKEN":      cfg.TelegramBotToken,
+				"TELEGRAM_WEBHOOK_SECRET": cfg.TelegramWebhookSecret,
+			} {
+				if value == "" {
+					return Config{}, fmt.Errorf("%s is required when TELEGRAM_ENABLED=true", name)
+				}
+			}
+		}
 		publicURL, err := url.Parse(cfg.BaseURL)
 		if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" {
 			return Config{}, fmt.Errorf("BASE_URL must be a public HTTPS URL in production")
@@ -122,6 +141,14 @@ func envInt64(name string, fallback int64) int64 {
 		return fallback
 	}
 	return parsed
+}
+
+func envBool(name string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func envDuration(name string, fallback time.Duration) time.Duration {

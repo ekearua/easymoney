@@ -26,7 +26,9 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/paystack"
+	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
 	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
@@ -41,6 +43,7 @@ type App struct {
 	logger       *slog.Logger
 	store        *store.Store
 	paystack     *paystack.Client
+	telegram     *telegram.Client
 	whatsapp     *whatsapp.Client
 	payments     *service.PaymentService
 	conversation *service.ConversationService
@@ -56,6 +59,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	paystackClient := paystack.New(cfg.PaystackSecretKey, cfg.PaystackBaseURL)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
+	var telegramClient *telegram.Client
+	messengers := map[string]ports.Messenger{service.ChannelWhatsApp: whatsappClient}
+	if cfg.TelegramEnabled {
+		telegramClient = telegram.New(cfg.TelegramBotToken, cfg.TelegramAPIBase, cfg.TelegramWebhookSecret)
+		messengers[service.ChannelTelegram] = telegramClient
+	}
 	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
@@ -69,8 +78,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
-		whatsapp: whatsappClient, payments: paymentService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, whatsappClient),
+		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
+		conversation: service.NewConversationService(cfg, repository, paymentService, messengers),
 		templates:    templates, limiter: newLoginLimiter(),
 	}, nil
 }
@@ -146,6 +155,7 @@ func (a *App) routes() http.Handler {
 	router.Get("/health/ready", a.handleReady)
 	router.Get("/webhooks/whatsapp", a.verifyWhatsAppWebhook)
 	router.Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
+	router.Post("/webhooks/telegram", a.receiveTelegramWebhook)
 	router.Post("/webhooks/paystack", a.receivePaystackWebhook)
 	router.Get("/payments/return", a.paymentReturn)
 	router.Get("/receipts/{token}", a.receipt)
@@ -198,15 +208,12 @@ func (a *App) runWorkers(ctx context.Context) {
 func (a *App) processInboundMessages(ctx context.Context) {
 	messages, err := a.store.ClaimInboundMessages(ctx, 20)
 	if err != nil {
-		a.logger.Warn("claim inbound WhatsApp messages", "error", err)
+		a.logger.Warn("claim inbound messages", "error", err)
 		return
 	}
 	for _, message := range messages {
-		inbound := whatsapp.InboundMessage{
-			ID: message.ID, From: message.Sender, Text: message.Text, Interactive: message.Interactive,
-		}
-		if err := a.conversation.Handle(ctx, inbound); err != nil {
-			a.logger.Error("process WhatsApp message", "message_id", message.ID, "error", err)
+		if err := a.conversation.Handle(ctx, message); err != nil {
+			a.logger.Error("process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
 			_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())
 			continue
 		}
@@ -251,7 +258,7 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			if err := json.Unmarshal(message.Payload, &payload); err != nil {
 				sendErr = err
 			} else {
-				sendErr = a.whatsapp.SendText(ctx, message.Recipient, payload.Body)
+				sendErr = a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
 			}
 		case "template":
 			var payload struct {
@@ -260,8 +267,10 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			}
 			if err := json.Unmarshal(message.Payload, &payload); err != nil {
 				sendErr = err
-			} else {
+			} else if message.Channel == service.ChannelWhatsApp {
 				sendErr = a.whatsapp.SendTemplate(ctx, message.Recipient, payload.Name, payload.Parameters)
+			} else {
+				sendErr = a.sendOutboxText(ctx, message.Channel, message.Recipient, strings.Join(payload.Parameters, "\n"))
 			}
 		default:
 			sendErr = fmt.Errorf("unsupported outbox kind %q", message.Kind)
@@ -271,6 +280,18 @@ func (a *App) deliverOutbox(ctx context.Context) {
 		} else {
 			_ = a.store.RetryOutbox(ctx, message.ID, message.Attempts, sendErr.Error())
 		}
+	}
+}
+
+func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body string) error {
+	switch channel {
+	case service.ChannelTelegram:
+		if a.telegram == nil {
+			return errors.New("Telegram is not configured")
+		}
+		return a.telegram.SendText(ctx, recipient, body)
+	default:
+		return a.whatsapp.SendText(ctx, recipient, body)
 	}
 }
 
@@ -320,7 +341,7 @@ func (a *App) receiveWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, message := range messages {
 		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
-			ID: message.ID, Sender: message.From, Text: message.Text, Interactive: message.Interactive,
+			ID: message.ID, Channel: service.ChannelWhatsApp, Sender: message.From, Recipient: message.From, Text: message.Text, Interactive: message.Interactive,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)
@@ -328,6 +349,61 @@ func (a *App) receiveWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	w.WriteHeader(http.StatusOK)
+}
+
+func (a *App) receiveTelegramWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.TelegramEnabled || a.telegram == nil {
+		http.Error(w, "telegram disabled", http.StatusNotFound)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	validationErr := a.telegram.ValidateSecret(r.Header.Get("X-Telegram-Bot-Api-Secret-Token"))
+	updates, parseErr := telegram.ParseInbound(body)
+	eventKey := digest(body)
+	if len(updates) > 0 {
+		eventKey = "update:" + strconv.FormatInt(updates[0].UpdateID, 10)
+	}
+	deliveryID, fresh, storeErr := a.store.RecordWebhook(r.Context(), service.ChannelTelegram, eventKey, validationErr == nil && parseErr == nil, json.RawMessage(`{}`))
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid secret")
+		http.Error(w, "invalid secret", http.StatusUnauthorized)
+		return
+	}
+	if parseErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", parseErr.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	for _, update := range updates {
+		if update.CallbackQueryID != "" {
+			_ = a.telegram.AnswerCallback(r.Context(), update.CallbackQueryID)
+		}
+		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
+			ID:          "telegram:" + strconv.FormatInt(update.UpdateID, 10),
+			Channel:     service.ChannelTelegram,
+			Sender:      update.UserID,
+			Recipient:   update.ChatID,
+			Text:        update.Text,
+			Interactive: update.Interactive,
+			Username:    update.Username,
+		}); err != nil {
+			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+			http.Error(w, "storage error", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if fresh {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	}
 	w.WriteHeader(http.StatusOK)
 }
 

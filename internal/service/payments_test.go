@@ -94,6 +94,24 @@ func TestResultOutboxRespectsWhatsAppServiceWindow(t *testing.T) {
 	}
 }
 
+func TestResultOutboxPreservesPaymentChannel(t *testing.T) {
+	t.Parallel()
+	payments := &PaymentService{
+		cfg: config.Config{BaseURL: "https://demo.example"},
+	}
+	payment := store.PaymentView{
+		Payment: domain.Payment{
+			UserID: uuid.New(), AmountKobo: 50_000, ReceiptToken: "receipt-token",
+			Channel: ChannelTelegram, Recipient: "12345",
+		},
+		MerchantName: "Lagos Lunchbox", LastInboundAt: time.Now(),
+	}
+	outbox := payments.resultOutbox(payment, domain.StatusSucceeded)
+	if outbox.Channel != ChannelTelegram || outbox.Recipient != "12345" {
+		t.Fatalf("unexpected outbox route: channel=%q recipient=%q", outbox.Channel, outbox.Recipient)
+	}
+}
+
 func TestGatewayStatusMapping(t *testing.T) {
 	t.Parallel()
 	if got := mapGatewayStatus("success"); got != domain.StatusSucceeded {
