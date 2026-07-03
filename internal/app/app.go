@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ import (
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
+	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	"whatsapp-payment-demo/internal/providers/paystack"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
@@ -46,6 +48,7 @@ type App struct {
 	telegram     *telegram.Client
 	whatsapp     *whatsapp.Client
 	payments     *service.PaymentService
+	data         *service.DataService
 	conversation *service.ConversationService
 	templates    *template.Template
 	limiter      *loginLimiter
@@ -66,10 +69,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		messengers[service.ChannelTelegram] = telegramClient
 	}
 	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
+	dataService := service.NewDataService(repository, paymentService, dataprovider.NewSimulator())
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
 		"maskPII":     maskPII,
-		"statusClass": func(status domain.PaymentStatus) string { return strings.ReplaceAll(string(status), "_", "-") },
+		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
@@ -79,7 +83,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, messengers),
+		data:         dataService,
+		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers),
 		templates:    templates, limiter: newLoginLimiter(),
 	}, nil
 }
@@ -156,6 +161,7 @@ func (a *App) routes() http.Handler {
 	router.Get("/webhooks/whatsapp", a.verifyWhatsAppWebhook)
 	router.Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
 	router.Post("/webhooks/telegram", a.receiveTelegramWebhook)
+	router.Post("/webhooks/sms", a.receiveSMSWebhook)
 	router.Post("/webhooks/paystack", a.receivePaystackWebhook)
 	router.Get("/payments/return", a.paymentReturn)
 	router.Get("/receipts/{token}", a.receipt)
@@ -172,6 +178,7 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
 		admin.Get("/admin/payments", a.adminPayments)
+		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/webhooks", a.adminWebhooks)
 		admin.Post("/admin/logout", a.logout)
 	})
@@ -192,6 +199,7 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-outboxTicker.C:
 			a.processInboundMessages(ctx)
 			a.processPaystackWebhooks(ctx)
+			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
 		case <-reconcileTicker.C:
 			if err := a.payments.Reconcile(ctx); err != nil {
@@ -242,6 +250,12 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 	}
 }
 
+func (a *App) processDataFulfilments(ctx context.Context) {
+	if err := a.data.ProcessFulfilments(ctx, 20); err != nil {
+		a.logger.Warn("process data fulfilments", "error", err)
+	}
+}
+
 func (a *App) deliverOutbox(ctx context.Context) {
 	messages, err := a.store.ClaimOutbox(ctx, 20)
 	if err != nil {
@@ -285,6 +299,10 @@ func (a *App) deliverOutbox(ctx context.Context) {
 
 func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body string) error {
 	switch channel {
+	case service.ChannelSMS:
+		// The SMS MVP returns replies synchronously from /webhooks/sms. A live SMS
+		// sender can be wired here later without changing order fulfilment logic.
+		return nil
 	case service.ChannelTelegram:
 		if a.telegram == nil {
 			return errors.New("Telegram is not configured")
@@ -407,6 +425,41 @@ func (a *App) receiveTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (a *App) receiveSMSWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.SMSEnabled {
+		http.Error(w, "sms disabled", http.StatusNotFound)
+		return
+	}
+	secret := r.Header.Get("X-SMS-Webhook-Secret")
+	if secret == "" {
+		secret = r.Header.Get("X-Xego-SMS-Secret")
+	}
+	if a.cfg.SMSWebhookSecret == "" || secret != a.cfg.SMSWebhookSecret {
+		http.Error(w, "invalid sms secret", http.StatusUnauthorized)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	messageID, sender, text := parseSMSWebhookPayload(r, body)
+	if messageID == "" {
+		messageID = "sms:" + digest(body)
+	}
+	if sender == "" || text == "" {
+		http.Error(w, "missing sender or text", http.StatusBadRequest)
+		return
+	}
+	reply, err := a.data.HandleSMS(r.Context(), messageID, sender, text)
+	if err != nil {
+		a.logger.Warn("process SMS webhook", "message_id", messageID, "error", err)
+		http.Error(w, "sms processing failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+}
+
 func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(r, 1<<20)
 	if err != nil {
@@ -467,7 +520,11 @@ func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment})
+	var dataOrder *store.DataOrderView
+	if order, err := a.store.DataOrderByPaymentID(r.Context(), payment.ID); err == nil {
+		dataOrder = &order
+	}
+	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder})
 }
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -557,6 +614,20 @@ func (a *App) adminPayments(w http.ResponseWriter, r *http.Request) {
 	a.renderAdmin(w, "payments.html", r, "Payments", map[string]any{"Payments": payments})
 }
 
+func (a *App) adminDataOrders(w http.ResponseWriter, r *http.Request) {
+	orders, err := a.store.ListDataOrders(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	smsRequests, err := a.store.ListSMSRequests(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "data_orders.html", r, "Data Orders", map[string]any{"Orders": orders, "SMSRequests": smsRequests})
+}
+
 func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {
 	webhooks, err := a.store.ListWebhooks(r.Context(), 100)
 	if err != nil {
@@ -589,6 +660,40 @@ func (a *App) requireAdmin(next http.Handler) http.Handler {
 func csrfFromContext(ctx context.Context) string {
 	value, _ := ctx.Value(csrfContextKey).(string)
 	return value
+}
+
+func parseSMSWebhookPayload(r *http.Request, body []byte) (string, string, string) {
+	var payload struct {
+		ID      string `json:"id"`
+		Message string `json:"message_id"`
+		From    string `json:"from"`
+		Sender  string `json:"sender"`
+		Body    string `json:"body"`
+		Text    string `json:"text"`
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		_ = json.Unmarshal(body, &payload)
+	} else if values, err := url.ParseQuery(string(body)); err == nil {
+		payload.ID = values.Get("id")
+		payload.Message = values.Get("message_id")
+		payload.From = values.Get("from")
+		payload.Sender = values.Get("sender")
+		payload.Body = values.Get("body")
+		payload.Text = values.Get("text")
+	}
+	id := strings.TrimSpace(payload.ID)
+	if id == "" {
+		id = strings.TrimSpace(payload.Message)
+	}
+	sender := strings.TrimSpace(payload.From)
+	if sender == "" {
+		sender = strings.TrimSpace(payload.Sender)
+	}
+	text := strings.TrimSpace(payload.Body)
+	if text == "" {
+		text = strings.TrimSpace(payload.Text)
+	}
+	return id, sender, text
 }
 
 func (a *App) limitLogin(next http.Handler) http.Handler {

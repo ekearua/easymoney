@@ -11,6 +11,10 @@
   <article><span>Success rate</span><strong>{{percent .Metrics.SuccessRate}}</strong></article>
   <article><span>Processed volume</span><strong>{{money .Metrics.VolumeKobo}}</strong></article>
   <article><span>Webhook failures</span><strong>{{.Metrics.WebhookFailures}}</strong></article>
+  <article><span>Data orders</span><strong>{{.Metrics.DataOrders}}</strong></article>
+  <article><span>Data fulfilled</span><strong>{{.Metrics.DataFulfilled}}</strong></article>
+  <article><span>Data failures</span><strong>{{.Metrics.DataFailures}}</strong></article>
+  <article><span>SMS requests</span><strong>{{.Metrics.SMSRequests}}</strong></article>
 </section>
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
 </main></body></html>

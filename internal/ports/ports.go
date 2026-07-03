@@ -85,3 +85,26 @@ type Messenger interface {
 	SendCheckout(context.Context, string, string, string) error
 	SendTemplate(context.Context, string, string, []string) error
 }
+
+// DataFulfilmentRequest contains the data-bundle order details sent to a data provider.
+type DataFulfilmentRequest struct {
+	OrderID          string
+	RequestCode      string
+	NetworkCode      string
+	PlanCode         string
+	ProviderSKU      string
+	BeneficiaryPhone string
+}
+
+// DataFulfilmentResult is the provider-neutral result of a data-bundle request.
+type DataFulfilmentResult struct {
+	ProviderReference string
+	Status            string
+	Message           string
+}
+
+// DataProvider isolates Xego data sales from a specific VTU or network API.
+type DataProvider interface {
+	FulfilData(context.Context, DataFulfilmentRequest) (DataFulfilmentResult, error)
+	CheckDataStatus(context.Context, string) (DataFulfilmentResult, error)
+}

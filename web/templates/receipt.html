@@ -5,11 +5,17 @@
 <title>Payment receipt - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt">
   <div class="receipt-mark">OK</div>
-  <p class="eyebrow">{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
-  <h1>Payment {{.Payment.Status}}</h1>
+  <p class="eyebrow">{{if .DataOrder}}Data order{{else if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
+  <h1>{{if .DataOrder}}Data {{.DataOrder.Status}}{{else}}Payment {{.Payment.Status}}{{end}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   <dl>
     <div><dt>Merchant</dt><dd>{{.Payment.MerchantName}}</dd></div>
+    {{if .DataOrder}}
+    <div><dt>Network</dt><dd>{{.DataOrder.NetworkName}}</dd></div>
+    <div><dt>Plan</dt><dd>{{.DataOrder.PlanName}}</dd></div>
+    <div><dt>Phone</dt><dd>{{.DataOrder.BeneficiaryPhone}}</dd></div>
+    <div><dt>Request code</dt><dd class="mono">{{.DataOrder.RequestCode}}</dd></div>
+    {{end}}
     <div><dt>Provider</dt><dd>{{.Payment.Provider}}</dd></div>
     <div><dt>Reference</dt><dd class="mono">{{.Payment.ProviderReference}}</dd></div>
     <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>

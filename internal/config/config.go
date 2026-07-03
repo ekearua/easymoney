@@ -40,6 +40,13 @@ type Config struct {
 	TelegramWebhookSecret string
 	TelegramAPIBase       string
 
+	SMSEnabled       bool
+	SMSProvider      string
+	SMSWebhookSecret string
+	SMSSenderID      string
+	SMSAPIBase       string
+	SMSAPIKey        string
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -70,6 +77,12 @@ func Load() (Config, error) {
 		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramWebhookSecret:  os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		TelegramAPIBase:        strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
+		SMSEnabled:             envBool("SMS_ENABLED", false),
+		SMSProvider:            env("SMS_PROVIDER", "webhook"),
+		SMSWebhookSecret:       os.Getenv("SMS_WEBHOOK_SECRET"),
+		SMSSenderID:            env("SMS_SENDER_ID", "Xego"),
+		SMSAPIBase:             strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
+		SMSAPIKey:              os.Getenv("SMS_API_KEY"),
 		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),
@@ -115,6 +128,9 @@ func Load() (Config, error) {
 					return Config{}, fmt.Errorf("%s is required when TELEGRAM_ENABLED=true", name)
 				}
 			}
+		}
+		if cfg.SMSEnabled && cfg.SMSWebhookSecret == "" {
+			return Config{}, fmt.Errorf("SMS_WEBHOOK_SECRET is required when SMS_ENABLED=true")
 		}
 		publicURL, err := url.Parse(cfg.BaseURL)
 		if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" {

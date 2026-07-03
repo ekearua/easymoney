@@ -1,0 +1,15 @@
+{{define "data_orders.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Read only</p><h1>Data orders</h1></div></header>
+<section class="panel"><h2>Recent data orders</h2>
+<div class="table-wrap"><table><thead><tr><th>Request</th><th>User</th><th>Network</th><th>Plan</th><th>Phone</th><th>Amount</th><th>Payment</th><th>Status</th><th>Created</th></tr></thead><tbody>
+{{range .Orders}}<tr><td class="mono">{{.RequestCode}}</td><td>{{.UserName}}</td><td>{{.NetworkName}}</td><td>{{.PlanName}}</td><td>{{.BeneficiaryPhone}}</td><td>{{money .AmountKobo}}</td><td>{{.PaymentStatus}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
+{{else}}<tr><td colspan="9">No data orders yet.</td></tr>{{end}}</tbody></table></div></section>
+<section class="panel"><h2>Recent SMS requests</h2>
+<div class="table-wrap"><table><thead><tr><th>Message</th><th>Sender</th><th>Command</th><th>Request</th><th>Status</th><th>Body</th><th>Response</th><th>Received</th></tr></thead><tbody>
+{{range .SMSRequests}}<tr><td class="mono">{{.ID}}</td><td>{{.Sender}}</td><td>{{.Command}}</td><td class="mono">{{.RequestCode}}</td><td>{{.ProcessingStatus}}</td><td>{{.Body}}</td><td>{{.ResponseBody}}</td><td>{{.ReceivedAt.Format "02 Jan 2006 15:04"}}</td></tr>
+{{else}}<tr><td colspan="8">No SMS requests yet.</td></tr>{{end}}</tbody></table></div></section>
+</main></body></html>
+{{end}}

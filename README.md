@@ -1,6 +1,7 @@
 # Xego
 
 Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API and Telegram Bot API as customer interfaces, hosted card checkout, and a bank-transfer payment path. It does not store card data in chat.
+It also supports a mobile data purchase flow for MTN, Airtel, Glo, and 9mobile using a simulated fulfilment provider.
 
 ## Architecture
 
@@ -108,18 +109,39 @@ The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegra
 
 The callback never marks a transaction successful by itself. Both callback and webhook invoke server-side verification.
 
+### SMS data request codes
+
+- Enable with `SMS_ENABLED=true`.
+- Webhook URL: `https://<host>/webhooks/sms`
+- Send the shared secret in `X-SMS-Webhook-Secret` or `X-Xego-SMS-Secret`.
+- JSON payload fields: `id` or `message_id`, `from` or `sender`, and `body` or `text`.
+- Form-encoded payloads with the same field names are also accepted.
+
+Supported inbound SMS commands:
+
+```text
+DATA MTN MTN1GB 08031234567
+PLANS MTN
+STATUS XG-DATA-8K2Q
+DATA HELP
+```
+
+The SMS MVP returns the reply text from the webhook response. A live outbound SMS sender can be connected later without changing the order lifecycle.
+
 ## Manual acceptance script
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.
 2. Enter a name and email.
 3. Confirm the WhatsApp number or Telegram account.
-4. Choose **Make payment**, a merchant, and an amount from ₦100 to ₦100,000.
+4. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
 5. Choose **Card checkout** or **Bank transfer**.
 6. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
-7. For bank transfer, choose a Nigerian collection bank, review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
+7. For bank transfer, use the recommended collection bank or choose another bank. You can type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
 8. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
 9. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
 10. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
+11. Choose **Buy Data**, select a network and plan, enter a beneficiary phone number, pay, and confirm the data order becomes fulfilled after payment success.
+12. Post an SMS command to `/webhooks/sms` and confirm the response contains a request code and checkout URL.
 
 ## Security and retention
 
