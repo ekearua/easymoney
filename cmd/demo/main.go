@@ -69,9 +69,11 @@ func run() error {
 		return application.Reconcile(ctx)
 	case "retain":
 		return application.PurgeExpiredData(ctx)
+	case "sync-vtpass-data-plans":
+		return application.SyncVTPassDataPlans(ctx)
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, health, or hash-password", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, sync-vtpass-data-plans, health, or hash-password", command)
 	}
 }

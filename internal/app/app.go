@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -121,6 +122,29 @@ func (a *App) PurgeExpiredData(ctx context.Context) error {
 		a.logger.Info("retention completed", "users_purged", count)
 	}
 	return err
+}
+
+// SyncVTPassDataPlans imports every current VTPass data variation into Xego's catalog.
+func (a *App) SyncVTPassDataPlans(ctx context.Context) error {
+	client := vtpass.New(a.cfg.VTPassBaseURL, a.cfg.VTPassAPIKey, a.cfg.VTPassPublicKey, a.cfg.VTPassSecretKey)
+	networks := []string{"MTN", "AIRTEL", "GLO", "9MOBILE"}
+	for _, network := range networks {
+		serviceID := vtpass.ServiceIDForNetwork(network)
+		variations, err := client.ListDataVariations(ctx, serviceID)
+		if err != nil {
+			return fmt.Errorf("sync %s variations: %w", network, err)
+		}
+		for index, variation := range variations {
+			code := vtpass.PlanCodeFromVariation(network, variation.VariationCode)
+			dataSize := extractDataSize(variation.Name)
+			validity := extractValidity(variation.Name)
+			if err := a.store.UpsertDataPlanFromProvider(ctx, network, code, variation.Name, dataSize, validity, variation.AmountKobo, variation.VariationCode, (index+1)*10); err != nil {
+				return fmt.Errorf("upsert %s %s: %w", network, variation.VariationCode, err)
+			}
+		}
+		a.logger.Info("synced VTPass data variations", "network", network, "count", len(variations))
+	}
+	return nil
 }
 
 // Health checks whether the application can reach its database.
@@ -699,6 +723,22 @@ func parseSMSWebhookPayload(r *http.Request, body []byte) (string, string, strin
 		text = strings.TrimSpace(payload.Text)
 	}
 	return id, sender, text
+}
+
+func extractDataSize(name string) string {
+	match := regexp.MustCompile(`(?i)([0-9]+(?:\.[0-9]+)?\s*(?:MB|GB|TB))`).FindString(name)
+	if strings.TrimSpace(match) == "" {
+		return "Data bundle"
+	}
+	return strings.ToUpper(strings.ReplaceAll(match, " ", ""))
+}
+
+func extractValidity(name string) string {
+	match := regexp.MustCompile(`(?i)([0-9]+\s*(?:day|days|week|weeks|month|months|hour|hours))`).FindString(name)
+	if strings.TrimSpace(match) == "" {
+		return "Validity varies"
+	}
+	return strings.TrimSpace(match)
 }
 
 func (a *App) limitLogin(next http.Handler) http.Handler {

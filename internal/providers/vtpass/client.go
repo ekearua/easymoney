@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,14 @@ type Client struct {
 	publicKey string
 	secretKey string
 	http      *http.Client
+}
+
+// DataVariation is one sellable bundle returned by VTPass service variations.
+type DataVariation struct {
+	ServiceID     string
+	VariationCode string
+	Name          string
+	AmountKobo    int64
 }
 
 // New creates a VTPass API client. Use https://sandbox.vtpass.com/api for
@@ -70,6 +80,49 @@ func (c *Client) CheckDataStatus(ctx context.Context, providerReference string) 
 		return ports.DataFulfilmentResult{}, err
 	}
 	return response.toFulfilmentResult(providerReference), nil
+}
+
+// ListDataVariations fetches every active VTPass variation for one data service.
+func (c *Client) ListDataVariations(ctx context.Context, serviceID string) ([]DataVariation, error) {
+	if c.apiKey == "" || c.publicKey == "" {
+		return nil, errors.New("VTPass API key and public key are required")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/service-variations?serviceID="+serviceID, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("api-key", c.apiKey)
+	request.Header.Set("public-key", c.publicKey)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("VTPass variations request: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("VTPass variations returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	var payload variationsResponse
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode VTPass variations: %w", err)
+	}
+	var variations []DataVariation
+	for _, variation := range payload.Content.Variations {
+		amount, err := parseAmountKobo(variation.VariationAmount)
+		if err != nil || strings.TrimSpace(variation.VariationCode) == "" {
+			continue
+		}
+		variations = append(variations, DataVariation{
+			ServiceID:     serviceID,
+			VariationCode: strings.TrimSpace(variation.VariationCode),
+			Name:          strings.TrimSpace(variation.Name),
+			AmountKobo:    amount,
+		})
+	}
+	return variations, nil
 }
 
 func (c *Client) post(ctx context.Context, path string, payload map[string]any, target any) error {
@@ -120,6 +173,16 @@ type apiResponse struct {
 	} `json:"content"`
 }
 
+type variationsResponse struct {
+	Content struct {
+		Variations []struct {
+			VariationCode   string          `json:"variation_code"`
+			Name            string          `json:"name"`
+			VariationAmount json.RawMessage `json:"variation_amount"`
+		} `json:"variations"`
+	} `json:"content"`
+}
+
 func (r apiResponse) toFulfilmentResult(fallbackReference string) ports.DataFulfilmentResult {
 	reference := firstNonEmpty(r.RequestID, r.RequestIDAlt, fallbackReference, r.Content.Transactions.TransactionID)
 	status := strings.ToLower(strings.TrimSpace(r.Content.Transactions.Status))
@@ -154,6 +217,42 @@ func serviceID(networkCode string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(networkCode))
 	}
+}
+
+// ServiceIDForNetwork exposes the VTPass data service mapping used by fulfilment.
+func ServiceIDForNetwork(networkCode string) string {
+	return serviceID(networkCode)
+}
+
+// PlanCodeFromVariation creates a stable SMS-safe Xego plan code from a VTPass variation code.
+func PlanCodeFromVariation(networkCode, variationCode string) string {
+	clean := regexp.MustCompile(`[^A-Z0-9]+`).ReplaceAllString(strings.ToUpper(variationCode), "_")
+	clean = strings.Trim(clean, "_")
+	prefix := strings.ToUpper(strings.TrimSpace(networkCode))
+	if clean == "" {
+		return prefix + "_DATA"
+	}
+	if strings.HasPrefix(clean, prefix+"_") || strings.HasPrefix(clean, prefix) {
+		return clean
+	}
+	return prefix + "_" + clean
+}
+
+func parseAmountKobo(raw json.RawMessage) (int64, error) {
+	var number float64
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return int64(number*100 + 0.5), nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, err
+	}
+	text = strings.ReplaceAll(strings.TrimSpace(text), ",", "")
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(value*100 + 0.5), nil
 }
 
 func vtpassRequestID(requestCode string) string {

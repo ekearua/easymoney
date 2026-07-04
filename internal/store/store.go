@@ -803,6 +803,26 @@ func (s *Store) DataPlanByCode(ctx context.Context, planCode string) (DataPlan, 
 	return plan, err
 }
 
+// UpsertDataPlanFromProvider inserts or updates one provider catalog plan.
+func (s *Store) UpsertDataPlanFromProvider(ctx context.Context, networkCode, code, displayName, dataSize, validity string, priceKobo int64, providerSKU string, sortOrder int) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO data_plans (network_id, code, display_name, data_size, validity, price_kobo, provider_sku, active, sort_order)
+		SELECT n.id, $2, $3, $4, $5, $6, $7, true, $8
+		FROM data_networks n
+		WHERE upper(n.code)=upper($1)
+		ON CONFLICT (code) DO UPDATE SET
+			display_name=EXCLUDED.display_name,
+			data_size=EXCLUDED.data_size,
+			validity=EXCLUDED.validity,
+			price_kobo=EXCLUDED.price_kobo,
+			provider_sku=EXCLUDED.provider_sku,
+			active=true,
+			sort_order=EXCLUDED.sort_order,
+			updated_at=now()`,
+		networkCode, code, displayName, dataSize, validity, priceKobo, providerSKU, sortOrder)
+	return err
+}
+
 // XegoDataMerchant returns the internal merchant used to reuse the payment rail.
 func (s *Store) XegoDataMerchant(ctx context.Context) (Merchant, error) {
 	return s.MerchantBySlug(ctx, "xego-data")

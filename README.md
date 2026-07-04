@@ -140,18 +140,25 @@ VTPASS_PUBLIC_KEY=replace-with-vtpass-public-key
 VTPASS_SECRET_KEY=replace-with-vtpass-secret-key
 ```
 
-In the VTPass sandbox dashboard, enable API access, whitelist the data products, and fetch current variation codes with:
+In the VTPass sandbox dashboard, enable API access and whitelist the data products. To import all currently available MTN, Airtel, Glo, and 9mobile bundles into Xego, run:
 
 ```bash
-curl -H "api-key: $VTPASS_API_KEY" \
-  -H "public-key: $VTPASS_PUBLIC_KEY" \
-  "$VTPASS_BASE_URL/service-variations?serviceID=mtn-data"
+go run ./cmd/demo sync-vtpass-data-plans
 ```
 
-Repeat for `airtel-data`, `glo-data`, and `etisalat-data`. Update Xego plan SKUs before switching traffic:
+On the server, use a root shell to read the protected env file safely:
+
+```bash
+sudo bash -c 'set -a; source /etc/whatsapp-payment.env; set +a; /opt/whatsapp-payment/whatsapp-payment-demo sync-vtpass-data-plans'
+```
+
+The sync stores each VTPass `variation_code` as `data_plans.provider_sku`, and generates an SMS-safe Xego plan code from it. You can inspect imported bundles with:
 
 ```sql
-UPDATE data_plans SET provider_sku='VTPASS_VARIATION_CODE' WHERE code='MTN1GB';
+SELECT n.code AS network, p.code, p.display_name, p.provider_sku, p.price_kobo
+FROM data_plans p
+JOIN data_networks n ON n.id = p.network_id
+ORDER BY n.sort_order, p.sort_order;
 ```
 
 The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, and `etisalat-data`, sends the plan `provider_sku` as `variation_code`, and uses the Xego request code to create a VTPass `request_id`.
