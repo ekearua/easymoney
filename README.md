@@ -163,6 +163,8 @@ ORDER BY n.sort_order, p.sort_order;
 
 The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, and `etisalat-data`, sends the plan `provider_sku` as `variation_code`, and uses the Xego request code to create a VTPass `request_id`.
 
+Large VTPass catalogs are shown in chat as paged lists. Customers can select visible plans, tap next/previous page, or type a search term such as `1GB`, `2GB`, `weekly`, or `monthly`.
+
 ## Manual acceptance script
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.

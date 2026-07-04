@@ -791,6 +791,45 @@ func (s *Store) ListActiveDataPlans(ctx context.Context, networkCode string) ([]
 	return plans, rows.Err()
 }
 
+// SearchDataPlans returns one customer-facing page of active plans for a network.
+func (s *Store) SearchDataPlans(ctx context.Context, networkCode, query string, offset, limit int) ([]DataPlan, bool, error) {
+	offset, limit = normalizePageBounds(offset, limit)
+	search := strings.ToLower(strings.TrimSpace(query))
+	args := []any{limit + 1, offset, networkCode}
+	sql := dataPlanSelect() + `
+		WHERE n.active=true AND p.active=true AND upper(n.code)=upper($3)`
+	if search != "" {
+		args = append(args, "%"+search+"%")
+		sql += ` AND (
+			lower(p.code) LIKE $4 OR lower(p.display_name) LIKE $4 OR
+			lower(p.data_size) LIKE $4 OR lower(p.validity) LIKE $4 OR
+			lower(p.provider_sku) LIKE $4
+		)`
+	}
+	sql += ` ORDER BY p.sort_order, p.price_kobo, p.display_name LIMIT $1 OFFSET $2`
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	var plans []DataPlan
+	for rows.Next() {
+		plan, err := scanDataPlan(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		plans = append(plans, plan)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(plans) > limit
+	if hasMore {
+		plans = plans[:limit]
+	}
+	return plans, hasMore, nil
+}
+
 // DataPlanByCode resolves an active sellable data bundle.
 func (s *Store) DataPlanByCode(ctx context.Context, planCode string) (DataPlan, error) {
 	var plan DataPlan

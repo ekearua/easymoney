@@ -387,23 +387,38 @@ func (s *ConversationService) handleDataNetwork(ctx context.Context, channel, re
 	}
 	session.State = "select_data_plan"
 	session.Data["data_network"] = network.Code
+	delete(session.Data, "data_plan_query")
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendDataPlans(ctx, channel, recipient, network.Code)
+	return s.sendDataPlanPicker(ctx, channel, recipient, network.Code, "", 0)
 }
 
 func (s *ConversationService) handleDataPlan(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if !strings.HasPrefix(input, "data_plan:") {
-		return s.sendDataPlans(ctx, channel, recipient, session.Data["data_network"])
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	networkCode := session.Data["data_network"]
+	switch {
+	case strings.HasPrefix(input, "data_plan_page:"):
+		page := parsePickerPage(strings.TrimPrefix(input, "data_plan_page:"))
+		return s.sendDataPlanPicker(ctx, channel, recipient, networkCode, session.Data["data_plan_query"], page)
+	case !strings.HasPrefix(input, "data_plan:"):
+		query := strings.TrimSpace(input)
+		session.Data["data_plan_query"] = query
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendDataPlanPicker(ctx, channel, recipient, networkCode, query, 0)
 	}
 	code := strings.TrimPrefix(input, "data_plan:")
 	plan, err := s.store.DataPlanByCode(ctx, code)
-	if err != nil || !strings.EqualFold(plan.NetworkCode, session.Data["data_network"]) {
-		return s.sendDataPlans(ctx, channel, recipient, session.Data["data_network"])
+	if err != nil || !strings.EqualFold(plan.NetworkCode, networkCode) {
+		return s.sendDataPlanPicker(ctx, channel, recipient, networkCode, session.Data["data_plan_query"], 0)
 	}
 	session.State = "enter_data_phone"
 	session.Data["data_plan"] = plan.Code
+	delete(session.Data, "data_plan_query")
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -694,25 +709,31 @@ func (s *ConversationService) sendDataNetworks(ctx context.Context, channel, rec
 	})
 }
 
-func (s *ConversationService) sendDataPlans(ctx context.Context, channel, recipient, networkCode string) error {
-	plans, err := s.store.ListActiveDataPlans(ctx, networkCode)
+func (s *ConversationService) sendDataPlanPicker(ctx context.Context, channel, recipient, networkCode, query string, page int) error {
+	page = normalizePickerPage(page)
+	query = strings.TrimSpace(query)
+	plans, hasMore, err := s.store.SearchDataPlans(ctx, networkCode, query, page*pickerPageSize, pickerPageSize)
 	if err != nil {
 		return err
 	}
-	rows := make([]ports.InteractiveRow, 0, len(plans))
-	for _, plan := range plans {
-		rows = append(rows, ports.InteractiveRow{
-			ID:          "data_plan:" + plan.Code,
-			Title:       truncateInteractiveTitle(plan.DisplayName),
-			Description: truncateInteractiveDescription(plan.Validity + " - " + domain.FormatNGN(plan.PriceKobo)),
-		})
+	if len(plans) == 0 {
+		if query == "" {
+			return s.sendText(ctx, channel, recipient, "No active data plans are available for that network right now.")
+		}
+		return s.sendText(ctx, channel, recipient, "I couldn't find a matching data plan.\n\nSearch tip: type another size or keyword like 1GB, 2GB, weekly, monthly, SME, social, or night. Type MENU to return to the main menu.")
 	}
-	if len(rows) == 0 {
-		return s.sendText(ctx, channel, recipient, "No active data plans are available for that network right now.")
+	rows := make([]ports.InteractiveRow, 0, len(plans)+2)
+	for _, plan := range plans {
+		rows = append(rows, dataPlanRow(plan))
+	}
+	rows = appendPickerNavigation(rows, "data_plan_page:", page, hasMore)
+	body := fmt.Sprintf("Choose a %s data plan.\n\nSearch tip: if you don't see what you want, type a size or keyword like 1GB, 2GB, weekly, monthly, SME, social, or night.", strings.ToUpper(networkCode))
+	if query != "" {
+		body = fmt.Sprintf("%s data plan search results for %q.\n\nChoose a plan, tap Next page, or type another search like 1GB, weekly, monthly, SME, social, or night.", strings.ToUpper(networkCode), query)
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:          recipient,
-		Body:        "Choose a data plan. Xego will show the phone number and amount again before payment.",
+		Body:        body,
 		ButtonLabel: "Choose plan",
 		Sections:    []ports.InteractiveSection{{Title: strings.ToUpper(networkCode) + " plans", Rows: rows}},
 	})
@@ -1077,6 +1098,14 @@ func bankRow(account store.BankTransferAccount) ports.InteractiveRow {
 		ID:          "bank:" + account.ID.String(),
 		Title:       truncateInteractiveTitle(account.BankName),
 		Description: truncateInteractiveDescription(account.AccountName + " - " + account.AccountNumber),
+	}
+}
+
+func dataPlanRow(plan store.DataPlan) ports.InteractiveRow {
+	return ports.InteractiveRow{
+		ID:          "data_plan:" + plan.Code,
+		Title:       truncateInteractiveTitle(plan.DisplayName),
+		Description: truncateInteractiveDescription(plan.Validity + " - " + domain.FormatNGN(plan.PriceKobo)),
 	}
 }
 
