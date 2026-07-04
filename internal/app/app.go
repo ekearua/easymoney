@@ -73,7 +73,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
 	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
 	if strings.EqualFold(cfg.DataProvider, "vtpass") {
-		dataProvider = vtpass.New(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey)
+		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
 	templates, err := template.New("").Funcs(template.FuncMap{
@@ -126,7 +126,7 @@ func (a *App) PurgeExpiredData(ctx context.Context) error {
 
 // SyncVTPassDataPlans imports every current VTPass data variation into Xego's catalog.
 func (a *App) SyncVTPassDataPlans(ctx context.Context) error {
-	client := vtpass.New(a.cfg.VTPassBaseURL, a.cfg.VTPassAPIKey, a.cfg.VTPassPublicKey, a.cfg.VTPassSecretKey)
+	client := vtpass.NewWithTimeout(a.cfg.VTPassBaseURL, a.cfg.VTPassAPIKey, a.cfg.VTPassPublicKey, a.cfg.VTPassSecretKey, a.cfg.VTPassTimeout)
 	networks := []string{"MTN", "AIRTEL", "GLO", "9MOBILE"}
 	for _, network := range networks {
 		serviceID := vtpass.ServiceIDForNetwork(network)

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -45,14 +46,24 @@ type WebhookEvent struct {
 // New creates a VTPass API client. Use https://sandbox.vtpass.com/api for
 // sandbox and https://vtpass.com/api for live once provisioned.
 func New(baseURL, apiKey, publicKey, secretKey string) *Client {
+	return NewWithTimeout(baseURL, apiKey, publicKey, secretKey, 45*time.Second)
+}
+
+// NewWithTimeout creates a VTPass API client with a configurable HTTP timeout.
+// Sandbox responses can be slow, so production configuration can tune this
+// without changing fulfilment logic.
+func NewWithTimeout(baseURL, apiKey, publicKey, secretKey string, timeout time.Duration) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		baseURL = "https://sandbox.vtpass.com/api"
 	}
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
 	return &Client{
 		baseURL: baseURL, apiKey: strings.TrimSpace(apiKey),
 		publicKey: strings.TrimSpace(publicKey), secretKey: strings.TrimSpace(secretKey),
-		http: &http.Client{Timeout: 25 * time.Second},
+		http: &http.Client{Timeout: timeout},
 	}
 }
 
@@ -61,8 +72,12 @@ func (c *Client) FulfilData(ctx context.Context, request ports.DataFulfilmentReq
 	if request.ProviderSKU == "" {
 		return ports.DataFulfilmentResult{}, errors.New("VTPass variation code is required")
 	}
+	requestID := strings.TrimSpace(request.ProviderReference)
+	if requestID == "" {
+		requestID = vtpassRequestID(request.RequestCode)
+	}
 	payload := map[string]any{
-		"request_id":     vtpassRequestID(request.RequestCode),
+		"request_id":     requestID,
 		"serviceID":      serviceID(request.NetworkCode),
 		"billersCode":    localPhone(request.BeneficiaryPhone),
 		"variation_code": request.ProviderSKU,
@@ -71,9 +86,16 @@ func (c *Client) FulfilData(ctx context.Context, request ports.DataFulfilmentReq
 	}
 	var response apiResponse
 	if err := c.post(ctx, "/pay", payload, &response); err != nil {
+		if isTimeoutErr(err) {
+			return ports.DataFulfilmentResult{
+				ProviderReference: requestID,
+				Status:            "pending",
+				Message:           "VTPass did not respond before the timeout; awaiting callback or retry.",
+			}, nil
+		}
 		return ports.DataFulfilmentResult{}, err
 	}
-	return response.toFulfilmentResult(payload["request_id"].(string)), nil
+	return response.toFulfilmentResult(requestID), nil
 }
 
 // CheckDataStatus requeries a VTPass transaction by the provider reference.
@@ -308,6 +330,14 @@ func vtpassRequestID(requestCode string) string {
 		location = time.FixedZone("WAT", 3600)
 	}
 	return time.Now().In(location).Format("200601021504") + clean
+}
+
+func isTimeoutErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func localPhone(phone string) string {

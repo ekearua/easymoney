@@ -138,6 +138,7 @@ VTPASS_BASE_URL=https://sandbox.vtpass.com/api
 VTPASS_API_KEY=replace-with-vtpass-api-key
 VTPASS_PUBLIC_KEY=replace-with-vtpass-public-key
 VTPASS_SECRET_KEY=replace-with-vtpass-secret-key
+VTPASS_TIMEOUT=45s
 ```
 
 In the VTPass sandbox dashboard, enable API access and whitelist the data products. To import all currently available MTN, Airtel, Glo, and 9mobile bundles into Xego, run:
@@ -161,7 +162,7 @@ JOIN data_networks n ON n.id = p.network_id
 ORDER BY n.sort_order, p.sort_order;
 ```
 
-The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, and `etisalat-data`, sends the plan `provider_sku` as `variation_code`, and uses the Xego request code to create a VTPass `request_id`.
+The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, and `etisalat-data`, sends the plan `provider_sku` as `variation_code`, and uses the Xego request code to create a VTPass `request_id`. If VTPass times out before returning headers, Xego keeps the order pending/retryable and stores the attempted `request_id` so the next retry does not create a second VTPass transaction.
 
 Large VTPass catalogs are shown in chat as paged lists. Customers can select visible plans, tap next/previous page, or type a search term such as `1GB`, `2GB`, `weekly`, or `monthly`.
 

@@ -81,13 +81,14 @@ func (s *DataService) ProcessFulfilments(ctx context.Context, limit int) error {
 	}
 	for _, order := range orders {
 		result, err := s.provider.FulfilData(ctx, ports.DataFulfilmentRequest{
-			OrderID:          order.ID.String(),
-			RequestCode:      order.RequestCode,
-			NetworkCode:      order.NetworkCode,
-			PlanCode:         order.PlanCode,
-			ProviderSKU:      order.ProviderSKU,
-			BeneficiaryPhone: order.BeneficiaryPhone,
-			AmountKobo:       order.AmountKobo,
+			OrderID:           order.ID.String(),
+			RequestCode:       order.RequestCode,
+			ProviderReference: order.ProviderReference,
+			NetworkCode:       order.NetworkCode,
+			PlanCode:          order.PlanCode,
+			ProviderSKU:       order.ProviderSKU,
+			BeneficiaryPhone:  order.BeneficiaryPhone,
+			AmountKobo:        order.AmountKobo,
 		})
 		status := domain.DataOrderFulfilled
 		message := result.Message

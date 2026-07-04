@@ -53,6 +53,7 @@ type Config struct {
 	VTPassPublicKey     string
 	VTPassSecretKey     string
 	VTPassWebhookSecret string
+	VTPassTimeout       time.Duration
 
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
@@ -96,6 +97,7 @@ func Load() (Config, error) {
 		VTPassPublicKey:        os.Getenv("VTPASS_PUBLIC_KEY"),
 		VTPassSecretKey:        os.Getenv("VTPASS_SECRET_KEY"),
 		VTPassWebhookSecret:    os.Getenv("VTPASS_WEBHOOK_SECRET"),
+		VTPassTimeout:          envDuration("VTPASS_TIMEOUT", 45*time.Second),
 		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),

@@ -88,13 +88,14 @@ type Messenger interface {
 
 // DataFulfilmentRequest contains the data-bundle order details sent to a data provider.
 type DataFulfilmentRequest struct {
-	OrderID          string
-	RequestCode      string
-	NetworkCode      string
-	PlanCode         string
-	ProviderSKU      string
-	BeneficiaryPhone string
-	AmountKobo       int64
+	OrderID           string
+	RequestCode       string
+	ProviderReference string
+	NetworkCode       string
+	PlanCode          string
+	ProviderSKU       string
+	BeneficiaryPhone  string
+	AmountKobo        int64
 }
 
 // DataFulfilmentResult is the provider-neutral result of a data-bundle request.

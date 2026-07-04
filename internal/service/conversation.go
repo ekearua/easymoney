@@ -69,6 +69,14 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	if !s.onboardingCompleteForChannel(user, message.Channel) {
 		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
 	}
+	if strings.EqualFold(input, "menu") || strings.EqualFold(input, "/menu") {
+		s.abandonSessionPayment(ctx, user, session)
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, message.Channel, recipient)
+	}
 	if strings.EqualFold(input, "cancel") || input == "cancel_payment" {
 		s.abandonSessionPayment(ctx, user, session)
 		session.State, session.Data = "menu", map[string]string{}
