@@ -94,6 +94,7 @@ type DataFulfilmentRequest struct {
 	PlanCode         string
 	ProviderSKU      string
 	BeneficiaryPhone string
+	AmountKobo       int64
 }
 
 // DataFulfilmentResult is the provider-neutral result of a data-bundle request.

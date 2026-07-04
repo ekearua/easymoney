@@ -47,6 +47,12 @@ type Config struct {
 	SMSAPIBase       string
 	SMSAPIKey        string
 
+	DataProvider    string
+	VTPassBaseURL   string
+	VTPassAPIKey    string
+	VTPassPublicKey string
+	VTPassSecretKey string
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -83,6 +89,11 @@ func Load() (Config, error) {
 		SMSSenderID:            env("SMS_SENDER_ID", "Xego"),
 		SMSAPIBase:             strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
 		SMSAPIKey:              os.Getenv("SMS_API_KEY"),
+		DataProvider:           strings.ToLower(env("DATA_PROVIDER", "simulated")),
+		VTPassBaseURL:          strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
+		VTPassAPIKey:           os.Getenv("VTPASS_API_KEY"),
+		VTPassPublicKey:        os.Getenv("VTPASS_PUBLIC_KEY"),
+		VTPassSecretKey:        os.Getenv("VTPASS_SECRET_KEY"),
 		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),
@@ -131,6 +142,17 @@ func Load() (Config, error) {
 		}
 		if cfg.SMSEnabled && cfg.SMSWebhookSecret == "" {
 			return Config{}, fmt.Errorf("SMS_WEBHOOK_SECRET is required when SMS_ENABLED=true")
+		}
+		if cfg.DataProvider == "vtpass" {
+			for name, value := range map[string]string{
+				"VTPASS_API_KEY":    cfg.VTPassAPIKey,
+				"VTPASS_PUBLIC_KEY": cfg.VTPassPublicKey,
+				"VTPASS_SECRET_KEY": cfg.VTPassSecretKey,
+			} {
+				if value == "" {
+					return Config{}, fmt.Errorf("%s is required when DATA_PROVIDER=vtpass", name)
+				}
+			}
 		}
 		publicURL, err := url.Parse(cfg.BaseURL)
 		if err != nil || publicURL.Scheme != "https" || publicURL.Host == "" {

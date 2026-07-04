@@ -31,6 +31,7 @@ import (
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	"whatsapp-payment-demo/internal/providers/paystack"
 	"whatsapp-payment-demo/internal/providers/telegram"
+	"whatsapp-payment-demo/internal/providers/vtpass"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
 	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
@@ -69,7 +70,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		messengers[service.ChannelTelegram] = telegramClient
 	}
 	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
-	dataService := service.NewDataService(repository, paymentService, dataprovider.NewSimulator())
+	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
+	if strings.EqualFold(cfg.DataProvider, "vtpass") {
+		dataProvider = vtpass.New(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey)
+	}
+	dataService := service.NewDataService(repository, paymentService, dataProvider)
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
 		"maskPII":     maskPII,

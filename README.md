@@ -128,6 +128,34 @@ DATA HELP
 
 The SMS MVP returns the reply text from the webhook response. A live outbound SMS sender can be connected later without changing the order lifecycle.
 
+### VTPass sandbox data fulfilment
+
+The default data provider is the local simulator. To use VTPass sandbox:
+
+```env
+DATA_PROVIDER=vtpass
+VTPASS_BASE_URL=https://sandbox.vtpass.com/api
+VTPASS_API_KEY=replace-with-vtpass-api-key
+VTPASS_PUBLIC_KEY=replace-with-vtpass-public-key
+VTPASS_SECRET_KEY=replace-with-vtpass-secret-key
+```
+
+In the VTPass sandbox dashboard, enable API access, whitelist the data products, and fetch current variation codes with:
+
+```bash
+curl -H "api-key: $VTPASS_API_KEY" \
+  -H "public-key: $VTPASS_PUBLIC_KEY" \
+  "$VTPASS_BASE_URL/service-variations?serviceID=mtn-data"
+```
+
+Repeat for `airtel-data`, `glo-data`, and `etisalat-data`. Update Xego plan SKUs before switching traffic:
+
+```sql
+UPDATE data_plans SET provider_sku='VTPASS_VARIATION_CODE' WHERE code='MTN1GB';
+```
+
+The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, and `etisalat-data`, sends the plan `provider_sku` as `variation_code`, and uses the Xego request code to create a VTPass `request_id`.
+
 ## Manual acceptance script
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.

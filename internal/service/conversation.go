@@ -97,8 +97,6 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleDataOrderConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "select_data_payment_method":
 		return s.handleDataPaymentMethod(ctx, message.Channel, recipient, user, session, input)
-	case "confirm_data_card":
-		return s.handleDataCardConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "select_data_transfer_bank":
 		return s.handleDataTransferBank(ctx, message.Channel, recipient, user, session, input)
 	case "await_data_bank_transfer":
@@ -430,19 +428,48 @@ func (s *ConversationService) handleDataPhone(ctx context.Context, channel, reci
 }
 
 func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if input != "confirm_data_order" && !strings.EqualFold(input, "confirm") && !strings.EqualFold(input, "continue") {
+	input = strings.ToLower(input)
+	if input != "method_card" && input != "card" && input != "paystack" && input != "card checkout" &&
+		input != "method_bank_transfer" && input != "bank" && input != "bank transfer" && input != "transfer" {
 		return s.sendDataReviewFromSession(ctx, channel, recipient, user, session)
 	}
 	order, err := s.data.CreateOrder(ctx, user, channel, recipient, session.Data["data_plan"], session.Data["data_phone"])
 	if err != nil {
 		return err
 	}
-	session.State = "select_data_payment_method"
 	session.Data["data_order_id"] = order.ID.String()
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	switch input {
+	case "method_card", "card", "paystack", "card checkout":
+		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderPaystack, channel, recipient)
+		if err != nil {
+			return err
+		}
+		session.Data["payment_id"] = payment.ID.String()
+		payment, err = s.payments.InitializeCheckout(ctx, payment)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
+				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
+			payment.CheckoutURL)
+	default:
+		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
+		if err != nil {
+			return err
+		}
+		session.State = "select_data_transfer_bank"
+		session.Data["payment_id"] = payment.ID.String()
+		delete(session.Data, "bank_query")
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendRecommendedTransferBank(ctx, channel, recipient)
 	}
-	return s.sendDataPaymentMethods(ctx, channel, recipient, order)
 }
 
 func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -456,12 +483,19 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 		if err != nil {
 			return err
 		}
-		session.State = "confirm_data_card"
 		session.Data["payment_id"] = payment.ID.String()
+		payment, err = s.payments.InitializeCheckout(ctx, payment)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
+		}
+		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendDataCardReview(ctx, channel, recipient, order)
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
+				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
+			payment.CheckoutURL)
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -477,32 +511,6 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 	default:
 		return s.sendDataPaymentMethods(ctx, channel, recipient, order)
 	}
-}
-
-func (s *ConversationService) handleDataCardConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if input != "confirm_payment" && !strings.EqualFold(input, "confirm") && !strings.EqualFold(input, "continue") {
-		return s.sendText(ctx, channel, recipient, "Choose Continue or Cancel to proceed.")
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
-	}
-	order, err := s.dataOrderFromSession(ctx, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That data order session expired. Please start again.")
-	}
-	payment, err = s.payments.InitializeCheckout(ctx, payment)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
-	}
-	session.State, session.Data = "menu", map[string]string{}
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendCheckout(ctx, channel, recipient,
-		fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
-			order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
-		payment.CheckoutURL)
 }
 
 func (s *ConversationService) handleDataTransferBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -713,10 +721,11 @@ func (s *ConversationService) sendDataPlans(ctx context.Context, channel, recipi
 func (s *ConversationService) sendDataReview(ctx context.Context, channel, recipient string, plan store.DataPlan, phone string) error {
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To: recipient,
-		Body: fmt.Sprintf("Review your Xego data order:\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\n\nContinue?",
+		Body: fmt.Sprintf("Review your Xego data order:\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\n\nChoose how you would like to pay.",
 			plan.NetworkName, plan.DisplayName, phone, domain.FormatNGN(plan.PriceKobo)),
 		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_data_order", Title: "Continue"},
+			{ID: "method_card", Title: "Card checkout"},
+			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
@@ -738,18 +747,6 @@ func (s *ConversationService) sendDataPaymentMethods(ctx context.Context, channe
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
-		},
-	})
-}
-
-func (s *ConversationService) sendDataCardReview(ctx context.Context, channel, recipient string, order store.DataOrderView) error {
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Review your Xego data payment:\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nContinue to secure card checkout?",
-			order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
-		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_payment", Title: "Continue"},
-			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
 }

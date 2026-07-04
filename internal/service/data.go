@@ -87,6 +87,7 @@ func (s *DataService) ProcessFulfilments(ctx context.Context, limit int) error {
 			PlanCode:         order.PlanCode,
 			ProviderSKU:      order.ProviderSKU,
 			BeneficiaryPhone: order.BeneficiaryPhone,
+			AmountKobo:       order.AmountKobo,
 		})
 		status := domain.DataOrderFulfilled
 		message := result.Message
