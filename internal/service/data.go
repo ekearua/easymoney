@@ -97,7 +97,7 @@ func (s *DataService) ProcessFulfilments(ctx context.Context, limit int) error {
 			message = err.Error()
 		} else if !strings.EqualFold(result.Status, "fulfilled") && !strings.EqualFold(result.Status, "success") {
 			if strings.EqualFold(result.Status, "pending") || strings.EqualFold(result.Status, "processing") || strings.EqualFold(result.Status, "queued") {
-				if err := s.store.DeferDataOrderFulfilment(ctx, order.ID, result.ProviderReference, result.Message); err != nil {
+				if err := s.store.DeferDataOrderFulfilment(ctx, order.ID, result.ProviderReference, result.Message, s.pendingOutbox(order, result.Message)); err != nil {
 					return err
 				}
 				continue
@@ -150,6 +150,16 @@ func (s *DataService) resultOutbox(order store.DataOrderView, status domain.Data
 		body += "\n\nYour data order has been fulfilled."
 	} else if message != "" {
 		body += "\n\n" + message
+	}
+	payload, _ := json.Marshal(map[string]any{"body": body})
+	return store.OutboxSpec{UserID: order.UserID, Channel: order.Channel, Recipient: order.Recipient, Kind: "text", Payload: payload}
+}
+
+func (s *DataService) pendingOutbox(order store.DataOrderView, message string) store.OutboxSpec {
+	body := fmt.Sprintf("Xego data order update\n\nStatus: PROCESSING\nNetwork: %s\nPlan: %s\nPhone: %s\nRequest code: %s\n\nPayment has been received. We are confirming fulfilment with the network and will send another update once it is completed.",
+		order.NetworkName, order.PlanName, order.BeneficiaryPhone, order.RequestCode)
+	if strings.TrimSpace(message) != "" {
+		body += "\n\nProvider note: " + strings.TrimSpace(message)
 	}
 	payload, _ := json.Marshal(map[string]any{"body": body})
 	return store.OutboxSpec{UserID: order.UserID, Channel: order.Channel, Recipient: order.Recipient, Kind: "text", Payload: payload}

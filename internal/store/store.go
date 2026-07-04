@@ -1005,14 +1005,45 @@ func (s *Store) CompleteDataOrderFulfilment(ctx context.Context, orderID uuid.UU
 	return s.transitionDataOrderWithOutbox(ctx, orderID, target, "data.provider", map[string]any{"provider_reference": providerReference, "message": message}, providerReference, message, outbox)
 }
 
-// DeferDataOrderFulfilment stores a pending provider reference and returns the
-// order to paid so a later worker pass or webhook can resolve the final state.
-func (s *Store) DeferDataOrderFulfilment(ctx context.Context, orderID uuid.UUID, providerReference, message string) error {
-	_, err := s.transitionDataOrder(ctx, orderID, domain.DataOrderPaid, "data.provider.pending", map[string]any{"provider_reference": providerReference, "message": message}, func(tx pgx.Tx) error {
+// DeferDataOrderFulfilment stores a pending provider reference, returns the
+// order to paid for retry/webhook resolution, and queues one customer
+// processing update the first time a provider result is inconclusive.
+func (s *Store) DeferDataOrderFulfilment(ctx context.Context, orderID uuid.UUID, providerReference, message string, outbox OutboxSpec) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var alreadyNotified bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM message_outbox m
+			JOIN data_orders d ON d.user_id=m.user_id
+			WHERE d.id=$1
+			  AND m.payload->>'body' ILIKE '%Status: PROCESSING%'
+			  AND m.payload->>'body' ILIKE '%' || d.request_code || '%'
+		)`, orderID).Scan(&alreadyNotified); err != nil {
+		return err
+	}
+	changed, err := s.transitionDataOrderTx(ctx, tx, orderID, domain.DataOrderPaid, "data.provider.pending", map[string]any{"provider_reference": providerReference, "message": message}, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `UPDATE data_orders SET provider_reference=$2, failure_reason='' WHERE id=$1`, orderID, providerReference)
 		return err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	if changed && !alreadyNotified && outbox.UserID != uuid.Nil {
+		if outbox.Channel == "" {
+			outbox.Channel = "whatsapp"
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) transitionDataOrder(ctx context.Context, orderID uuid.UUID, to domain.DataOrderStatus, source string, detail map[string]any, extra func(pgx.Tx) error) (bool, error) {
