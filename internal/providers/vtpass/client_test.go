@@ -75,3 +75,37 @@ func TestCheckDataStatusPostsRequery(t *testing.T) {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }
+
+func TestFulfilDataMapsResponseCodeSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":                 "000",
+			"response_description": "TRANSACTION SUCCESSFUL",
+			"requestId":            "req-123",
+		})
+	}))
+	defer server.Close()
+	result, err := New(server.URL, "api", "public", "secret").FulfilData(context.Background(), ports.DataFulfilmentRequest{
+		RequestCode:      "XG-DATA-8K2Q",
+		NetworkCode:      "MTN",
+		ProviderSKU:      "sku",
+		BeneficiaryPhone: "+2348031234567",
+		AmountKobo:       50_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "fulfilled" || result.ProviderReference != "req-123" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestParseWebhook(t *testing.T) {
+	event, err := ParseWebhook([]byte(`{"requestId":"req-123","response_description":"TRANSACTION SUCCESSFUL","content":{"transactions":{"status":"delivered"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Reference != "req-123" || event.Status != "fulfilled" {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+}

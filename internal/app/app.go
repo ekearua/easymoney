@@ -192,6 +192,7 @@ func (a *App) routes() http.Handler {
 	router.Post("/webhooks/telegram", a.receiveTelegramWebhook)
 	router.Post("/webhooks/sms", a.receiveSMSWebhook)
 	router.Post("/webhooks/paystack", a.receivePaystackWebhook)
+	router.Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.Get("/payments/return", a.paymentReturn)
 	router.Get("/receipts/{token}", a.receipt)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
@@ -521,6 +522,56 @@ func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	secretValid := a.cfg.VTPassWebhookSecret == "" ||
+		r.Header.Get("X-VTPass-Webhook-Secret") == a.cfg.VTPassWebhookSecret ||
+		r.URL.Query().Get("secret") == a.cfg.VTPassWebhookSecret
+	event, parseErr := vtpass.ParseWebhook(body)
+	eventKey := digest(body)
+	if event.Reference != "" {
+		eventKey = "vtpass:" + event.Reference
+	}
+	payload := json.RawMessage(`{}`)
+	if parseErr == nil {
+		payload, _ = json.Marshal(map[string]string{"reference": event.Reference, "status": event.Status, "message": event.Message})
+	}
+	deliveryID, fresh, storeErr := a.store.RecordWebhook(r.Context(), "vtpass", eventKey, secretValid && parseErr == nil, payload)
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if !secretValid {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid secret")
+		http.Error(w, "invalid secret", http.StatusUnauthorized)
+		return
+	}
+	if parseErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", parseErr.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	if !fresh {
+		writeJSON(w, http.StatusOK, map[string]string{"response": "success"})
+		return
+	}
+	if _, changed, err := a.data.ApplyProviderResult(r.Context(), event.Reference, event.Status, event.Message); err != nil {
+		a.logger.Warn("process VTPass webhook", "reference", event.Reference, "error", err)
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+		http.Error(w, "processing failed", http.StatusInternalServerError)
+		return
+	} else if changed {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "processed", "")
+	} else {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "ignored", "")
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"response": "success"})
 }
 
 func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {

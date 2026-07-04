@@ -920,6 +920,11 @@ func (s *Store) DataOrderByRequestCode(ctx context.Context, code string) (DataOr
 	return s.dataOrderBy(ctx, "upper(d.request_code)=upper($1)", code)
 }
 
+// DataOrderByProviderReference resolves an order from a VTPass request id or transaction id.
+func (s *Store) DataOrderByProviderReference(ctx context.Context, providerReference string) (DataOrderView, error) {
+	return s.dataOrderBy(ctx, "d.provider_reference=$1", providerReference)
+}
+
 func (s *Store) dataOrderBy(ctx context.Context, predicate string, value any) (DataOrderView, error) {
 	query := dataOrderSelect() + " WHERE " + predicate
 	var order DataOrderView
@@ -998,6 +1003,16 @@ func (s *Store) ClaimFulfillableDataOrders(ctx context.Context, limit int) ([]Da
 // CompleteDataOrderFulfilment records a provider result and queues the customer update.
 func (s *Store) CompleteDataOrderFulfilment(ctx context.Context, orderID uuid.UUID, target domain.DataOrderStatus, providerReference, message string, outbox OutboxSpec) error {
 	return s.transitionDataOrderWithOutbox(ctx, orderID, target, "data.provider", map[string]any{"provider_reference": providerReference, "message": message}, providerReference, message, outbox)
+}
+
+// DeferDataOrderFulfilment stores a pending provider reference and returns the
+// order to paid so a later worker pass or webhook can resolve the final state.
+func (s *Store) DeferDataOrderFulfilment(ctx context.Context, orderID uuid.UUID, providerReference, message string) error {
+	_, err := s.transitionDataOrder(ctx, orderID, domain.DataOrderPaid, "data.provider.pending", map[string]any{"provider_reference": providerReference, "message": message}, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE data_orders SET provider_reference=$2, failure_reason='' WHERE id=$1`, orderID, providerReference)
+		return err
+	})
+	return err
 }
 
 func (s *Store) transitionDataOrder(ctx context.Context, orderID uuid.UUID, to domain.DataOrderStatus, source string, detail map[string]any, extra func(pgx.Tx) error) (bool, error) {

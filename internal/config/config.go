@@ -47,11 +47,12 @@ type Config struct {
 	SMSAPIBase       string
 	SMSAPIKey        string
 
-	DataProvider    string
-	VTPassBaseURL   string
-	VTPassAPIKey    string
-	VTPassPublicKey string
-	VTPassSecretKey string
+	DataProvider        string
+	VTPassBaseURL       string
+	VTPassAPIKey        string
+	VTPassPublicKey     string
+	VTPassSecretKey     string
+	VTPassWebhookSecret string
 
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
@@ -94,6 +95,7 @@ func Load() (Config, error) {
 		VTPassAPIKey:           os.Getenv("VTPASS_API_KEY"),
 		VTPassPublicKey:        os.Getenv("VTPASS_PUBLIC_KEY"),
 		VTPassSecretKey:        os.Getenv("VTPASS_SECRET_KEY"),
+		VTPassWebhookSecret:    os.Getenv("VTPASS_WEBHOOK_SECRET"),
 		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),

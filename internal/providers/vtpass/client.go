@@ -35,6 +35,13 @@ type DataVariation struct {
 	AmountKobo    int64
 }
 
+// WebhookEvent is the normalized subset of a VTPass callback needed by Xego.
+type WebhookEvent struct {
+	Reference string
+	Status    string
+	Message   string
+}
+
 // New creates a VTPass API client. Use https://sandbox.vtpass.com/api for
 // sandbox and https://vtpass.com/api for live once provisioned.
 func New(baseURL, apiKey, publicKey, secretKey string) *Client {
@@ -185,22 +192,53 @@ type variationsResponse struct {
 
 func (r apiResponse) toFulfilmentResult(fallbackReference string) ports.DataFulfilmentResult {
 	reference := firstNonEmpty(r.RequestID, r.RequestIDAlt, fallbackReference, r.Content.Transactions.TransactionID)
-	status := strings.ToLower(strings.TrimSpace(r.Content.Transactions.Status))
-	if status == "" {
-		status = strings.ToLower(strings.TrimSpace(r.ResponseDescription))
-	}
-	switch status {
-	case "delivered", "successful", "transaction successful", "success":
-		status = "fulfilled"
-	case "failed", "reversed":
-		status = "failed"
-	default:
-		status = "pending"
-	}
+	status := NormalizeStatus(firstNonEmpty(r.Content.Transactions.Status, r.ResponseDescription, r.Code, r.ResponseCode))
 	return ports.DataFulfilmentResult{
 		ProviderReference: reference,
 		Status:            status,
 		Message:           firstNonEmpty(r.ResponseDescription, r.Content.Transactions.ProductName, r.Code, r.ResponseCode),
+	}
+}
+
+// ParseWebhook extracts request id/status from the common VTPass callback shapes.
+func ParseWebhook(body []byte) (WebhookEvent, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return WebhookEvent{}, fmt.Errorf("decode VTPass webhook: %w", err)
+	}
+	flattened := map[string]string{}
+	flatten("", raw, flattened)
+	reference := firstNonEmpty(
+		flattened["requestid"], flattened["request_id"], flattened["requestid"],
+		flattened["content.transactions.requestid"], flattened["content.transactions.request_id"],
+		flattened["content.transactions.transactionid"], flattened["transactionid"],
+	)
+	statusText := firstNonEmpty(
+		flattened["content.transactions.status"], flattened["status"], flattened["transactionstatus"],
+		flattened["response_description"], flattened["responsecode"], flattened["code"],
+	)
+	message := firstNonEmpty(flattened["response_description"], flattened["message"], flattened["content.transactions.product_name"], statusText)
+	if reference == "" {
+		return WebhookEvent{}, errors.New("VTPass webhook missing request id")
+	}
+	return WebhookEvent{Reference: reference, Status: NormalizeStatus(statusText), Message: message}, nil
+}
+
+// NormalizeStatus converts VTPass wording/codes into Xego provider statuses.
+func NormalizeStatus(value string) string {
+	status := strings.ToLower(strings.TrimSpace(value))
+	status = strings.ReplaceAll(status, "_", " ")
+	status = strings.ReplaceAll(status, "-", " ")
+	switch {
+	case status == "000" || strings.Contains(status, "delivered") ||
+		strings.Contains(status, "successful") || status == "success" ||
+		strings.Contains(status, "transaction successful"):
+		return "fulfilled"
+	case strings.Contains(status, "failed") || strings.Contains(status, "reversed") ||
+		strings.Contains(status, "cancelled") || strings.Contains(status, "canceled"):
+		return "failed"
+	default:
+		return "pending"
 	}
 }
 
@@ -290,4 +328,22 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func flatten(prefix string, input map[string]any, output map[string]string) {
+	for key, value := range input {
+		normalizedKey := strings.ToLower(strings.TrimSpace(key))
+		fullKey := normalizedKey
+		if prefix != "" {
+			fullKey = prefix + "." + normalizedKey
+		}
+		switch typed := value.(type) {
+		case string:
+			output[fullKey] = typed
+		case float64:
+			output[fullKey] = strconv.FormatFloat(typed, 'f', -1, 64)
+		case map[string]any:
+			flatten(fullKey, typed, output)
+		}
+	}
 }

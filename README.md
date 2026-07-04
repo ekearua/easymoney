@@ -165,6 +165,14 @@ The VTPass adapter maps Xego networks to `mtn-data`, `airtel-data`, `glo-data`, 
 
 Large VTPass catalogs are shown in chat as paged lists. Customers can select visible plans, tap next/previous page, or type a search term such as `1GB`, `2GB`, `weekly`, or `monthly`.
 
+Optional VTPass callback URL:
+
+```text
+https://<host>/webhooks/vtpass?secret=<VTPASS_WEBHOOK_SECRET>
+```
+
+If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass-Webhook-Secret`. VTPass callbacks are recorded in `/admin/webhooks` and can mark pending data orders fulfilled or failed by provider reference/request id.
+
 ## Manual acceptance script
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.

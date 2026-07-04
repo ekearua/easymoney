@@ -95,6 +95,12 @@ func (s *DataService) ProcessFulfilments(ctx context.Context, limit int) error {
 			status = domain.DataOrderFailed
 			message = err.Error()
 		} else if !strings.EqualFold(result.Status, "fulfilled") && !strings.EqualFold(result.Status, "success") {
+			if strings.EqualFold(result.Status, "pending") || strings.EqualFold(result.Status, "processing") || strings.EqualFold(result.Status, "queued") {
+				if err := s.store.DeferDataOrderFulfilment(ctx, order.ID, result.ProviderReference, result.Message); err != nil {
+					return err
+				}
+				continue
+			}
 			status = domain.DataOrderFailed
 			if message == "" {
 				message = "provider did not fulfil the data order"
@@ -105,6 +111,35 @@ func (s *DataService) ProcessFulfilments(ctx context.Context, limit int) error {
 		}
 	}
 	return nil
+}
+
+// ApplyProviderResult resolves a pending data order from a provider webhook or requery result.
+func (s *DataService) ApplyProviderResult(ctx context.Context, providerReference, providerStatus, message string) (store.DataOrderView, bool, error) {
+	order, err := s.store.DataOrderByProviderReference(ctx, providerReference)
+	if err != nil {
+		return store.DataOrderView{}, false, err
+	}
+	target := mapProviderDataStatus(providerStatus)
+	if target == "" {
+		return order, false, nil
+	}
+	if err := s.store.CompleteDataOrderFulfilment(ctx, order.ID, target, providerReference, message, s.resultOutbox(order, target, message)); err != nil {
+		return order, false, err
+	}
+	updated, err := s.store.DataOrderByID(ctx, order.ID)
+	return updated, true, err
+}
+
+func mapProviderDataStatus(status string) domain.DataOrderStatus {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "delivered", "successful", "transaction successful", "success", "fulfilled":
+		return domain.DataOrderFulfilled
+	case "failed", "reversed", "cancelled":
+		return domain.DataOrderFailed
+	default:
+		return ""
+	}
 }
 
 func (s *DataService) resultOutbox(order store.DataOrderView, status domain.DataOrderStatus, message string) store.OutboxSpec {

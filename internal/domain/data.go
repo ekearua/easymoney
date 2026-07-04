@@ -27,7 +27,7 @@ var dataTransitions = map[DataOrderStatus]map[DataOrderStatus]bool{
 	DataOrderDraft:           {DataOrderAwaitingPayment: true, DataOrderCancelled: true, DataOrderExpired: true},
 	DataOrderAwaitingPayment: {DataOrderPaid: true, DataOrderCancelled: true, DataOrderExpired: true},
 	DataOrderPaid:            {DataOrderFulfilling: true, DataOrderFailed: true, DataOrderExpired: true},
-	DataOrderFulfilling:      {DataOrderFulfilled: true, DataOrderFailed: true},
+	DataOrderFulfilling:      {DataOrderPaid: true, DataOrderFulfilled: true, DataOrderFailed: true},
 }
 
 // CanTransitionDataOrder reports whether a data-order state change is monotonic.
