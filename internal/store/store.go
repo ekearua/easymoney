@@ -456,13 +456,17 @@ func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email str
 	if _, err := tx.Exec(ctx, `UPDATE email_verification_codes SET consumed_at=now() WHERE id=$1`, id); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE users
 		SET email_verified_at=now(),
 			verification_level=CASE WHEN verification_level='unverified' THEN 'email_confirmed' ELSE verification_level END,
 			updated_at=now()
-		WHERE id=$1 AND lower(email)=lower($2)`, userID, email); err != nil {
+		WHERE id=$1 AND lower(email)=lower($2)`, userID, email)
+	if err != nil {
 		return false, err
+	}
+	if tag.RowsAffected() != 1 {
+		return false, nil
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE email_verification_codes

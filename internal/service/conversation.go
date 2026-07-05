@@ -152,6 +152,9 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 }
 
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if session.State == "onboard_confirm_account" {
+		return s.handleAccountConfirmation(ctx, channel, recipient, user, session, input)
+	}
 	if user.OnboardingComplete && s.cfg.EmailConfirmationEnabled && strings.TrimSpace(user.Email) == "" && session.State != "onboard_email" {
 		session.State = "onboard_email"
 		if err := s.saveSession(ctx, session); err != nil {
@@ -168,7 +171,8 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		}
 		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, user.Email)
 	}
-	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) && session.State != "onboard_confirm_account" {
+	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) &&
+		session.State != "onboard_confirm_account" && session.State != "onboard_email" && session.State != "onboard_email_code" {
 		session.State, session.Data = "onboard_confirm_account", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -205,8 +209,8 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		switch strings.ToLower(input) {
 		case "resend", "resend code":
 			return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
-		case "change email", "email":
-			session.State = "onboard_email"
+		case "change_email", "change email", "email":
+			session.State, session.Data = "onboard_email", map[string]string{}
 			if err := s.saveSession(ctx, session); err != nil {
 				return err
 			}
@@ -232,36 +236,6 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
 	}
-	if session.State == "onboard_confirm_account" {
-		switch {
-		case input == "confirm_number" || input == "confirm_account" || strings.EqualFold(input, "confirm"):
-			var err error
-			if channel == ChannelTelegram {
-				err = s.store.ConfirmTelegramAccount(ctx, user.ID)
-			} else {
-				err = s.store.ConfirmUserNumber(ctx, user.ID)
-			}
-			if err != nil {
-				return err
-			}
-			session.State, session.Data = "menu", map[string]string{}
-			if err := s.saveSession(ctx, session); err != nil {
-				return err
-			}
-			if err := s.sendText(ctx, channel, recipient, "You’re all set. Your account is confirmed for Xego payments."); err != nil {
-				return err
-			}
-			return s.sendMenu(ctx, channel, recipient)
-		case input == "cancel_number" || input == "cancel_account" || strings.EqualFold(input, "cancel"):
-			session.State, session.Data = "onboard_name", map[string]string{}
-			if err := s.saveSession(ctx, session); err != nil {
-				return err
-			}
-			return s.sendText(ctx, channel, recipient, "No problem. Let’s restart your Xego setup.\n\nWhat name should we use on your receipts?")
-		default:
-			return s.sendAccountConfirmation(ctx, channel, recipient)
-		}
-	}
 	address, err := mail.ParseAddress(input)
 	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
 		return s.sendText(ctx, channel, recipient, "That email doesn’t look quite right. Please send a valid address, like name@example.com.")
@@ -282,6 +256,43 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return err
 	}
 	return s.sendAccountConfirmation(ctx, channel, recipient)
+}
+
+func (s *ConversationService) handleAccountConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	switch {
+	case input == "confirm_number" || input == "confirm_account" || strings.EqualFold(input, "confirm"):
+		var err error
+		if channel == ChannelTelegram {
+			err = s.store.ConfirmTelegramAccount(ctx, user.ID)
+		} else {
+			err = s.store.ConfirmUserNumber(ctx, user.ID)
+		}
+		if err != nil {
+			return err
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed for Xego payments."); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, channel, recipient)
+	case input == "cancel_number" || input == "cancel_account" || strings.EqualFold(input, "cancel"):
+		session.State, session.Data = "onboard_name", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "No problem. Let's restart your Xego setup.\n\nWhat name should we use on your receipts?")
+	case input == "change_email" || strings.EqualFold(input, "change email") || strings.EqualFold(input, "email"):
+		session.State, session.Data = "onboard_email", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "No problem. Send the email address you want to use for checkout and receipts.")
+	default:
+		return s.sendAccountConfirmation(ctx, channel, recipient)
+	}
 }
 
 func (s *ConversationService) startEmailConfirmation(ctx context.Context, channel, recipient string, userID uuid.UUID, email string) error {
@@ -880,6 +891,7 @@ func (s *ConversationService) sendAccountConfirmation(ctx context.Context, chann
 		Body: fmt.Sprintf("Xego will use this %s as your account identity.\n\nConfirm this account?", label),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_account", Title: "Confirm"},
+			{ID: "change_email", Title: "Change email"},
 			{ID: "cancel_account", Title: "Cancel"},
 		},
 	})
