@@ -30,6 +30,7 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
+	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	"whatsapp-payment-demo/internal/providers/paystack"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -76,6 +77,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
+	var emailSender ports.EmailSender
+	if cfg.SMTPHost != "" {
+		emailSender = emailprovider.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	}
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
 		"maskPII":     maskPII,
@@ -90,7 +95,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers),
+		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender),
 		templates:    templates, limiter: newLoginLimiter(),
 	}, nil
 }
@@ -105,7 +110,7 @@ func (a *App) Migrate(ctx context.Context) error {
 	return a.store.Migrate(ctx)
 }
 
-// Seed refreshes the fictional merchant fixtures.
+// Seed refreshes the baseline merchant fixtures.
 func (a *App) Seed(ctx context.Context) error {
 	return a.store.Seed(ctx)
 }

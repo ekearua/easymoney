@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -401,12 +402,80 @@ func (s *Store) UpdateUserName(ctx context.Context, id uuid.UUID, name string) e
 	return err
 }
 
-// UpdateUserEmail stores the Paystack checkout and receipt email without
-// treating it as verified. Email verification can be added later as a separate
-// proof, but this MVP only confirms the WhatsApp number.
+// UpdateUserEmail stores the checkout and receipt email. If the address
+// changes, any previous email verification is cleared.
 func (s *Store) UpdateUserEmail(ctx context.Context, id uuid.UUID, email string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE users SET email=$2, updated_at=now() WHERE id=$1`, id, email)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET email=$2,
+			email_verified_at=CASE WHEN lower(email)=lower($2) THEN email_verified_at ELSE NULL END,
+			updated_at=now()
+		WHERE id=$1`, id, email)
 	return err
+}
+
+// CreateEmailVerificationCode stores a hashed one-time confirmation code.
+func (s *Store) CreateEmailVerificationCode(ctx context.Context, userID uuid.UUID, email string, codeHash []byte, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO email_verification_codes(user_id,email,code_hash,expires_at)
+		VALUES($1,lower($2),$3,$4)`, userID, email, codeHash, expiresAt)
+	return err
+}
+
+// VerifyEmailCode consumes the latest valid code when the submitted hash
+// matches. Mismatches increment attempts so repeated guessing is bounded.
+func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email string, codeHash []byte) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var id int64
+	var stored []byte
+	var attempts int
+	err = tx.QueryRow(ctx, `
+		SELECT id, code_hash, attempts
+		FROM email_verification_codes
+		WHERE user_id=$1 AND lower(email)=lower($2) AND consumed_at IS NULL AND expires_at > now()
+		ORDER BY created_at DESC
+		LIMIT 1
+		FOR UPDATE`, userID, email).Scan(&id, &stored, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return false, err
+	}
+	if attempts >= 5 || !equalBytes(stored, codeHash) {
+		_, err = tx.Exec(ctx, `UPDATE email_verification_codes SET attempts=attempts+1 WHERE id=$1`, id)
+		if err != nil {
+			return false, err
+		}
+		return false, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE email_verification_codes SET consumed_at=now() WHERE id=$1`, id); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users
+		SET email_verified_at=now(),
+			verification_level=CASE WHEN verification_level='unverified' THEN 'email_confirmed' ELSE verification_level END,
+			updated_at=now()
+		WHERE id=$1 AND lower(email)=lower($2)`, userID, email); err != nil {
+		return false, err
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE email_verification_codes
+		SET consumed_at=COALESCE(consumed_at, now())
+		WHERE user_id=$1 AND lower(email)=lower($2) AND consumed_at IS NULL`, userID, email)
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+func equalBytes(left, right []byte) bool {
+	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
 
 // ConfirmUserNumber records the user's explicit confirmation that their
@@ -1934,6 +2003,9 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int64, error
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `DELETE FROM admin_sessions WHERE expires_at < now()`); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM email_verification_codes WHERE expires_at < now() OR created_at < $1`, cutoff); err != nil {
 		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE received_at < $1`, cutoff); err != nil {

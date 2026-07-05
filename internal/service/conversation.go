@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"math/big"
 	"net/mail"
 	"strconv"
 	"strings"
@@ -35,11 +38,12 @@ type ConversationService struct {
 	payments   *PaymentService
 	data       *DataService
 	messengers map[string]ports.Messenger
+	email      ports.EmailSender
 }
 
 // NewConversationService constructs the customer-facing workflow.
-func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger) *ConversationService {
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers}
+func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender) *ConversationService {
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email}
 }
 
 // Handle processes one deduplicated inbound customer message from any supported channel.
@@ -138,6 +142,9 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 	if !user.OnboardingComplete {
 		return false
 	}
+	if s.cfg.EmailConfirmationEnabled && !user.EmailVerifiedAt.Valid {
+		return false
+	}
 	if channel == ChannelTelegram {
 		return user.TelegramConfirmedAt.Valid
 	}
@@ -145,6 +152,22 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 }
 
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if user.OnboardingComplete && s.cfg.EmailConfirmationEnabled && strings.TrimSpace(user.Email) == "" && session.State != "onboard_email" {
+		session.State = "onboard_email"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Please add an email address for checkout, receipts, and account recovery.")
+	}
+	if user.OnboardingComplete && s.cfg.EmailConfirmationEnabled && user.Email != "" && !user.EmailVerifiedAt.Valid &&
+		session.State != "onboard_email" && session.State != "onboard_email_code" {
+		session.State = "onboard_email_code"
+		session.Data = map[string]string{"email": user.Email}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, user.Email)
+	}
 	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) && session.State != "onboard_confirm_account" {
 		session.State, session.Data = "onboard_confirm_account", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
@@ -152,7 +175,7 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
 	}
-	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_confirm_account" {
+	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" && session.State != "onboard_confirm_account" {
 		session.State = "onboard_name"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -173,6 +196,41 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 			return err
 		}
 		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts?")
+	}
+	if session.State == "onboard_email_code" {
+		email := session.Data["email"]
+		if email == "" {
+			email = user.Email
+		}
+		switch strings.ToLower(input) {
+		case "resend", "resend code":
+			return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+		case "change email", "email":
+			session.State = "onboard_email"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, "No problem. Send the email address you want to use for checkout and receipts.")
+		}
+		code := normalizeEmailCode(input)
+		if len(code) != 6 {
+			return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
+		}
+		ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
+		}
+		session.State, session.Data = "onboard_confirm_account", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		if err := s.sendText(ctx, channel, recipient, "Email confirmed. One last step."); err != nil {
+			return err
+		}
+		return s.sendAccountConfirmation(ctx, channel, recipient)
 	}
 	if session.State == "onboard_confirm_account" {
 		switch {
@@ -211,11 +269,43 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
 		return err
 	}
+	if s.cfg.EmailConfirmationEnabled {
+		email := strings.ToLower(address.Address)
+		session.State, session.Data = "onboard_email_code", map[string]string{"email": email}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+	}
 	session.State, session.Data = "onboard_confirm_account", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendAccountConfirmation(ctx, channel, recipient)
+}
+
+func (s *ConversationService) startEmailConfirmation(ctx context.Context, channel, recipient string, userID uuid.UUID, email string) error {
+	code, err := newEmailCode()
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().Add(s.cfg.EmailVerificationTTL)
+	if err := s.store.CreateEmailVerificationCode(ctx, userID, email, emailCodeHash(email, code), expiresAt); err != nil {
+		return err
+	}
+	subject := s.cfg.AppName + " email confirmation code"
+	body := fmt.Sprintf("Your %s email confirmation code is %s.\n\nIt expires in %s.\n\nIf you did not request this, you can ignore this message.",
+		s.cfg.AppName, code, s.cfg.EmailVerificationTTL.Round(time.Minute))
+	if s.email != nil {
+		if err := s.email.Send(ctx, email, subject, body); err != nil {
+			return s.sendText(ctx, channel, recipient, "Xego could not send the confirmation email right now. Please try RESEND in a moment.")
+		}
+		return s.sendText(ctx, channel, recipient, "We sent a 6-digit confirmation code to "+email+".\n\nEnter the code here to continue. You can also type RESEND or CHANGE EMAIL.")
+	}
+	if s.cfg.EmailDemoCodeInChat {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Demo email confirmation for %s\n\nCode: %s\n\nEnter this 6-digit code to continue. In production this code should be delivered by email only.", email, code))
+	}
+	return s.sendText(ctx, channel, recipient, "Email confirmation is enabled, but email delivery is not configured yet. Ask the operator to configure SMTP or enable the demo code fallback.")
 }
 
 func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -1148,6 +1238,29 @@ func normalizePickerPage(page int) int {
 		return 0
 	}
 	return page
+}
+
+func newEmailCode() (string, error) {
+	value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", value.Int64()), nil
+}
+
+func emailCodeHash(email, code string) []byte {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email)) + ":" + normalizeEmailCode(code)))
+	return sum[:]
+}
+
+func normalizeEmailCode(value string) string {
+	var builder strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func truncateInteractiveTitle(value string) string {

@@ -86,6 +86,11 @@ type Messenger interface {
 	SendTemplate(context.Context, string, string, []string) error
 }
 
+// EmailSender sends transactional onboarding and receipt email messages.
+type EmailSender interface {
+	Send(context.Context, string, string, string) error
+}
+
 // DataFulfilmentRequest contains the data-bundle order details sent to a data provider.
 type DataFulfilmentRequest struct {
 	OrderID           string

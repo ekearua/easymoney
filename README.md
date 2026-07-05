@@ -69,6 +69,23 @@ Back up PostgreSQL before upgrades. Keep the database port private; only Caddy e
 
 ## Provider setup
 
+### Email confirmation
+
+Onboarding can require a 6-digit email confirmation code before the user reaches the main menu.
+
+For real email delivery, configure:
+
+```env
+EMAIL_CONFIRMATION_ENABLED=true
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=replace-me
+SMTP_PASSWORD=replace-me
+SMTP_FROM=hello@example.com
+```
+
+For a local or investor-demo rehearsal before SMTP is ready, set `EMAIL_DEMO_CODE_IN_CHAT=true`. Do not use the chat fallback for production-like testing because it proves the flow, not email ownership.
+
 ### WhatsApp Cloud API
 
 - Callback URL: `https://<host>/webhooks/whatsapp`
@@ -178,16 +195,17 @@ If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.
 2. Enter a name and email.
-3. Confirm the WhatsApp number or Telegram account.
-4. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
-5. Choose **Card checkout** or **Bank transfer**.
-6. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
-7. For bank transfer, choose a collection bank from the bank list. You can browse pages or type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
-8. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
-9. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
-10. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
-11. Choose **Buy Data**, select a network and plan, enter a beneficiary phone number, pay, and confirm the data order becomes fulfilled after payment success.
-12. Post an SMS command to `/webhooks/sms` and confirm the response contains a request code and checkout URL.
+3. Enter the 6-digit email confirmation code. Configure SMTP for real email delivery, or set `EMAIL_DEMO_CODE_IN_CHAT=true` while testing the demo flow.
+4. Confirm the WhatsApp number or Telegram account.
+5. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
+6. Choose **Card checkout** or **Bank transfer**.
+7. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
+8. For bank transfer, choose a collection bank from the bank list. You can browse pages or type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
+9. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
+10. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
+11. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
+12. Choose **Buy Data**, select a network and plan, enter a beneficiary phone number, pay, and confirm the data order becomes fulfilled after payment success.
+13. Post an SMS command to `/webhooks/sms` and confirm the response contains a request code and checkout URL.
 
 ## Security and retention
 

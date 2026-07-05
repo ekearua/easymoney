@@ -24,6 +24,15 @@ type Config struct {
 	AdminEmail        string
 	AdminPasswordHash string
 
+	EmailConfirmationEnabled bool
+	EmailDemoCodeInChat      bool
+	EmailVerificationTTL     time.Duration
+	SMTPHost                 string
+	SMTPPort                 int
+	SMTPUsername             string
+	SMTPPassword             string
+	SMTPFrom                 string
+
 	PaystackSecretKey string
 	PaystackBaseURL   string
 
@@ -65,50 +74,64 @@ type Config struct {
 // Load reads settings from the process environment and applies safe local defaults.
 func Load() (Config, error) {
 	cfg := Config{
-		Environment:            env("APP_ENV", "development"),
-		AppName:                env("APP_NAME", "Xego"),
-		BaseURL:                strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
-		HTTPAddr:               env("HTTP_ADDR", ":8080"),
-		DatabaseURL:            os.Getenv("DATABASE_URL"),
-		AdminEmail:             strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
-		AdminPasswordHash:      os.Getenv("ADMIN_PASSWORD_HASH"),
-		PaystackSecretKey:      os.Getenv("PAYSTACK_SECRET_KEY"),
-		PaystackBaseURL:        strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
-		WhatsAppVerifyToken:    os.Getenv("WHATSAPP_VERIFY_TOKEN"),
-		WhatsAppAppSecret:      os.Getenv("WHATSAPP_APP_SECRET"),
-		WhatsAppAccessToken:    os.Getenv("WHATSAPP_ACCESS_TOKEN"),
-		WhatsAppPhoneNumberID:  os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
-		WhatsAppGraphVersion:   strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
-		WhatsAppTemplateName:   env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
-		WhatsAppTemplateLocale: env("WHATSAPP_TEMPLATE_LOCALE", "en"),
-		TelegramEnabled:        envBool("TELEGRAM_ENABLED", false),
-		TelegramBotToken:       os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramWebhookSecret:  os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
-		TelegramAPIBase:        strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
-		SMSEnabled:             envBool("SMS_ENABLED", false),
-		SMSProvider:            env("SMS_PROVIDER", "webhook"),
-		SMSWebhookSecret:       os.Getenv("SMS_WEBHOOK_SECRET"),
-		SMSSenderID:            env("SMS_SENDER_ID", "Xego"),
-		SMSAPIBase:             strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
-		SMSAPIKey:              os.Getenv("SMS_API_KEY"),
-		DataProvider:           strings.ToLower(env("DATA_PROVIDER", "simulated")),
-		VTPassBaseURL:          strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
-		VTPassAPIKey:           os.Getenv("VTPASS_API_KEY"),
-		VTPassPublicKey:        os.Getenv("VTPASS_PUBLIC_KEY"),
-		VTPassSecretKey:        os.Getenv("VTPASS_SECRET_KEY"),
-		VTPassWebhookSecret:    os.Getenv("VTPASS_WEBHOOK_SECRET"),
-		VTPassTimeout:          envDuration("VTPASS_TIMEOUT", 45*time.Second),
-		PaymentMinKobo:         envInt64("PAYMENT_MIN_KOBO", 10_000),
-		PaymentMaxKobo:         envInt64("PAYMENT_MAX_KOBO", 10_000_000),
-		RetentionPeriod:        envDuration("RETENTION_PERIOD", 90*24*time.Hour),
-		SessionTTL:             envDuration("CONVERSATION_TTL", 30*time.Minute),
-		ReceiptTTL:             envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		Environment:              env("APP_ENV", "development"),
+		AppName:                  env("APP_NAME", "Xego"),
+		BaseURL:                  strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
+		HTTPAddr:                 env("HTTP_ADDR", ":8080"),
+		DatabaseURL:              os.Getenv("DATABASE_URL"),
+		AdminEmail:               strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
+		AdminPasswordHash:        os.Getenv("ADMIN_PASSWORD_HASH"),
+		EmailConfirmationEnabled: envBool("EMAIL_CONFIRMATION_ENABLED", true),
+		EmailDemoCodeInChat:      envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
+		EmailVerificationTTL:     envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
+		SMTPHost:                 strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:                 int(envInt64("SMTP_PORT", 587)),
+		SMTPUsername:             os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:             os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                 strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		PaystackSecretKey:        os.Getenv("PAYSTACK_SECRET_KEY"),
+		PaystackBaseURL:          strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
+		WhatsAppVerifyToken:      os.Getenv("WHATSAPP_VERIFY_TOKEN"),
+		WhatsAppAppSecret:        os.Getenv("WHATSAPP_APP_SECRET"),
+		WhatsAppAccessToken:      os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		WhatsAppPhoneNumberID:    os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppGraphVersion:     strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
+		WhatsAppTemplateName:     env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
+		WhatsAppTemplateLocale:   env("WHATSAPP_TEMPLATE_LOCALE", "en"),
+		TelegramEnabled:          envBool("TELEGRAM_ENABLED", false),
+		TelegramBotToken:         os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:    os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
+		TelegramAPIBase:          strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
+		SMSEnabled:               envBool("SMS_ENABLED", false),
+		SMSProvider:              env("SMS_PROVIDER", "webhook"),
+		SMSWebhookSecret:         os.Getenv("SMS_WEBHOOK_SECRET"),
+		SMSSenderID:              env("SMS_SENDER_ID", "Xego"),
+		SMSAPIBase:               strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
+		SMSAPIKey:                os.Getenv("SMS_API_KEY"),
+		DataProvider:             strings.ToLower(env("DATA_PROVIDER", "simulated")),
+		VTPassBaseURL:            strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
+		VTPassAPIKey:             os.Getenv("VTPASS_API_KEY"),
+		VTPassPublicKey:          os.Getenv("VTPASS_PUBLIC_KEY"),
+		VTPassSecretKey:          os.Getenv("VTPASS_SECRET_KEY"),
+		VTPassWebhookSecret:      os.Getenv("VTPASS_WEBHOOK_SECRET"),
+		VTPassTimeout:            envDuration("VTPASS_TIMEOUT", 45*time.Second),
+		PaymentMinKobo:           envInt64("PAYMENT_MIN_KOBO", 10_000),
+		PaymentMaxKobo:           envInt64("PAYMENT_MAX_KOBO", 10_000_000),
+		RetentionPeriod:          envDuration("RETENTION_PERIOD", 90*24*time.Hour),
+		SessionTTL:               envDuration("CONVERSATION_TTL", 30*time.Minute),
+		ReceiptTTL:               envDuration("RECEIPT_TTL", 90*24*time.Hour),
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
 	}
 	if cfg.PaymentMinKobo <= 0 || cfg.PaymentMaxKobo < cfg.PaymentMinKobo {
 		return Config{}, fmt.Errorf("payment limits are invalid")
+	}
+	if cfg.SMTPFrom == "" {
+		cfg.SMTPFrom = cfg.AdminEmail
+	}
+	if cfg.SMTPPort <= 0 {
+		cfg.SMTPPort = 587
 	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
 		cfg.WhatsAppGraphVersion = "v23.0"
