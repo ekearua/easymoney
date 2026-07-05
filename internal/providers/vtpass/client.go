@@ -215,6 +215,9 @@ type variationsResponse struct {
 func (r apiResponse) toFulfilmentResult(fallbackReference string) ports.DataFulfilmentResult {
 	reference := firstNonEmpty(r.RequestID, r.RequestIDAlt, fallbackReference, r.Content.Transactions.TransactionID)
 	status := NormalizeStatus(firstNonEmpty(r.Content.Transactions.Status, r.ResponseDescription, r.Code, r.ResponseCode))
+	if strings.TrimSpace(r.Content.Transactions.Status) == "" && hasProviderErrorCode(r.Code, r.ResponseCode) {
+		status = "failed"
+	}
 	return ports.DataFulfilmentResult{
 		ProviderReference: reference,
 		Status:            status,
@@ -262,6 +265,19 @@ func NormalizeStatus(value string) string {
 	default:
 		return "pending"
 	}
+}
+
+func hasProviderErrorCode(values ...string) bool {
+	for _, value := range values {
+		code := strings.TrimSpace(value)
+		if code == "" {
+			continue
+		}
+		if code != "000" && regexp.MustCompile(`^[0-9]{3}$`).MatchString(code) {
+			return true
+		}
+	}
+	return false
 }
 
 func serviceID(networkCode string) string {

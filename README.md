@@ -182,7 +182,7 @@ If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass
 4. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
 5. Choose **Card checkout** or **Bank transfer**.
 6. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
-7. For bank transfer, use the recommended collection bank or choose another bank. You can type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
+7. For bank transfer, choose a collection bank from the bank list. You can browse pages or type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
 8. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
 9. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
 10. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.

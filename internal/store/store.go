@@ -324,7 +324,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// Seed refreshes the fictional merchant fixtures.
+// Seed refreshes the baseline merchant fixtures.
 func (s *Store) Seed(ctx context.Context) error {
 	body, err := migrationFiles.ReadFile("migrations/002_seed_merchants.sql")
 	if err != nil {
@@ -864,7 +864,15 @@ func (s *Store) UpsertDataPlanFromProvider(ctx context.Context, networkCode, cod
 
 // XegoDataMerchant returns the internal merchant used to reuse the payment rail.
 func (s *Store) XegoDataMerchant(ctx context.Context) (Merchant, error) {
-	return s.MerchantBySlug(ctx, "xego-data")
+	var merchant Merchant
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		FROM merchants WHERE slug=$1`, "xego-data").Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
+		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
+		&merchant.SortOrder, &merchant.CreatedAt,
+	)
+	return merchant, err
 }
 
 // CreateDataOrder stores a new draft data purchase with a unique request code.

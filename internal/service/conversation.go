@@ -325,7 +325,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendRecommendedTransferBank(ctx, channel, recipient)
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
@@ -491,7 +491,7 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendRecommendedTransferBank(ctx, channel, recipient)
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
 	}
 }
 
@@ -530,7 +530,7 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendRecommendedTransferBank(ctx, channel, recipient)
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
 	default:
 		return s.sendDataPaymentMethods(ctx, channel, recipient, order)
 	}
