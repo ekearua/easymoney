@@ -41,6 +41,7 @@ type User struct {
 	NumberConfirmedAt   sql.NullTime
 	EmailVerifiedAt     sql.NullTime
 	VerificationLevel   string
+	AccountLevel        string
 	TelegramChatID      sql.NullString
 	TelegramUserID      sql.NullString
 	TelegramUsername    string
@@ -63,6 +64,177 @@ type Merchant struct {
 	SearchKeywords string
 	SortOrder      int
 	CreatedAt      time.Time
+}
+
+// MerchantRegistration is a chat-submitted merchant onboarding request.
+type MerchantRegistration struct {
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	UserName     string
+	UserEmail    string
+	Reference    string
+	BusinessName string
+	Category     string
+	Description  string
+	ContactEmail string
+	Status       string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// InvoiceItem is one line on a merchant-generated invoice.
+type InvoiceItem struct {
+	ID            int64
+	Description   string
+	Quantity      int
+	UnitPriceKobo int64
+	LineTotalKobo int64
+	SortOrder     int
+}
+
+// InvoiceView joins invoice data with merchant and creator display fields.
+type InvoiceView struct {
+	ID                     uuid.UUID
+	MerchantID             uuid.UUID
+	CreatedByUserID        uuid.UUID
+	CustomerWhatsAppNumber string
+	CustomerEmail          string
+	Reference              string
+	Status                 string
+	DeliveryFeeKobo        int64
+	SubtotalKobo           int64
+	TotalKobo              int64
+	AmountPaidKobo         int64
+	DueAt                  *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	PaidAt                 *time.Time
+	MerchantName           string
+	MerchantSlug           string
+	MerchantCategory       string
+	CreatorName            string
+	CreatorEmail           string
+	Items                  []InvoiceItem
+}
+
+// InvoicePaymentView links one payment receipt to one invoice contribution.
+type InvoicePaymentView struct {
+	ID          uuid.UUID
+	InvoiceID   uuid.UUID
+	PaymentID   uuid.UUID
+	PayerUserID uuid.UUID
+	AmountKobo  int64
+	Status      string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// InvoiceSpec contains validated invoice details collected in chat.
+type InvoiceSpec struct {
+	MerchantID             uuid.UUID
+	CreatedByUserID        uuid.UUID
+	CustomerWhatsAppNumber string
+	CustomerEmail          string
+	DeliveryFeeKobo        int64
+	DueAt                  *time.Time
+	Items                  []InvoiceItem
+}
+
+// IndividualProfile is the demo KYC profile that unlocks individual-only features.
+type IndividualProfile struct {
+	UserID      uuid.UUID
+	LegalName   string
+	DateOfBirth time.Time
+	Address     string
+	Occupation  string
+	KYCStatus   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// ThriftGroupView summarizes one rotational thrift group.
+type ThriftGroupView struct {
+	ID                     uuid.UUID
+	CreatorUserID          uuid.UUID
+	Name                   string
+	ContributionAmountKobo int64
+	Frequency              string
+	TargetMemberCount      int
+	InviteCode             string
+	Status                 string
+	CurrentCycle           int
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	ActivatedAt            *time.Time
+	CompletedAt            *time.Time
+	CreatorName            string
+	MemberCount            int
+}
+
+// ThriftMemberView joins thrift membership with user display fields.
+type ThriftMemberView struct {
+	ID             uuid.UUID
+	GroupID        uuid.UUID
+	UserID         uuid.UUID
+	UserName       string
+	UserEmail      string
+	WhatsAppNumber string
+	Status         string
+	PayoutPosition sql.NullInt32
+	JoinedAt       time.Time
+	ConfirmedAt    time.Time
+}
+
+// ThriftCycleView is one contribution/payout cycle.
+type ThriftCycleView struct {
+	ID                     uuid.UUID
+	GroupID                uuid.UUID
+	GroupName              string
+	CycleNumber            int
+	DueAt                  time.Time
+	PayoutMemberID         uuid.UUID
+	PayoutMemberName       string
+	Status                 string
+	ContributionAmountKobo int64
+	TargetMemberCount      int
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+}
+
+// ThriftContributionView links one member contribution to a payment receipt.
+type ThriftContributionView struct {
+	ID             uuid.UUID
+	CycleID        uuid.UUID
+	GroupID        uuid.UUID
+	GroupName      string
+	CycleNumber    int
+	MemberID       uuid.UUID
+	UserID         uuid.UUID
+	MemberName     string
+	PaymentID      uuid.NullUUID
+	AmountKobo     int64
+	Status         string
+	PaymentStatus  domain.PaymentStatus
+	PaymentReceipt string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	PaidAt         *time.Time
+}
+
+// ThriftPayoutView is one simulated thrift payout obligation.
+type ThriftPayoutView struct {
+	ID               uuid.UUID
+	CycleID          uuid.UUID
+	GroupID          uuid.UUID
+	GroupName        string
+	CycleNumber      int
+	PayoutMemberID   uuid.UUID
+	PayoutMemberName string
+	AmountKobo       int64
+	Status           string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	CompletedAt      *time.Time
 }
 
 // Session persists a user's current conversation state.
@@ -349,14 +521,14 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 				ELSE users.verification_level
 			END
 		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
-			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
-		&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt, &user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
@@ -381,14 +553,14 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 				ELSE users.verification_level
 			END
 		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
-			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, chatID, userID, username).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
-		&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt, &user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
@@ -482,6 +654,10 @@ func equalBytes(left, right []byte) bool {
 	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
 
+func newMerchantRegistrationReference() string {
+	return "XG-MER-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+}
+
 // ConfirmUserNumber records the user's explicit confirmation that their
 // WhatsApp number should be used as the demo account identity.
 func (s *Store) ConfirmUserNumber(ctx context.Context, id uuid.UUID) error {
@@ -511,7 +687,7 @@ func (s *Store) ConfirmTelegramAccount(ctx context.Context, id uuid.UUID) error 
 func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
-			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
@@ -524,7 +700,7 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 		var user User
 		if err := rows.Scan(&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
 			&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
-			&user.EmailVerifiedAt, &user.VerificationLevel, &user.TelegramChatID,
+			&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 			&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 			&user.TelegramConfirmedAt, &user.LastInboundAt,
 			&user.CreatedAt, &user.UpdatedAt); err != nil {
@@ -676,6 +852,1055 @@ func (s *Store) TouchRecentMerchant(ctx context.Context, userID, merchantID uuid
 		VALUES ($1,$2,now())
 		ON CONFLICT (user_id, merchant_id) DO UPDATE
 		SET last_selected_at=EXCLUDED.last_selected_at`, userID, merchantID)
+	return err
+}
+
+// CreateMerchantRegistration stores a pending merchant request submitted from chat.
+func (s *Store) CreateMerchantRegistration(ctx context.Context, userID uuid.UUID, businessName, category, description, contactEmail string) (MerchantRegistration, error) {
+	for i := 0; i < 5; i++ {
+		request := MerchantRegistration{ID: uuid.New(), UserID: userID, Reference: newMerchantRegistrationReference()}
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO merchant_registrations
+				(id,user_id,reference,business_name,category,description,contact_email,status)
+			VALUES($1,$2,$3,$4,$5,$6,lower($7),'awaiting_approval')
+			RETURNING id,user_id,reference,business_name,category,description,contact_email,status,created_at,updated_at`,
+			request.ID, userID, request.Reference, strings.TrimSpace(businessName), strings.TrimSpace(category), strings.TrimSpace(description), strings.TrimSpace(contactEmail),
+		).Scan(&request.ID, &request.UserID, &request.Reference, &request.BusinessName, &request.Category, &request.Description, &request.ContactEmail, &request.Status, &request.CreatedAt, &request.UpdatedAt)
+		if err == nil {
+			_, _ = s.pool.Exec(ctx, `UPDATE users SET account_level='pending_merchant',updated_at=now() WHERE id=$1 AND account_level='customer'`, userID)
+			return request, nil
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "merchant_registrations_reference") {
+			return MerchantRegistration{}, err
+		}
+	}
+	return MerchantRegistration{}, errors.New("could not allocate merchant registration reference")
+}
+
+// ListMerchantRegistrations returns recent merchant onboarding requests.
+func (s *Store) ListMerchantRegistrations(ctx context.Context, limit int) ([]MerchantRegistration, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT r.id,r.user_id,COALESCE(u.display_name,''),COALESCE(u.email,''),
+		       r.reference,r.business_name,r.category,r.description,r.contact_email,r.status,r.created_at,r.updated_at
+		FROM merchant_registrations r
+		JOIN users u ON u.id=r.user_id
+		ORDER BY r.created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var requests []MerchantRegistration
+	for rows.Next() {
+		var request MerchantRegistration
+		if err := rows.Scan(&request.ID, &request.UserID, &request.UserName, &request.UserEmail, &request.Reference, &request.BusinessName, &request.Category, &request.Description, &request.ContactEmail, &request.Status, &request.CreatedAt, &request.UpdatedAt); err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	return requests, rows.Err()
+}
+
+// ApproveMerchantRegistration turns a reviewed request into an active payable
+// merchant, links the requester as owner, and upgrades the user's account level.
+func (s *Store) ApproveMerchantRegistration(ctx context.Context, registrationID uuid.UUID) (Merchant, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Merchant{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	var request MerchantRegistration
+	err = tx.QueryRow(ctx, `
+		SELECT id,user_id,reference,business_name,category,description,contact_email,status,created_at,updated_at
+		FROM merchant_registrations
+		WHERE id=$1
+		FOR UPDATE`, registrationID).Scan(
+		&request.ID, &request.UserID, &request.Reference, &request.BusinessName, &request.Category,
+		&request.Description, &request.ContactEmail, &request.Status, &request.CreatedAt, &request.UpdatedAt,
+	)
+	if err != nil {
+		return Merchant{}, err
+	}
+	if request.Status != "approved" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE merchant_registrations
+			SET status='approved',updated_at=now()
+			WHERE id=$1`, request.ID); err != nil {
+			return Merchant{}, err
+		}
+	}
+
+	slug, err := allocateMerchantSlug(ctx, tx, request.BusinessName)
+	if err != nil {
+		return Merchant{}, err
+	}
+	var merchant Merchant
+	err = tx.QueryRow(ctx, `
+		INSERT INTO merchants(slug,name,category,description,active,search_keywords,sort_order)
+		VALUES($1,$2,$3,$4,true,$5,900)
+		ON CONFLICT(slug) DO UPDATE
+		SET name=EXCLUDED.name,
+			category=EXCLUDED.category,
+			description=EXCLUDED.description,
+			active=true,
+			search_keywords=EXCLUDED.search_keywords,
+			updated_at=now()
+		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at`,
+		slug, request.BusinessName, request.Category, request.Description,
+		strings.ToLower(request.BusinessName+" "+request.Category+" "+request.Description),
+	).Scan(&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
+		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt)
+	if err != nil {
+		return Merchant{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO merchant_owners(merchant_id,user_id)
+		VALUES($1,$2)
+		ON CONFLICT DO NOTHING`, merchant.ID, request.UserID); err != nil {
+		return Merchant{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET account_level='merchant',updated_at=now()
+		WHERE id=$1`, request.UserID); err != nil {
+		return Merchant{}, err
+	}
+	return merchant, tx.Commit(ctx)
+}
+
+func allocateMerchantSlug(ctx context.Context, tx pgx.Tx, name string) (string, error) {
+	base := slugify(name)
+	if base == "" {
+		base = "merchant"
+	}
+	for i := 0; i < 20; i++ {
+		slug := base
+		if i > 0 {
+			slug = fmt.Sprintf("%s-%d", base, i+1)
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM merchants WHERE slug=$1)`, slug).Scan(&exists); err != nil {
+			return "", err
+		}
+		if !exists {
+			return slug, nil
+		}
+	}
+	return "", errors.New("could not allocate merchant slug")
+}
+
+func slugify(value string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(value) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			dash = false
+		case !dash:
+			b.WriteByte('-')
+			dash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// ApprovedMerchantsForUser returns active merchants owned by the user.
+func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) ([]Merchant, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
+		       m.search_keywords, m.sort_order, m.created_at
+		FROM merchant_owners mo
+		JOIN merchants m ON m.id=mo.merchant_id
+		WHERE mo.user_id=$1 AND m.active=true
+		ORDER BY m.name`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectMerchants(rows)
+}
+
+// CreateInvoice stores a merchant invoice and its line items atomically.
+func (s *Store) CreateInvoice(ctx context.Context, spec InvoiceSpec) (InvoiceView, error) {
+	if len(spec.Items) == 0 {
+		return InvoiceView{}, errors.New("invoice requires at least one line item")
+	}
+	subtotal := int64(0)
+	for i := range spec.Items {
+		item := &spec.Items[i]
+		if item.Quantity <= 0 || item.UnitPriceKobo <= 0 || strings.TrimSpace(item.Description) == "" {
+			return InvoiceView{}, errors.New("invoice item is invalid")
+		}
+		item.LineTotalKobo = int64(item.Quantity) * item.UnitPriceKobo
+		item.SortOrder = i + 1
+		subtotal += item.LineTotalKobo
+	}
+	total := subtotal + spec.DeliveryFeeKobo
+	if total <= 0 {
+		return InvoiceView{}, errors.New("invoice total must be greater than zero")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return InvoiceView{}, err
+	}
+	defer tx.Rollback(ctx)
+	reference := newInvoiceReference()
+	var invoice InvoiceView
+	err = tx.QueryRow(ctx, `
+		INSERT INTO invoices
+			(id,merchant_id,created_by_user_id,customer_whatsapp_number,customer_email,reference,status,delivery_fee_kobo,subtotal_kobo,total_kobo,due_at)
+		VALUES($1,$2,$3,$4,lower($5),$6,'sent',$7,$8,$9,$10)
+		RETURNING id,merchant_id,created_by_user_id,customer_whatsapp_number,customer_email,reference,status,
+		          delivery_fee_kobo,subtotal_kobo,total_kobo,amount_paid_kobo,due_at,created_at,updated_at,paid_at`,
+		uuid.New(), spec.MerchantID, spec.CreatedByUserID, spec.CustomerWhatsAppNumber, spec.CustomerEmail,
+		reference, spec.DeliveryFeeKobo, subtotal, total, spec.DueAt,
+	).Scan(&invoice.ID, &invoice.MerchantID, &invoice.CreatedByUserID, &invoice.CustomerWhatsAppNumber,
+		&invoice.CustomerEmail, &invoice.Reference, &invoice.Status, &invoice.DeliveryFeeKobo,
+		&invoice.SubtotalKobo, &invoice.TotalKobo, &invoice.AmountPaidKobo, &invoice.DueAt,
+		&invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt)
+	if err != nil {
+		return InvoiceView{}, err
+	}
+	for _, item := range spec.Items {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO invoice_items(invoice_id,description,quantity,unit_price_kobo,line_total_kobo,sort_order)
+			VALUES($1,$2,$3,$4,$5,$6)`, invoice.ID, item.Description, item.Quantity, item.UnitPriceKobo, item.LineTotalKobo, item.SortOrder); err != nil {
+			return InvoiceView{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return InvoiceView{}, err
+	}
+	return s.InvoiceByReference(ctx, reference)
+}
+
+func newInvoiceReference() string {
+	return "XG-INV-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+}
+
+// InvoiceByReference returns an invoice with merchant details and line items.
+func (s *Store) InvoiceByReference(ctx context.Context, reference string) (InvoiceView, error) {
+	var invoice InvoiceView
+	err := s.pool.QueryRow(ctx, `
+		SELECT i.id,i.merchant_id,i.created_by_user_id,i.customer_whatsapp_number,i.customer_email,
+		       i.reference,i.status,i.delivery_fee_kobo,i.subtotal_kobo,i.total_kobo,i.amount_paid_kobo,
+		       i.due_at,i.created_at,i.updated_at,i.paid_at,
+		       m.name,m.slug,m.category,u.display_name,u.email
+		FROM invoices i
+		JOIN merchants m ON m.id=i.merchant_id
+		JOIN users u ON u.id=i.created_by_user_id
+		WHERE i.reference=$1`, strings.ToUpper(strings.TrimSpace(reference))).Scan(
+		&invoice.ID, &invoice.MerchantID, &invoice.CreatedByUserID, &invoice.CustomerWhatsAppNumber,
+		&invoice.CustomerEmail, &invoice.Reference, &invoice.Status, &invoice.DeliveryFeeKobo,
+		&invoice.SubtotalKobo, &invoice.TotalKobo, &invoice.AmountPaidKobo, &invoice.DueAt,
+		&invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt, &invoice.MerchantName,
+		&invoice.MerchantSlug, &invoice.MerchantCategory, &invoice.CreatorName, &invoice.CreatorEmail,
+	)
+	if err != nil {
+		return InvoiceView{}, err
+	}
+	items, err := s.invoiceItems(ctx, invoice.ID)
+	if err != nil {
+		return InvoiceView{}, err
+	}
+	invoice.Items = items
+	return invoice, nil
+}
+
+func (s *Store) invoiceItems(ctx context.Context, invoiceID uuid.UUID) ([]InvoiceItem, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,description,quantity,unit_price_kobo,line_total_kobo,sort_order
+		FROM invoice_items
+		WHERE invoice_id=$1
+		ORDER BY sort_order,id`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InvoiceItem
+	for rows.Next() {
+		var item InvoiceItem
+		if err := rows.Scan(&item.ID, &item.Description, &item.Quantity, &item.UnitPriceKobo, &item.LineTotalKobo, &item.SortOrder); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// RecentInvoicesForMerchantOwner returns a chat-sized dashboard for an approved merchant.
+func (s *Store) RecentInvoicesForMerchantOwner(ctx context.Context, userID uuid.UUID, limit int) ([]InvoiceView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id,i.merchant_id,i.created_by_user_id,i.customer_whatsapp_number,i.customer_email,
+		       i.reference,i.status,i.delivery_fee_kobo,i.subtotal_kobo,i.total_kobo,i.amount_paid_kobo,
+		       i.due_at,i.created_at,i.updated_at,i.paid_at,
+		       m.name,m.slug,m.category,u.display_name,u.email
+		FROM invoices i
+		JOIN merchants m ON m.id=i.merchant_id
+		JOIN merchant_owners mo ON mo.merchant_id=m.id
+		JOIN users u ON u.id=i.created_by_user_id
+		WHERE mo.user_id=$1
+		ORDER BY i.created_at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invoices []InvoiceView
+	for rows.Next() {
+		var invoice InvoiceView
+		if err := rows.Scan(&invoice.ID, &invoice.MerchantID, &invoice.CreatedByUserID, &invoice.CustomerWhatsAppNumber,
+			&invoice.CustomerEmail, &invoice.Reference, &invoice.Status, &invoice.DeliveryFeeKobo,
+			&invoice.SubtotalKobo, &invoice.TotalKobo, &invoice.AmountPaidKobo, &invoice.DueAt,
+			&invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt, &invoice.MerchantName,
+			&invoice.MerchantSlug, &invoice.MerchantCategory, &invoice.CreatorName, &invoice.CreatorEmail); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, invoice)
+	}
+	return invoices, rows.Err()
+}
+
+// CreateInvoicePayment links a newly created payment attempt to an invoice.
+func (s *Store) CreateInvoicePayment(ctx context.Context, invoiceID, paymentID, payerUserID uuid.UUID, amountKobo int64) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO invoice_payments(invoice_id,payment_id,payer_user_id,amount_kobo,status)
+		VALUES($1,$2,$3,$4,'pending')
+		ON CONFLICT(payment_id) DO NOTHING`, invoiceID, paymentID, payerUserID, amountKobo)
+	return err
+}
+
+// ApplyInvoicePaymentSuccess records a successful contribution and marks the
+// invoice paid only when cumulative successful payments cover the invoice total.
+func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.UUID) (InvoiceView, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return InvoiceView{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	var invoiceID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT invoice_id
+		FROM invoice_payments
+		WHERE payment_id=$1
+		FOR UPDATE`, paymentID).Scan(&invoiceID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return InvoiceView{}, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return InvoiceView{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE invoice_payments
+		SET status='succeeded',updated_at=now()
+		WHERE payment_id=$1 AND status <> 'succeeded'`, paymentID); err != nil {
+		return InvoiceView{}, false, err
+	}
+	var total, paid int64
+	if err := tx.QueryRow(ctx, `
+		SELECT i.total_kobo,
+		       COALESCE((SELECT SUM(ip.amount_kobo) FROM invoice_payments ip WHERE ip.invoice_id=i.id AND ip.status='succeeded'),0)
+		FROM invoices i
+		WHERE i.id=$1
+		FOR UPDATE`, invoiceID).Scan(&total, &paid); err != nil {
+		return InvoiceView{}, false, err
+	}
+	status := "partially_paid"
+	paidClause := ""
+	if paid >= total {
+		status = "paid"
+		paidClause = ", paid_at=COALESCE(paid_at, now())"
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE invoices
+		SET amount_paid_kobo=$2,status=$3,updated_at=now()`+paidClause+`
+		WHERE id=$1`, invoiceID, paid, status); err != nil {
+		return InvoiceView{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return InvoiceView{}, false, err
+	}
+	invoice, err := s.InvoiceByID(ctx, invoiceID)
+	return invoice, true, err
+}
+
+// InvoiceByID returns one invoice by primary key.
+func (s *Store) InvoiceByID(ctx context.Context, id uuid.UUID) (InvoiceView, error) {
+	var reference string
+	if err := s.pool.QueryRow(ctx, `SELECT reference FROM invoices WHERE id=$1`, id).Scan(&reference); err != nil {
+		return InvoiceView{}, err
+	}
+	return s.InvoiceByReference(ctx, reference)
+}
+
+// InvoiceByPaymentID resolves invoice context for a receipt contribution.
+func (s *Store) InvoiceByPaymentID(ctx context.Context, paymentID uuid.UUID) (InvoiceView, error) {
+	var reference string
+	err := s.pool.QueryRow(ctx, `
+		SELECT i.reference
+		FROM invoice_payments ip
+		JOIN invoices i ON i.id=ip.invoice_id
+		WHERE ip.payment_id=$1`, paymentID).Scan(&reference)
+	if err != nil {
+		return InvoiceView{}, err
+	}
+	return s.InvoiceByReference(ctx, reference)
+}
+
+// UpsertIndividualProfile records the demo KYC profile and upgrades the user to
+// the individual account level. The KYC status is simulated for the MVP.
+func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation string) (IndividualProfile, error) {
+	var profile IndividualProfile
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,kyc_status)
+		VALUES($1,$2,$3,$4,$5,'approved_simulated')
+		ON CONFLICT(user_id) DO UPDATE
+		SET legal_name=EXCLUDED.legal_name,
+			date_of_birth=EXCLUDED.date_of_birth,
+			address=EXCLUDED.address,
+			occupation=EXCLUDED.occupation,
+			kyc_status='approved_simulated',
+			updated_at=now()
+		RETURNING user_id,legal_name,date_of_birth,address,occupation,kyc_status,created_at,updated_at`,
+		userID, strings.TrimSpace(legalName), dob, strings.TrimSpace(address), strings.TrimSpace(occupation),
+	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+	if err != nil {
+		return IndividualProfile{}, err
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE users SET account_level='individual',updated_at=now() WHERE id=$1`, userID); err != nil {
+		return IndividualProfile{}, err
+	}
+	return profile, nil
+}
+
+// IndividualProfileByUser resolves the profile used to gate thrift creation.
+func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (IndividualProfile, error) {
+	var profile IndividualProfile
+	err := s.pool.QueryRow(ctx, `
+		SELECT user_id,legal_name,date_of_birth,address,occupation,kyc_status,created_at,updated_at
+		FROM individual_profiles
+		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+	return profile, err
+}
+
+// ThriftSystemMerchant returns the inactive internal merchant used only for
+// thrift contribution payment records.
+func (s *Store) ThriftSystemMerchant(ctx context.Context) (Merchant, error) {
+	var merchant Merchant
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		FROM merchants WHERE slug='xego-thrift-contributions'`).Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
+		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
+		&merchant.SortOrder, &merchant.CreatedAt,
+	)
+	return merchant, err
+}
+
+// CreateThriftGroup creates an inviting thrift group and adds the creator as a
+// confirmed member. The creator can later choose the full payout order.
+func (s *Store) CreateThriftGroup(ctx context.Context, creatorID uuid.UUID, name string, amountKobo int64, frequency string, targetMembers int) (ThriftGroupView, error) {
+	for i := 0; i < 5; i++ {
+		code := newThriftInviteCode()
+		group, err := s.createThriftGroupOnce(ctx, creatorID, name, amountKobo, frequency, targetMembers, code)
+		if err == nil {
+			return group, nil
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "thrift_groups_invite_code") {
+			return ThriftGroupView{}, err
+		}
+	}
+	return ThriftGroupView{}, errors.New("could not allocate thrift invite code")
+}
+
+func (s *Store) createThriftGroupOnce(ctx context.Context, creatorID uuid.UUID, name string, amountKobo int64, frequency string, targetMembers int, code string) (ThriftGroupView, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ThriftGroupView{}, err
+	}
+	defer tx.Rollback(ctx)
+	var groupID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO thrift_groups(creator_user_id,name,contribution_amount_kobo,frequency,target_member_count,invite_code,status)
+		VALUES($1,$2,$3,$4,$5,$6,'inviting')
+		RETURNING id`, creatorID, strings.TrimSpace(name), amountKobo, frequency, targetMembers, code).Scan(&groupID); err != nil {
+		return ThriftGroupView{}, err
+	}
+	var memberID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO thrift_members(group_id,user_id,status)
+		VALUES($1,$2,'confirmed')
+		RETURNING id`, groupID, creatorID).Scan(&memberID); err != nil {
+		return ThriftGroupView{}, err
+	}
+	if err := insertThriftEvent(ctx, tx, groupID, uuid.Nil, memberID, "group_created", map[string]any{"invite_code": code}); err != nil {
+		return ThriftGroupView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ThriftGroupView{}, err
+	}
+	return s.ThriftGroupByID(ctx, groupID)
+}
+
+func newThriftInviteCode() string {
+	return "XG-THRIFT-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
+}
+
+// ThriftGroupByInviteCode returns a group for customer join/contribute commands.
+func (s *Store) ThriftGroupByInviteCode(ctx context.Context, code string) (ThriftGroupView, error) {
+	var id uuid.UUID
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM thrift_groups WHERE invite_code=$1`, strings.ToUpper(strings.TrimSpace(code))).Scan(&id); err != nil {
+		return ThriftGroupView{}, err
+	}
+	return s.ThriftGroupByID(ctx, id)
+}
+
+// ThriftGroupByID returns a group summary.
+func (s *Store) ThriftGroupByID(ctx context.Context, id uuid.UUID) (ThriftGroupView, error) {
+	var group ThriftGroupView
+	err := s.pool.QueryRow(ctx, `
+		SELECT g.id,g.creator_user_id,g.name,g.contribution_amount_kobo,g.frequency,g.target_member_count,
+		       g.invite_code,g.status,g.current_cycle,g.created_at,g.updated_at,g.activated_at,g.completed_at,
+		       u.display_name,
+		       (SELECT COUNT(*) FROM thrift_members tm WHERE tm.group_id=g.id AND tm.status IN ('confirmed','active'))
+		FROM thrift_groups g
+		JOIN users u ON u.id=g.creator_user_id
+		WHERE g.id=$1`, id).Scan(
+		&group.ID, &group.CreatorUserID, &group.Name, &group.ContributionAmountKobo, &group.Frequency,
+		&group.TargetMemberCount, &group.InviteCode, &group.Status, &group.CurrentCycle,
+		&group.CreatedAt, &group.UpdatedAt, &group.ActivatedAt, &group.CompletedAt,
+		&group.CreatorName, &group.MemberCount,
+	)
+	return group, err
+}
+
+// JoinThriftGroup adds a confirmed member while the group is still inviting.
+func (s *Store) JoinThriftGroup(ctx context.Context, inviteCode string, userID uuid.UUID) (ThriftGroupView, ThriftMemberView, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	defer tx.Rollback(ctx)
+	var groupID uuid.UUID
+	var status string
+	var target, count int
+	if err := tx.QueryRow(ctx, `
+		SELECT id,status,target_member_count,
+		       (SELECT COUNT(*) FROM thrift_members WHERE group_id=thrift_groups.id AND status IN ('confirmed','active'))
+		FROM thrift_groups
+		WHERE invite_code=$1
+		FOR UPDATE`, strings.ToUpper(strings.TrimSpace(inviteCode))).Scan(&groupID, &status, &target, &count); err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	if status != "inviting" {
+		return ThriftGroupView{}, ThriftMemberView{}, fmt.Errorf("thrift group is %s", status)
+	}
+	if count >= target {
+		return ThriftGroupView{}, ThriftMemberView{}, errors.New("thrift group is already full")
+	}
+	var memberID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO thrift_members(group_id,user_id,status)
+		VALUES($1,$2,'confirmed')
+		ON CONFLICT(group_id,user_id) DO UPDATE
+		SET status=CASE WHEN thrift_members.status='removed' THEN 'confirmed' ELSE thrift_members.status END,
+			confirmed_at=COALESCE(thrift_members.confirmed_at, now())
+		RETURNING id`, groupID, userID).Scan(&memberID); err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	if err := insertThriftEvent(ctx, tx, groupID, uuid.Nil, memberID, "member_confirmed", map[string]any{}); err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	group, err := s.ThriftGroupByID(ctx, groupID)
+	if err != nil {
+		return ThriftGroupView{}, ThriftMemberView{}, err
+	}
+	member, err := s.ThriftMemberByID(ctx, memberID)
+	return group, member, err
+}
+
+// ThriftMemberByID returns one member with display fields.
+func (s *Store) ThriftMemberByID(ctx context.Context, memberID uuid.UUID) (ThriftMemberView, error) {
+	var member ThriftMemberView
+	err := s.pool.QueryRow(ctx, `
+		SELECT tm.id,tm.group_id,tm.user_id,u.display_name,u.email,COALESCE(u.whatsapp_number,''),
+		       tm.status,tm.payout_position,tm.joined_at,tm.confirmed_at
+		FROM thrift_members tm
+		JOIN users u ON u.id=tm.user_id
+		WHERE tm.id=$1`, memberID).Scan(&member.ID, &member.GroupID, &member.UserID, &member.UserName, &member.UserEmail, &member.WhatsAppNumber, &member.Status, &member.PayoutPosition, &member.JoinedAt, &member.ConfirmedAt)
+	return member, err
+}
+
+// ThriftMembers returns active/confirmed members in a deterministic display order.
+func (s *Store) ThriftMembers(ctx context.Context, groupID uuid.UUID) ([]ThriftMemberView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tm.id,tm.group_id,tm.user_id,u.display_name,u.email,COALESCE(u.whatsapp_number,''),
+		       tm.status,tm.payout_position,tm.joined_at,tm.confirmed_at
+		FROM thrift_members tm
+		JOIN users u ON u.id=tm.user_id
+		WHERE tm.group_id=$1 AND tm.status IN ('confirmed','active')
+		ORDER BY tm.payout_position NULLS LAST, tm.joined_at`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []ThriftMemberView
+	for rows.Next() {
+		var member ThriftMemberView
+		if err := rows.Scan(&member.ID, &member.GroupID, &member.UserID, &member.UserName, &member.UserEmail, &member.WhatsAppNumber, &member.Status, &member.PayoutPosition, &member.JoinedAt, &member.ConfirmedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, rows.Err()
+}
+
+// ActivateThriftGroup applies the creator-selected payout order and opens the
+// first contribution cycle.
+func (s *Store) ActivateThriftGroup(ctx context.Context, groupID, creatorID uuid.UUID, orderedMemberIDs []uuid.UUID) (ThriftCycleView, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ThriftCycleView{}, err
+	}
+	defer tx.Rollback(ctx)
+	var amount int64
+	var frequency, status string
+	var target, current int
+	if err := tx.QueryRow(ctx, `
+		SELECT contribution_amount_kobo,frequency,status,target_member_count,
+		       (SELECT COUNT(*) FROM thrift_members WHERE group_id=thrift_groups.id AND status='confirmed')
+		FROM thrift_groups
+		WHERE id=$1 AND creator_user_id=$2
+		FOR UPDATE`, groupID, creatorID).Scan(&amount, &frequency, &status, &target, &current); err != nil {
+		return ThriftCycleView{}, err
+	}
+	if status != "inviting" {
+		return ThriftCycleView{}, fmt.Errorf("thrift group is %s", status)
+	}
+	if current != target || len(orderedMemberIDs) != target {
+		return ThriftCycleView{}, fmt.Errorf("rotation needs exactly %d confirmed members", target)
+	}
+	seen := map[uuid.UUID]bool{}
+	for i, memberID := range orderedMemberIDs {
+		if seen[memberID] {
+			return ThriftCycleView{}, errors.New("rotation contains a duplicate member")
+		}
+		seen[memberID] = true
+		tag, err := tx.Exec(ctx, `
+			UPDATE thrift_members
+			SET payout_position=$3,status='active'
+			WHERE id=$1 AND group_id=$2 AND status='confirmed'`, memberID, groupID, i+1)
+		if err != nil {
+			return ThriftCycleView{}, err
+		}
+		if tag.RowsAffected() != 1 {
+			return ThriftCycleView{}, errors.New("rotation contains an invalid member")
+		}
+	}
+	var payoutMemberID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM thrift_members WHERE group_id=$1 AND payout_position=1`, groupID).Scan(&payoutMemberID); err != nil {
+		return ThriftCycleView{}, err
+	}
+	dueAt := nextThriftDueDate(time.Now(), frequency)
+	var cycleID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO thrift_cycles(group_id,cycle_number,due_at,payout_member_id,status)
+		VALUES($1,1,$2,$3,'pending_contributions')
+		RETURNING id`, groupID, dueAt, payoutMemberID).Scan(&cycleID); err != nil {
+		return ThriftCycleView{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO thrift_contributions(cycle_id,member_id,amount_kobo,status)
+		SELECT $1,id,$2,'awaiting_payment'
+		FROM thrift_members
+		WHERE group_id=$3 AND status='active'`, cycleID, amount, groupID); err != nil {
+		return ThriftCycleView{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE thrift_groups
+		SET status='active',current_cycle=1,activated_at=now(),updated_at=now()
+		WHERE id=$1`, groupID); err != nil {
+		return ThriftCycleView{}, err
+	}
+	if err := insertThriftEvent(ctx, tx, groupID, cycleID, uuid.Nil, "group_activated", map[string]any{"frequency": frequency}); err != nil {
+		return ThriftCycleView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ThriftCycleView{}, err
+	}
+	return s.ThriftCycleByID(ctx, cycleID)
+}
+
+func nextThriftDueDate(from time.Time, frequency string) time.Time {
+	if frequency == "monthly" {
+		return from.AddDate(0, 1, 0)
+	}
+	return from.AddDate(0, 0, 7)
+}
+
+// CurrentThriftContributionForUser returns the open contribution for a member.
+func (s *Store) CurrentThriftContributionForUser(ctx context.Context, inviteCode string, userID uuid.UUID) (ThriftContributionView, error) {
+	var contribution ThriftContributionView
+	err := s.pool.QueryRow(ctx, `
+		SELECT tc.id,tc.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,tm.user_id,u.display_name,
+		       tc.payment_id,tc.amount_kobo,tc.status,COALESCE(p.status,''),COALESCE(p.receipt_token,''),
+		       tc.created_at,tc.updated_at,tc.paid_at
+		FROM thrift_groups tg
+		JOIN thrift_cycles tcy ON tcy.group_id=tg.id AND tcy.cycle_number=tg.current_cycle
+		JOIN thrift_members tm ON tm.group_id=tg.id AND tm.user_id=$2
+		JOIN users u ON u.id=tm.user_id
+		JOIN thrift_contributions tc ON tc.cycle_id=tcy.id AND tc.member_id=tm.id
+		LEFT JOIN payments p ON p.id=tc.payment_id
+		WHERE tg.invite_code=$1 AND tg.status='active'`, strings.ToUpper(strings.TrimSpace(inviteCode)), userID).Scan(
+		&contribution.ID, &contribution.CycleID, &contribution.GroupID, &contribution.GroupName, &contribution.CycleNumber,
+		&contribution.MemberID, &contribution.UserID, &contribution.MemberName, &contribution.PaymentID,
+		&contribution.AmountKobo, &contribution.Status, &contribution.PaymentStatus, &contribution.PaymentReceipt,
+		&contribution.CreatedAt, &contribution.UpdatedAt, &contribution.PaidAt,
+	)
+	return contribution, err
+}
+
+// LinkThriftContributionPayment attaches one payment attempt to a contribution.
+func (s *Store) LinkThriftContributionPayment(ctx context.Context, contributionID, paymentID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE thrift_contributions
+		SET payment_id=$2,updated_at=now()
+		WHERE id=$1 AND status='awaiting_payment' AND payment_id IS NULL`, contributionID, paymentID)
+	return err
+}
+
+// ApplyThriftContributionPaymentSuccess credits a contribution and advances
+// cycle readiness only once all active members have paid.
+func (s *Store) ApplyThriftContributionPaymentSuccess(ctx context.Context, paymentID uuid.UUID) (ThriftContributionView, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ThriftContributionView{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	var contributionID, cycleID, groupID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT tc.id,tc.cycle_id,tcy.group_id
+		FROM thrift_contributions tc
+		JOIN thrift_cycles tcy ON tcy.id=tc.cycle_id
+		WHERE tc.payment_id=$1
+		FOR UPDATE`, paymentID).Scan(&contributionID, &cycleID, &groupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ThriftContributionView{}, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return ThriftContributionView{}, false, err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE thrift_contributions
+		SET status='paid',paid_at=COALESCE(paid_at, now()),updated_at=now()
+		WHERE id=$1 AND status <> 'paid'`, contributionID)
+	if err != nil {
+		return ThriftContributionView{}, false, err
+	}
+	changed := tag.RowsAffected() == 1
+	var unpaid int
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM thrift_contributions
+		WHERE cycle_id=$1 AND status <> 'paid'`, cycleID).Scan(&unpaid); err != nil {
+		return ThriftContributionView{}, false, err
+	}
+	if unpaid == 0 {
+		var cycleStatus string
+		var payoutMemberID uuid.UUID
+		var total int64
+		if err := tx.QueryRow(ctx, `
+			SELECT status,payout_member_id,
+			       (SELECT COALESCE(SUM(amount_kobo),0) FROM thrift_contributions WHERE cycle_id=thrift_cycles.id)
+			FROM thrift_cycles
+			WHERE id=$1
+			FOR UPDATE`, cycleID).Scan(&cycleStatus, &payoutMemberID, &total); err != nil {
+			return ThriftContributionView{}, false, err
+		}
+		if cycleStatus == "pending_contributions" {
+			if _, err := tx.Exec(ctx, `UPDATE thrift_cycles SET status='ready_for_payout',updated_at=now() WHERE id=$1`, cycleID); err != nil {
+				return ThriftContributionView{}, false, err
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO thrift_payouts(cycle_id,payout_member_id,amount_kobo,status)
+				VALUES($1,$2,$3,'pending')
+				ON CONFLICT(cycle_id) DO NOTHING`, cycleID, payoutMemberID, total); err != nil {
+				return ThriftContributionView{}, false, err
+			}
+			if err := insertThriftEvent(ctx, tx, groupID, cycleID, payoutMemberID, "cycle_ready_for_payout", map[string]any{"amount_kobo": total}); err != nil {
+				return ThriftContributionView{}, false, err
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ThriftContributionView{}, false, err
+	}
+	view, err := s.ThriftContributionByPaymentID(ctx, paymentID)
+	return view, changed, err
+}
+
+// ThriftContributionByPaymentID returns thrift context for a receipt.
+func (s *Store) ThriftContributionByPaymentID(ctx context.Context, paymentID uuid.UUID) (ThriftContributionView, error) {
+	return s.thriftContributionBy(ctx, "tc.payment_id=$1", paymentID)
+}
+
+// ThriftContributionByID returns one contribution by primary key.
+func (s *Store) ThriftContributionByID(ctx context.Context, id uuid.UUID) (ThriftContributionView, error) {
+	return s.thriftContributionBy(ctx, "tc.id=$1", id)
+}
+
+func (s *Store) thriftContributionBy(ctx context.Context, predicate string, value any) (ThriftContributionView, error) {
+	var contribution ThriftContributionView
+	err := s.pool.QueryRow(ctx, `
+		SELECT tc.id,tc.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,tm.user_id,u.display_name,
+		       tc.payment_id,tc.amount_kobo,tc.status,COALESCE(p.status,''),COALESCE(p.receipt_token,''),
+		       tc.created_at,tc.updated_at,tc.paid_at
+		FROM thrift_contributions tc
+		JOIN thrift_cycles tcy ON tcy.id=tc.cycle_id
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tc.member_id
+		JOIN users u ON u.id=tm.user_id
+		LEFT JOIN payments p ON p.id=tc.payment_id
+		WHERE `+predicate, value).Scan(
+		&contribution.ID, &contribution.CycleID, &contribution.GroupID, &contribution.GroupName, &contribution.CycleNumber,
+		&contribution.MemberID, &contribution.UserID, &contribution.MemberName, &contribution.PaymentID,
+		&contribution.AmountKobo, &contribution.Status, &contribution.PaymentStatus, &contribution.PaymentReceipt,
+		&contribution.CreatedAt, &contribution.UpdatedAt, &contribution.PaidAt,
+	)
+	return contribution, err
+}
+
+// MarkThriftPayoutCompleted simulates payout completion and opens the next
+// rotation cycle until each member has received one payout.
+func (s *Store) MarkThriftPayoutCompleted(ctx context.Context, payoutID uuid.UUID) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var cycleID, groupID uuid.UUID
+	var cycleNumber, target int
+	var frequency string
+	var status string
+	if err := tx.QueryRow(ctx, `
+		SELECT tp.cycle_id,tcy.group_id,tcy.cycle_number,tg.target_member_count,tg.frequency,tp.status
+		FROM thrift_payouts tp
+		JOIN thrift_cycles tcy ON tcy.id=tp.cycle_id
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		WHERE tp.id=$1
+		FOR UPDATE`, payoutID).Scan(&cycleID, &groupID, &cycleNumber, &target, &frequency, &status); err != nil {
+		return err
+	}
+	if status == "completed_simulated" {
+		return tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE thrift_payouts SET status='completed_simulated',completed_at=now(),updated_at=now()
+		WHERE id=$1`, payoutID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE thrift_cycles SET status='payout_completed',updated_at=now() WHERE id=$1`, cycleID); err != nil {
+		return err
+	}
+	if err := insertThriftEvent(ctx, tx, groupID, cycleID, uuid.Nil, "payout_completed_simulated", map[string]any{}); err != nil {
+		return err
+	}
+	if cycleNumber >= target {
+		if _, err := tx.Exec(ctx, `UPDATE thrift_groups SET status='completed',completed_at=now(),updated_at=now() WHERE id=$1`, groupID); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	nextCycle := cycleNumber + 1
+	var payoutMemberID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM thrift_members WHERE group_id=$1 AND payout_position=$2`, groupID, nextCycle).Scan(&payoutMemberID); err != nil {
+		return err
+	}
+	var amount int64
+	if err := tx.QueryRow(ctx, `SELECT contribution_amount_kobo FROM thrift_groups WHERE id=$1`, groupID).Scan(&amount); err != nil {
+		return err
+	}
+	dueAt := nextThriftDueDate(time.Now(), frequency)
+	var newCycleID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO thrift_cycles(group_id,cycle_number,due_at,payout_member_id,status)
+		VALUES($1,$2,$3,$4,'pending_contributions')
+		RETURNING id`, groupID, nextCycle, dueAt, payoutMemberID).Scan(&newCycleID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO thrift_contributions(cycle_id,member_id,amount_kobo,status)
+		SELECT $1,id,$2,'awaiting_payment'
+		FROM thrift_members
+		WHERE group_id=$3 AND status='active'`, newCycleID, amount, groupID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE thrift_groups SET current_cycle=$2,updated_at=now() WHERE id=$1`, groupID, nextCycle); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// ListThriftGroups returns recent groups for the admin dashboard.
+func (s *Store) ListThriftGroups(ctx context.Context, limit int) ([]ThriftGroupView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT g.id,g.creator_user_id,g.name,g.contribution_amount_kobo,g.frequency,g.target_member_count,
+		       g.invite_code,g.status,g.current_cycle,g.created_at,g.updated_at,g.activated_at,g.completed_at,
+		       u.display_name,
+		       (SELECT COUNT(*) FROM thrift_members tm WHERE tm.group_id=g.id AND tm.status IN ('confirmed','active'))
+		FROM thrift_groups g
+		JOIN users u ON u.id=g.creator_user_id
+		ORDER BY g.created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups []ThriftGroupView
+	for rows.Next() {
+		var group ThriftGroupView
+		if err := rows.Scan(&group.ID, &group.CreatorUserID, &group.Name, &group.ContributionAmountKobo, &group.Frequency,
+			&group.TargetMemberCount, &group.InviteCode, &group.Status, &group.CurrentCycle, &group.CreatedAt,
+			&group.UpdatedAt, &group.ActivatedAt, &group.CompletedAt, &group.CreatorName, &group.MemberCount); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+// ListThriftPayouts returns recent simulated payouts for admin operations.
+func (s *Store) ListThriftPayouts(ctx context.Context, limit int) ([]ThriftPayoutView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tp.id,tp.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,u.display_name,
+		       tp.amount_kobo,tp.status,tp.created_at,tp.updated_at,tp.completed_at
+		FROM thrift_payouts tp
+		JOIN thrift_cycles tcy ON tcy.id=tp.cycle_id
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tp.payout_member_id
+		JOIN users u ON u.id=tm.user_id
+		ORDER BY tp.created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var payouts []ThriftPayoutView
+	for rows.Next() {
+		var payout ThriftPayoutView
+		if err := rows.Scan(&payout.ID, &payout.CycleID, &payout.GroupID, &payout.GroupName, &payout.CycleNumber,
+			&payout.PayoutMemberID, &payout.PayoutMemberName, &payout.AmountKobo, &payout.Status,
+			&payout.CreatedAt, &payout.UpdatedAt, &payout.CompletedAt); err != nil {
+			return nil, err
+		}
+		payouts = append(payouts, payout)
+	}
+	return payouts, rows.Err()
+}
+
+// ListThriftContributions returns recent contribution attempts for admin visibility.
+func (s *Store) ListThriftContributions(ctx context.Context, limit int) ([]ThriftContributionView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tc.id,tc.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,tm.user_id,u.display_name,
+		       tc.payment_id,tc.amount_kobo,tc.status,COALESCE(p.status,''),COALESCE(p.receipt_token,''),
+		       tc.created_at,tc.updated_at,tc.paid_at
+		FROM thrift_contributions tc
+		JOIN thrift_cycles tcy ON tcy.id=tc.cycle_id
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tc.member_id
+		JOIN users u ON u.id=tm.user_id
+		LEFT JOIN payments p ON p.id=tc.payment_id
+		ORDER BY tc.created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var contributions []ThriftContributionView
+	for rows.Next() {
+		var contribution ThriftContributionView
+		if err := rows.Scan(&contribution.ID, &contribution.CycleID, &contribution.GroupID, &contribution.GroupName, &contribution.CycleNumber,
+			&contribution.MemberID, &contribution.UserID, &contribution.MemberName, &contribution.PaymentID,
+			&contribution.AmountKobo, &contribution.Status, &contribution.PaymentStatus, &contribution.PaymentReceipt,
+			&contribution.CreatedAt, &contribution.UpdatedAt, &contribution.PaidAt); err != nil {
+			return nil, err
+		}
+		contributions = append(contributions, contribution)
+	}
+	return contributions, rows.Err()
+}
+
+// RecentThriftGroupsForUser returns created or joined groups for chat dashboard.
+func (s *Store) RecentThriftGroupsForUser(ctx context.Context, userID uuid.UUID, limit int) ([]ThriftGroupView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT g.id,g.creator_user_id,g.name,g.contribution_amount_kobo,g.frequency,g.target_member_count,
+		       g.invite_code,g.status,g.current_cycle,g.created_at,g.updated_at,g.activated_at,g.completed_at,
+		       u.display_name,
+		       (SELECT COUNT(*) FROM thrift_members tm2 WHERE tm2.group_id=g.id AND tm2.status IN ('confirmed','active'))
+		FROM thrift_groups g
+		JOIN thrift_members tm ON tm.group_id=g.id
+		JOIN users u ON u.id=g.creator_user_id
+		WHERE g.creator_user_id=$1 OR tm.user_id=$1
+		ORDER BY g.created_at DESC
+		LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var groups []ThriftGroupView
+	for rows.Next() {
+		var group ThriftGroupView
+		if err := rows.Scan(&group.ID, &group.CreatorUserID, &group.Name, &group.ContributionAmountKobo, &group.Frequency,
+			&group.TargetMemberCount, &group.InviteCode, &group.Status, &group.CurrentCycle, &group.CreatedAt,
+			&group.UpdatedAt, &group.ActivatedAt, &group.CompletedAt, &group.CreatorName, &group.MemberCount); err != nil {
+			return nil, err
+		}
+		groups = append(groups, group)
+	}
+	return groups, rows.Err()
+}
+
+// ThriftCycleByID returns a cycle with group and payout display fields.
+func (s *Store) ThriftCycleByID(ctx context.Context, cycleID uuid.UUID) (ThriftCycleView, error) {
+	var cycle ThriftCycleView
+	err := s.pool.QueryRow(ctx, `
+		SELECT tcy.id,tcy.group_id,tg.name,tcy.cycle_number,tcy.due_at,tcy.payout_member_id,u.display_name,
+		       tcy.status,tg.contribution_amount_kobo,tg.target_member_count,tcy.created_at,tcy.updated_at
+		FROM thrift_cycles tcy
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tcy.payout_member_id
+		JOIN users u ON u.id=tm.user_id
+		WHERE tcy.id=$1`, cycleID).Scan(&cycle.ID, &cycle.GroupID, &cycle.GroupName, &cycle.CycleNumber,
+		&cycle.DueAt, &cycle.PayoutMemberID, &cycle.PayoutMemberName, &cycle.Status,
+		&cycle.ContributionAmountKobo, &cycle.TargetMemberCount, &cycle.CreatedAt, &cycle.UpdatedAt)
+	return cycle, err
+}
+
+func insertThriftEvent(ctx context.Context, tx pgx.Tx, groupID, cycleID, memberID uuid.UUID, eventType string, detail map[string]any) error {
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	var group any = nil
+	if groupID != uuid.Nil {
+		group = groupID
+	}
+	var cycle any = nil
+	if cycleID != uuid.Nil {
+		cycle = cycleID
+	}
+	var member any = nil
+	if memberID != uuid.Nil {
+		member = memberID
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO thrift_events(group_id,cycle_id,member_id,event_type,detail)
+		VALUES($1,$2,$3,$4,$5)`, group, cycle, member, eventType, raw)
 	return err
 }
 

@@ -146,6 +146,14 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 	if err != nil {
 		return payment, changed, err
 	}
+	if changed {
+		if _, _, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
+		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
+	}
 	return updated, changed, nil
 }
 
@@ -185,6 +193,14 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	updated, err := s.store.PaymentByID(ctx, payment.ID)
 	if err != nil {
 		return payment, changed, err
+	}
+	if changed && target == domain.StatusSucceeded {
+		if _, _, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
+		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
 	}
 	return updated, changed, nil
 }

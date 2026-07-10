@@ -1,0 +1,27 @@
+{{define "invoice.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Invoice {{.Invoice.Reference}} - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Xego invoice</p>
+  <h1>{{.Invoice.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Invoice.TotalKobo}}</p>
+  <dl>
+    <div><dt>Status</dt><dd>{{.Invoice.Status}}</dd></div>
+    <div><dt>Reference</dt><dd class="mono">{{.Invoice.Reference}}</dd></div>
+    <div><dt>Customer WhatsApp</dt><dd>{{maskPII .Invoice.CustomerWhatsAppNumber}}</dd></div>
+    <div><dt>Paid so far</dt><dd>{{money .Invoice.AmountPaidKobo}}</dd></div>
+    <div><dt>Balance</dt><dd>{{money (sub .Invoice.TotalKobo .Invoice.AmountPaidKobo)}}</dd></div>
+    {{if .Invoice.DueAt}}<div><dt>Due</dt><dd>{{.Invoice.DueAt.Format "02 Jan 2006"}}</dd></div>{{end}}
+  </dl>
+  <h2>Items</h2>
+  <dl>
+    {{range .Invoice.Items}}<div><dt>{{.Description}} × {{.Quantity}}</dt><dd>{{money .LineTotalKobo}}</dd></div>{{end}}
+    <div><dt>Delivery fee</dt><dd>{{money .Invoice.DeliveryFeeKobo}}</dd></div>
+  </dl>
+  <p>To pay, send this exact message to Xego on WhatsApp:</p>
+  <p class="mono">PAY {{.Invoice.Reference}}</p>
+  <p class="muted">The payer can choose card checkout or bank transfer, and may pay the full balance or a partial amount. Xego marks the invoice paid only when total collected equals the invoice total.</p>
+</main></body></html>
+{{end}}

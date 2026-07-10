@@ -1,0 +1,23 @@
+{{define "thrift.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Rotational contributions</p><h1>Thrift</h1></div></header>
+
+<section><h2>Groups</h2>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Creator</th><th>Invite</th><th>Amount</th><th>Frequency</th><th>Members</th><th>Status</th><th>Cycle</th></tr></thead><tbody>
+{{range .Groups}}<tr><td>{{.Name}}</td><td>{{.CreatorName}}</td><td class="mono">{{.InviteCode}}</td><td>{{money .ContributionAmountKobo}}</td><td>{{.Frequency}}</td><td>{{.MemberCount}}/{{.TargetMemberCount}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CurrentCycle}}</td></tr>
+{{else}}<tr><td colspan="8">No thrift groups yet.</td></tr>{{end}}</tbody></table></div></section>
+
+<section><h2>Contributions</h2>
+<div class="table-wrap"><table><thead><tr><th>Group</th><th>Cycle</th><th>Member</th><th>Amount</th><th>Status</th><th>Payment</th><th>Updated</th></tr></thead><tbody>
+{{range .Contributions}}<tr><td>{{.GroupName}}</td><td>{{.CycleNumber}}</td><td>{{.MemberName}}</td><td>{{money .AmountKobo}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{if .PaymentID.Valid}}{{.PaymentStatus}}{{else}}Not started{{end}}</td><td>{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
+{{else}}<tr><td colspan="7">No thrift contributions yet.</td></tr>{{end}}</tbody></table></div></section>
+
+<section><h2>Simulated payouts</h2>
+<div class="table-wrap"><table><thead><tr><th>Group</th><th>Cycle</th><th>Recipient</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>
+{{range .Payouts}}<tr><td>{{.GroupName}}</td><td>{{.CycleNumber}}</td><td>{{.PayoutMemberName}}</td><td>{{money .AmountKobo}}</td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{if eq .Status "pending"}}<form method="post" action="/admin/thrift/payouts/{{.ID}}/complete"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Mark completed</button></form>{{else}}Completed{{end}}</td></tr>
+{{else}}<tr><td colspan="6">No simulated payouts yet.</td></tr>{{end}}</tbody></table></div></section>
+
+</main></body></html>
+{{end}}

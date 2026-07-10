@@ -5,11 +5,21 @@
 <title>Payment receipt - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt">
   <div class="receipt-mark">OK</div>
-  <p class="eyebrow">{{if .DataOrder}}Data order{{else if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
-  <h1>{{if .DataOrder}}Data {{.DataOrder.Status}}{{else}}Payment {{.Payment.Status}}{{end}}</h1>
+  <p class="eyebrow">{{if .Thrift}}Thrift contribution{{else if .Invoice}}Invoice payment{{else if .DataOrder}}Data order{{else if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
+  <h1>{{if .Thrift}}Contribution {{.Thrift.Status}}{{else if .Invoice}}Payment {{.Payment.Status}}{{else if .DataOrder}}Data {{.DataOrder.Status}}{{else}}Payment {{.Payment.Status}}{{end}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   <dl>
     <div><dt>Merchant</dt><dd>{{.Payment.MerchantName}}</dd></div>
+    {{if .Thrift}}
+    <div><dt>Thrift group</dt><dd>{{.Thrift.GroupName}}</dd></div>
+    <div><dt>Cycle</dt><dd>{{.Thrift.CycleNumber}}</dd></div>
+    <div><dt>Member</dt><dd>{{.Thrift.MemberName}}</dd></div>
+    {{end}}
+    {{if .Invoice}}
+    <div><dt>Invoice</dt><dd class="mono">{{.Invoice.Reference}}</dd></div>
+    <div><dt>Invoice status</dt><dd>{{.Invoice.Status}}</dd></div>
+    <div><dt>Total collected</dt><dd>{{money .Invoice.AmountPaidKobo}} of {{money .Invoice.TotalKobo}}</dd></div>
+    {{end}}
     {{if .DataOrder}}
     <div><dt>Network</dt><dd>{{.DataOrder.NetworkName}}</dd></div>
     <div><dt>Plan</dt><dd>{{.DataOrder.PlanName}}</dd></div>

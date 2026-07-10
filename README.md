@@ -69,9 +69,11 @@ Back up PostgreSQL before upgrades. Keep the database port private; only Caddy e
 
 ## Provider setup
 
-### Email confirmation
+### Merchant registration email confirmation
 
-Onboarding can require a 6-digit email confirmation code before the user reaches the main menu.
+Standard user onboarding collects an email for checkout and receipts, but does not require an OTP. The 6-digit email confirmation code is used when a user chooses **Register merchant**, because that is a higher-trust action.
+
+Merchant requests start as `awaiting_approval`. An admin must approve the request in `/admin/merchants`; approval creates the payable merchant record, links the requesting user as the merchant owner, and unlocks merchant-only invoice features.
 
 For real email delivery, configure:
 
@@ -195,8 +197,8 @@ If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.
 2. Enter a name and email.
-3. Enter the 6-digit email confirmation code. Configure SMTP for real email delivery, or set `EMAIL_DEMO_CODE_IN_CHAT=true` while testing the demo flow.
-4. Confirm the WhatsApp number or Telegram account.
+3. Confirm the WhatsApp number or Telegram account.
+4. Choose **Register merchant**, complete the 6-digit email OTP, enter business name, category, and description, then confirm the request appears in `/admin/merchants`.
 5. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
 6. Choose **Card checkout** or **Bank transfer**.
 7. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
@@ -206,6 +208,27 @@ If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass
 11. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
 12. Choose **Buy Data**, select a network and plan, enter a beneficiary phone number, pay, and confirm the data order becomes fulfilled after payment success.
 13. Post an SMS command to `/webhooks/sms` and confirm the response contains a request code and checkout URL.
+
+Invoice demo checks:
+
+1. After admin approval, choose **Generate invoice** in chat.
+2. Use one of the allowed demo customer WhatsApp numbers: `+2347061975340` or `+2348033072780`.
+3. Add customer email, one or more line items, quantities, unit prices, and delivery fee.
+4. Confirm the generated invoice link renders at `/invoices/{reference}`.
+5. From the customer chat, send `PAY XG-INV-...`.
+6. Choose either the full balance or a partial/split amount, then pay by card checkout or bank transfer.
+7. Confirm the invoice remains partially paid until total collected equals the invoice total, and that each contribution has its own receipt.
+
+Thrift demo checks:
+
+1. Confirm a normal customer can still pay merchants, buy data, and pay invoices after only WhatsApp/Telegram account confirmation.
+2. Choose **Become individual**, verify the email OTP, then enter legal name, date of birth, address, and occupation. Xego marks KYC as `approved_simulated`.
+3. Choose **Create thrift**, enter group name, fixed contribution amount, weekly/monthly frequency, and 2-12 target members.
+4. Share the generated invite code. Members can join with `JOIN XG-THRIFT-...`.
+5. When all members have joined, the creator sends `ACTIVATE XG-THRIFT-...` and enters the payout rotation order.
+6. Members pay the current cycle with `CONTRIBUTE XG-THRIFT-...`, then choose card checkout or bank transfer.
+7. Confirm `/admin/thrift` shows groups, contributions, and pending simulated payouts.
+8. Mark the simulated payout completed in `/admin/thrift`; Xego opens the next cycle until every member has received one payout.
 
 ## Security and retention
 

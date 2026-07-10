@@ -4,6 +4,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"net/mail"
@@ -30,6 +31,11 @@ const (
 	pickerPageSize = 8
 	recentLimit    = 3
 )
+
+var demoInvoiceCustomerNumbers = map[string]bool{
+	"+2347061975340": true,
+	"+2348033072780": true,
+}
 
 // ConversationService implements the customer onboarding and payment state machine.
 type ConversationService struct {
@@ -117,6 +123,74 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "await_bank_transfer":
 		return s.handleBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_email":
+		return s.handleMerchantRegistrationEmail(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_email_code":
+		return s.handleMerchantRegistrationEmailCode(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_name":
+		return s.handleMerchantRegistrationName(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_category":
+		return s.handleMerchantRegistrationCategory(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_description":
+		return s.handleMerchantRegistrationDescription(ctx, message.Channel, recipient, user, session, input)
+	case "individual_email":
+		return s.handleIndividualEmail(ctx, message.Channel, recipient, user, session, input)
+	case "individual_email_code":
+		return s.handleIndividualEmailCode(ctx, message.Channel, recipient, user, session, input)
+	case "individual_legal_name":
+		return s.handleIndividualLegalName(ctx, message.Channel, recipient, user, session, input)
+	case "individual_dob":
+		return s.handleIndividualDOB(ctx, message.Channel, recipient, user, session, input)
+	case "individual_address":
+		return s.handleIndividualAddress(ctx, message.Channel, recipient, user, session, input)
+	case "individual_occupation":
+		return s.handleIndividualOccupation(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_name":
+		return s.handleThriftName(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_amount":
+		return s.handleThriftAmount(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_frequency":
+		return s.handleThriftFrequency(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_target":
+		return s.handleThriftTarget(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_join_code":
+		return s.startThriftJoin(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_join_confirm":
+		return s.handleThriftJoinConfirm(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_activate_order":
+		return s.handleThriftActivateOrder(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_pay_method":
+		return s.handleThriftPayMethod(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_pay_bank":
+		return s.handleThriftPayBank(ctx, message.Channel, recipient, user, session, input)
+	case "await_thrift_bank_transfer":
+		return s.handleThriftBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_select_merchant":
+		return s.handleInvoiceMerchant(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_customer_phone":
+		return s.handleInvoiceCustomerPhone(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_customer_email":
+		return s.handleInvoiceCustomerEmail(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_item_name":
+		return s.handleInvoiceItemName(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_item_quantity":
+		return s.handleInvoiceItemQuantity(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_item_unit_price":
+		return s.handleInvoiceItemUnitPrice(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_add_item":
+		return s.handleInvoiceAddItem(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_delivery_fee":
+		return s.handleInvoiceDeliveryFee(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_review":
+		return s.handleInvoiceReview(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_pay_amount":
+		return s.handleInvoicePayAmount(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_pay_method":
+		return s.handleInvoicePayMethod(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_pay_bank":
+		return s.handleInvoicePayBank(ctx, message.Channel, recipient, user, session, input)
+	case "await_invoice_bank_transfer":
+		return s.handleInvoiceBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	default:
 		return s.handleMenu(ctx, message.Channel, recipient, user, session, input)
 	}
@@ -142,9 +216,6 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 	if !user.OnboardingComplete {
 		return false
 	}
-	if s.cfg.EmailConfirmationEnabled && !user.EmailVerifiedAt.Valid {
-		return false
-	}
 	if channel == ChannelTelegram {
 		return user.TelegramConfirmedAt.Valid
 	}
@@ -154,22 +225,6 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if session.State == "onboard_confirm_account" {
 		return s.handleAccountConfirmation(ctx, channel, recipient, user, session, input)
-	}
-	if user.OnboardingComplete && s.cfg.EmailConfirmationEnabled && strings.TrimSpace(user.Email) == "" && session.State != "onboard_email" {
-		session.State = "onboard_email"
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendText(ctx, channel, recipient, "Please add an email address for checkout, receipts, and account recovery.")
-	}
-	if user.OnboardingComplete && s.cfg.EmailConfirmationEnabled && user.Email != "" && !user.EmailVerifiedAt.Valid &&
-		session.State != "onboard_email" && session.State != "onboard_email_code" {
-		session.State = "onboard_email_code"
-		session.Data = map[string]string{"email": user.Email}
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, user.Email)
 	}
 	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) &&
 		session.State != "onboard_confirm_account" && session.State != "onboard_email" && session.State != "onboard_email_code" {
@@ -202,36 +257,11 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts?")
 	}
 	if session.State == "onboard_email_code" {
-		email := session.Data["email"]
-		if email == "" {
-			email = user.Email
-		}
-		switch strings.ToLower(input) {
-		case "resend", "resend code":
-			return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
-		case "change_email", "change email", "email":
-			session.State, session.Data = "onboard_email", map[string]string{}
-			if err := s.saveSession(ctx, session); err != nil {
-				return err
-			}
-			return s.sendText(ctx, channel, recipient, "No problem. Send the email address you want to use for checkout and receipts.")
-		}
-		code := normalizeEmailCode(input)
-		if len(code) != 6 {
-			return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
-		}
-		ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
-		}
 		session.State, session.Data = "onboard_confirm_account", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "Email confirmed. One last step."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "Email saved. One last step."); err != nil {
 			return err
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
@@ -242,14 +272,6 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	}
 	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
 		return err
-	}
-	if s.cfg.EmailConfirmationEnabled {
-		email := strings.ToLower(address.Address)
-		session.State, session.Data = "onboard_email_code", map[string]string{"email": email}
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
 	}
 	session.State, session.Data = "onboard_confirm_account", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
@@ -320,6 +342,18 @@ func (s *ConversationService) startEmailConfirmation(ctx context.Context, channe
 }
 
 func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if ref, ok := invoiceReferenceFromPAY(input); ok {
+		return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
+	}
+	if code, ok := thriftJoinCodeFromInput(input); ok {
+		return s.startThriftJoin(ctx, channel, recipient, user, session, code)
+	}
+	if code, ok := thriftActivateCodeFromInput(input); ok {
+		return s.startThriftActivation(ctx, channel, recipient, user, session, code)
+	}
+	if code, ok := thriftContributeCodeFromInput(input); ok {
+		return s.startThriftContribution(ctx, channel, recipient, user, session, code)
+	}
 	switch strings.ToLower(input) {
 	case "pay", "menu_pay", "make payment":
 		session.State = "select_merchant"
@@ -335,6 +369,41 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 			return err
 		}
 		return s.sendDataNetworks(ctx, channel, recipient)
+	case "register merchant", "merchant registration", "menu_register_merchant":
+		if !s.cfg.EmailConfirmationEnabled {
+			return s.sendText(ctx, channel, recipient, "Merchant registration is not accepting email-verified requests right now. Please try again later.")
+		}
+		session.Data = map[string]string{}
+		email := strings.TrimSpace(user.Email)
+		if email == "" {
+			session.State = "merchant_register_email"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, "Let's register your business for review.\n\nFirst, send the email address we should verify and use for merchant updates.")
+		}
+		session.State = "merchant_register_email_code"
+		session.Data["email"] = email
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+	case "become individual", "individual", "menu_become_individual":
+		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
+	case "create thrift", "menu_create_thrift", "thrift":
+		return s.startThriftCreation(ctx, channel, recipient, user, session)
+	case "join thrift", "menu_join_thrift":
+		session.State, session.Data = "thrift_join_code", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send the thrift invite code. It looks like XG-THRIFT-1234ABCD.")
+	case "thrift dashboard", "menu_thrift_dashboard":
+		return s.sendThriftDashboard(ctx, channel, recipient, user)
+	case "generate invoice", "menu_generate_invoice", "invoice":
+		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
+	case "merchant dashboard", "menu_merchant_dashboard":
+		return s.sendMerchantDashboard(ctx, channel, recipient, user)
 	case "status", "menu_status", "check payment status":
 		return s.sendLatestStatus(ctx, channel, recipient, user)
 	case "history", "menu_history", "recent transactions":
@@ -380,6 +449,843 @@ func (s *ConversationService) handleMerchant(ctx context.Context, channel, recip
 		fmt.Sprintf("How much would you like to pay %s?\n\nEnter an amount between %s and %s. Example: 2500",
 			merchant.Name,
 			domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
+}
+
+func (s *ConversationService) handleMerchantRegistrationEmail(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if !s.cfg.EmailConfirmationEnabled {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "Merchant registration is not accepting email-verified requests right now. Please try again later.")
+	}
+	address, err := mail.ParseAddress(input)
+	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
+		return s.sendText(ctx, channel, recipient, "That email doesn't look quite right. Please send a valid merchant contact email, like owner@example.com.")
+	}
+	email := strings.ToLower(address.Address)
+	if err := s.store.UpdateUserEmail(ctx, user.ID, email); err != nil {
+		return err
+	}
+	session.State = "merchant_register_email_code"
+	session.Data = map[string]string{"email": email}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+}
+
+func (s *ConversationService) handleMerchantRegistrationEmailCode(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if !s.cfg.EmailConfirmationEnabled {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "Merchant registration is not accepting email-verified requests right now. Please try again later.")
+	}
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	email := session.Data["email"]
+	if email == "" {
+		email = user.Email
+	}
+	switch strings.ToLower(input) {
+	case "resend", "resend code":
+		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+	case "change_email", "change email", "email":
+		session.State, session.Data = "merchant_register_email", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "No problem. Send the email address we should verify for this merchant registration.")
+	}
+	code := normalizeEmailCode(input)
+	if len(code) != 6 {
+		return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
+	}
+	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
+	}
+	session.State = "merchant_register_name"
+	session.Data = map[string]string{"email": email}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Email verified for merchant registration.\n\nWhat is the business or merchant name?")
+}
+
+func (s *ConversationService) handleMerchantRegistrationName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	name := strings.TrimSpace(input)
+	if len([]rune(name)) < 2 || len([]rune(name)) > 80 {
+		return s.sendText(ctx, channel, recipient, "Please send the merchant or business name. It should be between 2 and 80 characters.")
+	}
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	session.State = "merchant_register_category"
+	session.Data["business_name"] = name
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "What category best describes this business? Examples: Food, Retail, Services, Health, Education, Logistics.")
+}
+
+func (s *ConversationService) handleMerchantRegistrationCategory(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	category := strings.TrimSpace(input)
+	if len([]rune(category)) < 2 || len([]rune(category)) > 50 {
+		return s.sendText(ctx, channel, recipient, "Please send a short business category, such as Food, Retail, Services, Health, Education, or Logistics.")
+	}
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	session.State = "merchant_register_description"
+	session.Data["category"] = category
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Briefly describe what the business sells or does. One sentence is enough.")
+}
+
+func (s *ConversationService) handleMerchantRegistrationDescription(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	description := strings.TrimSpace(input)
+	if len([]rune(description)) < 10 || len([]rune(description)) > 240 {
+		return s.sendText(ctx, channel, recipient, "Please send a description between 10 and 240 characters.")
+	}
+	if session.Data == nil || strings.TrimSpace(session.Data["business_name"]) == "" || strings.TrimSpace(session.Data["category"]) == "" || strings.TrimSpace(session.Data["email"]) == "" {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That merchant registration session expired. Please start again.")
+	}
+	request, err := s.store.CreateMerchantRegistration(ctx, user.ID, session.Data["business_name"], session.Data["category"], description, session.Data["email"])
+	if err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Merchant registration submitted.\n\nBusiness: %s\nCategory: %s\nReference: %s\nStatus: Awaiting approval\n\nXego will use your verified email for follow-up.",
+		request.BusinessName, request.Category, request.Reference)); err != nil {
+		return err
+	}
+	return s.sendMenu(ctx, channel, recipient)
+}
+
+func (s *ConversationService) startIndividualUpgrade(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	if user.AccountLevel == "merchant" {
+		return s.sendText(ctx, channel, recipient, "This account is currently approved as a merchant. For this demo, thrift creation is only available to individual accounts.")
+	}
+	if profile, err := s.store.IndividualProfileByUser(ctx, user.ID); err == nil && profile.KYCStatus == "approved_simulated" {
+		return s.sendText(ctx, channel, recipient, "Your Xego individual profile is already approved for the demo. Choose Create thrift to start a contribution group.")
+	}
+	if !s.cfg.EmailConfirmationEnabled {
+		return s.sendText(ctx, channel, recipient, "Individual onboarding is not accepting email-verified upgrades right now. Please try again later.")
+	}
+	session.Data = map[string]string{}
+	email := strings.TrimSpace(user.Email)
+	if email == "" {
+		session.State = "individual_email"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Let's set up your Xego individual profile for thrift contributions.\n\nFirst, send the email address we should verify.")
+	}
+	session.State = "individual_email_code"
+	session.Data["email"] = email
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+}
+
+func (s *ConversationService) handleIndividualEmail(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	address, err := mail.ParseAddress(input)
+	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
+		return s.sendText(ctx, channel, recipient, "That email doesn't look valid. Please send a valid email address, like name@example.com.")
+	}
+	email := strings.ToLower(address.Address)
+	if err := s.store.UpdateUserEmail(ctx, user.ID, email); err != nil {
+		return err
+	}
+	session.State = "individual_email_code"
+	session.Data = map[string]string{"email": email}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+}
+
+func (s *ConversationService) handleIndividualEmailCode(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	email := session.Data["email"]
+	if email == "" {
+		email = user.Email
+	}
+	switch strings.ToLower(input) {
+	case "resend", "resend code":
+		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+	case "change_email", "change email", "email":
+		session.State, session.Data = "individual_email", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send the email address to verify for your individual profile.")
+	}
+	code := normalizeEmailCode(input)
+	if len(code) != 6 {
+		return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
+	}
+	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
+	}
+	session.State = "individual_legal_name"
+	session.Data = map[string]string{"email": email}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Email verified.\n\nSend your legal name for this demo individual profile.")
+}
+
+func (s *ConversationService) handleIndividualLegalName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	name := strings.TrimSpace(input)
+	if len([]rune(name)) < 3 || len([]rune(name)) > 100 {
+		return s.sendText(ctx, channel, recipient, "Send your legal name, between 3 and 100 characters.")
+	}
+	session.State = "individual_dob"
+	session.Data["legal_name"] = name
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
+}
+
+func (s *ConversationService) handleIndividualDOB(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	dob, err := time.Parse("2006-01-02", strings.TrimSpace(input))
+	if err != nil || dob.After(time.Now().AddDate(-18, 0, 0)) {
+		return s.sendText(ctx, channel, recipient, "Send a valid date of birth as YYYY-MM-DD. For this demo, the individual must be at least 18.")
+	}
+	session.State = "individual_address"
+	session.Data["dob"] = dob.Format("2006-01-02")
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Send your residential address for the demo profile.")
+}
+
+func (s *ConversationService) handleIndividualAddress(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	address := strings.TrimSpace(input)
+	if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
+		return s.sendText(ctx, channel, recipient, "Send an address between 10 and 240 characters.")
+	}
+	session.State = "individual_occupation"
+	session.Data["address"] = address
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "What is your occupation?")
+}
+
+func (s *ConversationService) handleIndividualOccupation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	occupation := strings.TrimSpace(input)
+	if len([]rune(occupation)) < 2 || len([]rune(occupation)) > 80 {
+		return s.sendText(ctx, channel, recipient, "Send an occupation between 2 and 80 characters.")
+	}
+	dob, err := time.Parse("2006-01-02", session.Data["dob"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That individual onboarding session expired. Please start again.")
+	}
+	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, session.Data["legal_name"], dob, session.Data["address"], occupation); err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	if err := s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved for this demo.\n\nYou can now create thrift contribution groups."); err != nil {
+		return err
+	}
+	return s.sendMenu(ctx, channel, recipient)
+}
+
+func (s *ConversationService) startThriftCreation(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	if !s.userIsApprovedIndividual(ctx, user) {
+		return s.sendText(ctx, channel, recipient, "Create thrift is available to approved individual accounts.\n\nChoose Become an individual to complete email verification and demo KYC approval.")
+	}
+	session.State = "thrift_name"
+	session.Data = map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Let's create a rotational thrift contribution.\n\nWhat should we call this thrift group?")
+}
+
+func (s *ConversationService) handleThriftName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	name := strings.TrimSpace(input)
+	if len([]rune(name)) < 3 || len([]rune(name)) > 80 {
+		return s.sendText(ctx, channel, recipient, "Send a thrift group name between 3 and 80 characters.")
+	}
+	session.State = "thrift_amount"
+	session.Data["thrift_name"] = name
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "What fixed amount should each member contribute per cycle? Example: 5000")
+}
+
+func (s *ConversationService) handleThriftAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	amount, err := domain.ParseNGNAmount(input, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, err.Error())
+	}
+	session.State = "thrift_frequency"
+	session.Data["thrift_amount_kobo"] = strconv.FormatInt(amount, 10)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: "How often should members contribute?",
+		Buttons: []ports.InteractiveButton{
+			{ID: "thrift_frequency_weekly", Title: "Weekly"},
+			{ID: "thrift_frequency_monthly", Title: "Monthly"},
+		},
+	})
+}
+
+func (s *ConversationService) handleThriftFrequency(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	frequency := ""
+	switch strings.ToLower(input) {
+	case "thrift_frequency_weekly", "weekly":
+		frequency = "weekly"
+	case "thrift_frequency_monthly", "monthly":
+		frequency = "monthly"
+	default:
+		return s.sendText(ctx, channel, recipient, "Choose Weekly or Monthly.")
+	}
+	session.State = "thrift_target"
+	session.Data["thrift_frequency"] = frequency
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "How many members should this thrift group have? Send a number from 2 to 12.")
+}
+
+func (s *ConversationService) handleThriftTarget(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	target, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || target < 2 || target > 12 {
+		return s.sendText(ctx, channel, recipient, "Send a member count from 2 to 12.")
+	}
+	amount, err := strconv.ParseInt(session.Data["thrift_amount_kobo"], 10, 64)
+	if err != nil || session.Data["thrift_name"] == "" || session.Data["thrift_frequency"] == "" {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift creation session expired. Please start again.")
+	}
+	group, err := s.store.CreateThriftGroup(ctx, user.ID, session.Data["thrift_name"], amount, session.Data["thrift_frequency"], target)
+	if err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\nInvite code: %s\n\nShare this code with members. They can send JOIN %s to Xego. When all members have joined, send ACTIVATE %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.InviteCode, group.InviteCode, group.InviteCode))
+}
+
+func (s *ConversationService) startThriftJoin(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	code, ok := thriftCodeFromText(input)
+	if !ok {
+		return s.sendText(ctx, channel, recipient, "Send a valid thrift invite code, for example XG-THRIFT-1234ABCD.")
+	}
+	group, err := s.store.ThriftGroupByInviteCode(ctx, code)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't find that thrift invite code. Please check it and try again.")
+	}
+	if group.Status != "inviting" {
+		return s.sendText(ctx, channel, recipient, "That thrift group is not accepting new members right now.")
+	}
+	session.State = "thrift_join_confirm"
+	session.Data = map[string]string{"thrift_invite_code": group.InviteCode}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Join thrift group?\n\nName: %s\nCreator: %s\nContribution: %s %s\nMembers: %d of %d\n\nConfirm that you want to join this rotational contribution group.",
+			group.Name, group.CreatorName, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.MemberCount, group.TargetMemberCount),
+		Buttons: []ports.InteractiveButton{
+			{ID: "thrift_join_confirm", Title: "Join"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+func (s *ConversationService) handleThriftJoinConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if input != "thrift_join_confirm" && !strings.EqualFold(input, "join") && !strings.EqualFold(input, "confirm") {
+		return s.startThriftJoin(ctx, channel, recipient, user, session, session.Data["thrift_invite_code"])
+	}
+	group, member, err := s.store.JoinThriftGroup(ctx, session.Data["thrift_invite_code"], user.ID)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego could not join that thrift group: "+err.Error())
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("You're in.\n\nThrift: %s\nMember: %s\nMembers: %d of %d\n\nWhen the creator activates the group, Xego will show your contribution prompt.",
+		group.Name, member.UserName, group.MemberCount, group.TargetMemberCount))
+}
+
+func (s *ConversationService) startThriftActivation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	code, ok := thriftCodeFromText(input)
+	if !ok {
+		return s.sendText(ctx, channel, recipient, "Send ACTIVATE followed by the thrift invite code. Example: ACTIVATE XG-THRIFT-1234ABCD")
+	}
+	group, err := s.store.ThriftGroupByInviteCode(ctx, code)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't find that thrift group.")
+	}
+	if group.CreatorUserID != user.ID {
+		return s.sendText(ctx, channel, recipient, "Only the thrift creator can activate this group.")
+	}
+	if group.Status != "inviting" {
+		return s.sendText(ctx, channel, recipient, "That thrift group is not waiting for activation.")
+	}
+	members, err := s.store.ThriftMembers(ctx, group.ID)
+	if err != nil {
+		return err
+	}
+	if len(members) != group.TargetMemberCount {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("This thrift group has %d of %d members. You can activate it after all members have joined.", len(members), group.TargetMemberCount))
+	}
+	ids := make([]string, 0, len(members))
+	lines := []string{"Choose payout rotation order.\n\nSend the member numbers in payout order. Example: 1 2 3\n"}
+	for i, member := range members {
+		ids = append(ids, member.ID.String())
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, displayNameOrFallback(member.UserName, member.WhatsAppNumber)))
+	}
+	raw, _ := json.Marshal(ids)
+	session.State = "thrift_activate_order"
+	session.Data = map[string]string{"thrift_group_id": group.ID.String(), "thrift_activation_members": string(raw), "thrift_invite_code": group.InviteCode}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
+}
+
+func (s *ConversationService) handleThriftActivateOrder(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	groupID, err := uuid.Parse(session.Data["thrift_group_id"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift activation session expired. Please start again.")
+	}
+	var memberIDStrings []string
+	if err := json.Unmarshal([]byte(session.Data["thrift_activation_members"]), &memberIDStrings); err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift activation session expired. Please start again.")
+	}
+	indexes := parseRotationIndexes(input)
+	if len(indexes) != len(memberIDStrings) {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Send exactly %d member numbers in order. Example: 1 2 3", len(memberIDStrings)))
+	}
+	ordered := make([]uuid.UUID, 0, len(indexes))
+	seen := map[int]bool{}
+	for _, index := range indexes {
+		if index < 1 || index > len(memberIDStrings) || seen[index] {
+			return s.sendText(ctx, channel, recipient, "The rotation order has an invalid or repeated number. Please send the member numbers once each.")
+		}
+		seen[index] = true
+		id, err := uuid.Parse(memberIDStrings[index-1])
+		if err != nil {
+			return err
+		}
+		ordered = append(ordered, id)
+	}
+	inviteCode := session.Data["thrift_invite_code"]
+	cycle, err := s.store.ActivateThriftGroup(ctx, groupID, user.ID, ordered)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego could not activate the thrift group: "+err.Error())
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group activated.\n\nGroup: %s\nCycle: %d\nContribution: %s\nPayout recipient: %s\nDue: %s\n\nMembers can send CONTRIBUTE %s to pay this cycle.",
+		cycle.GroupName, cycle.CycleNumber, domain.FormatNGN(cycle.ContributionAmountKobo), cycle.PayoutMemberName, cycle.DueAt.Format("02 Jan 2006"), inviteCode))
+}
+
+func (s *ConversationService) startThriftContribution(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	code, ok := thriftCodeFromText(input)
+	if !ok {
+		return s.sendText(ctx, channel, recipient, "Send CONTRIBUTE followed by the thrift invite code. Example: CONTRIBUTE XG-THRIFT-1234ABCD")
+	}
+	contribution, err := s.store.CurrentThriftContributionForUser(ctx, code, user.ID)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't find an active unpaid contribution for you in that thrift group.")
+	}
+	if contribution.Status == "paid" {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Your contribution for %s cycle %d is already paid.", contribution.GroupName, contribution.CycleNumber))
+	}
+	session.State = "thrift_pay_method"
+	session.Data = map[string]string{"thrift_contribution_id": contribution.ID.String(), "thrift_invite_code": code}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
+			contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "method_card", Title: "Card checkout"},
+			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	contribution, err := s.thriftContributionFromSession(ctx, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift contribution session expired. Please send CONTRIBUTE and the invite code again.")
+	}
+	merchant, err := s.store.ThriftSystemMerchant(ctx)
+	if err != nil {
+		return err
+	}
+	switch strings.ToLower(input) {
+	case "method_card", "card", "paystack", "card checkout":
+		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, contribution.AmountKobo, ProviderPaystack, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.LinkThriftContributionPayment(ctx, contribution.ID, payment.ID); err != nil {
+			return err
+		}
+		payment, err = s.payments.InitializeCheckout(ctx, payment)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your thrift checkout is ready.\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nXego credits the contribution only after payment is verified.",
+				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
+			payment.CheckoutURL)
+	case "method_bank_transfer", "bank", "bank transfer", "transfer":
+		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, contribution.AmountKobo, ProviderBankTransfer, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.LinkThriftContributionPayment(ctx, contribution.ID, payment.ID); err != nil {
+			return err
+		}
+		session.State = "thrift_pay_bank"
+		session.Data["payment_id"] = payment.ID.String()
+		delete(session.Data, "bank_query")
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	default:
+		return s.startThriftContribution(ctx, channel, recipient, user, session, session.Data["thrift_invite_code"])
+	}
+}
+
+func (s *ConversationService) handleThriftPayBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	contribution, err := s.thriftContributionFromSession(ctx, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift contribution session expired. Please send CONTRIBUTE and the invite code again.")
+	}
+	switch {
+	case input == "bank_choose_other":
+		session.Data["bank_query"] = ""
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	case strings.HasPrefix(input, "bank_page:"):
+		page := parsePickerPage(strings.TrimPrefix(input, "bank_page:"))
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], page)
+	case !strings.HasPrefix(input, "bank:"):
+		query := strings.TrimSpace(input)
+		session.Data["bank_query"] = query
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, query, 0)
+	}
+	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
+	if err != nil {
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
+	}
+	account, err := s.store.BankTransferAccountByID(ctx, accountID)
+	if err != nil {
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
+	}
+	payment, err := s.paymentFromSession(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
+	}
+	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
+	if err != nil {
+		return err
+	}
+	session.State = "await_thrift_bank_transfer"
+	delete(session.Data, "bank_query")
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendThriftBankTransferInstructions(ctx, channel, recipient, payment, contribution, instruction)
+}
+
+func (s *ConversationService) handleThriftBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
+		payment, err := s.paymentFromSession(ctx, user, session)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+		}
+		contribution, err := s.thriftContributionFromSession(ctx, session)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift contribution session expired. Please start again.")
+		}
+		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+		}
+		return s.sendThriftBankTransferInstructions(ctx, channel, recipient, payment, contribution, instruction)
+	}
+	payment, err := s.paymentFromSession(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+	}
+	updated, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment)
+	if err != nil {
+		return err
+	}
+	contribution, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID)
+	if err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your thrift contribution.\n\nGroup: %s\nCycle: %d\nAmount: %s\nStatus: %s",
+		contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo), strings.ToUpper(contribution.Status)))
+}
+
+func (s *ConversationService) startInvoiceGeneration(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(merchants) == 0 {
+		return s.sendText(ctx, channel, recipient, "Invoice generation is available after your merchant registration is approved.\n\nChoose Register merchant to submit a business, or check with the operator if you have already submitted one.")
+	}
+	session.Data = map[string]string{}
+	if len(merchants) == 1 {
+		session.State = "invoice_customer_phone"
+		session.Data["invoice_merchant_slug"] = merchants[0].Slug
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Let's generate an invoice for "+merchants[0].Name+".\n\nSend the customer's WhatsApp number.\n\nFor this demo, use one of:\n+2347061975340\n+2348033072780")
+	}
+	session.State = "invoice_select_merchant"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	rows := make([]ports.InteractiveRow, 0, len(merchants))
+	for _, merchant := range merchants {
+		rows = append(rows, ports.InteractiveRow{ID: "invoice_merchant:" + merchant.Slug, Title: merchant.Name, Description: merchant.Category})
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        "Choose which approved merchant should issue this invoice.",
+		ButtonLabel: "Choose merchant",
+		Sections:    []ports.InteractiveSection{{Title: "Your merchants", Rows: rows}},
+	})
+}
+
+func (s *ConversationService) handleInvoiceMerchant(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if !strings.HasPrefix(input, "invoice_merchant:") {
+		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
+	}
+	slug := strings.TrimPrefix(input, "invoice_merchant:")
+	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	for _, merchant := range merchants {
+		if merchant.Slug == slug {
+			session.State = "invoice_customer_phone"
+			session.Data = map[string]string{"invoice_merchant_slug": slug}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, "Send the customer's WhatsApp number.\n\nFor this demo, use one of:\n+2347061975340\n+2348033072780")
+		}
+	}
+	return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
+}
+
+func (s *ConversationService) handleInvoiceCustomerPhone(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	phone, err := domain.NormalizeNigerianPhone(input)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "Send a valid Nigerian WhatsApp number for the customer, for example +2347061975340.")
+	}
+	if !demoInvoiceCustomerNumbers[phone] {
+		return s.sendText(ctx, channel, recipient, "For this demo, invoices can only be sent to these test WhatsApp numbers:\n+2347061975340\n+2348033072780")
+	}
+	session.State = "invoice_customer_email"
+	session.Data["invoice_customer_phone"] = phone
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Send the customer's email address for the invoice copy.")
+}
+
+func (s *ConversationService) handleInvoiceCustomerEmail(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	address, err := mail.ParseAddress(input)
+	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
+		return s.sendText(ctx, channel, recipient, "That email doesn't look valid. Please send the customer's email address, like customer@example.com.")
+	}
+	session.State = "invoice_item_name"
+	session.Data["invoice_customer_email"] = strings.ToLower(address.Address)
+	session.Data["invoice_items"] = "[]"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Add the first invoice item.\n\nSend the item name or description, for example: Website design deposit.")
+}
+
+func (s *ConversationService) handleInvoiceItemName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	name := strings.TrimSpace(input)
+	if len([]rune(name)) < 2 || len([]rune(name)) > 120 {
+		return s.sendText(ctx, channel, recipient, "Send an item description between 2 and 120 characters.")
+	}
+	session.State = "invoice_item_quantity"
+	session.Data["invoice_item_name"] = name
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Quantity for this item? Send a whole number, for example: 1")
+}
+
+func (s *ConversationService) handleInvoiceItemQuantity(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	qty, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || qty < 1 || qty > 1000 {
+		return s.sendText(ctx, channel, recipient, "Send a quantity between 1 and 1000.")
+	}
+	session.State = "invoice_item_unit_price"
+	session.Data["invoice_item_quantity"] = strconv.Itoa(qty)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Unit price for this item? Send the amount in naira, for example: 2500")
+}
+
+func (s *ConversationService) handleInvoiceItemUnitPrice(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	price, err := domain.ParseNGNAmount(input, 100, s.cfg.PaymentMaxKobo)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, err.Error())
+	}
+	qty, _ := strconv.Atoi(session.Data["invoice_item_quantity"])
+	items, err := invoiceItemsFromSession(session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	items = append(items, store.InvoiceItem{
+		Description:   session.Data["invoice_item_name"],
+		Quantity:      qty,
+		UnitPriceKobo: price,
+		LineTotalKobo: int64(qty) * price,
+		SortOrder:     len(items) + 1,
+	})
+	if err := putInvoiceItems(&session, items); err != nil {
+		return err
+	}
+	delete(session.Data, "invoice_item_name")
+	delete(session.Data, "invoice_item_quantity")
+	session.State = "invoice_add_item"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: invoiceItemsSummary("Item added. Current invoice items:", items) + "\n\nAdd another item?",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+			{ID: "invoice_add_no", Title: "Continue"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoiceAddItem(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	switch strings.ToLower(input) {
+	case "invoice_add_yes", "yes", "add", "add item":
+		session.State = "invoice_item_name"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send the next item name or description.")
+	case "invoice_add_no", "no", "continue", "done":
+		session.State = "invoice_delivery_fee"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Delivery fee, if any? Send 0 if there is no delivery fee.")
+	default:
+		return s.sendText(ctx, channel, recipient, "Choose Add item or Continue.")
+	}
+}
+
+func (s *ConversationService) handleInvoiceDeliveryFee(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	fee := int64(0)
+	if !strings.EqualFold(strings.TrimSpace(input), "none") && strings.TrimSpace(input) != "0" {
+		amount, err := domain.ParseNGNAmount(input, 0, s.cfg.PaymentMaxKobo)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "Send the delivery fee as a naira amount, or 0 if none.")
+		}
+		fee = amount
+	}
+	session.State = "invoice_review"
+	session.Data["invoice_delivery_fee_kobo"] = strconv.FormatInt(fee, 10)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInvoiceReview(ctx, channel, recipient, user, session)
+}
+
+func (s *ConversationService) handleInvoiceReview(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if input != "invoice_confirm" && !strings.EqualFold(input, "confirm") {
+		return s.sendInvoiceReview(ctx, channel, recipient, user, session)
+	}
+	merchant, items, fee, err := s.invoiceDraft(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	dueAt := time.Now().Add(7 * 24 * time.Hour)
+	invoice, err := s.store.CreateInvoice(ctx, store.InvoiceSpec{
+		MerchantID:             merchant.ID,
+		CreatedByUserID:        user.ID,
+		CustomerWhatsAppNumber: session.Data["invoice_customer_phone"],
+		CustomerEmail:          session.Data["invoice_customer_email"],
+		DeliveryFeeKobo:        fee,
+		DueAt:                  &dueAt,
+		Items:                  items,
+	})
+	if err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	s.notifyInvoiceCustomer(ctx, invoice)
+	link := s.cfg.BaseURL + "/invoices/" + invoice.Reference
+	if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Invoice generated.\n\nMerchant: %s\nCustomer: %s\nTotal: %s\nReference: %s\nLink: %s\n\nThe customer can open the link or send PAY %s to Xego on WhatsApp to pay. Split payment is decided by the paying customer; Xego marks the invoice paid when total collected reaches the invoice total.",
+		invoice.MerchantName, invoice.CustomerWhatsAppNumber, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)); err != nil {
+		return err
+	}
+	return s.sendMenu(ctx, channel, recipient)
 }
 
 func (s *ConversationService) handleAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -430,6 +1336,159 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
+}
+
+func (s *ConversationService) startInvoicePayment(ctx context.Context, channel, recipient string, user store.User, session store.Session, reference string) error {
+	invoice, err := s.store.InvoiceByReference(ctx, reference)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't find that invoice. Check the invoice reference and send it like this: PAY XG-INV-1234ABCD")
+	}
+	if invoice.Status == "paid" || invoice.AmountPaidKobo >= invoice.TotalKobo {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Invoice %s is already fully paid.\n\nMerchant: %s\nTotal: %s", invoice.Reference, invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo)))
+	}
+	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+	session.State = "invoice_pay_amount"
+	session.Data = map[string]string{"invoice_reference": invoice.Reference}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient,
+		fmt.Sprintf("Invoice %s\n\nMerchant: %s\nTotal: %s\nPaid so far: %s\nRemaining: %s\n\nHow much would you like to pay now?\nSend FULL to pay the remaining balance, or enter a naira amount for a split/partial payment.",
+			invoice.Reference, invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(remaining)))
+}
+
+func (s *ConversationService) handleInvoicePayAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	invoice, err := s.store.InvoiceByReference(ctx, session.Data["invoice_reference"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please send PAY followed by the invoice reference again.")
+	}
+	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+	if remaining <= 0 {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice is already fully paid.")
+	}
+	amount := remaining
+	if !strings.EqualFold(strings.TrimSpace(input), "full") {
+		parsed, err := domain.ParseNGNAmount(input, s.cfg.PaymentMinKobo, remaining)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, fmt.Sprintf("Enter an amount between %s and %s, or send FULL to pay the remaining balance.", domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(remaining)))
+		}
+		amount = parsed
+	}
+	session.State = "invoice_pay_method"
+	session.Data["invoice_pay_amount_kobo"] = strconv.FormatInt(amount, 10)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
+			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "method_card", Title: "Card checkout"},
+			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	invoice, amount, err := s.invoicePaymentSession(ctx, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice payment session expired. Please send PAY followed by the invoice reference again.")
+	}
+	merchant, err := s.store.MerchantBySlug(ctx, invoice.MerchantSlug)
+	if err != nil {
+		return err
+	}
+	switch strings.ToLower(input) {
+	case "method_card", "card", "paystack", "card checkout":
+		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.CreateInvoicePayment(ctx, invoice.ID, payment.ID, user.ID, amount); err != nil {
+			return err
+		}
+		session.Data["payment_id"] = payment.ID.String()
+		payment, err = s.payments.InitializeCheckout(ctx, payment)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nInvoice: %s\nMerchant: %s\nAmount: %s\n\nXego will update the invoice only after payment is verified.",
+				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
+			payment.CheckoutURL)
+	case "method_bank_transfer", "bank", "bank transfer", "transfer":
+		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.CreateInvoicePayment(ctx, invoice.ID, payment.ID, user.ID, amount); err != nil {
+			return err
+		}
+		session.State = "invoice_pay_bank"
+		session.Data["payment_id"] = payment.ID.String()
+		delete(session.Data, "bank_query")
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	default:
+		session.State = "invoice_pay_amount"
+		_ = s.saveSession(ctx, session)
+		return s.handleInvoicePayAmount(ctx, channel, recipient, user, session, "full")
+	}
+}
+
+func (s *ConversationService) handleInvoicePayBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	invoice, _, err := s.invoicePaymentSession(ctx, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice payment session expired. Please send PAY followed by the invoice reference again.")
+	}
+	switch {
+	case input == "bank_choose_other":
+		session.Data["bank_query"] = ""
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	case strings.HasPrefix(input, "bank_page:"):
+		page := parsePickerPage(strings.TrimPrefix(input, "bank_page:"))
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], page)
+	case !strings.HasPrefix(input, "bank:"):
+		query := strings.TrimSpace(input)
+		session.Data["bank_query"] = query
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendTransferBankPicker(ctx, channel, recipient, query, 0)
+	}
+	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
+	if err != nil {
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
+	}
+	account, err := s.store.BankTransferAccountByID(ctx, accountID)
+	if err != nil {
+		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
+	}
+	payment, err := s.paymentFromSession(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
+	}
+	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
+	if err != nil {
+		return err
+	}
+	session.State = "await_invoice_bank_transfer"
+	delete(session.Data, "bank_query")
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInvoiceBankTransferInstructions(ctx, channel, recipient, payment, invoice, instruction)
 }
 
 func (s *ConversationService) handleTransferBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -751,6 +1810,45 @@ func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context
 	return s.sendText(ctx, channel, recipient, "Thanks. Xego has received your transfer confirmation. You’ll receive the final update shortly.")
 }
 
+func (s *ConversationService) handleInvoiceBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
+		payment, err := s.paymentFromSession(ctx, user, session)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+		}
+		invoice, _, err := s.invoicePaymentSession(ctx, session)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+		}
+		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+		}
+		return s.sendInvoiceBankTransferInstructions(ctx, channel, recipient, payment, invoice, instruction)
+	}
+	payment, err := s.paymentFromSession(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
+	}
+	updated, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment)
+	if err != nil {
+		return err
+	}
+	invoice, changed, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID)
+	if err != nil {
+		return err
+	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	if changed {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your transfer confirmation.\n\nInvoice: %s\nPaid now: %s\nInvoice status: %s\nTotal collected: %s of %s",
+			invoice.Reference, domain.FormatNGN(updated.AmountKobo), strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo)))
+	}
+	return s.sendText(ctx, channel, recipient, "Thanks. Xego has recorded your transfer confirmation.")
+}
+
 func (s *ConversationService) handleConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "confirm_payment" && !strings.EqualFold(input, "confirm") && !strings.EqualFold(input, "continue") {
 		return s.sendText(ctx, channel, recipient, "Choose Continue or Cancel to proceed.")
@@ -782,6 +1880,13 @@ func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient s
 			Rows: []ports.InteractiveRow{
 				{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
 				{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
+				{ID: "menu_register_merchant", Title: "Register merchant", Description: "Submit a business for review"},
+				{ID: "menu_become_individual", Title: "Become individual", Description: "Enable thrift groups"},
+				{ID: "menu_create_thrift", Title: "Create thrift", Description: "Rotational contributions"},
+				{ID: "menu_join_thrift", Title: "Join thrift", Description: "Use an invite code"},
+				{ID: "menu_thrift_dashboard", Title: "Thrift dashboard", Description: "Groups and cycles"},
+				{ID: "menu_generate_invoice", Title: "Generate invoice", Description: "Approved merchants only"},
+				{ID: "menu_merchant_dashboard", Title: "Merchant dashboard", Description: "Invoice status summary"},
 				{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
 				{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
 				{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
@@ -988,6 +2093,30 @@ func (s *ConversationService) sendDataBankTransferInstructions(ctx context.Conte
 	})
 }
 
+func (s *ConversationService) sendInvoiceBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, invoice store.InvoiceView, instruction store.BankTransferInstruction) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Bank transfer details for invoice %s\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nPayment reference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above.\n3. Put the payment reference exactly in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nXego adds this receipt to the invoice after confirmation. The invoice is fully paid only when total collected reaches %s.",
+			invoice.Reference, invoice.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference, domain.FormatNGN(invoice.TotalKobo)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_bank_transfer", Title: "I have transferred"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+func (s *ConversationService) sendThriftBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, contribution store.ThriftContributionView, instruction store.BankTransferInstruction) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Bank transfer details for thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nPayment reference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above.\n3. Put the payment reference exactly in narration, remark, or payment reference.\n4. After sending, tap I have transferred.\n\nXego credits the thrift cycle only after this payment is confirmed.",
+			contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_bank_transfer", Title: "I have transferred"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
 func (s *ConversationService) sendMerchants(ctx context.Context, channel, recipient string) error {
 	merchants, err := s.store.ListActiveMerchants(ctx)
 	if err != nil {
@@ -1004,6 +2133,26 @@ func (s *ConversationService) sendMerchants(ctx context.Context, channel, recipi
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To: recipient, Body: "Choose who you’d like to pay.", ButtonLabel: "View merchants",
 		Sections: []ports.InteractiveSection{{Title: "Merchants", Rows: rows}},
+	})
+}
+
+func (s *ConversationService) sendInvoiceReview(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	merchant, items, fee, err := s.invoiceDraft(ctx, user, session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	subtotal := invoiceSubtotal(items)
+	total := subtotal + fee
+	body := invoiceItemsSummary("Review invoice", items)
+	body += fmt.Sprintf("\n\nMerchant: %s\nCustomer WhatsApp: %s\nCustomer email: %s\nSubtotal: %s\nDelivery fee: %s\nTotal: %s\nDue: 7 days from today\n\nGenerate this invoice?",
+		merchant.Name, session.Data["invoice_customer_phone"], session.Data["invoice_customer_email"], domain.FormatNGN(subtotal), domain.FormatNGN(fee), domain.FormatNGN(total))
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: body,
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_confirm", Title: "Generate"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
 	})
 }
 
@@ -1099,9 +2248,59 @@ func (s *ConversationService) sendHistory(ctx context.Context, channel, recipien
 	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
 }
 
+func (s *ConversationService) sendMerchantDashboard(ctx context.Context, channel, recipient string, user store.User) error {
+	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	if len(merchants) == 0 {
+		return s.sendText(ctx, channel, recipient, "Merchant dashboard is available after your merchant registration is approved.")
+	}
+	invoices, err := s.store.RecentInvoicesForMerchantOwner(ctx, user.ID, 5)
+	if err != nil {
+		return err
+	}
+	lines := []string{"Merchant dashboard"}
+	for _, merchant := range merchants {
+		lines = append(lines, fmt.Sprintf("\n%s — %s", merchant.Name, merchant.Category))
+	}
+	if len(invoices) == 0 {
+		lines = append(lines, "\nNo invoices generated yet. Choose Generate invoice to create one.")
+		return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
+	}
+	lines = append(lines, "\nRecent invoices:")
+	for _, invoice := range invoices {
+		lines = append(lines, fmt.Sprintf("• %s — %s — %s/%s — %s",
+			invoice.Reference, strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo), invoice.CustomerWhatsAppNumber))
+	}
+	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
+}
+
+func (s *ConversationService) sendThriftDashboard(ctx context.Context, channel, recipient string, user store.User) error {
+	groups, err := s.store.RecentThriftGroupsForUser(ctx, user.ID, 5)
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		return s.sendText(ctx, channel, recipient, "You don't have any thrift groups yet.\n\nChoose Become individual, then Create thrift, or join a group with an invite code.")
+	}
+	lines := []string{"Your thrift dashboard:"}
+	for _, group := range groups {
+		lines = append(lines, fmt.Sprintf("• %s — %s — %s %s — members %d/%d — code %s",
+			group.Name, strings.ToUpper(group.Status), domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.MemberCount, group.TargetMemberCount, group.InviteCode))
+		if group.Status == "inviting" && group.CreatorUserID == user.ID && group.MemberCount == group.TargetMemberCount {
+			lines = append(lines, "  Send: ACTIVATE "+group.InviteCode)
+		}
+		if group.Status == "active" {
+			lines = append(lines, "  To pay this cycle, send: CONTRIBUTE "+group.InviteCode)
+		}
+	}
+	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
+}
+
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
-		"Xego lets you pay merchants and buy mobile data for MTN, Airtel, Glo, and 9mobile.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
+		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN XG-THRIFT-1234ABCD joins an inviting group.\nACTIVATE XG-THRIFT-1234ABCD lets the creator set payout rotation.\nCONTRIBUTE XG-THRIFT-1234ABCD starts this cycle's payment.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, channel, recipient string, user store.User, session store.Session, body string) error {
@@ -1145,6 +2344,186 @@ func (s *ConversationService) dataOrderFromSession(ctx context.Context, session 
 		return store.DataOrderView{}, err
 	}
 	return s.store.DataOrderByID(ctx, orderID)
+}
+
+func (s *ConversationService) invoiceDraft(ctx context.Context, user store.User, session store.Session) (store.Merchant, []store.InvoiceItem, int64, error) {
+	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
+	if err != nil {
+		return store.Merchant{}, nil, 0, err
+	}
+	slug := session.Data["invoice_merchant_slug"]
+	var merchant store.Merchant
+	found := false
+	for _, candidate := range merchants {
+		if candidate.Slug == slug {
+			merchant = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return store.Merchant{}, nil, 0, fmt.Errorf("merchant not owned by user")
+	}
+	items, err := invoiceItemsFromSession(session)
+	if err != nil || len(items) == 0 {
+		return store.Merchant{}, nil, 0, fmt.Errorf("missing invoice items")
+	}
+	fee, _ := strconv.ParseInt(session.Data["invoice_delivery_fee_kobo"], 10, 64)
+	return merchant, items, fee, nil
+}
+
+func (s *ConversationService) invoicePaymentSession(ctx context.Context, session store.Session) (store.InvoiceView, int64, error) {
+	invoice, err := s.store.InvoiceByReference(ctx, session.Data["invoice_reference"])
+	if err != nil {
+		return store.InvoiceView{}, 0, err
+	}
+	amount, err := strconv.ParseInt(session.Data["invoice_pay_amount_kobo"], 10, 64)
+	if err != nil || amount <= 0 {
+		return store.InvoiceView{}, 0, fmt.Errorf("invalid invoice payment amount")
+	}
+	return invoice, amount, nil
+}
+
+func (s *ConversationService) thriftContributionFromSession(ctx context.Context, session store.Session) (store.ThriftContributionView, error) {
+	id, err := uuid.Parse(session.Data["thrift_contribution_id"])
+	if err != nil {
+		return store.ThriftContributionView{}, err
+	}
+	return s.store.ThriftContributionByID(ctx, id)
+}
+
+func (s *ConversationService) userIsApprovedIndividual(ctx context.Context, user store.User) bool {
+	if user.AccountLevel != "individual" {
+		return false
+	}
+	profile, err := s.store.IndividualProfileByUser(ctx, user.ID)
+	return err == nil && profile.KYCStatus == "approved_simulated"
+}
+
+func thriftJoinCodeFromInput(input string) (string, bool) {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
+	if len(fields) == 2 && fields[0] == "JOIN" {
+		return thriftCodeFromText(fields[1])
+	}
+	if len(fields) == 1 {
+		return thriftCodeFromText(fields[0])
+	}
+	return "", false
+}
+
+func thriftActivateCodeFromInput(input string) (string, bool) {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
+	if len(fields) == 2 && fields[0] == "ACTIVATE" {
+		return thriftCodeFromText(fields[1])
+	}
+	return "", false
+}
+
+func thriftContributeCodeFromInput(input string) (string, bool) {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
+	if len(fields) == 2 && fields[0] == "CONTRIBUTE" {
+		return thriftCodeFromText(fields[1])
+	}
+	return "", false
+}
+
+func thriftCodeFromText(input string) (string, bool) {
+	code := strings.ToUpper(strings.TrimSpace(input))
+	code = strings.Trim(code, ".,;: ")
+	if strings.HasPrefix(code, "XG-THRIFT-") && len(code) >= len("XG-THRIFT-1234") {
+		return code, true
+	}
+	return "", false
+}
+
+func parseRotationIndexes(input string) []int {
+	cleaned := strings.NewReplacer(",", " ", ";", " ", "-", " ").Replace(input)
+	fields := strings.Fields(cleaned)
+	indexes := make([]int, 0, len(fields))
+	for _, field := range fields {
+		value, err := strconv.Atoi(field)
+		if err != nil {
+			return nil
+		}
+		indexes = append(indexes, value)
+	}
+	return indexes
+}
+
+func displayNameOrFallback(name, fallback string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return name
+	}
+	return fallback
+}
+
+func invoiceItemsFromSession(session store.Session) ([]store.InvoiceItem, error) {
+	raw := strings.TrimSpace(session.Data["invoice_items"])
+	if raw == "" {
+		raw = "[]"
+	}
+	var items []store.InvoiceItem
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func putInvoiceItems(session *store.Session, items []store.InvoiceItem) error {
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	session.Data["invoice_items"] = string(raw)
+	return nil
+}
+
+func invoiceSubtotal(items []store.InvoiceItem) int64 {
+	total := int64(0)
+	for _, item := range items {
+		line := item.LineTotalKobo
+		if line == 0 {
+			line = int64(item.Quantity) * item.UnitPriceKobo
+		}
+		total += line
+	}
+	return total
+}
+
+func invoiceItemsSummary(prefix string, items []store.InvoiceItem) string {
+	lines := []string{prefix}
+	for i, item := range items {
+		line := item.LineTotalKobo
+		if line == 0 {
+			line = int64(item.Quantity) * item.UnitPriceKobo
+		}
+		lines = append(lines, fmt.Sprintf("%d. %s — Qty %d × %s = %s", i+1, item.Description, item.Quantity, domain.FormatNGN(item.UnitPriceKobo), domain.FormatNGN(line)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func invoiceReferenceFromPAY(input string) (string, bool) {
+	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
+	if len(fields) != 2 || fields[0] != "PAY" || !strings.HasPrefix(fields[1], "XG-INV-") {
+		return "", false
+	}
+	return fields[1], true
+}
+
+func (s *ConversationService) notifyInvoiceCustomer(ctx context.Context, invoice store.InvoiceView) {
+	link := s.cfg.BaseURL + "/invoices/" + invoice.Reference
+	body := fmt.Sprintf("Xego invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nTo pay in WhatsApp, reply with:\nPAY %s\n\nYou may pay the full balance or choose a split/partial amount during payment.",
+		invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)
+	if s.email != nil && invoice.CustomerEmail != "" {
+		_ = s.email.Send(ctx, invoice.CustomerEmail, "Xego invoice "+invoice.Reference, body)
+	}
+	if invoice.CustomerWhatsAppNumber != "" {
+		_ = s.sendText(ctx, ChannelWhatsApp, invoice.CustomerWhatsAppNumber, body)
+	}
 }
 
 func (s *ConversationService) abandonSessionPayment(ctx context.Context, user store.User, session store.Session) {

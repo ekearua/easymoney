@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
 	"whatsapp-payment-demo/internal/config"
@@ -86,6 +87,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"maskPII":     maskPII,
 		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
+		"sub":         func(a, b int64) int64 { return a - b },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		repository.Close()
@@ -200,6 +202,7 @@ func (a *App) routes() http.Handler {
 	router.Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.Get("/payments/return", a.paymentReturn)
 	router.Get("/receipts/{token}", a.receipt)
+	router.Get("/invoices/{reference}", a.invoice)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
 
 	router.Get("/admin/login", a.loginPage)
@@ -212,8 +215,11 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/metrics", a.adminMetrics)
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
+		admin.Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
 		admin.Get("/admin/payments", a.adminPayments)
 		admin.Get("/admin/data-orders", a.adminDataOrders)
+		admin.Get("/admin/thrift", a.adminThrift)
+		admin.Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
 		admin.Get("/admin/webhooks", a.adminWebhooks)
 		admin.Post("/admin/logout", a.logout)
 	})
@@ -609,7 +615,29 @@ func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
 	if order, err := a.store.DataOrderByPaymentID(r.Context(), payment.ID); err == nil {
 		dataOrder = &order
 	}
-	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder})
+	var invoice *store.InvoiceView
+	if view, err := a.store.InvoiceByPaymentID(r.Context(), payment.ID); err == nil {
+		invoice = &view
+	}
+	var thrift *store.ThriftContributionView
+	if view, err := a.store.ThriftContributionByPaymentID(r.Context(), payment.ID); err == nil {
+		thrift = &view
+	}
+	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder, "Invoice": invoice, "Thrift": thrift})
+}
+
+func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
+	reference := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "reference")))
+	if !strings.HasPrefix(reference, "XG-INV-") {
+		http.NotFound(w, r)
+		return
+	}
+	invoice, err := a.store.InvoiceByReference(r.Context(), reference)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL})
 }
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
@@ -687,7 +715,30 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants})
+	registrations, err := a.store.ListMerchantRegistrations(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants, "Registrations": registrations})
+}
+
+func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid registration id", http.StatusBadRequest)
+		return
+	}
+	if _, err := a.store.ApproveMerchantRegistration(r.Context(), id); err != nil {
+		a.logger.Warn("approve merchant registration failed", "registration_id", id, "error", err)
+		http.Error(w, "approval failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
 }
 
 func (a *App) adminPayments(w http.ResponseWriter, r *http.Request) {
@@ -711,6 +762,43 @@ func (a *App) adminDataOrders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderAdmin(w, "data_orders.html", r, "Data Orders", map[string]any{"Orders": orders, "SMSRequests": smsRequests})
+}
+
+func (a *App) adminThrift(w http.ResponseWriter, r *http.Request) {
+	groups, err := a.store.ListThriftGroups(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	contributions, err := a.store.ListThriftContributions(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	payouts, err := a.store.ListThriftPayouts(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "thrift.html", r, "Thrift", map[string]any{"Groups": groups, "Contributions": contributions, "Payouts": payouts})
+}
+
+func (a *App) adminCompleteThriftPayout(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid payout id", http.StatusBadRequest)
+		return
+	}
+	if err := a.store.MarkThriftPayoutCompleted(r.Context(), id); err != nil {
+		a.logger.Warn("complete thrift payout failed", "payout_id", id, "error", err)
+		http.Error(w, "payout completion failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/thrift", http.StatusSeeOther)
 }
 
 func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {

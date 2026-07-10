@@ -3,7 +3,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Read only</p><h1>Users</h1></div></header>
-<div class="table-wrap"><table><thead><tr><th>Name</th><th>WhatsApp</th><th>Telegram</th><th>Email</th><th>Verification</th><th>Onboarded</th><th>Created</th></tr></thead><tbody>
-{{range .Users}}<tr><td>{{.DisplayName}}</td><td>{{maskPII .WhatsAppNumber}}</td><td>{{if .TelegramUsername}}@{{.TelegramUsername}}{{else if .TelegramChatID.Valid}}{{maskPII .TelegramChatID.String}}{{end}}</td><td>{{maskPII .Email}}</td><td>{{.VerificationLevel}}</td><td>{{if .OnboardingComplete}}Yes{{else}}No{{end}}</td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
-{{else}}<tr><td colspan="7">No users yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>Level</th><th>WhatsApp</th><th>Telegram</th><th>Email</th><th>Verification</th><th>Onboarded</th><th>Created</th></tr></thead><tbody>
+{{range .Users}}<tr><td>{{.DisplayName}}</td><td>{{.AccountLevel}}</td><td>{{maskPII .WhatsAppNumber}}</td><td>{{if .TelegramUsername}}@{{.TelegramUsername}}{{else if .TelegramChatID.Valid}}{{maskPII .TelegramChatID.String}}{{end}}</td><td>{{maskPII .Email}}</td><td>{{.VerificationLevel}}</td><td>{{if .OnboardingComplete}}Yes{{else}}No{{end}}</td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>
+{{else}}<tr><td colspan="8">No users yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
 {{end}}

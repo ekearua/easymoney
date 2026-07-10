@@ -2,7 +2,13 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
-<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Curated fixtures</p><h1>Merchants</h1></div></header>
+<body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant operations</p><h1>Merchants</h1></div></header>
+<section><h2>Registration requests</h2>
+<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Business</th><th>Category</th><th>Contact</th><th>User</th><th>Status</th><th>Created</th><th>Action</th></tr></thead><tbody>
+{{range .Registrations}}<tr><td class="mono">{{.Reference}}</td><td><strong>{{.BusinessName}}</strong><br><span class="muted">{{.Description}}</span></td><td>{{.Category}}</td><td>{{maskPII .ContactEmail}}</td><td>{{.UserName}}<br><span class="muted">{{maskPII .UserEmail}}</span></td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td><td>{{if ne .Status "approved"}}<form method="post" action="/admin/merchant-registrations/{{.ID}}/approve"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Approve</button></form>{{else}}Approved{{end}}</td></tr>
+{{else}}<tr><td colspan="8">No merchant registration requests yet.</td></tr>{{end}}</tbody></table></div></section>
+<section><h2>Payable merchants</h2>
 <section class="cards">{{range .Merchants}}<article class="merchant-card"><span class="category">{{.Category}}</span><h2>{{.Name}}</h2><p>{{.Description}}</p><small>{{if .Active}}Active{{else}}Disabled{{end}} · {{.Slug}}</small></article>{{end}}</section>
+</section>
 </main></body></html>
 {{end}}
