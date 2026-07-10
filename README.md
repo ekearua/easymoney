@@ -67,6 +67,21 @@ Caddy obtains and renews TLS automatically. If the reserved public IP or hostnam
 
 Back up PostgreSQL before upgrades. Keep the database port private; only Caddy exposes public ports.
 
+### Native VPS rebuild script
+
+For the existing non-Docker Ubuntu VPS setup, rebuild and restart from the checked-out repo with:
+
+```bash
+cd /tmp/whatsapp-payment-build
+bash deploy/rebuild-vps.sh
+```
+
+The script pulls latest code, downloads Go modules, runs tests and `go vet`, builds the binary, installs it to `/opt/whatsapp-payment/whatsapp-payment-demo`, runs migrations using `/etc/whatsapp-payment.env`, restarts `whatsapp-payment`, and prints recent logs. To skip slower checks during a quick demo rebuild:
+
+```bash
+RUN_TESTS=0 RUN_VET=0 bash deploy/rebuild-vps.sh
+```
+
 ## Provider setup
 
 ### Merchant registration email confirmation
