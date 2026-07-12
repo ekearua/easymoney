@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 
 	"whatsapp-payment-demo/internal/config"
@@ -202,7 +203,10 @@ func (a *App) routes() http.Handler {
 	router.Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.Get("/payments/return", a.paymentReturn)
 	router.Get("/receipts/{token}", a.receipt)
+	router.Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.Get("/invoices/{reference}", a.invoice)
+	router.Get("/scan/{token}", a.scanLanding)
+	router.Post("/api/readers/scan", a.readerScan)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
 
 	router.Get("/admin/login", a.loginPage)
@@ -220,6 +224,9 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/thrift", a.adminThrift)
 		admin.Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
+		admin.Get("/admin/scanning", a.adminScanning)
+		admin.Post("/admin/scanning/services", a.adminCreateScanningService)
+		admin.Post("/admin/scanning/readers", a.adminCreateServiceReader)
 		admin.Get("/admin/webhooks", a.adminWebhooks)
 		admin.Post("/admin/logout", a.logout)
 	})
@@ -623,7 +630,87 @@ func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
 	if view, err := a.store.ThriftContributionByPaymentID(r.Context(), payment.ID); err == nil {
 		thrift = &view
 	}
-	a.render(w, "receipt.html", map[string]any{"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder, "Invoice": invoice, "Thrift": thrift})
+	var scanToken *store.ReceiptScanTokenView
+	if view, err := a.store.ReceiptScanTokenByPaymentID(r.Context(), payment.ID); err == nil {
+		scanToken = &view
+	}
+	a.render(w, "receipt.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder,
+		"Invoice": invoice, "Thrift": thrift, "ScanToken": scanToken, "BaseURL": a.cfg.BaseURL,
+	})
+}
+
+func (a *App) receiptScanQR(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	payment, err := a.store.PaymentByReceiptToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	scanToken, err := a.store.ReceiptScanTokenByPaymentID(r.Context(), payment.ID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// The QR payload contains only the opaque scan URL. Readers call the
+	// authenticated API to get safe receipt details and consume the token.
+	png, err := qrcode.Encode(a.cfg.BaseURL+"/scan/"+scanToken.Token, qrcode.Medium, 240)
+	if err != nil {
+		http.Error(w, "qr unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(png)
+}
+
+func (a *App) scanLanding(w http.ResponseWriter, r *http.Request) {
+	token := store.ExtractScanToken(chi.URLParam(r, "token"))
+	if token == "" {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "scan.html", map[string]any{"AppName": a.cfg.AppName, "Token": token})
+}
+
+func (a *App) readerScan(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(r.Header.Get("X-Xego-Reader-Key"))
+	if apiKey == "" {
+		apiKey = strings.TrimPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+	}
+	var body struct {
+		Token string `json:"token"`
+		URL   string `json:"url"`
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+	} else if err := r.ParseForm(); err == nil {
+		body.Token = r.FormValue("token")
+		body.URL = r.FormValue("url")
+	}
+	tokenOrURL := body.Token
+	if tokenOrURL == "" {
+		tokenOrURL = body.URL
+	}
+	result, err := a.store.ValidateAndConsumeReceiptScan(r.Context(), apiKey, tokenOrURL, clientIP(r))
+	if err != nil {
+		http.Error(w, "scan unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	status := http.StatusOK
+	if result.Status != "valid_consumed" {
+		status = http.StatusConflict
+		if result.Status == "reader_not_authorized" {
+			status = http.StatusUnauthorized
+		}
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
@@ -799,6 +886,106 @@ func (a *App) adminCompleteThriftPayout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	http.Redirect(w, r, "/admin/thrift", http.StatusSeeOther)
+}
+
+func (a *App) adminScanning(w http.ResponseWriter, r *http.Request) {
+	a.renderScanningAdmin(w, r, nil)
+}
+
+func (a *App) adminCreateScanningService(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	ttlHours, _ := strconv.Atoi(r.FormValue("ttl_hours"))
+	if ttlHours <= 0 {
+		ttlHours = 24
+	}
+	var merchantID uuid.NullUUID
+	if raw := strings.TrimSpace(r.FormValue("merchant_id")); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			http.Error(w, "invalid merchant", http.StatusBadRequest)
+			return
+		}
+		merchantID = uuid.NullUUID{UUID: id, Valid: true}
+	}
+	_, err := a.store.CreateRegisteredService(
+		r.Context(),
+		r.FormValue("name"),
+		r.FormValue("service_type"),
+		merchantID,
+		r.FormValue("accepted_receipt_types"),
+		ttlHours*3600,
+		r.FormValue("active") == "on",
+	)
+	if err != nil {
+		a.renderScanningAdmin(w, r, map[string]any{"Error": "Could not save registered service."})
+		return
+	}
+	http.Redirect(w, r, "/admin/scanning", http.StatusSeeOther)
+}
+
+func (a *App) adminCreateServiceReader(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	serviceID, err := uuid.Parse(strings.TrimSpace(r.FormValue("service_id")))
+	if err != nil {
+		http.Error(w, "invalid service", http.StatusBadRequest)
+		return
+	}
+	reader, key, err := a.store.CreateServiceReader(r.Context(), serviceID, r.FormValue("name"))
+	if err != nil {
+		a.renderScanningAdmin(w, r, map[string]any{"Error": "Could not create reader."})
+		return
+	}
+	a.renderScanningAdmin(w, r, map[string]any{"NewReader": reader, "NewReaderKey": key})
+}
+
+func (a *App) renderScanningAdmin(w http.ResponseWriter, r *http.Request, extra map[string]any) {
+	services, err := a.store.ListRegisteredServices(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	readers, err := a.store.ListServiceReaders(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	tokens, err := a.store.ListReceiptScanTokens(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	attempts, err := a.store.ListReceiptScanAttempts(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	merchants, err := a.store.ListMerchants(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := map[string]any{
+		"Services": services, "Readers": readers, "Tokens": tokens,
+		"Attempts": attempts, "Merchants": merchants,
+	}
+	for key, value := range extra {
+		data[key] = value
+	}
+	a.renderAdmin(w, "scanning.html", r, "Receipt scanning", data)
 }
 
 func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,19 @@
     <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
     <div><dt>Channel</dt><dd>{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</dd></div>
   </dl>
+  {{if .ScanToken}}
+  <section class="receipt-scan">
+    <h2>Service scan code</h2>
+    <p class="muted">Show this QR or manual code only to an authorised {{.ScanToken.ServiceName}} reader. It is single-use.</p>
+    <img class="qr-code" src="/receipts/{{.Payment.ReceiptToken}}/scan-qr.png" alt="QR code for receipt scanning">
+    <dl>
+      <div><dt>Scan service</dt><dd>{{.ScanToken.ServiceName}}</dd></div>
+      <div><dt>Manual code</dt><dd class="mono">{{.ScanToken.ManualCode}}</dd></div>
+      <div><dt>Receipt type</dt><dd>{{.ScanToken.ReceiptType}}</dd></div>
+      <div><dt>Expires</dt><dd>{{.ScanToken.ExpiresAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
+    </dl>
+  </section>
+  {{end}}
   <p class="muted">{{if eq .Payment.Provider "bank_transfer"}}Payment status is shown after transfer confirmation is recorded.{{else}}Payment status is shown only after server-side card checkout verification.{{end}}</p>
 </main></body></html>
 {{end}}

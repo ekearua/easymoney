@@ -1,0 +1,91 @@
+{{define "scanning.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Receipt scanning - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main class="dashboard">
+  <h1>Receipt scanning</h1>
+  <p class="muted">QR scanning is active. NFC can reuse the same scan URL/token later without changing the reader validation API.</p>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  {{if .NewReaderKey}}
+  <section class="panel">
+    <h2>Reader API key created</h2>
+    <p class="muted">Copy this now. Xego stores only the hash and will not show it again.</p>
+    <p><strong>{{.NewReader.Name}}</strong> for {{.NewReader.ServiceName}}</p>
+    <pre class="mono">{{.NewReaderKey}}</pre>
+  </section>
+  {{end}}
+
+  <section class="grid-two">
+    <article class="panel">
+      <h2>Register service</h2>
+      <form method="post" action="/admin/scanning/services">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <label>Name <input name="name" required placeholder="Lekki Toll Access"></label>
+        <label>Type
+          <select name="service_type">
+            <option value="merchant">Merchant</option>
+            <option value="xego">Xego-owned</option>
+          </select>
+        </label>
+        <label>Merchant / product owner
+          <select name="merchant_id">
+            <option value="">None</option>
+            {{range .Merchants}}<option value="{{.ID}}">{{.Name}} ({{.Slug}})</option>{{end}}
+          </select>
+        </label>
+        <label>Accepted receipt types <input name="accepted_receipt_types" value="merchant_payment,invoice" placeholder="merchant_payment,invoice,data,thrift"></label>
+        <label>Token expiry, hours <input name="ttl_hours" type="number" min="1" value="24"></label>
+        <label><input name="active" type="checkbox" checked> Active</label>
+        <button type="submit">Save service</button>
+      </form>
+    </article>
+
+    <article class="panel">
+      <h2>Create reader key</h2>
+      <form method="post" action="/admin/scanning/readers">
+        <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+        <label>Service
+          <select name="service_id" required>
+            {{range .Services}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+          </select>
+        </label>
+        <label>Reader name <input name="name" required placeholder="Gate scanner 1"></label>
+        <button type="submit">Create API key</button>
+      </form>
+    </article>
+  </section>
+
+  <section class="panel">
+    <h2>Registered services</h2>
+    <table><thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Receipts</th><th>Expiry</th><th>Status</th></tr></thead><tbody>
+    {{range .Services}}<tr><td>{{.Name}}</td><td>{{.ServiceType}}</td><td>{{.MerchantName}}</td><td>{{.AcceptedReceiptTypes}}</td><td>{{.TokenTTLSeconds}}s</td><td>{{if .Active}}active{{else}}inactive{{end}}</td></tr>{{else}}
+    <tr><td colspan="6">No registered services yet.</td></tr>{{end}}
+    </tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Reader keys</h2>
+    <table><thead><tr><th>Name</th><th>Service</th><th>Key prefix</th><th>Status</th><th>Created</th></tr></thead><tbody>
+    {{range .Readers}}<tr><td>{{.Name}}</td><td>{{.ServiceName}}</td><td class="mono">{{.KeyPrefix}}</td><td>{{if .Active}}active{{else}}inactive{{end}}</td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>{{else}}
+    <tr><td colspan="5">No readers yet.</td></tr>{{end}}
+    </tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Recent scan tokens</h2>
+    <table><thead><tr><th>Service</th><th>Type</th><th>Manual code</th><th>Expires</th><th>Consumed</th></tr></thead><tbody>
+    {{range .Tokens}}<tr><td>{{.ServiceName}}</td><td>{{.ReceiptType}}</td><td class="mono">{{.ManualCode}}</td><td>{{.ExpiresAt.Format "02 Jan 2006 15:04"}}</td><td>{{if .ConsumedAt}}{{.ConsumedAt.Format "02 Jan 2006 15:04"}}{{else}}unused{{end}}</td></tr>{{else}}
+    <tr><td colspan="5">No tokens yet.</td></tr>{{end}}
+    </tbody></table>
+  </section>
+
+  <section class="panel">
+    <h2>Recent scan attempts</h2>
+    <table><thead><tr><th>Status</th><th>Service</th><th>Reader</th><th>IP</th><th>Time</th></tr></thead><tbody>
+    {{range .Attempts}}<tr><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.ServiceName}}</td><td>{{.ReaderName}}</td><td>{{.RemoteAddr}}</td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td></tr>{{else}}
+    <tr><td colspan="5">No scan attempts yet.</td></tr>{{end}}
+    </tbody></table>
+  </section>
+</main></body></html>
+{{end}}

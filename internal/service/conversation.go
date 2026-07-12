@@ -355,6 +355,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.startThriftContribution(ctx, channel, recipient, user, session, code)
 	}
 	switch strings.ToLower(input) {
+	case "menu_main", "main menu", "back":
+		return s.sendMenu(ctx, channel, recipient)
 	case "pay", "menu_pay", "make payment":
 		session.State = "select_merchant"
 		session.Data = map[string]string{}
@@ -388,6 +390,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 			return err
 		}
 		return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+	case "merchant services", "menu_merchant_services":
+		return s.sendMerchantServicesMenu(ctx, channel, recipient)
 	case "become individual", "individual", "menu_become_individual":
 		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
 	case "create thrift", "menu_create_thrift", "thrift":
@@ -400,6 +404,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendText(ctx, channel, recipient, "Send the thrift invite code. It looks like XG-THRIFT-1234ABCD.")
 	case "thrift dashboard", "menu_thrift_dashboard":
 		return s.sendThriftDashboard(ctx, channel, recipient, user)
+	case "thrift contributions", "menu_thrift_services":
+		return s.sendThriftMenu(ctx, channel, recipient)
 	case "generate invoice", "menu_generate_invoice", "invoice":
 		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
 	case "merchant dashboard", "menu_merchant_dashboard":
@@ -1877,22 +1883,64 @@ func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient s
 		ButtonLabel: "Open menu",
 		Sections: []ports.InteractiveSection{{
 			Title: "Xego",
-			Rows: []ports.InteractiveRow{
-				{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
-				{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
-				{ID: "menu_register_merchant", Title: "Register merchant", Description: "Submit a business for review"},
-				{ID: "menu_become_individual", Title: "Become individual", Description: "Enable thrift groups"},
-				{ID: "menu_create_thrift", Title: "Create thrift", Description: "Rotational contributions"},
-				{ID: "menu_join_thrift", Title: "Join thrift", Description: "Use an invite code"},
-				{ID: "menu_thrift_dashboard", Title: "Thrift dashboard", Description: "Groups and cycles"},
-				{ID: "menu_generate_invoice", Title: "Generate invoice", Description: "Approved merchants only"},
-				{ID: "menu_merchant_dashboard", Title: "Merchant dashboard", Description: "Invoice status summary"},
-				{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
-				{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
-				{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
-			},
+			Rows:  mainMenuRows(),
 		}},
 	})
+}
+
+func (s *ConversationService) sendMerchantServicesMenu(ctx context.Context, channel, recipient string) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        "Merchant services\n\nChoose a merchant action. Merchant-only features unlock after approval.",
+		ButtonLabel: "Merchant menu",
+		Sections: []ports.InteractiveSection{{
+			Title: "Merchants",
+			Rows:  merchantServicesRows(),
+		}},
+	})
+}
+
+func (s *ConversationService) sendThriftMenu(ctx context.Context, channel, recipient string) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        "Thrift contributions\n\nCreate, join, or manage rotational contribution groups.",
+		ButtonLabel: "Thrift menu",
+		Sections: []ports.InteractiveSection{{
+			Title: "Thrift",
+			Rows:  thriftMenuRows(),
+		}},
+	})
+}
+
+func mainMenuRows() []ports.InteractiveRow {
+	return []ports.InteractiveRow{
+		{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
+		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
+		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
+		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
+		{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
+		{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
+		{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
+	}
+}
+
+func merchantServicesRows() []ports.InteractiveRow {
+	return []ports.InteractiveRow{
+		{ID: "menu_register_merchant", Title: "Register merchant", Description: "Submit a business for review"},
+		{ID: "menu_generate_invoice", Title: "Generate invoice", Description: "Approved merchants only"},
+		{ID: "menu_merchant_dashboard", Title: "Merchant dashboard", Description: "Invoice status summary"},
+		{ID: "menu_main", Title: "Back to main menu", Description: "Return to Xego menu"},
+	}
+}
+
+func thriftMenuRows() []ports.InteractiveRow {
+	return []ports.InteractiveRow{
+		{ID: "menu_become_individual", Title: "Become individual", Description: "Enable thrift groups"},
+		{ID: "menu_create_thrift", Title: "Create thrift", Description: "Rotational contributions"},
+		{ID: "menu_join_thrift", Title: "Join thrift", Description: "Use an invite code"},
+		{ID: "menu_thrift_dashboard", Title: "Thrift dashboard", Description: "Groups and cycles"},
+		{ID: "menu_main", Title: "Back to main menu", Description: "Return to Xego menu"},
+	}
 }
 
 func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {

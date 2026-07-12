@@ -1,0 +1,15 @@
+{{define "scan.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Receipt scan - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <div class="receipt-mark">QR</div>
+  <p class="eyebrow">Xego receipt scan</p>
+  <h1>Present this code to the service reader</h1>
+  <p class="muted">This page does not validate or consume the receipt. Authorised readers must submit the code through the Xego reader API.</p>
+  <dl>
+    <div><dt>Scan token</dt><dd class="mono">{{.Token}}</dd></div>
+  </dl>
+</main></body></html>
+{{end}}

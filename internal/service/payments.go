@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
@@ -153,6 +154,9 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.createReceiptScanToken(ctx, updated); err != nil {
+			return payment, changed, err
+		}
 	}
 	return updated, changed, nil
 }
@@ -201,8 +205,29 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.createReceiptScanToken(ctx, updated); err != nil {
+			return payment, changed, err
+		}
 	}
 	return updated, changed, nil
+}
+
+func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
+	token, created, err := s.store.EnsureReceiptScanToken(ctx, payment.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !created {
+		return nil
+	}
+	scanURL := s.cfg.BaseURL + "/scan/" + token.Token
+	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
+	body := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\nShow this QR/code only to an authorised service reader. It is single-use and expires on %s.",
+		token.ServiceName, token.ManualCode, scanURL, receiptURL, token.ExpiresAt.Format("02 Jan 2006, 15:04 MST"))
+	return s.store.EnqueueTextForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, body)
 }
 
 func validateVerification(payment store.PaymentView, verification ports.Verification) error {
