@@ -159,6 +159,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleThriftJoinConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_activate_order":
 		return s.handleThriftActivateOrder(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_concat_review":
+		return s.handleThriftConcatReview(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_pay_method":
 		return s.handleThriftPayMethod(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_pay_bank":
@@ -720,10 +722,19 @@ func (s *ConversationService) startThriftCreation(ctx context.Context, channel, 
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Let's create a rotational thrift contribution.\n\nWhat should we call this thrift group?")
+	return s.sendText(ctx, channel, recipient, "Let's create a rotational thrift contribution.\n\nWhat should we call this thrift group?\n\nYou can send all details at once: Name, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8")
 }
 
 func (s *ConversationService) handleThriftName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	fields := parseCommaSeparatedFields(input)
+	if len(fields) >= 2 {
+		parsed := parseThriftConcatInput(input, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo)
+		if len(parsed.Errors) > 0 {
+			return s.sendText(ctx, channel, recipient, strings.Join(parsed.Errors, "\n"))
+		}
+		return s.handleThriftConcatCreation(ctx, channel, recipient, user, session, parsed)
+	}
+
 	name := strings.TrimSpace(input)
 	if len([]rune(name)) < 3 || len([]rune(name)) > 80 {
 		return s.sendText(ctx, channel, recipient, "Send a thrift group name between 3 and 80 characters.")
@@ -787,6 +798,97 @@ func (s *ConversationService) handleThriftTarget(ctx context.Context, channel, r
 	if err != nil {
 		return err
 	}
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\nInvite code: %s\n\nShare this code with members. They can send JOIN %s to Xego. When all members have joined, send ACTIVATE %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.InviteCode, group.InviteCode, group.InviteCode))
+}
+
+func (s *ConversationService) handleThriftConcatCreation(ctx context.Context, channel, recipient string, user store.User, session store.Session, parsed thriftConcatResult) error {
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	session.Data["thrift_name"] = parsed.Name
+
+	if parsed.Amount != "" {
+		amount, err := domain.ParseNGNAmount(parsed.Amount, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, err.Error())
+		}
+		session.Data["thrift_amount_kobo"] = strconv.FormatInt(amount, 10)
+	}
+	if parsed.Frequency != "" {
+		session.Data["thrift_frequency"] = parsed.Frequency
+	}
+	if parsed.Target != "" {
+		session.Data["thrift_target"] = parsed.Target
+	}
+
+	missing := []string{}
+	if session.Data["thrift_amount_kobo"] == "" {
+		missing = append(missing, "amount")
+	}
+	if session.Data["thrift_frequency"] == "" {
+		missing = append(missing, "frequency (weekly or monthly)")
+	}
+	if session.Data["thrift_target"] == "" {
+		missing = append(missing, "member count (2-12)")
+	}
+
+	if len(missing) > 0 {
+		if session.Data["thrift_amount_kobo"] == "" {
+			session.State = "thrift_amount"
+		} else if session.Data["thrift_frequency"] == "" {
+			session.State = "thrift_frequency"
+		} else if session.Data["thrift_target"] == "" {
+			session.State = "thrift_target"
+		}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Got it. Now send the: "+strings.Join(missing, ", "))
+	}
+
+	session.State = "thrift_concat_review"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+
+	amount, _ := strconv.ParseInt(session.Data["thrift_amount_kobo"], 10, 64)
+	target, _ := strconv.Atoi(session.Data["thrift_target"])
+
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Review your thrift group:\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nCreate this group?",
+			parsed.Name, domain.FormatNGN(amount), parsed.Frequency, target),
+		Buttons: []ports.InteractiveButton{
+			{ID: "thrift_concat_confirm", Title: "Create"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+func (s *ConversationService) handleThriftConcatReview(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if input != "thrift_concat_confirm" && !strings.EqualFold(input, "create") && !strings.EqualFold(input, "confirm") {
+		return s.sendText(ctx, channel, recipient, "Choose Create or Cancel.")
+	}
+
+	amount, err := strconv.ParseInt(session.Data["thrift_amount_kobo"], 10, 64)
+	if err != nil || session.Data["thrift_name"] == "" || session.Data["thrift_frequency"] == "" || session.Data["thrift_target"] == "" {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift creation session expired. Please start again.")
+	}
+	target, err := strconv.Atoi(session.Data["thrift_target"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That thrift creation session expired. Please start again.")
+	}
+
+	group, err := s.store.CreateThriftGroup(ctx, user.ID, session.Data["thrift_name"], amount, session.Data["thrift_frequency"], target)
+	if err != nil {
+		return err
+	}
+
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
@@ -1159,10 +1261,21 @@ func (s *ConversationService) handleInvoiceCustomerEmail(ctx context.Context, ch
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Add the first invoice item.\n\nSend the item name or description, for example: Website design deposit.")
+	return s.sendText(ctx, channel, recipient, "Add invoice items.\n\nSend one item per line: Name, Quantity, Price\nExample: Website design, 1, 25000\n\nOr send just the item name to enter details one at a time.")
 }
 
 func (s *ConversationService) handleInvoiceItemName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if strings.Contains(input, "\n") {
+		return s.handleInvoiceBulkItems(ctx, channel, recipient, user, session, input)
+	}
+	fields := parseCommaSeparatedFields(input)
+	if len(fields) >= 3 {
+		name, qtyStr, priceStr, ok := parseInvoiceSingleItemConcat(input, s.cfg.PaymentMaxKobo)
+		if ok {
+			return s.handleInvoiceSingleItemConcat(ctx, channel, recipient, user, session, name, qtyStr, priceStr)
+		}
+	}
+
 	name := strings.TrimSpace(input)
 	if len([]rune(name)) < 2 || len([]rune(name)) > 120 {
 		return s.sendText(ctx, channel, recipient, "Send an item description between 2 and 120 characters.")
@@ -1217,6 +1330,98 @@ func (s *ConversationService) handleInvoiceItemUnitPrice(ctx context.Context, ch
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
 		Body: invoiceItemsSummary("Item added. Current invoice items:", items) + "\n\nAdd another item?",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+			{ID: "invoice_add_no", Title: "Continue"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoiceSingleItemConcat(ctx context.Context, channel, recipient string, user store.User, session store.Session, name, qtyStr, priceStr string) error {
+	qty, _ := strconv.Atoi(qtyStr)
+	price, err := domain.ParseNGNAmount(priceStr, 100, s.cfg.PaymentMaxKobo)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, err.Error())
+	}
+
+	existing, err := invoiceItemsFromSession(session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	existing = append(existing, store.InvoiceItem{
+		Description:   name,
+		Quantity:      qty,
+		UnitPriceKobo: price,
+		LineTotalKobo: int64(qty) * price,
+		SortOrder:     len(existing) + 1,
+	})
+	if err := putInvoiceItems(&session, existing); err != nil {
+		return err
+	}
+
+	session.State = "invoice_add_item"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: invoiceItemsSummary("Item added. Current invoice items:", existing) + "\n\nAdd another item?",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+			{ID: "invoice_add_no", Title: "Continue"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoiceBulkItems(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	parsed := parseInvoiceBulkItems(input, s.cfg.PaymentMaxKobo)
+
+	var allErrors []string
+	for i, item := range parsed {
+		for _, e := range item.Errors {
+			allErrors = append(allErrors, fmt.Sprintf("Item %d (%s): %s", i+1, item.Name, e))
+		}
+	}
+	if len(allErrors) > 0 {
+		return s.sendText(ctx, channel, recipient, "Some items have issues:\n"+strings.Join(allErrors, "\n")+"\n\nPlease fix and try again, or send items one at a time.")
+	}
+
+	if len(parsed) == 0 {
+		return s.sendText(ctx, channel, recipient, "Send at least one item. Format: name, quantity, price (one per line).")
+	}
+	if len(parsed) > 10 {
+		return s.sendText(ctx, channel, recipient, "You can add up to 10 items at once. Please split into smaller batches.")
+	}
+
+	var items []store.InvoiceItem
+	for _, p := range parsed {
+		qty, _ := strconv.Atoi(p.Quantity)
+		price, _ := domain.ParseNGNAmount(p.Price, 100, s.cfg.PaymentMaxKobo)
+		items = append(items, store.InvoiceItem{
+			Description:   p.Name,
+			Quantity:      qty,
+			UnitPriceKobo: price,
+			LineTotalKobo: int64(qty) * price,
+			SortOrder:     len(items) + 1,
+		})
+	}
+
+	existing, err := invoiceItemsFromSession(session)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	items = append(existing, items...)
+	if err := putInvoiceItems(&session, items); err != nil {
+		return err
+	}
+
+	session.State = "invoice_add_item"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: invoiceItemsSummary("Items added. Current invoice items:", items) + "\n\nAdd another item?",
 		Buttons: []ports.InteractiveButton{
 			{ID: "invoice_add_yes", Title: "Add item"},
 			{ID: "invoice_add_no", Title: "Continue"},
@@ -2348,7 +2553,7 @@ func (s *ConversationService) sendThriftDashboard(ctx context.Context, channel, 
 
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
-		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN XG-THRIFT-1234ABCD joins an inviting group.\nACTIVATE XG-THRIFT-1234ABCD lets the creator set payout rotation.\nCONTRIBUTE XG-THRIFT-1234ABCD starts this cycle's payment.\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
+		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN XG-THRIFT-1234ABCD joins an inviting group.\nACTIVATE XG-THRIFT-1234ABCD lets the creator set payout rotation.\nCONTRIBUTE XG-THRIFT-1234ABCD starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, channel, recipient string, user store.User, session store.Session, body string) error {
@@ -2719,6 +2924,165 @@ func truncateRunes(value string, limit int) string {
 		return string(runes[:limit])
 	}
 	return string(runes[:limit-1]) + "…"
+}
+
+type thriftConcatResult struct {
+	Name      string
+	Amount    string
+	Frequency string
+	Target    string
+	Errors    []string
+}
+
+type invoiceBulkItem struct {
+	Name     string
+	Quantity string
+	Price    string
+	Errors   []string
+}
+
+func parseCommaSeparatedFields(input string) []string {
+	parts := strings.Split(input, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func parseThriftConcatInput(input string, minKobo, maxKobo int64) thriftConcatResult {
+	fields := parseCommaSeparatedFields(input)
+	result := thriftConcatResult{}
+
+	for _, field := range fields {
+		lower := strings.ToLower(field)
+		if result.Frequency == "" && (lower == "weekly" || lower == "monthly") {
+			result.Frequency = lower
+			continue
+		}
+		if result.Amount == "" {
+			if _, err := domain.ParseNGNAmount(field, minKobo, maxKobo); err == nil {
+				result.Amount = field
+				continue
+			}
+		}
+	}
+
+	var targetCandidates []string
+	for _, field := range fields {
+		if strings.ToLower(field) == result.Frequency || field == result.Amount {
+			continue
+		}
+		if target, err := strconv.Atoi(field); err == nil && target >= 2 && target <= 12 {
+			targetCandidates = append(targetCandidates, field)
+		}
+	}
+	if len(targetCandidates) == 1 {
+		result.Target = targetCandidates[0]
+	}
+
+	for _, field := range fields {
+		if field == result.Frequency || field == result.Amount || field == result.Target {
+			continue
+		}
+		if result.Name == "" {
+			result.Name = field
+		}
+	}
+
+	if result.Name != "" && (len([]rune(result.Name)) < 3 || len([]rune(result.Name)) > 80) {
+		result.Errors = append(result.Errors, "Name should be between 3 and 80 characters.")
+	}
+	if result.Amount != "" {
+		if _, err := domain.ParseNGNAmount(result.Amount, minKobo, maxKobo); err != nil {
+			result.Errors = append(result.Errors, "Amount: "+err.Error())
+		}
+	}
+	if result.Frequency != "" && result.Frequency != "weekly" && result.Frequency != "monthly" {
+		result.Errors = append(result.Errors, "Frequency must be Weekly or Monthly.")
+	}
+	if result.Target != "" {
+		target, err := strconv.Atoi(result.Target)
+		if err != nil || target < 2 || target > 12 {
+			result.Errors = append(result.Errors, "Member count should be between 2 and 12.")
+		}
+	}
+
+	return result
+}
+
+func parseInvoiceSingleItemConcat(input string, maxPriceKobo int64) (name, qtyStr, priceStr string, ok bool) {
+	fields := parseCommaSeparatedFields(input)
+	if len(fields) < 3 {
+		return "", "", "", false
+	}
+
+	priceStr = fields[len(fields)-1]
+	qtyStr = fields[len(fields)-2]
+
+	qty, err := strconv.Atoi(qtyStr)
+	if err != nil || qty < 1 || qty > 1000 {
+		return "", "", "", false
+	}
+
+	if _, err := domain.ParseNGNAmount(priceStr, 100, maxPriceKobo); err != nil {
+		return "", "", "", false
+	}
+
+	name = strings.Join(fields[:len(fields)-2], ", ")
+	if len([]rune(name)) < 2 || len([]rune(name)) > 120 {
+		return "", "", "", false
+	}
+
+	return name, qtyStr, priceStr, true
+}
+
+func parseInvoiceBulkItems(input string, maxPriceKobo int64) []invoiceBulkItem {
+	lines := strings.Split(input, "\n")
+	var items []invoiceBulkItem
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := parseCommaSeparatedFields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		item := invoiceBulkItem{}
+
+		if len(fields) >= 3 {
+			item.Price = fields[len(fields)-1]
+			item.Quantity = fields[len(fields)-2]
+			item.Name = strings.Join(fields[:len(fields)-2], ", ")
+		} else if len(fields) == 2 {
+			item.Name = fields[0]
+			item.Quantity = fields[1]
+		} else {
+			item.Name = fields[0]
+		}
+
+		if len([]rune(item.Name)) < 2 || len([]rune(item.Name)) > 120 {
+			item.Errors = append(item.Errors, "Item name should be between 2 and 120 characters.")
+		}
+		if item.Quantity != "" {
+			qty, err := strconv.Atoi(item.Quantity)
+			if err != nil || qty < 1 || qty > 1000 {
+				item.Errors = append(item.Errors, "Quantity should be between 1 and 1000.")
+			}
+		}
+		if item.Price != "" {
+			if _, err := domain.ParseNGNAmount(item.Price, 100, maxPriceKobo); err != nil {
+				item.Errors = append(item.Errors, "Price: "+err.Error())
+			}
+		}
+
+		items = append(items, item)
+	}
+	return items
 }
 
 func normalizePhone(value string) string {
