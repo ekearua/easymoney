@@ -1194,7 +1194,7 @@ func (s *ConversationService) startInvoiceGeneration(ctx context.Context, channe
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "Let's generate an invoice for "+merchants[0].Name+".\n\nSend the customer's WhatsApp number.\n\nFor this demo, use one of:\n+2347061975340\n+2348033072780")
+		return s.sendText(ctx, channel, recipient, "Let's generate an invoice for "+merchants[0].Name+".\n\nSend the customer's WhatsApp number and email, comma-separated.\nExample: +2347061975340, customer@example.com\n\nOr send just the WhatsApp number to enter details one at a time.")
 	}
 	session.State = "invoice_select_merchant"
 	if err := s.saveSession(ctx, session); err != nil {
@@ -1228,13 +1228,36 @@ func (s *ConversationService) handleInvoiceMerchant(ctx context.Context, channel
 			if err := s.saveSession(ctx, session); err != nil {
 				return err
 			}
-			return s.sendText(ctx, channel, recipient, "Send the customer's WhatsApp number.\n\nFor this demo, use one of:\n+2347061975340\n+2348033072780")
+			return s.sendText(ctx, channel, recipient, "Send the customer's WhatsApp number and email, comma-separated.\nExample: +2347061975340, customer@example.com\n\nOr send just the WhatsApp number to enter details one at a time.")
 		}
 	}
 	return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
 }
 
 func (s *ConversationService) handleInvoiceCustomerPhone(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	fields := parseCommaSeparatedFields(input)
+	if len(fields) >= 2 {
+		phone, phoneErr := domain.NormalizeNigerianPhone(fields[0])
+		address, emailErr := mail.ParseAddress(fields[1])
+		if phoneErr != nil {
+			return s.sendText(ctx, channel, recipient, "Send a valid Nigerian WhatsApp number for the customer, for example +2347061975340.")
+		}
+		if !demoInvoiceCustomerNumbers[phone] {
+			return s.sendText(ctx, channel, recipient, "For this demo, invoices can only be sent to these test WhatsApp numbers:\n+2347061975340\n+2348033072780")
+		}
+		if emailErr != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
+			return s.sendText(ctx, channel, recipient, "That email doesn't look valid. Please send a valid email address, like customer@example.com.")
+		}
+		session.State = "invoice_item_name"
+		session.Data["invoice_customer_phone"] = phone
+		session.Data["invoice_customer_email"] = strings.ToLower(address.Address)
+		session.Data["invoice_items"] = "[]"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Add invoice items.\n\nSend one item per line: Name, Quantity, Price\nExample: Website design, 1, 25000\n\nOr send just the item name to enter details one at a time.")
+	}
+
 	phone, err := domain.NormalizeNigerianPhone(input)
 	if err != nil {
 		return s.sendText(ctx, channel, recipient, "Send a valid Nigerian WhatsApp number for the customer, for example +2347061975340.")
