@@ -89,6 +89,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
 		"sub":         func(a, b int64) int64 { return a - b },
+		"inc":         func(i int) int { return i + 1 },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		repository.Close()
@@ -205,6 +206,7 @@ func (a *App) routes() http.Handler {
 	router.Get("/receipts/{token}", a.receipt)
 	router.Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.Get("/invoices/{reference}", a.invoice)
+	router.Get("/thrift/{name}", a.thriftGroup)
 	router.Get("/scan/{token}", a.scanLanding)
 	router.Post("/api/readers/scan", a.readerScan)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
@@ -725,6 +727,27 @@ func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL})
+}
+
+func (a *App) thriftGroup(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	group, err := a.store.ThriftGroupByName(r.Context(), name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	members, _ := a.store.ThriftMembers(r.Context(), group.ID)
+	progress, _ := a.store.ThriftCycleProgressForGroup(r.Context(), group.ID)
+	a.render(w, "thrift_group.html", map[string]any{
+		"AppName":  a.cfg.AppName,
+		"Group":    group,
+		"Members":  members,
+		"Progress": progress,
+	})
 }
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {

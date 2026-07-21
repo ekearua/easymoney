@@ -16,11 +16,14 @@ func TestThriftCommandParsing(t *testing.T) {
 		want  string
 		ok    bool
 	}{
-		{name: "join command", input: "JOIN XG-THRIFT-8K2Q", fn: thriftJoinCodeFromInput, want: "XG-THRIFT-8K2Q", ok: true},
-		{name: "bare invite", input: "xg-thrift-8k2q", fn: thriftJoinCodeFromInput, want: "XG-THRIFT-8K2Q", ok: true},
-		{name: "activate command", input: "activate XG-THRIFT-ABCD1234", fn: thriftActivateCodeFromInput, want: "XG-THRIFT-ABCD1234", ok: true},
-		{name: "contribute command", input: "CONTRIBUTE XG-THRIFT-ABCD1234", fn: thriftContributeCodeFromInput, want: "XG-THRIFT-ABCD1234", ok: true},
-		{name: "wrong verb", input: "PAY XG-THRIFT-ABCD1234", fn: thriftContributeCodeFromInput, ok: false},
+		{name: "join command", input: "JOIN Office Pool", fn: thriftJoinNameFromInput, want: "Office Pool", ok: true},
+		{name: "bare join", input: "join savings circle", fn: thriftJoinNameFromInput, want: "savings circle", ok: true},
+		{name: "activate command", input: "activate Office Pool", fn: thriftActivateNameFromInput, want: "Office Pool", ok: true},
+		{name: "start alias", input: "start Office Pool", fn: thriftActivateNameFromInput, want: "Office Pool", ok: true},
+		{name: "contribute command", input: "CONTRIBUTE Office Pool", fn: thriftContributeNameFromInput, want: "Office Pool", ok: true},
+		{name: "wrong verb", input: "PAY Office Pool", fn: thriftContributeNameFromInput, ok: false},
+		{name: "name too short", input: "JOIN A", fn: thriftJoinNameFromInput, ok: false},
+		{name: "empty name", input: "JOIN", fn: thriftJoinNameFromInput, ok: false},
 	}
 	for _, test := range tests {
 		test := test

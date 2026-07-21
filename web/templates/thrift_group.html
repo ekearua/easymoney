@@ -1,0 +1,36 @@
+{{define "thrift_group.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Group.Name}} - {{.AppName}} Thrift</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Xego thrift group</p>
+  <h1>{{.Group.Name}}</h1>
+  <p class="receipt-amount">{{money .Group.ContributionAmountKobo}}</p>
+  <dl>
+    <div><dt>Status</dt><dd>{{.Group.Status}}</dd></div>
+    <div><dt>Creator</dt><dd>{{.Group.CreatorName}}</dd></div>
+    <div><dt>Contribution</dt><dd>{{money .Group.ContributionAmountKobo}} {{.Group.Frequency}}</dd></div>
+    <div><dt>Members</dt><dd>{{.Group.MemberCount}} of {{.Group.TargetMemberCount}}</dd></div>
+    {{if .Group.ActivatedAt}}<div><dt>Activated</dt><dd>{{.Group.ActivatedAt.Format "02 Jan 2006"}}</dd></div>{{end}}
+  </dl>
+  {{if .Progress}}
+  <h2>Current Cycle</h2>
+  <dl>
+    <div><dt>Cycle</dt><dd>#{{.Progress.CycleNumber}}</dd></div>
+    <div><dt>Paid</dt><dd>{{.Progress.PaidCount}} of {{.Progress.TotalMembers}}</dd></div>
+    <div><dt>Payout recipient</dt><dd>{{.Progress.PayoutMemberName}}</dd></div>
+    <div><dt>Due</dt><dd>{{.Progress.DueAt.Format "02 Jan 2006"}}</dd></div>
+  </dl>
+  {{end}}
+  {{if .Members}}
+  <h2>Members</h2>
+  <dl>
+    {{range $index, $member := .Members}}<div><dt>#{{inc $index}} {{$member.UserName}}</dt><dd>{{$member.Status}}</dd></div>{{end}}
+  </dl>
+  {{end}}
+  <p>To join or contribute, send this message to Xego on WhatsApp:</p>
+  <p class="mono">JOIN {{.Group.Name}}</p>
+  <p class="muted">Or CONTRIBUTE {{.Group.Name}} when there is an active contribution cycle.</p>
+</main></body></html>
+{{end}}

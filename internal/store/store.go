@@ -1844,33 +1844,29 @@ func (s *Store) ThriftSystemMerchant(ctx context.Context) (Merchant, error) {
 	return merchant, err
 }
 
+// ThriftGroupNameExists reports whether an active thrift group with the given
+// name already exists. Names are compared case-insensitively.
+func (s *Store) ThriftGroupNameExists(ctx context.Context, name string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM thrift_groups WHERE LOWER(TRIM(name))=LOWER($1) AND status <> 'cancelled')`, name).Scan(&exists)
+	return exists, err
+}
+
 // CreateThriftGroup creates an inviting thrift group and adds the creator as a
 // confirmed member. The creator can later choose the full payout order.
 func (s *Store) CreateThriftGroup(ctx context.Context, creatorID uuid.UUID, name string, amountKobo int64, frequency string, targetMembers int) (ThriftGroupView, error) {
-	for i := 0; i < 5; i++ {
-		code := newThriftInviteCode()
-		group, err := s.createThriftGroupOnce(ctx, creatorID, name, amountKobo, frequency, targetMembers, code)
-		if err == nil {
-			return group, nil
-		}
-		if !strings.Contains(strings.ToLower(err.Error()), "thrift_groups_invite_code") {
-			return ThriftGroupView{}, err
-		}
-	}
-	return ThriftGroupView{}, errors.New("could not allocate thrift invite code")
-}
-
-func (s *Store) createThriftGroupOnce(ctx context.Context, creatorID uuid.UUID, name string, amountKobo int64, frequency string, targetMembers int, code string) (ThriftGroupView, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ThriftGroupView{}, err
 	}
 	defer tx.Rollback(ctx)
+	trimmed := strings.TrimSpace(name)
 	var groupID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO thrift_groups(creator_user_id,name,contribution_amount_kobo,frequency,target_member_count,invite_code,status)
-		VALUES($1,$2,$3,$4,$5,$6,'inviting')
-		RETURNING id`, creatorID, strings.TrimSpace(name), amountKobo, frequency, targetMembers, code).Scan(&groupID); err != nil {
+		VALUES($1,$2,$3,$4,$5,'','inviting')
+		RETURNING id`, creatorID, trimmed, amountKobo, frequency, targetMembers).Scan(&groupID); err != nil {
 		return ThriftGroupView{}, err
 	}
 	var memberID uuid.UUID
@@ -1880,7 +1876,7 @@ func (s *Store) createThriftGroupOnce(ctx context.Context, creatorID uuid.UUID, 
 		RETURNING id`, groupID, creatorID).Scan(&memberID); err != nil {
 		return ThriftGroupView{}, err
 	}
-	if err := insertThriftEvent(ctx, tx, groupID, uuid.Nil, memberID, "group_created", map[string]any{"invite_code": code}); err != nil {
+	if err := insertThriftEvent(ctx, tx, groupID, uuid.Nil, memberID, "group_created", map[string]any{"name": trimmed}); err != nil {
 		return ThriftGroupView{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1889,17 +1885,18 @@ func (s *Store) createThriftGroupOnce(ctx context.Context, creatorID uuid.UUID, 
 	return s.ThriftGroupByID(ctx, groupID)
 }
 
-func newThriftInviteCode() string {
-	return "XG-THRIFT-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
-}
-
-// ThriftGroupByInviteCode returns a group for customer join/contribute commands.
-func (s *Store) ThriftGroupByInviteCode(ctx context.Context, code string) (ThriftGroupView, error) {
+// ThriftGroupByName returns a group by its user-facing name (case-insensitive).
+func (s *Store) ThriftGroupByName(ctx context.Context, name string) (ThriftGroupView, error) {
 	var id uuid.UUID
-	if err := s.pool.QueryRow(ctx, `SELECT id FROM thrift_groups WHERE invite_code=$1`, strings.ToUpper(strings.TrimSpace(code))).Scan(&id); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM thrift_groups WHERE LOWER(TRIM(name))=LOWER($1)`, strings.TrimSpace(name)).Scan(&id); err != nil {
 		return ThriftGroupView{}, err
 	}
 	return s.ThriftGroupByID(ctx, id)
+}
+
+// ThriftGroupByInviteCode is a backward-compatible alias for ThriftGroupByName.
+func (s *Store) ThriftGroupByInviteCode(ctx context.Context, code string) (ThriftGroupView, error) {
+	return s.ThriftGroupByName(ctx, code)
 }
 
 // ThriftGroupByID returns a group summary.
@@ -1922,7 +1919,7 @@ func (s *Store) ThriftGroupByID(ctx context.Context, id uuid.UUID) (ThriftGroupV
 }
 
 // JoinThriftGroup adds a confirmed member while the group is still inviting.
-func (s *Store) JoinThriftGroup(ctx context.Context, inviteCode string, userID uuid.UUID) (ThriftGroupView, ThriftMemberView, error) {
+func (s *Store) JoinThriftGroup(ctx context.Context, name string, userID uuid.UUID) (ThriftGroupView, ThriftMemberView, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ThriftGroupView{}, ThriftMemberView{}, err
@@ -1935,8 +1932,8 @@ func (s *Store) JoinThriftGroup(ctx context.Context, inviteCode string, userID u
 		SELECT id,status,target_member_count,
 		       (SELECT COUNT(*) FROM thrift_members WHERE group_id=thrift_groups.id AND status IN ('confirmed','active'))
 		FROM thrift_groups
-		WHERE invite_code=$1
-		FOR UPDATE`, strings.ToUpper(strings.TrimSpace(inviteCode))).Scan(&groupID, &status, &target, &count); err != nil {
+		WHERE LOWER(TRIM(name))=LOWER($1)
+		FOR UPDATE`, strings.TrimSpace(name)).Scan(&groupID, &status, &target, &count); err != nil {
 		return ThriftGroupView{}, ThriftMemberView{}, err
 	}
 	if status != "inviting" {
@@ -2089,7 +2086,7 @@ func nextThriftDueDate(from time.Time, frequency string) time.Time {
 }
 
 // CurrentThriftContributionForUser returns the open contribution for a member.
-func (s *Store) CurrentThriftContributionForUser(ctx context.Context, inviteCode string, userID uuid.UUID) (ThriftContributionView, error) {
+func (s *Store) CurrentThriftContributionForUser(ctx context.Context, name string, userID uuid.UUID) (ThriftContributionView, error) {
 	var contribution ThriftContributionView
 	err := s.pool.QueryRow(ctx, `
 		SELECT tc.id,tc.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,tm.user_id,u.display_name,
@@ -2101,7 +2098,7 @@ func (s *Store) CurrentThriftContributionForUser(ctx context.Context, inviteCode
 		JOIN users u ON u.id=tm.user_id
 		JOIN thrift_contributions tc ON tc.cycle_id=tcy.id AND tc.member_id=tm.id
 		LEFT JOIN payments p ON p.id=tc.payment_id
-		WHERE tg.invite_code=$1 AND tg.status='active'`, strings.ToUpper(strings.TrimSpace(inviteCode)), userID).Scan(
+		WHERE LOWER(TRIM(tg.name))=LOWER($1) AND tg.status='active'`, strings.TrimSpace(name), userID).Scan(
 		&contribution.ID, &contribution.CycleID, &contribution.GroupID, &contribution.GroupName, &contribution.CycleNumber,
 		&contribution.MemberID, &contribution.UserID, &contribution.MemberName, &contribution.PaymentID,
 		&contribution.AmountKobo, &contribution.Status, &contribution.PaymentStatus, &contribution.PaymentReceipt,
@@ -2289,6 +2286,153 @@ func (s *Store) MarkThriftPayoutCompleted(ctx context.Context, payoutID uuid.UUI
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// UpdateThriftGroup updates mutable fields of a thrift group that is still in
+// inviting status. Only the creator can update. Returns the updated group.
+func (s *Store) UpdateThriftGroup(ctx context.Context, groupID, creatorID uuid.UUID, name *string, amountKobo *int64, frequency *string, targetMembers *int) (ThriftGroupView, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ThriftGroupView{}, err
+	}
+	defer tx.Rollback(ctx)
+	var status string
+	if err := tx.QueryRow(ctx, `
+		SELECT status FROM thrift_groups
+		WHERE id=$1 AND creator_user_id=$2
+		FOR UPDATE`, groupID, creatorID).Scan(&status); err != nil {
+		return ThriftGroupView{}, err
+	}
+	if status != "inviting" {
+		return ThriftGroupView{}, fmt.Errorf("thrift group is %s and can no longer be edited", status)
+	}
+	setClauses := []string{}
+	args := []any{}
+	argIdx := 3
+	if name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name=$%d", argIdx))
+		args = append(args, strings.TrimSpace(*name))
+		argIdx++
+	}
+	if amountKobo != nil {
+		setClauses = append(setClauses, fmt.Sprintf("contribution_amount_kobo=$%d", argIdx))
+		args = append(args, *amountKobo)
+		argIdx++
+	}
+	if frequency != nil {
+		setClauses = append(setClauses, fmt.Sprintf("frequency=$%d", argIdx))
+		args = append(args, *frequency)
+		argIdx++
+	}
+	if targetMembers != nil {
+		setClauses = append(setClauses, fmt.Sprintf("target_member_count=$%d", argIdx))
+		args = append(args, *targetMembers)
+		argIdx++
+	}
+	if len(setClauses) == 0 {
+		return s.ThriftGroupByID(ctx, groupID)
+	}
+	setClauses = append(setClauses, "updated_at=now()")
+	query := fmt.Sprintf("UPDATE thrift_groups SET %s WHERE id=$1 AND creator_user_id=$2", strings.Join(setClauses, ","))
+	args = append([]any{groupID, creatorID}, args...)
+	if _, err := tx.Exec(ctx, query, args...); err != nil {
+		return ThriftGroupView{}, err
+	}
+	if err := insertThriftEvent(ctx, tx, groupID, uuid.Nil, uuid.Nil, "group_updated", map[string]any{}); err != nil {
+		return ThriftGroupView{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ThriftGroupView{}, err
+	}
+	return s.ThriftGroupByID(ctx, groupID)
+}
+
+// ThriftCycleProgress returns summary progress for a specific cycle.
+type ThriftCycleProgress struct {
+	TotalMembers     int
+	PaidCount        int
+	DueAt            time.Time
+	PayoutMemberName string
+	GroupName        string
+	CycleNumber      int
+	ContributionAmt  int64
+}
+
+// ThriftCycleProgressForGroup returns the current cycle's progress for a group.
+func (s *Store) ThriftCycleProgressForGroup(ctx context.Context, groupID uuid.UUID) (ThriftCycleProgress, error) {
+	var p ThriftCycleProgress
+	err := s.pool.QueryRow(ctx, `
+		SELECT tg.name,tcy.cycle_number,tcy.due_at,u.display_name,tg.contribution_amount_kobo,
+		       tg.target_member_count,
+		       (SELECT COUNT(*) FROM thrift_contributions tc2 WHERE tc2.cycle_id=tcy.id AND tc2.status='paid')
+		FROM thrift_groups tg
+		JOIN thrift_cycles tcy ON tcy.group_id=tg.id AND tcy.cycle_number=tg.current_cycle
+		JOIN thrift_members tm ON tm.id=tcy.payout_member_id
+		JOIN users u ON u.id=tm.user_id
+		WHERE tg.id=$1`, groupID).Scan(
+		&p.GroupName, &p.CycleNumber, &p.DueAt, &p.PayoutMemberName, &p.ContributionAmt,
+		&p.TotalMembers, &p.PaidCount,
+	)
+	return p, err
+}
+
+// ThriftCyclesForGroup returns all cycles for a group in order.
+func (s *Store) ThriftCyclesForGroup(ctx context.Context, groupID uuid.UUID) ([]ThriftCycleView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tcy.id,tcy.group_id,tg.name,tcy.cycle_number,tcy.due_at,tm.id,u.display_name,
+		       tcy.status,tg.contribution_amount_kobo,tg.target_member_count,tcy.created_at,tcy.updated_at
+		FROM thrift_cycles tcy
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tcy.payout_member_id
+		JOIN users u ON u.id=tm.user_id
+		WHERE tcy.group_id=$1
+		ORDER BY tcy.cycle_number`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cycles []ThriftCycleView
+	for rows.Next() {
+		var c ThriftCycleView
+		if err := rows.Scan(&c.ID, &c.GroupID, &c.GroupName, &c.CycleNumber, &c.DueAt, &c.PayoutMemberID, &c.PayoutMemberName,
+			&c.Status, &c.ContributionAmountKobo, &c.TargetMemberCount, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		cycles = append(cycles, c)
+	}
+	return cycles, rows.Err()
+}
+
+// ThriftContributionsForCycle returns all contributions for a cycle with member names.
+func (s *Store) ThriftContributionsForCycle(ctx context.Context, cycleID uuid.UUID) ([]ThriftContributionView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT tc.id,tc.cycle_id,tg.id,tg.name,tcy.cycle_number,tm.id,tm.user_id,u.display_name,
+		       tc.payment_id,tc.amount_kobo,tc.status,COALESCE(p.status,''),COALESCE(p.receipt_token,''),
+		       tc.created_at,tc.updated_at,tc.paid_at
+		FROM thrift_contributions tc
+		JOIN thrift_cycles tcy ON tcy.id=tc.cycle_id
+		JOIN thrift_groups tg ON tg.id=tcy.group_id
+		JOIN thrift_members tm ON tm.id=tc.member_id
+		JOIN users u ON u.id=tm.user_id
+		LEFT JOIN payments p ON p.id=tc.payment_id
+		WHERE tc.cycle_id=$1
+		ORDER BY tm.payout_position NULLS LAST, tm.joined_at`, cycleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var contributions []ThriftContributionView
+	for rows.Next() {
+		var c ThriftContributionView
+		if err := rows.Scan(&c.ID, &c.CycleID, &c.GroupID, &c.GroupName, &c.CycleNumber,
+			&c.MemberID, &c.UserID, &c.MemberName, &c.PaymentID,
+			&c.AmountKobo, &c.Status, &c.PaymentStatus, &c.PaymentReceipt,
+			&c.CreatedAt, &c.UpdatedAt, &c.PaidAt); err != nil {
+			return nil, err
+		}
+		contributions = append(contributions, c)
+	}
+	return contributions, rows.Err()
 }
 
 // ListThriftGroups returns recent groups for the admin dashboard.

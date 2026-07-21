@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/mail"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -167,6 +168,14 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleThriftPayBank(ctx, message.Channel, recipient, user, session, input)
 	case "await_thrift_bank_transfer":
 		return s.handleThriftBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_edit_field":
+		return s.handleThriftEditField(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_edit_amount_value":
+		return s.handleThriftEditAmountValue(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_edit_frequency_value":
+		return s.handleThriftEditFrequencyValue(ctx, message.Channel, recipient, user, session, input)
+	case "thrift_edit_members_value":
+		return s.handleThriftEditMembersValue(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_select_merchant":
 		return s.handleInvoiceMerchant(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_customer_phone":
@@ -347,14 +356,35 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	if ref, ok := invoiceReferenceFromPAY(input); ok {
 		return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
 	}
-	if code, ok := thriftJoinCodeFromInput(input); ok {
+	if code, ok := thriftJoinNameFromInput(input); ok {
 		return s.startThriftJoin(ctx, channel, recipient, user, session, code)
 	}
-	if code, ok := thriftActivateCodeFromInput(input); ok {
+	if code, ok := thriftActivateNameFromInput(input); ok {
 		return s.startThriftActivation(ctx, channel, recipient, user, session, code)
 	}
-	if code, ok := thriftContributeCodeFromInput(input); ok {
+	if code, ok := thriftContributeNameFromInput(input); ok {
 		return s.startThriftContribution(ctx, channel, recipient, user, session, code)
+	}
+	if strings.HasPrefix(strings.ToLower(input), "thrift_select:") {
+		name := strings.TrimSpace(input[len("thrift_select:"):])
+		group, err := s.store.ThriftGroupByName(ctx, name)
+		if err != nil {
+			return s.sendThriftDashboard(ctx, channel, recipient, user)
+		}
+		return s.sendThriftDetails(ctx, channel, recipient, user, group)
+	}
+	if strings.HasPrefix(strings.ToLower(input), "thrift_edit:") {
+		name := strings.TrimSpace(input[len("thrift_edit:"):])
+		group, err := s.store.ThriftGroupByName(ctx, name)
+		if err != nil {
+			return s.startThriftEdit(ctx, channel, recipient, user, session)
+		}
+		session.State = "thrift_edit_field"
+		session.Data = map[string]string{"thrift_edit_id": group.ID.String(), "thrift_name": group.Name, "edit_changes": ""}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendThriftEditMenu(ctx, channel, recipient, group)
 	}
 	switch strings.ToLower(input) {
 	case "menu_main", "main menu", "back":
@@ -403,11 +433,13 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "Send the thrift invite code. It looks like XG-THRIFT-1234ABCD.")
+		return s.sendText(ctx, channel, recipient, "Send the thrift group name to join. Example: JOIN Office Pool")
 	case "thrift dashboard", "menu_thrift_dashboard":
 		return s.sendThriftDashboard(ctx, channel, recipient, user)
 	case "thrift contributions", "menu_thrift_services":
 		return s.sendThriftMenu(ctx, channel, recipient)
+	case "edit thrift", "menu_edit_thrift":
+		return s.startThriftEdit(ctx, channel, recipient, user, session)
 	case "generate invoice", "menu_generate_invoice", "invoice":
 		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
 	case "merchant dashboard", "menu_merchant_dashboard":
@@ -802,8 +834,8 @@ func (s *ConversationService) handleThriftTarget(ctx context.Context, channel, r
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\nInvite code: %s\n\nShare this code with members. They can send JOIN %s to Xego. When all members have joined, send ACTIVATE %s to choose payout rotation.",
-		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.InviteCode, group.InviteCode, group.InviteCode))
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare the group name with members. They can send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.Name, group.Name))
 }
 
 func (s *ConversationService) handleThriftConcatCreation(ctx context.Context, channel, recipient string, user store.User, session store.Session, parsed thriftConcatResult) error {
@@ -893,24 +925,230 @@ func (s *ConversationService) handleThriftConcatReview(ctx context.Context, chan
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\nInvite code: %s\n\nShare this code with members. They can send JOIN %s to Xego. When all members have joined, send ACTIVATE %s to choose payout rotation.",
-		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.InviteCode, group.InviteCode, group.InviteCode))
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare the group name with members. They can send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.Name, group.Name))
 }
 
-func (s *ConversationService) startThriftJoin(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	code, ok := thriftCodeFromText(input)
-	if !ok {
-		return s.sendText(ctx, channel, recipient, "Send a valid thrift invite code, for example XG-THRIFT-1234ABCD.")
-	}
-	group, err := s.store.ThriftGroupByInviteCode(ctx, code)
+func (s *ConversationService) startThriftEdit(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	groups, err := s.store.RecentThriftGroupsForUser(ctx, user.ID, 10)
 	if err != nil {
-		return s.sendText(ctx, channel, recipient, "I couldn't find that thrift invite code. Please check it and try again.")
+		return err
+	}
+	var editable []store.ThriftGroupView
+	for _, g := range groups {
+		if g.Status == "inviting" && g.CreatorUserID == user.ID {
+			editable = append(editable, g)
+		}
+	}
+	if len(editable) == 0 {
+		return s.sendText(ctx, channel, recipient, "You don't have any thrift groups in inviting status that you can edit.\n\nOnly the creator can edit a group before it is activated.")
+	}
+	if len(editable) == 1 {
+		session.State = "thrift_edit_field"
+		session.Data = map[string]string{"thrift_edit_id": editable[0].ID.String(), "thrift_name": editable[0].Name}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendThriftEditMenu(ctx, channel, recipient, editable[0])
+	}
+	rows := make([]ports.InteractiveRow, 0, len(editable))
+	for _, g := range editable {
+		rows = append(rows, ports.InteractiveRow{ID: "thrift_edit:" + g.Name, Title: g.Name, Description: fmt.Sprintf("%s %s — %d/%d members", domain.FormatNGN(g.ContributionAmountKobo), g.Frequency, g.MemberCount, g.TargetMemberCount)})
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        "Choose which thrift group to edit.",
+		ButtonLabel: "Choose group",
+		Sections:    []ports.InteractiveSection{{Title: "Your thrift groups", Rows: rows}},
+	})
+}
+
+func (s *ConversationService) sendThriftEditMenu(ctx context.Context, channel, recipient string, group store.ThriftGroupView) error {
+	body := fmt.Sprintf("Editing: %s\n\nCurrent details:\nContribution: %s %s\nMembers: %d\n\nWhich field would you like to change?",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount)
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: body,
+		Buttons: []ports.InteractiveButton{
+			{ID: "thrift_edit_amount", Title: "Amount"},
+			{ID: "thrift_edit_frequency", Title: "Frequency"},
+			{ID: "thrift_edit_members", Title: "Members"},
+			{ID: "thrift_edit_done", Title: "Done"},
+		},
+	})
+}
+
+func (s *ConversationService) handleThriftEditField(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	groupID, err := uuid.Parse(session.Data["thrift_edit_id"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired. Please start again from the thrift menu.")
+	}
+	switch strings.ToLower(input) {
+	case "thrift_edit_amount", "amount":
+		session.State = "thrift_edit_amount_value"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send the new contribution amount in naira. Example: 10000")
+	case "thrift_edit_frequency", "frequency":
+		session.State = "thrift_edit_frequency_value"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To:   recipient,
+			Body: "Choose the new contribution frequency:",
+			Buttons: []ports.InteractiveButton{
+				{ID: "thrift_freq_weekly", Title: "Weekly"},
+				{ID: "thrift_freq_monthly", Title: "Monthly"},
+			},
+		})
+	case "thrift_edit_members", "members":
+		session.State = "thrift_edit_members_value"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send the new target member count (2-12).")
+	case "thrift_edit_done", "done", "finish":
+		group, err := s.store.ThriftGroupByID(ctx, groupID)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "Could not load thrift group. Please start again.")
+		}
+		s.notifyThriftMembersOfChanges(ctx, channel, group, session.Data["edit_changes"])
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Thrift group updated. Members have been notified of the changes.")
+	default:
+		group, err := s.store.ThriftGroupByID(ctx, groupID)
+		if err != nil {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+		}
+		return s.sendThriftEditMenu(ctx, channel, recipient, group)
+	}
+}
+
+func (s *ConversationService) handleThriftEditAmountValue(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	groupID, err := uuid.Parse(session.Data["thrift_edit_id"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	amount, err := domain.ParseNGNAmount(input, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, err.Error())
+	}
+	oldGroup, err := s.store.ThriftGroupByID(ctx, groupID)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	_, err = s.store.UpdateThriftGroup(ctx, groupID, user.ID, nil, &amount, nil, nil)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "Could not update: "+err.Error())
+	}
+	change := fmt.Sprintf("Amount changed from %s to %s", domain.FormatNGN(oldGroup.ContributionAmountKobo), domain.FormatNGN(amount))
+	session.Data["edit_changes"] = session.Data["edit_changes"] + "\n• " + change
+	session.State = "thrift_edit_field"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	group, _ := s.store.ThriftGroupByID(ctx, groupID)
+	return s.sendThriftEditMenu(ctx, channel, recipient, group)
+}
+
+func (s *ConversationService) handleThriftEditFrequencyValue(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	groupID, err := uuid.Parse(session.Data["thrift_edit_id"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	var frequency string
+	switch strings.ToLower(input) {
+	case "thrift_freq_weekly", "weekly":
+		frequency = "weekly"
+	case "thrift_freq_monthly", "monthly":
+		frequency = "monthly"
+	default:
+		return s.sendText(ctx, channel, recipient, "Choose Weekly or Monthly.")
+	}
+	oldGroup, err := s.store.ThriftGroupByID(ctx, groupID)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	_, err = s.store.UpdateThriftGroup(ctx, groupID, user.ID, nil, nil, &frequency, nil)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "Could not update: "+err.Error())
+	}
+	change := fmt.Sprintf("Frequency changed from %s to %s", oldGroup.Frequency, frequency)
+	session.Data["edit_changes"] = session.Data["edit_changes"] + "\n• " + change
+	session.State = "thrift_edit_field"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	group, _ := s.store.ThriftGroupByID(ctx, groupID)
+	return s.sendThriftEditMenu(ctx, channel, recipient, group)
+}
+
+func (s *ConversationService) handleThriftEditMembersValue(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	groupID, err := uuid.Parse(session.Data["thrift_edit_id"])
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	target, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || target < 2 || target > 12 {
+		return s.sendText(ctx, channel, recipient, "Send a member count from 2 to 12.")
+	}
+	oldGroup, err := s.store.ThriftGroupByID(ctx, groupID)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That edit session expired.")
+	}
+	if oldGroup.MemberCount > target {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("The group already has %d members. You cannot reduce the target below that.", oldGroup.MemberCount))
+	}
+	_, err = s.store.UpdateThriftGroup(ctx, groupID, user.ID, nil, nil, nil, &target)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "Could not update: "+err.Error())
+	}
+	change := fmt.Sprintf("Members changed from %d to %d", oldGroup.TargetMemberCount, target)
+	session.Data["edit_changes"] = session.Data["edit_changes"] + "\n• " + change
+	session.State = "thrift_edit_field"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	group, _ := s.store.ThriftGroupByID(ctx, groupID)
+	return s.sendThriftEditMenu(ctx, channel, recipient, group)
+}
+
+func (s *ConversationService) notifyThriftMembersOfChanges(ctx context.Context, channel string, group store.ThriftGroupView, changes string) {
+	if changes == "" {
+		return
+	}
+	members, err := s.store.ThriftMembers(ctx, group.ID)
+	if err != nil {
+		return
+	}
+	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
+	body := fmt.Sprintf("Thrift group updated by %s:\n\nGroup: %s%s\n\nView details: %s",
+		group.CreatorName, group.Name, changes, webLink)
+	for _, member := range members {
+		if member.UserID == group.CreatorUserID {
+			continue
+		}
+		if member.WhatsAppNumber != "" {
+			_ = s.sendText(ctx, ChannelWhatsApp, member.WhatsAppNumber, body)
+		}
+	}
+}
+
+func (s *ConversationService) startThriftJoin(ctx context.Context, channel, recipient string, user store.User, session store.Session, name string) error {
+	group, err := s.store.ThriftGroupByName(ctx, name)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't find a thrift group with that name. Please check and try again.")
 	}
 	if group.Status != "inviting" {
 		return s.sendText(ctx, channel, recipient, "That thrift group is not accepting new members right now.")
 	}
 	session.State = "thrift_join_confirm"
-	session.Data = map[string]string{"thrift_invite_code": group.InviteCode}
+	session.Data = map[string]string{"thrift_name": group.Name}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -927,9 +1165,9 @@ func (s *ConversationService) startThriftJoin(ctx context.Context, channel, reci
 
 func (s *ConversationService) handleThriftJoinConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "thrift_join_confirm" && !strings.EqualFold(input, "join") && !strings.EqualFold(input, "confirm") {
-		return s.startThriftJoin(ctx, channel, recipient, user, session, session.Data["thrift_invite_code"])
+		return s.startThriftJoin(ctx, channel, recipient, user, session, session.Data["thrift_name"])
 	}
-	group, member, err := s.store.JoinThriftGroup(ctx, session.Data["thrift_invite_code"], user.ID)
+	group, member, err := s.store.JoinThriftGroup(ctx, session.Data["thrift_name"], user.ID)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego could not join that thrift group: "+err.Error())
 	}
@@ -941,14 +1179,10 @@ func (s *ConversationService) handleThriftJoinConfirm(ctx context.Context, chann
 		group.Name, member.UserName, group.MemberCount, group.TargetMemberCount))
 }
 
-func (s *ConversationService) startThriftActivation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	code, ok := thriftCodeFromText(input)
-	if !ok {
-		return s.sendText(ctx, channel, recipient, "Send ACTIVATE followed by the thrift invite code. Example: ACTIVATE XG-THRIFT-1234ABCD")
-	}
-	group, err := s.store.ThriftGroupByInviteCode(ctx, code)
+func (s *ConversationService) startThriftActivation(ctx context.Context, channel, recipient string, user store.User, session store.Session, name string) error {
+	group, err := s.store.ThriftGroupByName(ctx, name)
 	if err != nil {
-		return s.sendText(ctx, channel, recipient, "I couldn't find that thrift group.")
+		return s.sendText(ctx, channel, recipient, "I couldn't find a thrift group with that name. Please check and try again.")
 	}
 	if group.CreatorUserID != user.ID {
 		return s.sendText(ctx, channel, recipient, "Only the thrift creator can activate this group.")
@@ -971,7 +1205,7 @@ func (s *ConversationService) startThriftActivation(ctx context.Context, channel
 	}
 	raw, _ := json.Marshal(ids)
 	session.State = "thrift_activate_order"
-	session.Data = map[string]string{"thrift_group_id": group.ID.String(), "thrift_activation_members": string(raw), "thrift_invite_code": group.InviteCode}
+	session.Data = map[string]string{"thrift_group_id": group.ID.String(), "thrift_activation_members": string(raw), "thrift_name": group.Name}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -1004,7 +1238,7 @@ func (s *ConversationService) handleThriftActivateOrder(ctx context.Context, cha
 		}
 		ordered = append(ordered, id)
 	}
-	inviteCode := session.Data["thrift_invite_code"]
+	thriftName := session.Data["thrift_name"]
 	cycle, err := s.store.ActivateThriftGroup(ctx, groupID, user.ID, ordered)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego could not activate the thrift group: "+err.Error())
@@ -1014,15 +1248,11 @@ func (s *ConversationService) handleThriftActivateOrder(ctx context.Context, cha
 		return err
 	}
 	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group activated.\n\nGroup: %s\nCycle: %d\nContribution: %s\nPayout recipient: %s\nDue: %s\n\nMembers can send CONTRIBUTE %s to pay this cycle.",
-		cycle.GroupName, cycle.CycleNumber, domain.FormatNGN(cycle.ContributionAmountKobo), cycle.PayoutMemberName, cycle.DueAt.Format("02 Jan 2006"), inviteCode))
+		cycle.GroupName, cycle.CycleNumber, domain.FormatNGN(cycle.ContributionAmountKobo), cycle.PayoutMemberName, cycle.DueAt.Format("02 Jan 2006"), thriftName))
 }
 
-func (s *ConversationService) startThriftContribution(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	code, ok := thriftCodeFromText(input)
-	if !ok {
-		return s.sendText(ctx, channel, recipient, "Send CONTRIBUTE followed by the thrift invite code. Example: CONTRIBUTE XG-THRIFT-1234ABCD")
-	}
-	contribution, err := s.store.CurrentThriftContributionForUser(ctx, code, user.ID)
+func (s *ConversationService) startThriftContribution(ctx context.Context, channel, recipient string, user store.User, session store.Session, name string) error {
+	contribution, err := s.store.CurrentThriftContributionForUser(ctx, name, user.ID)
 	if err != nil {
 		return s.sendText(ctx, channel, recipient, "I couldn't find an active unpaid contribution for you in that thrift group.")
 	}
@@ -1030,7 +1260,7 @@ func (s *ConversationService) startThriftContribution(ctx context.Context, chann
 		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Your contribution for %s cycle %d is already paid.", contribution.GroupName, contribution.CycleNumber))
 	}
 	session.State = "thrift_pay_method"
-	session.Data = map[string]string{"thrift_contribution_id": contribution.ID.String(), "thrift_invite_code": code}
+	session.Data = map[string]string{"thrift_contribution_id": contribution.ID.String(), "thrift_name": name}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -1092,7 +1322,7 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 		}
 		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
 	default:
-		return s.startThriftContribution(ctx, channel, recipient, user, session, session.Data["thrift_invite_code"])
+		return s.startThriftContribution(ctx, channel, recipient, user, session, session.Data["thrift_name"])
 	}
 }
 
@@ -1175,8 +1405,18 @@ func (s *ConversationService) handleThriftBankTransferConfirmation(ctx context.C
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your thrift contribution.\n\nGroup: %s\nCycle: %d\nAmount: %s\nStatus: %s",
-		contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo), strings.ToUpper(contribution.Status)))
+	group, err := s.store.ThriftGroupByName(ctx, contribution.GroupName)
+	var progressMsg string
+	if err == nil {
+		progress, pErr := s.store.ThriftCycleProgressForGroup(ctx, group.ID)
+		if pErr == nil {
+			progressMsg = fmt.Sprintf("\n\nCycle progress: %d of %d members paid\nPayout recipient: %s\nDue: %s",
+				progress.PaidCount, progress.TotalMembers, progress.PayoutMemberName, progress.DueAt.Format("02 Jan 2006"))
+		}
+	}
+	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(contribution.GroupName)
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Contribution recorded for %s!\n\nCycle %d\nAmount: %s\nYour status: PAID%s\n\nView details: %s",
+		contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo), progressMsg, webLink))
 }
 
 func (s *ConversationService) startInvoiceGeneration(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
@@ -2165,7 +2405,8 @@ func thriftMenuRows() []ports.InteractiveRow {
 	return []ports.InteractiveRow{
 		{ID: "menu_become_individual", Title: "Become individual", Description: "Enable thrift groups"},
 		{ID: "menu_create_thrift", Title: "Create thrift", Description: "Rotational contributions"},
-		{ID: "menu_join_thrift", Title: "Join thrift", Description: "Use an invite code"},
+		{ID: "menu_join_thrift", Title: "Join thrift", Description: "Use a group name"},
+		{ID: "menu_edit_thrift", Title: "Edit thrift", Description: "Update before activation"},
 		{ID: "menu_thrift_dashboard", Title: "Thrift dashboard", Description: "Groups and cycles"},
 		{ID: "menu_main", Title: "Back to main menu", Description: "Return to Xego menu"},
 	}
@@ -2553,30 +2794,60 @@ func (s *ConversationService) sendMerchantDashboard(ctx context.Context, channel
 }
 
 func (s *ConversationService) sendThriftDashboard(ctx context.Context, channel, recipient string, user store.User) error {
-	groups, err := s.store.RecentThriftGroupsForUser(ctx, user.ID, 5)
+	groups, err := s.store.RecentThriftGroupsForUser(ctx, user.ID, 10)
 	if err != nil {
 		return err
 	}
 	if len(groups) == 0 {
-		return s.sendText(ctx, channel, recipient, "You don't have any thrift groups yet.\n\nChoose Become individual, then Create thrift, or join a group with an invite code.")
+		return s.sendText(ctx, channel, recipient, "You don't have any thrift groups yet.\n\nChoose Become individual, then Create thrift, or join a group with JOIN <group name>.")
 	}
-	lines := []string{"Your thrift dashboard:"}
+	if len(groups) == 1 {
+		return s.sendThriftDetails(ctx, channel, recipient, user, groups[0])
+	}
+	rows := make([]ports.InteractiveRow, 0, len(groups))
 	for _, group := range groups {
-		lines = append(lines, fmt.Sprintf("• %s — %s — %s %s — members %d/%d — code %s",
-			group.Name, strings.ToUpper(group.Status), domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.MemberCount, group.TargetMemberCount, group.InviteCode))
-		if group.Status == "inviting" && group.CreatorUserID == user.ID && group.MemberCount == group.TargetMemberCount {
-			lines = append(lines, "  Send: ACTIVATE "+group.InviteCode)
-		}
-		if group.Status == "active" {
-			lines = append(lines, "  To pay this cycle, send: CONTRIBUTE "+group.InviteCode)
-		}
+		desc := fmt.Sprintf("%s %s — %d/%d members", domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.MemberCount, group.TargetMemberCount)
+		rows = append(rows, ports.InteractiveRow{ID: "thrift_select:" + group.Name, Title: group.Name, Description: desc})
 	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        "You're in multiple thrift groups. Choose one to view details.",
+		ButtonLabel: "Choose group",
+		Sections:    []ports.InteractiveSection{{Title: "Your thrift groups", Rows: rows}},
+	})
+}
+
+func (s *ConversationService) sendThriftDetails(ctx context.Context, channel, recipient string, user store.User, group store.ThriftGroupView) error {
+	lines := []string{fmt.Sprintf("%s — %s", group.Name, strings.ToUpper(group.Status))}
+	lines = append(lines, fmt.Sprintf("Contribution: %s %s", domain.FormatNGN(group.ContributionAmountKobo), group.Frequency))
+	lines = append(lines, fmt.Sprintf("Members: %d of %d", group.MemberCount, group.TargetMemberCount))
+	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
+
+	switch group.Status {
+	case "inviting":
+		if group.CreatorUserID == user.ID && group.MemberCount == group.TargetMemberCount {
+			lines = append(lines, fmt.Sprintf("\nAll members joined! Send START %s to choose payout rotation.", group.Name))
+		} else if group.CreatorUserID == user.ID {
+			lines = append(lines, "\nWaiting for more members to join.")
+		}
+	case "active":
+		progress, err := s.store.ThriftCycleProgressForGroup(ctx, group.ID)
+		if err == nil {
+			lines = append(lines, fmt.Sprintf("\nCycle %d — %d of %d members paid", progress.CycleNumber, progress.PaidCount, progress.TotalMembers))
+			lines = append(lines, fmt.Sprintf("Payout to: %s", progress.PayoutMemberName))
+			lines = append(lines, fmt.Sprintf("Due: %s", progress.DueAt.Format("02 Jan 2006")))
+		}
+		lines = append(lines, fmt.Sprintf("\nTo pay: CONTRIBUTE %s", group.Name))
+	case "completed":
+		lines = append(lines, "\nThis thrift group has completed all cycles.")
+	}
+	lines = append(lines, "\nView online: "+webLink)
 	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
 }
 
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
-		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN XG-THRIFT-1234ABCD joins an inviting group.\nACTIVATE XG-THRIFT-1234ABCD lets the creator set payout rotation.\nCONTRIBUTE XG-THRIFT-1234ABCD starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
+		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN <group name> joins an inviting group.\nSTART <group name> (or ACTIVATE) lets the creator set payout rotation.\nCONTRIBUTE <group name> starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, channel, recipient string, user store.User, session store.Session, body string) error {
@@ -2676,38 +2947,42 @@ func (s *ConversationService) userIsApprovedIndividual(ctx context.Context, user
 	return err == nil && profile.KYCStatus == "approved_simulated"
 }
 
-func thriftJoinCodeFromInput(input string) (string, bool) {
-	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
-	if len(fields) == 2 && fields[0] == "JOIN" {
-		return thriftCodeFromText(fields[1])
-	}
-	if len(fields) == 1 {
-		return thriftCodeFromText(fields[0])
+func thriftJoinNameFromInput(input string) (string, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(input))
+	if strings.HasPrefix(upper, "JOIN ") {
+		name := strings.TrimSpace(input[5:])
+		return thriftNameFromText(name)
 	}
 	return "", false
 }
 
-func thriftActivateCodeFromInput(input string) (string, bool) {
-	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
-	if len(fields) == 2 && fields[0] == "ACTIVATE" {
-		return thriftCodeFromText(fields[1])
+func thriftActivateNameFromInput(input string) (string, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(input))
+	if strings.HasPrefix(upper, "ACTIVATE ") {
+		name := strings.TrimSpace(input[9:])
+		return thriftNameFromText(name)
+	}
+	if strings.HasPrefix(upper, "START ") {
+		name := strings.TrimSpace(input[6:])
+		return thriftNameFromText(name)
 	}
 	return "", false
 }
 
-func thriftContributeCodeFromInput(input string) (string, bool) {
-	fields := strings.Fields(strings.ToUpper(strings.TrimSpace(input)))
-	if len(fields) == 2 && fields[0] == "CONTRIBUTE" {
-		return thriftCodeFromText(fields[1])
+func thriftContributeNameFromInput(input string) (string, bool) {
+	upper := strings.ToUpper(strings.TrimSpace(input))
+	if strings.HasPrefix(upper, "CONTRIBUTE ") {
+		name := strings.TrimSpace(input[11:])
+		return thriftNameFromText(name)
 	}
 	return "", false
 }
 
-func thriftCodeFromText(input string) (string, bool) {
-	code := strings.ToUpper(strings.TrimSpace(input))
-	code = strings.Trim(code, ".,;: ")
-	if strings.HasPrefix(code, "XG-THRIFT-") && len(code) >= len("XG-THRIFT-1234") {
-		return code, true
+func thriftNameFromText(input string) (string, bool) {
+	name := strings.TrimSpace(input)
+	name = strings.Trim(name, ".,;: ")
+	if len([]rune(name)) >= 2 {
+		return name, true
 	}
 	return "", false
 }
