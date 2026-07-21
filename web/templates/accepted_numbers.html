@@ -1,0 +1,32 @@
+{{define "accepted_numbers.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Configuration</p><h1>Accepted Invoice Numbers</h1></div></header>
+
+<section class="panel">
+  <p class="muted">Phone numbers listed here can receive demo invoices. One number per line. Leave empty to accept all numbers.</p>
+  <form method="post" action="/admin/accepted-numbers">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="numbers">Accepted phone numbers (one per line)</label>
+    <textarea id="numbers" name="numbers" rows="10" placeholder="+2347061975340">{{range .Numbers}}{{.}}
+{{end}}</textarea>
+    <button type="submit">Save</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Current list</h2>
+  {{if .Numbers}}
+  <table><thead><tr><th>Phone Number</th></tr></thead><tbody>
+  {{range .Numbers}}<tr><td class="mono">{{.}}</td></tr>
+  {{else}}<tr><td>No numbers configured.</td></tr>{{end}}
+  </tbody></table>
+  {{else}}
+  <p class="muted">No numbers configured. All phone numbers are currently accepted for invoices.</p>
+  {{end}}
+</section>
+</main></body></html>
+{{end}}

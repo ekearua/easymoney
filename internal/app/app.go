@@ -226,6 +226,8 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/thrift", a.adminThrift)
 		admin.Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
+		admin.Get("/admin/accepted-numbers", a.adminAcceptedNumbers)
+		admin.Post("/admin/accepted-numbers", a.adminUpdateAcceptedNumbers)
 		admin.Get("/admin/scanning", a.adminScanning)
 		admin.Post("/admin/scanning/services", a.adminCreateScanningService)
 		admin.Post("/admin/scanning/readers", a.adminCreateServiceReader)
@@ -909,6 +911,28 @@ func (a *App) adminCompleteThriftPayout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	http.Redirect(w, r, "/admin/thrift", http.StatusSeeOther)
+}
+
+func (a *App) adminAcceptedNumbers(w http.ResponseWriter, r *http.Request) {
+	numbers := a.conversation.AcceptedInvoiceNumbers()
+	a.renderAdmin(w, "accepted_numbers.html", r, "Accepted Invoice Numbers", map[string]any{"Numbers": numbers})
+}
+
+func (a *App) adminUpdateAcceptedNumbers(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	raw := r.FormValue("numbers")
+	var numbers []string
+	for _, s := range strings.Split(raw, "\n") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			numbers = append(numbers, s)
+		}
+	}
+	a.conversation.SetAcceptedInvoiceNumbers(numbers)
+	http.Redirect(w, r, "/admin/accepted-numbers", http.StatusSeeOther)
 }
 
 func (a *App) adminScanning(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,11 +34,6 @@ const (
 	recentLimit    = 3
 )
 
-var demoInvoiceCustomerNumbers = map[string]bool{
-	"+2347061975340": true,
-	"+2348033072780": true,
-}
-
 // ConversationService implements the customer onboarding and payment state machine.
 type ConversationService struct {
 	cfg        config.Config
@@ -46,11 +42,48 @@ type ConversationService struct {
 	data       *DataService
 	messengers map[string]ports.Messenger
 	email      ports.EmailSender
+
+	acceptedMu      sync.RWMutex
+	acceptedNumbers map[string]bool
 }
 
 // NewConversationService constructs the customer-facing workflow.
 func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender) *ConversationService {
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email}
+	accepted := make(map[string]bool, len(cfg.InvoiceAcceptedNumbers))
+	for _, n := range cfg.InvoiceAcceptedNumbers {
+		accepted[n] = true
+	}
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, acceptedNumbers: accepted}
+}
+
+// AcceptedInvoiceNumbers returns the current list of accepted customer phone numbers.
+func (s *ConversationService) AcceptedInvoiceNumbers() []string {
+	s.acceptedMu.RLock()
+	defer s.acceptedMu.RUnlock()
+	out := make([]string, 0, len(s.acceptedNumbers))
+	for n := range s.acceptedNumbers {
+		out = append(out, n)
+	}
+	return out
+}
+
+// SetAcceptedInvoiceNumbers replaces the accepted customer phone number list.
+func (s *ConversationService) SetAcceptedInvoiceNumbers(numbers []string) {
+	s.acceptedMu.Lock()
+	defer s.acceptedMu.Unlock()
+	s.acceptedNumbers = make(map[string]bool, len(numbers))
+	for _, n := range numbers {
+		s.acceptedNumbers[n] = true
+	}
+}
+
+func (s *ConversationService) isAcceptedInvoiceNumber(phone string) bool {
+	s.acceptedMu.RLock()
+	defer s.acceptedMu.RUnlock()
+	if len(s.acceptedNumbers) == 0 {
+		return true
+	}
+	return s.acceptedNumbers[phone]
 }
 
 // Handle processes one deduplicated inbound customer message from any supported channel.
@@ -1482,8 +1515,8 @@ func (s *ConversationService) handleInvoiceCustomerPhone(ctx context.Context, ch
 		if phoneErr != nil {
 			return s.sendText(ctx, channel, recipient, "Send a valid Nigerian WhatsApp number for the customer, for example +2347061975340.")
 		}
-		if !demoInvoiceCustomerNumbers[phone] {
-			return s.sendText(ctx, channel, recipient, "For this demo, invoices can only be sent to these test WhatsApp numbers:\n+2347061975340\n+2348033072780")
+		if !s.isAcceptedInvoiceNumber(phone) {
+			return s.sendText(ctx, channel, recipient, s.rejectedPhoneMessage())
 		}
 		if emailErr != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
 			return s.sendText(ctx, channel, recipient, "That email doesn't look valid. Please send a valid email address, like customer@example.com.")
@@ -1502,8 +1535,8 @@ func (s *ConversationService) handleInvoiceCustomerPhone(ctx context.Context, ch
 	if err != nil {
 		return s.sendText(ctx, channel, recipient, "Send a valid Nigerian WhatsApp number for the customer, for example +2347061975340.")
 	}
-	if !demoInvoiceCustomerNumbers[phone] {
-		return s.sendText(ctx, channel, recipient, "For this demo, invoices can only be sent to these test WhatsApp numbers:\n+2347061975340\n+2348033072780")
+	if !s.isAcceptedInvoiceNumber(phone) {
+		return s.sendText(ctx, channel, recipient, s.rejectedPhoneMessage())
 	}
 	session.State = "invoice_customer_email"
 	session.Data["invoice_customer_phone"] = phone
@@ -2848,6 +2881,20 @@ func (s *ConversationService) sendThriftDetails(ctx context.Context, channel, re
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
 		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN <group name> joins an inviting group.\nSTART <group name> (or ACTIVATE) lets the creator set payout rotation.\nCONTRIBUTE <group name> starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
+}
+
+func (s *ConversationService) rejectedPhoneMessage() string {
+	numbers := s.AcceptedInvoiceNumbers()
+	if len(numbers) == 0 {
+		return "That phone number is not accepted for invoices."
+	}
+	var b strings.Builder
+	b.WriteString("That phone number is not on the accepted list. Allowed numbers:\n")
+	for _, n := range numbers {
+		b.WriteString(n)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (s *ConversationService) resetWithMessage(ctx context.Context, channel, recipient string, user store.User, session store.Session, body string) error {

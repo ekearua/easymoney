@@ -69,6 +69,8 @@ type Config struct {
 	RetentionPeriod time.Duration
 	SessionTTL      time.Duration
 	ReceiptTTL      time.Duration
+
+	InvoiceAcceptedNumbers []string
 }
 
 // Load reads settings from the process environment and applies safe local defaults.
@@ -120,6 +122,14 @@ func Load() (Config, error) {
 		RetentionPeriod:          envDuration("RETENTION_PERIOD", 90*24*time.Hour),
 		SessionTTL:               envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:               envDuration("RECEIPT_TTL", 90*24*time.Hour),
+	}
+	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.InvoiceAcceptedNumbers = append(cfg.InvoiceAcceptedNumbers, s)
+			}
+		}
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
