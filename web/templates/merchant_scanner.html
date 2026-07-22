@@ -5,19 +5,22 @@
 <body>{{template "merchant_nav" .}}<main class="dashboard">
   <h1>Receipt scanner</h1>
   <p class="muted">Manage NFC/QR scan tokens for your services.</p>
+  {{if index . "WhitelistSaved"}}<div class="alert success">Phone whitelist updated.</div>{{end}}
 
   <section class="panel">
     <h2>Your services</h2>
     {{if .Services}}
-    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Accepted types</th><th>TTL (s)</th><th>Active</th><th>Phone whitelist</th></tr></thead><tbody>
-    {{range .Services}}<tr>
-      <td>{{.Name}}</td>
-      <td>{{.ServiceType}}</td>
-      <td>{{.AcceptedReceiptTypes}}</td>
-      <td>{{.TokenTTLSeconds}}</td>
-      <td>{{if .Active}}Yes{{else}}No{{end}}</td>
-      <td>{{if .PhoneWhitelist}}{{.PhoneWhitelist}}{{else}}(none — all phones allowed){{end}}</td>
-    </tr>{{end}}</tbody></table></div>
+    {{range .Services}}<article class="panel" style="margin-bottom:12px">
+      <h3>{{.Name}}</h3>
+      <p class="muted">Type: {{.ServiceType}} · Accepted: {{.AcceptedReceiptTypes}} · TTL: {{.TokenTTLSeconds}}s · {{if .Active}}Active{{else}}Inactive{{end}}</p>
+      <form method="post" action="/merchant/scanner/services/{{.ID}}/whitelist" style="margin-top:8px;display:flex;gap:8px;align-items:end">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <label style="flex:1">Phone whitelist (comma-separated E.164, empty = all phones allowed)
+          <input name="phone_whitelist" value="{{.PhoneWhitelist}}" placeholder="+2348012345678,+2348098765432">
+        </label>
+        <button type="submit">Save</button>
+      </form>
+    </article>{{end}}
     {{else}}<p class="muted">No services registered yet. Ask an admin to create one for you.</p>{{end}}
   </section>
 </main></body></html>

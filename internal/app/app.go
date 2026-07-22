@@ -254,6 +254,7 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/settings", a.merchantUpdateSettings)
 		m.Get("/merchant/profile", a.merchantProfile)
 		m.Post("/merchant/profile", a.merchantUpdateProfile)
+		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
 	return router
@@ -1187,6 +1188,41 @@ func (a *App) merchantScanner(w http.ResponseWriter, r *http.Request) {
 	}
 	data := map[string]any{"Services": services}
 	a.renderMerchant(w, "merchant_scanner.html", r, "Receipt scanner", data)
+}
+
+func (a *App) merchantUpdateServiceWhitelist(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	serviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	services, err := a.store.ServicesByMerchantID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	owned := false
+	for _, svc := range services {
+		if svc.ID == serviceID {
+			owned = true
+			break
+		}
+	}
+	if !owned {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+	whitelist := strings.TrimSpace(r.FormValue("phone_whitelist"))
+	if err := a.store.UpdateServicePhoneWhitelist(r.Context(), serviceID, whitelist); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/scanner?whitelist_saved=1", http.StatusSeeOther)
 }
 
 func (a *App) merchantInvoices(w http.ResponseWriter, r *http.Request) {
