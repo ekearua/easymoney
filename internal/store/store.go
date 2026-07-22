@@ -1747,6 +1747,103 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 	return result, tx.Commit(ctx)
 }
 
+// MerchantValidateScanToken validates a scan token from the merchant portal,
+// checking ownership via the merchant's services instead of a reader API key.
+func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.UUID, tokenOrURL string, remoteAddr string) (ReceiptScanResult, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ReceiptScanResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	tokenValue := ExtractScanToken(tokenOrURL)
+	if tokenValue == "" {
+		return ReceiptScanResult{Status: "unknown_token"}, nil
+	}
+	var token ReceiptScanTokenView
+	var payment PaymentView
+	var serviceActive bool
+	var phoneWhitelist string
+	err = tx.QueryRow(ctx, `
+		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
+		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at,
+		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
+		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
+		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
+		       rs.active,rs.phone_whitelist
+		FROM receipt_scan_tokens rst
+		JOIN registered_services rs ON rs.id=rst.service_id
+		JOIN payments p ON p.id=rst.payment_id
+		JOIN users u ON u.id=p.user_id
+		JOIN merchants m ON m.id=p.merchant_id
+		WHERE (rst.token=$1 OR rst.manual_code=$1) AND p.merchant_id=$2
+		FOR UPDATE`, tokenValue, merchantID).Scan(
+		&token.ID, &token.PaymentID, &token.ServiceID, &token.ServiceName, &token.Token, &token.ManualCode,
+		&token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt, &token.CreatedAt,
+		&payment.ID, &payment.UserID, &payment.MerchantID, &payment.AmountKobo, &payment.Currency,
+		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
+		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
+		&payment.UpdatedAt, &payment.PaidAt, &payment.UserName, &payment.UserEmail, &payment.WhatsAppNumber,
+		&payment.MerchantName, &payment.MerchantSlug, &payment.LastInboundAt, &serviceActive, &phoneWhitelist,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		_ = tx.Commit(ctx)
+		return ReceiptScanResult{Status: "unknown_token"}, nil
+	}
+	if err != nil {
+		return ReceiptScanResult{}, err
+	}
+	now := time.Now()
+	status := "valid_consumed"
+	switch {
+	case !serviceActive:
+		status = "reader_not_authorized"
+	case payment.Status != domain.StatusSucceeded:
+		status = "not_paid"
+	case token.RevokedAt != nil:
+		status = "revoked"
+	case now.After(token.ExpiresAt):
+		status = "expired"
+	case token.ConsumedAt != nil:
+		status = "already_used"
+	}
+	if status == "valid_consumed" && phoneWhitelist != "" {
+		if !phoneInWhitelist(payment.WhatsAppNumber, phoneWhitelist) {
+			status = "phone_not_whitelisted"
+		}
+	}
+	if status == "valid_consumed" {
+		tag, err := tx.Exec(ctx, `UPDATE receipt_scan_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, token.ID)
+		if err != nil {
+			return ReceiptScanResult{}, err
+		}
+		if tag.RowsAffected() != 1 {
+			status = "already_used"
+		}
+	}
+	_ = recordScanAttemptTx(ctx, tx,
+		uuid.NullUUID{UUID: token.ID, Valid: true},
+		uuid.NullUUID{UUID: token.ServiceID, Valid: true},
+		uuid.NullUUID{},
+		status, remoteAddr, map[string]any{"receipt_type": token.ReceiptType, "source": "merchant_portal"})
+	result := ReceiptScanResult{
+		Status:        status,
+		ReceiptType:   token.ReceiptType,
+		ServiceName:   token.ServiceName,
+		MerchantName:  payment.MerchantName,
+		Amount:        domain.FormatNGN(payment.AmountKobo),
+		AmountKobo:    payment.AmountKobo,
+		PaymentStatus: string(payment.Status),
+		CustomerName:  payment.UserName,
+		CustomerPhone: maskForScan(payment.WhatsAppNumber),
+		ManualCode:    token.ManualCode,
+		ProviderRef:   payment.ProviderReference,
+	}
+	if status == "valid_consumed" {
+		result.ConsumedAtText = time.Now().Format(time.RFC3339)
+	}
+	return result, tx.Commit(ctx)
+}
+
 func scanValidationStatus(reader ServiceReaderView, token ReceiptScanTokenView, payment PaymentView, serviceActive bool) string {
 	now := time.Now()
 	switch {

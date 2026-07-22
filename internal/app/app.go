@@ -248,6 +248,8 @@ func (a *App) routes() http.Handler {
 			http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
 		})
 		m.Get("/merchant/scanner", a.merchantScanner)
+		m.Get("/merchant/scan", a.merchantScanPage)
+		m.Post("/merchant/scan", a.merchantScanPost)
 		m.Get("/merchant/invoices", a.merchantInvoices)
 		m.Get("/merchant/payments", a.merchantPayments)
 		m.Get("/merchant/settings", a.merchantSettings)
@@ -1188,6 +1190,29 @@ func (a *App) merchantScanner(w http.ResponseWriter, r *http.Request) {
 	}
 	data := map[string]any{"Services": services}
 	a.renderMerchant(w, "merchant_scanner.html", r, "Receipt scanner", data)
+}
+
+func (a *App) merchantScanPage(w http.ResponseWriter, r *http.Request) {
+	a.renderMerchant(w, "merchant_scan.html", r, "Manual scan", map[string]any{})
+}
+
+func (a *App) merchantScanPost(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	token := strings.TrimSpace(r.FormValue("token"))
+	if token == "" {
+		a.renderMerchant(w, "merchant_scan.html", r, "Manual scan", map[string]any{"Error": "Enter a scan token, manual code, or scan URL."})
+		return
+	}
+	result, err := a.store.MerchantValidateScanToken(r.Context(), merchantID, token, "")
+	if err != nil {
+		a.renderMerchant(w, "merchant_scan.html", r, "Manual scan", map[string]any{"Error": "Scan validation failed."})
+		return
+	}
+	a.renderMerchant(w, "merchant_scan.html", r, "Manual scan", map[string]any{"Result": result})
 }
 
 func (a *App) merchantUpdateServiceWhitelist(w http.ResponseWriter, r *http.Request) {

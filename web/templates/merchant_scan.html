@@ -1,0 +1,39 @@
+{{define "merchant_scan.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <h1>Manual scan</h1>
+  <p class="muted">Enter a scan token, manual code, or scan URL to validate a customer's receipt.</p>
+
+  <section class="panel">
+    <form method="post" action="/merchant/scan">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Scan token or manual code
+        <input name="token" placeholder="scan-xxxxx or XGSCAN-xxxxx or full URL" required autofocus>
+      </label>
+      <button type="submit">Validate</button>
+    </form>
+  </section>
+
+  {{if .Error}}<div class="alert">{{.Error}}</div>{{end}}
+
+  {{if .Result}}
+  <section class="panel">
+    <h2>Result: <span class="status {{statusClass .Result.Status}}">{{.Result.Status}}</span></h2>
+    <dl style="margin-top:12px">
+      <div><dt>Receipt type</dt><dd>{{.Result.ReceiptType}}</dd></div>
+      <div><dt>Service</dt><dd>{{.Result.ServiceName}}</dd></div>
+      <div><dt>Merchant</dt><dd>{{.Result.MerchantName}}</dd></div>
+      <div><dt>Amount</dt><dd>{{.Result.Amount}}</dd></div>
+      <div><dt>Payment status</dt><dd>{{.Result.PaymentStatus}}</dd></div>
+      <div><dt>Customer</dt><dd>{{.Result.CustomerName}} ({{.Result.CustomerPhone}})</dd></div>
+      <div><dt>Manual code</dt><dd class="mono">{{.Result.ManualCode}}</dd></div>
+      <div><dt>Provider ref</dt><dd class="mono">{{.Result.ProviderRef}}</dd></div>
+      {{if .Result.ConsumedAtText}}<div><dt>Consumed at</dt><dd>{{.Result.ConsumedAtText}}</dd></div>{{end}}
+    </dl>
+  </section>
+  {{end}}
+
+</main></body></html>
+{{end}}
