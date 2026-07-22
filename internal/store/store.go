@@ -56,16 +56,23 @@ type User struct {
 
 // Merchant is a curated payment recipient.
 type Merchant struct {
-	ID             uuid.UUID
-	Slug           string
-	Name           string
-	Category       string
-	Description    string
-	LogoURL        string
-	Active         bool
-	SearchKeywords string
-	SortOrder      int
-	CreatedAt      time.Time
+	ID                      uuid.UUID
+	Slug                    string
+	Name                    string
+	Category                string
+	Description             string
+	LogoURL                 string
+	Active                  bool
+	SearchKeywords          string
+	SortOrder               int
+	CreatedAt               time.Time
+	PasswordHash            string
+	AllowPartialPayments    bool
+	MinInvoiceAmountKobo    int64
+	UpfrontPercent          int
+	MinInstallmentPercent   int
+	MaxInstallments         int
+	AllowFullPayAlways      bool
 }
 
 // MerchantRegistration is a chat-submitted merchant onboarding request.
@@ -249,6 +256,7 @@ type RegisteredServiceView struct {
 	AcceptedReceiptTypes string
 	TokenTTLSeconds      int
 	Active               bool
+	PhoneWhitelist       string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 }
@@ -794,7 +802,7 @@ func (s *Store) ListMerchants(ctx context.Context) ([]Merchant, error) {
 }
 
 func (s *Store) listMerchants(ctx context.Context, activeOnly bool) ([]Merchant, error) {
-	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at FROM merchants`
+	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always FROM merchants`
 	if activeOnly {
 		query += ` WHERE active=true`
 	}
@@ -819,11 +827,17 @@ func (s *Store) listMerchants(ctx context.Context, activeOnly bool) ([]Merchant,
 func (s *Store) MerchantBySlug(ctx context.Context, slug string) (Merchant, error) {
 	var merchant Merchant
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
 		FROM merchants WHERE slug=$1 AND active=true`, slug).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
 		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
 	)
 	return merchant, err
 }
@@ -834,7 +848,9 @@ func (s *Store) SearchMerchants(ctx context.Context, query string, offset, limit
 	search := strings.ToLower(strings.TrimSpace(query))
 	args := []any{limit + 1, offset}
 	sql := `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
 		FROM merchants
 		WHERE active=true`
 	if search != "" {
@@ -868,12 +884,15 @@ func (s *Store) SearchMerchantsExcludingUserRecents(ctx context.Context, userID 
 	search := strings.ToLower(strings.TrimSpace(query))
 	args := []any{limit + 1, offset, userID}
 	sql := `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
-		FROM merchants
-		WHERE active=true
+		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
+		       m.search_keywords, m.sort_order, m.created_at,
+		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+		FROM merchants m
+		WHERE m.active=true
 			AND NOT EXISTS (
 				SELECT 1 FROM user_merchant_recents r
-				WHERE r.user_id=$3 AND r.merchant_id=merchants.id
+				WHERE r.user_id=$3 AND r.merchant_id=m.id
 			)`
 	if search != "" {
 		args = append(args, "%"+search+"%")
@@ -904,7 +923,9 @@ func (s *Store) RecentMerchantsForUser(ctx context.Context, userID uuid.UUID, li
 	_, limit = normalizePageBounds(0, limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
-			m.search_keywords, m.sort_order, m.created_at
+			m.search_keywords, m.sort_order, m.created_at,
+			m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
+			m.min_installment_percent, m.max_installments, m.allow_full_pay_always
 		FROM user_merchant_recents r
 		JOIN merchants m ON m.id=r.merchant_id
 		WHERE r.user_id=$1 AND m.active=true
@@ -1018,11 +1039,17 @@ func (s *Store) ApproveMerchantRegistration(ctx context.Context, registrationID 
 			active=true,
 			search_keywords=EXCLUDED.search_keywords,
 			updated_at=now()
-		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at`,
+		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		          password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		          min_installment_percent, max_installments, allow_full_pay_always`,
 		slug, request.BusinessName, request.Category, request.Description,
 		strings.ToLower(request.BusinessName+" "+request.Category+" "+request.Description),
 	).Scan(&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
-		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt)
+		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways)
 	if err != nil {
 		return Merchant{}, err
 	}
@@ -1091,7 +1118,9 @@ func slugify(value string) string {
 func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) ([]Merchant, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
-		       m.search_keywords, m.sort_order, m.created_at
+		       m.search_keywords, m.sort_order, m.created_at,
+		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
 		FROM merchant_owners mo
 		JOIN merchants m ON m.id=mo.merchant_id
 		WHERE mo.user_id=$1 AND m.active=true
@@ -1277,6 +1306,14 @@ func (s *Store) CreateInvoicePayment(ctx context.Context, invoiceID, paymentID, 
 		VALUES($1,$2,$3,$4,'pending')
 		ON CONFLICT(payment_id) DO NOTHING`, invoiceID, paymentID, payerUserID, amountKobo)
 	return err
+}
+
+// CountInvoicePayments returns the number of payment attempts linked to an invoice.
+func (s *Store) CountInvoicePayments(ctx context.Context, invoiceID uuid.UUID) (int64, error) {
+	var count int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM invoice_payments WHERE invoice_id=$1`, invoiceID).Scan(&count)
+	return count, err
 }
 
 // ApplyInvoicePaymentSuccess records a successful contribution and marks the
@@ -1526,10 +1563,10 @@ func (s *Store) RegisteredServiceByID(ctx context.Context, id uuid.UUID) (Regist
 	var service RegisteredServiceView
 	err := s.pool.QueryRow(ctx, `
 		SELECT rs.id,rs.name,rs.service_type,rs.merchant_id,COALESCE(m.name,''),
-		       rs.accepted_receipt_types,rs.token_ttl_seconds,rs.active,rs.created_at,rs.updated_at
+		       rs.accepted_receipt_types,rs.token_ttl_seconds,rs.active,rs.phone_whitelist,rs.created_at,rs.updated_at
 		FROM registered_services rs
 		LEFT JOIN merchants m ON m.id=rs.merchant_id
-		WHERE rs.id=$1`, id).Scan(&service.ID, &service.Name, &service.ServiceType, &service.MerchantID, &service.MerchantName, &service.AcceptedReceiptTypes, &service.TokenTTLSeconds, &service.Active, &service.CreatedAt, &service.UpdatedAt)
+		WHERE rs.id=$1`, id).Scan(&service.ID, &service.Name, &service.ServiceType, &service.MerchantID, &service.MerchantName, &service.AcceptedReceiptTypes, &service.TokenTTLSeconds, &service.Active, &service.PhoneWhitelist, &service.CreatedAt, &service.UpdatedAt)
 	return service, err
 }
 
@@ -1537,7 +1574,7 @@ func (s *Store) RegisteredServiceByID(ctx context.Context, id uuid.UUID) (Regist
 func (s *Store) ListRegisteredServices(ctx context.Context, limit int) ([]RegisteredServiceView, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT rs.id,rs.name,rs.service_type,rs.merchant_id,COALESCE(m.name,''),
-		       rs.accepted_receipt_types,rs.token_ttl_seconds,rs.active,rs.created_at,rs.updated_at
+		       rs.accepted_receipt_types,rs.token_ttl_seconds,rs.active,rs.phone_whitelist,rs.created_at,rs.updated_at
 		FROM registered_services rs
 		LEFT JOIN merchants m ON m.id=rs.merchant_id
 		ORDER BY rs.created_at DESC
@@ -1549,7 +1586,7 @@ func (s *Store) ListRegisteredServices(ctx context.Context, limit int) ([]Regist
 	var services []RegisteredServiceView
 	for rows.Next() {
 		var service RegisteredServiceView
-		if err := rows.Scan(&service.ID, &service.Name, &service.ServiceType, &service.MerchantID, &service.MerchantName, &service.AcceptedReceiptTypes, &service.TokenTTLSeconds, &service.Active, &service.CreatedAt, &service.UpdatedAt); err != nil {
+		if err := rows.Scan(&service.ID, &service.Name, &service.ServiceType, &service.MerchantID, &service.MerchantName, &service.AcceptedReceiptTypes, &service.TokenTTLSeconds, &service.Active, &service.PhoneWhitelist, &service.CreatedAt, &service.UpdatedAt); err != nil {
 			return nil, err
 		}
 		services = append(services, service)
@@ -1638,13 +1675,14 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 	var token ReceiptScanTokenView
 	var payment PaymentView
 	var serviceActive bool
+	var phoneWhitelist string
 	err = tx.QueryRow(ctx, `
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
 		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at,
 		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
 		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
-		       rs.active
+		       rs.active,rs.phone_whitelist
 		FROM receipt_scan_tokens rst
 		JOIN registered_services rs ON rs.id=rst.service_id
 		JOIN payments p ON p.id=rst.payment_id
@@ -1658,7 +1696,7 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
 		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
 		&payment.UpdatedAt, &payment.PaidAt, &payment.UserName, &payment.UserEmail, &payment.WhatsAppNumber,
-		&payment.MerchantName, &payment.MerchantSlug, &payment.LastInboundAt, &serviceActive,
+		&payment.MerchantName, &payment.MerchantSlug, &payment.LastInboundAt, &serviceActive, &phoneWhitelist,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = recordScanAttemptTx(ctx, tx, uuid.NullUUID{}, uuid.NullUUID{UUID: reader.ServiceID, Valid: true}, uuid.NullUUID{UUID: reader.ID, Valid: true}, "unknown_token", remoteAddr, map[string]any{})
@@ -1669,6 +1707,11 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		return ReceiptScanResult{}, err
 	}
 	status := scanValidationStatus(reader, token, payment, serviceActive)
+	if status == "valid_consumed" && phoneWhitelist != "" {
+		if !phoneInWhitelist(payment.WhatsAppNumber, phoneWhitelist) {
+			status = "phone_not_whitelisted"
+		}
+	}
 	if status == "valid_consumed" {
 		tag, err := tx.Exec(ctx, `UPDATE receipt_scan_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, token.ID)
 		if err != nil {
@@ -1860,11 +1903,17 @@ func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (
 func (s *Store) ThriftSystemMerchant(ctx context.Context) (Merchant, error) {
 	var merchant Merchant
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
 		FROM merchants WHERE slug='xego-thrift-contributions'`).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
 		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
 	)
 	return merchant, err
 }
@@ -2726,6 +2775,10 @@ func scanMerchant(rows pgx.Rows) (Merchant, error) {
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active,
 		&merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
 	)
 	return merchant, err
 }
@@ -2878,11 +2931,17 @@ func (s *Store) UpsertDataPlanFromProvider(ctx context.Context, networkCode, cod
 func (s *Store) XegoDataMerchant(ctx context.Context) (Merchant, error) {
 	var merchant Merchant
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
 		FROM merchants WHERE slug=$1`, "xego-data").Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
 		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
 	)
 	return merchant, err
 }
@@ -4004,4 +4063,261 @@ func truncate(value string, limit int) string {
 		return value
 	}
 	return value[:limit]
+}
+
+func normalizeStorePhone(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "+") {
+		return value
+	}
+	return "+" + value
+}
+
+func phoneInWhitelist(phone, whitelist string) bool {
+	phone = normalizeStorePhone(phone)
+	for _, entry := range strings.Split(whitelist, ",") {
+		if normalizeStorePhone(strings.TrimSpace(entry)) == phone {
+			return true
+		}
+	}
+	return false
+}
+
+// MerchantByID returns a single merchant by its ID.
+func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error) {
+	var merchant Merchant
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
+		FROM merchants WHERE id=$1`, id).Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
+		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
+		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
+	)
+	return merchant, err
+}
+
+// ServicesByMerchantID returns registered services belonging to a merchant.
+func (s *Store) ServicesByMerchantID(ctx context.Context, merchantID uuid.UUID) ([]RegisteredServiceView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT rs.id,rs.name,rs.service_type,rs.merchant_id,COALESCE(m.name,''),
+		       rs.accepted_receipt_types,rs.token_ttl_seconds,rs.active,rs.phone_whitelist,rs.created_at,rs.updated_at
+		FROM registered_services rs
+		LEFT JOIN merchants m ON m.id=rs.merchant_id
+		WHERE rs.merchant_id=$1
+		ORDER BY rs.created_at DESC`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var services []RegisteredServiceView
+	for rows.Next() {
+		var service RegisteredServiceView
+		if err := rows.Scan(&service.ID, &service.Name, &service.ServiceType, &service.MerchantID, &service.MerchantName, &service.AcceptedReceiptTypes, &service.TokenTTLSeconds, &service.Active, &service.PhoneWhitelist, &service.CreatedAt, &service.UpdatedAt); err != nil {
+			return nil, err
+		}
+		services = append(services, service)
+	}
+	return services, rows.Err()
+}
+
+// MerchantByEmail returns the merchant whose owner has the given email address.
+func (s *Store) MerchantByEmail(ctx context.Context, email string) (Merchant, error) {
+	var merchant Merchant
+	err := s.pool.QueryRow(ctx, `
+		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
+		       m.search_keywords, m.sort_order, m.created_at,
+		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+		FROM merchants m
+		JOIN merchant_owners mo ON mo.merchant_id=m.id
+		JOIN users u ON u.id=mo.user_id
+		WHERE LOWER(u.email)=LOWER($1) AND m.active=true
+		ORDER BY mo.created_at ASC
+		LIMIT 1`, email).Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
+		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
+		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
+	)
+	return merchant, err
+}
+
+// MerchantOwnerID returns the user ID of the primary owner of a merchant.
+func (s *Store) MerchantOwnerID(ctx context.Context, merchantID uuid.UUID) (uuid.UUID, error) {
+	var userID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT user_id FROM merchant_owners
+		WHERE merchant_id=$1
+		ORDER BY created_at ASC LIMIT 1`, merchantID).Scan(&userID)
+	return userID, err
+}
+
+// CreateMerchantSession stores a hashed session token and returns the raw token.
+func (s *Store) CreateMerchantSession(ctx context.Context, merchantID, userID uuid.UUID, token, csrf string, expiresAt time.Time) error {
+	hash := sha256.Sum256([]byte(token))
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO merchant_sessions(token_hash,merchant_id,user_id,csrf_token,expires_at)
+		VALUES($1,$2,$3,$4,$5)`, hash[:], merchantID, userID, csrf, expiresAt)
+	return err
+}
+
+// ValidateMerchantSession checks a session token and returns the merchant_id and user_id.
+func (s *Store) ValidateMerchantSession(ctx context.Context, token string) (uuid.UUID, uuid.UUID, string, error) {
+	hash := sha256.Sum256([]byte(token))
+	var merchantID, userID uuid.UUID
+	var csrf string
+	err := s.pool.QueryRow(ctx, `
+		SELECT merchant_id,user_id,csrf_token FROM merchant_sessions
+		WHERE token_hash=$1 AND expires_at > now()`, hash[:]).Scan(&merchantID, &userID, &csrf)
+	return merchantID, userID, csrf, err
+}
+
+// DeleteMerchantSession invalidates one merchant login.
+func (s *Store) DeleteMerchantSession(ctx context.Context, token string) error {
+	hash := sha256.Sum256([]byte(token))
+	_, err := s.pool.Exec(ctx, `DELETE FROM merchant_sessions WHERE token_hash=$1`, hash[:])
+	return err
+}
+
+// CreateMerchantPasswordResetToken stores a hashed one-time token for the merchant to set their password.
+func (s *Store) CreateMerchantPasswordResetToken(ctx context.Context, merchantID, userID uuid.UUID, token string, expiresAt time.Time) error {
+	hash := sha256.Sum256([]byte(token))
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO merchant_password_reset_tokens(token_hash,merchant_id,user_id,expires_at)
+		VALUES($1,$2,$3,$4)`, hash[:], merchantID, userID, expiresAt)
+	return err
+}
+
+// ValidateMerchantPasswordResetToken checks a reset token is valid and unused.
+func (s *Store) ValidateMerchantPasswordResetToken(ctx context.Context, token string) (uuid.UUID, uuid.UUID, error) {
+	hash := sha256.Sum256([]byte(token))
+	var merchantID, userID uuid.UUID
+	err := s.pool.QueryRow(ctx, `
+		SELECT merchant_id,user_id FROM merchant_password_reset_tokens
+		WHERE token_hash=$1 AND expires_at > now() AND used_at IS NULL`, hash[:]).Scan(&merchantID, &userID)
+	return merchantID, userID, err
+}
+
+// UseMerchantPasswordResetToken marks a reset token as consumed.
+func (s *Store) UseMerchantPasswordResetToken(ctx context.Context, token string) error {
+	hash := sha256.Sum256([]byte(token))
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchant_password_reset_tokens SET used_at=now()
+		WHERE token_hash=$1 AND used_at IS NULL`, hash[:])
+	return err
+}
+
+// UpdateMerchantPaymentTerms updates a merchant's partial payment settings.
+func (s *Store) UpdateMerchantPaymentTerms(ctx context.Context, merchantID uuid.UUID, allowPartial bool, minInvoiceKobo int64, upfrontPct, minInstallPct, maxInstallments int, allowFullAlways bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET
+			allow_partial_payments=$2,
+			min_invoice_amount_kobo=$3,
+			upfront_percent=$4,
+			min_installment_percent=$5,
+			max_installments=$6,
+			allow_full_pay_always=$7,
+			updated_at=now()
+		WHERE id=$1`, merchantID, allowPartial, minInvoiceKobo, upfrontPct, minInstallPct, maxInstallments, allowFullAlways)
+	return err
+}
+
+// UpdateMerchantPassword sets the password hash for a merchant.
+func (s *Store) UpdateMerchantPassword(ctx context.Context, merchantID uuid.UUID, passwordHash string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET password_hash=$2, updated_at=now() WHERE id=$1`, merchantID, passwordHash)
+	return err
+}
+
+// UpdateMerchantProfile updates a merchant's display fields.
+func (s *Store) UpdateMerchantProfile(ctx context.Context, merchantID uuid.UUID, name, category, description, logoURL string) error {
+	keywords := strings.ToLower(name + " " + category + " " + description)
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET name=$2, category=$3, description=$4, logo_url=$5,
+			search_keywords=$6, updated_at=now()
+		WHERE id=$1`, merchantID, name, category, description, logoURL, keywords)
+	return err
+}
+
+// UpdateServicePhoneWhitelist sets the comma-separated E.164 whitelist for a service.
+func (s *Store) UpdateServicePhoneWhitelist(ctx context.Context, serviceID uuid.UUID, whitelist string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE registered_services SET phone_whitelist=$2, updated_at=now() WHERE id=$1`, serviceID, whitelist)
+	return err
+}
+
+// InvoicesByMerchantID returns all invoices for a merchant, most recent first.
+func (s *Store) InvoicesByMerchantID(ctx context.Context, merchantID uuid.UUID, limit, offset int) ([]InvoiceView, error) {
+	offset, limit = normalizePageBounds(offset, limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT i.id,i.merchant_id,i.created_by_user_id,i.customer_whatsapp_number,i.customer_email,
+		       i.reference,i.status,i.delivery_fee_kobo,i.subtotal_kobo,i.total_kobo,i.amount_paid_kobo,
+		       i.due_at,i.created_at,i.updated_at,i.paid_at,
+		       m.name,m.slug,m.category,u.display_name,u.email
+		FROM invoices i
+		JOIN merchants m ON m.id=i.merchant_id
+		JOIN users u ON u.id=i.created_by_user_id
+		WHERE i.merchant_id=$1
+		ORDER BY i.created_at DESC
+		LIMIT $2 OFFSET $3`, merchantID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var invoices []InvoiceView
+	for rows.Next() {
+		var invoice InvoiceView
+		if err := rows.Scan(&invoice.ID, &invoice.MerchantID, &invoice.CreatedByUserID, &invoice.CustomerWhatsAppNumber,
+			&invoice.CustomerEmail, &invoice.Reference, &invoice.Status, &invoice.DeliveryFeeKobo,
+			&invoice.SubtotalKobo, &invoice.TotalKobo, &invoice.AmountPaidKobo, &invoice.DueAt,
+			&invoice.CreatedAt, &invoice.UpdatedAt, &invoice.PaidAt, &invoice.MerchantName,
+			&invoice.MerchantSlug, &invoice.MerchantCategory, &invoice.CreatorName, &invoice.CreatorEmail); err != nil {
+			return nil, err
+		}
+		invoices = append(invoices, invoice)
+	}
+	return invoices, rows.Err()
+}
+
+// PaymentsByMerchantID returns payments linked to a merchant, most recent first.
+func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, limit, offset int) ([]PaymentView, error) {
+	offset, limit = normalizePageBounds(offset, limit)
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.created_at,p.updated_at,p.paid_at,
+		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
+		FROM payments p
+		JOIN users u ON u.id=p.user_id
+		JOIN merchants m ON m.id=p.merchant_id
+		WHERE p.merchant_id=$1
+		ORDER BY p.created_at DESC
+		LIMIT $2 OFFSET $3`, merchantID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var payments []PaymentView
+	for rows.Next() {
+		var view PaymentView
+		if err := rows.Scan(
+			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
+			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
+			&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
+			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
+		); err != nil {
+			return nil, err
+		}
+		payments = append(payments, view)
+	}
+	return payments, rows.Err()
 }

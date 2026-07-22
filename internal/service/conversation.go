@@ -2129,13 +2129,47 @@ func (s *ConversationService) handleInvoicePayAmount(ctx context.Context, channe
 	if remaining <= 0 {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice is already fully paid.")
 	}
-	amount := remaining
-	if !strings.EqualFold(strings.TrimSpace(input), "full") {
+	merchant, err := s.store.MerchantByID(ctx, invoice.MerchantID)
+	if err != nil {
+		return err
+	}
+	isFullPay := strings.EqualFold(strings.TrimSpace(input), "full")
+	if !merchant.AllowPartialPayments && !isFullPay {
+		return s.sendText(ctx, channel, recipient, "This merchant does not accept partial payments. Please send FULL to pay the remaining balance.")
+	}
+	var amount int64
+	if isFullPay {
+		amount = remaining
+	} else {
 		parsed, err := domain.ParseNGNAmount(input, s.cfg.PaymentMinKobo, remaining)
 		if err != nil {
 			return s.sendText(ctx, channel, recipient, fmt.Sprintf("Enter an amount between %s and %s, or send FULL to pay the remaining balance.", domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(remaining)))
 		}
 		amount = parsed
+	}
+	if merchant.AllowPartialPayments && amount < remaining {
+		if merchant.MinInvoiceAmountKobo > 0 && invoice.TotalKobo < merchant.MinInvoiceAmountKobo {
+			return s.sendText(ctx, channel, recipient, fmt.Sprintf("This invoice is below the minimum of %s for installment payments. Please send FULL to pay in full.", domain.FormatNGN(merchant.MinInvoiceAmountKobo)))
+		}
+		if merchant.UpfrontPercent > 0 {
+			upfrontMin := invoice.TotalKobo * int64(merchant.UpfrontPercent) / 100
+			alreadyPaid := invoice.AmountPaidKobo
+			if alreadyPaid == 0 && amount < upfrontMin {
+				return s.sendText(ctx, channel, recipient, fmt.Sprintf("The upfront payment must be at least %d%% of the invoice total (%s). Enter a higher amount or send FULL.", merchant.UpfrontPercent, domain.FormatNGN(upfrontMin)))
+			}
+		}
+		if merchant.MinInstallmentPercent > 0 && invoice.AmountPaidKobo > 0 {
+			installMin := invoice.TotalKobo * int64(merchant.MinInstallmentPercent) / 100
+			if amount < installMin {
+				return s.sendText(ctx, channel, recipient, fmt.Sprintf("Each installment must be at least %d%% of the invoice total (%s). Enter a higher amount or send FULL.", merchant.MinInstallmentPercent, domain.FormatNGN(installMin)))
+			}
+		}
+		if merchant.MaxInstallments > 0 {
+			paymentCount, _ := s.store.CountInvoicePayments(ctx, invoice.ID)
+			if paymentCount >= int64(merchant.MaxInstallments) {
+				return s.sendText(ctx, channel, recipient, fmt.Sprintf("This invoice has reached the maximum of %d installments. Please send FULL to pay the remaining balance.", merchant.MaxInstallments))
+			}
+		}
 	}
 	session.State = "invoice_pay_method"
 	session.Data["invoice_pay_amount_kobo"] = strconv.FormatInt(amount, 10)
@@ -3384,13 +3418,17 @@ func (s *ConversationService) notifyInvoiceCustomer(ctx context.Context, invoice
 }
 
 // NotifyMerchantApproved sends a WhatsApp message to the merchant owner after approval.
-func (s *ConversationService) NotifyMerchantApproved(ctx context.Context, owner store.User, merchantName string) {
+func (s *ConversationService) NotifyMerchantApproved(ctx context.Context, owner store.User, merchantName, setPasswordURL string) {
 	if owner.WhatsAppNumber == "" {
 		return
 	}
-	_ = s.sendText(ctx, ChannelWhatsApp, owner.WhatsAppNumber, fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"Your merchant account has been approved!\n\nBusiness: %s\n\nYou can now generate invoices and receive payments through Xego. Send MENU to get started.",
-		merchantName))
+		merchantName)
+	if setPasswordURL != "" {
+		msg += fmt.Sprintf("\n\nSet your merchant dashboard password here:\n%s", setPasswordURL)
+	}
+	_ = s.sendText(ctx, ChannelWhatsApp, owner.WhatsAppNumber, msg)
 }
 
 // NotifyMerchantPayment sends a WhatsApp message to the merchant owner when an invoice payment is received.

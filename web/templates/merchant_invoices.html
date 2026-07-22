@@ -1,0 +1,15 @@
+{{define "merchant_invoices.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Invoices</h1></div></header>
+<div class="table-wrap"><table><thead><tr><th>Reference</th><th>Customer</th><th>Total</th><th>Paid</th><th>Status</th><th>Created</th></tr></thead><tbody>
+{{range .Invoices}}<tr>
+  <td class="mono">{{.Reference}}</td>
+  <td>{{if .CustomerEmail}}{{.CustomerEmail}}{{else}}{{.CustomerWhatsAppNumber}}{{end}}</td>
+  <td>{{money .TotalKobo}}</td>
+  <td>{{money .AmountPaidKobo}}</td>
+  <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+  <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+</tr>{{else}}<tr><td colspan="6">No invoices yet.</td></tr>{{end}}</tbody></table></div></main></body></html>
+{{end}}

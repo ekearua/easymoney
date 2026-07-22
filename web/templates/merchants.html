@@ -3,12 +3,38 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant operations</p><h1>Merchants</h1></div></header>
+{{if index . "PasswordSet"}}<div class="alert success">Merchant password updated.</div>{{end}}
+{{if index . "TermsSet"}}<div class="alert success">Payment terms updated.</div>{{end}}
 <section><h2>Registration requests</h2>
 <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Business</th><th>Category</th><th>Contact</th><th>User</th><th>Status</th><th>Created</th><th>Action</th></tr></thead><tbody>
 {{range .Registrations}}<tr><td class="mono">{{.Reference}}</td><td><strong>{{.BusinessName}}</strong><br><span class="muted">{{.Description}}</span></td><td>{{.Category}}</td><td>{{maskPII .ContactEmail}}</td><td>{{.UserName}}<br><span class="muted">{{maskPII .UserEmail}}</span></td><td><span class="status {{statusClass .Status}}">{{.Status}}</span></td><td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td><td>{{if ne .Status "approved"}}<form method="post" action="/admin/merchant-registrations/{{.ID}}/approve"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Approve</button></form>{{else}}Approved{{end}}</td></tr>
 {{else}}<tr><td colspan="8">No merchant registration requests yet.</td></tr>{{end}}</tbody></table></div></section>
 <section><h2>Payable merchants</h2>
-<section class="cards">{{range .Merchants}}<article class="merchant-card"><span class="category">{{.Category}}</span><h2>{{.Name}}</h2><p>{{.Description}}</p><small>{{if .Active}}Active{{else}}Disabled{{end}} · {{.Slug}}</small></article>{{end}}</section>
+<section class="cards">{{range .Merchants}}<article class="merchant-card"><span class="category">{{.Category}}</span><h2>{{.Name}}</h2><p>{{.Description}}</p><small>{{if .Active}}Active{{else}}Disabled{{end}} · {{.Slug}} {{if .PasswordHash}}· has password{{else}}· no password{{end}}</small>
+<details><summary>Manage</summary>
+<div class="panel" style="margin-top:8px">
+<h3>Set password</h3>
+<form method="post" action="/admin/merchants/{{.ID}}/password" style="display:flex;gap:8px;align-items:end">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<input type="password" name="password" placeholder="New password" required style="flex:1">
+<button type="submit">Set</button>
+</form>
+<h3>Payment terms</h3>
+<form method="post" action="/admin/merchants/{{.ID}}/payment-terms">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<label class="checkbox-row"><input type="checkbox" name="allow_partial_payments" {{if .AllowPartialPayments}}checked{{end}}> Allow partial payments</label>
+<label class="checkbox-row"><input type="checkbox" name="allow_full_pay_always" {{if .AllowFullPayAlways}}checked{{end}}> Always allow full pay</label>
+<div class="form-grid">
+<label>Min invoice (kobo) <input type="number" name="min_invoice_amount_kobo" value="{{.MinInvoiceAmountKobo}}" min="0"></label>
+<label>Upfront % <input type="number" name="upfront_percent" value="{{.UpfrontPercent}}" min="0" max="100"></label>
+<label>Min installment % <input type="number" name="min_installment_percent" value="{{.MinInstallmentPercent}}" min="0" max="100"></label>
+<label>Max installments <input type="number" name="max_installments" value="{{.MaxInstallments}}" min="0" max="100"></label>
+</div>
+<button type="submit">Save terms</button>
+</form>
+</div>
+</details>
+</article>{{end}}</section>
 </section>
 </main></body></html>
 {{end}}

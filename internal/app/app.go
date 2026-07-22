@@ -43,6 +43,7 @@ import (
 )
 
 const adminCookieName = "wpd_admin"
+const merchantCookieName = "wpd_merchant"
 
 // App is the fully assembled payment demo.
 type App struct {
@@ -222,6 +223,8 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
 		admin.Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
+		admin.Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
+		admin.Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
 		admin.Get("/admin/payments", a.adminPayments)
 		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/thrift", a.adminThrift)
@@ -231,8 +234,27 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/scanning", a.adminScanning)
 		admin.Post("/admin/scanning/services", a.adminCreateScanningService)
 		admin.Post("/admin/scanning/readers", a.adminCreateServiceReader)
+		admin.Post("/admin/scanning/services/{id}/whitelist", a.adminSetPhoneWhitelist)
 		admin.Get("/admin/webhooks", a.adminWebhooks)
 		admin.Post("/admin/logout", a.logout)
+	})
+	router.Get("/merchant/login", a.merchantLogin)
+	router.With(a.limitLogin).Post("/merchant/login", a.merchantLoginPost)
+	router.Get("/merchant/set-password", a.merchantSetPasswordPage)
+	router.Post("/merchant/set-password", a.merchantSetPasswordPost)
+	router.Group(func(m chi.Router) {
+		m.Use(a.requireMerchant)
+		m.Get("/merchant", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
+		})
+		m.Get("/merchant/scanner", a.merchantScanner)
+		m.Get("/merchant/invoices", a.merchantInvoices)
+		m.Get("/merchant/payments", a.merchantPayments)
+		m.Get("/merchant/settings", a.merchantSettings)
+		m.Post("/merchant/settings", a.merchantUpdateSettings)
+		m.Get("/merchant/profile", a.merchantProfile)
+		m.Post("/merchant/profile", a.merchantUpdateProfile)
+		m.Post("/merchant/logout", a.merchantLogout)
 	})
 	return router
 }
@@ -881,9 +903,88 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 	}
 	owner, err := a.store.MerchantOwnerByRegistrationID(r.Context(), id)
 	if err == nil {
-		a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name)
+		var setPasswordURL string
+		token, err := randomToken(32)
+		if err == nil {
+			if err := a.store.CreateMerchantPasswordResetToken(r.Context(), merchant.ID, owner.ID, token, time.Now().Add(72*time.Hour)); err == nil {
+				setPasswordURL = a.cfg.BaseURL + "/merchant/set-password?token=" + token
+			}
+		}
+		a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
 	}
 	http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
+}
+
+func (a *App) adminSetMerchantPassword(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	password := strings.TrimSpace(r.FormValue("password"))
+	if password == "" {
+		http.Error(w, "password required", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "hash error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.UpdateMerchantPassword(r.Context(), id, string(hash)); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/merchants?password_set=1", http.StatusSeeOther)
+}
+
+func (a *App) adminSetMerchantPaymentTerms(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	allowPartial := r.FormValue("allow_partial_payments") == "on"
+	minInvoiceKobo, _ := strconv.ParseInt(r.FormValue("min_invoice_amount_kobo"), 10, 64)
+	upfrontPct, _ := strconv.Atoi(r.FormValue("upfront_percent"))
+	minInstallPct, _ := strconv.Atoi(r.FormValue("min_installment_percent"))
+	maxInstallments, _ := strconv.Atoi(r.FormValue("max_installments"))
+	allowFullAlways := r.FormValue("allow_full_pay_always") == "on"
+	if err := a.store.UpdateMerchantPaymentTerms(r.Context(), id, allowPartial, minInvoiceKobo, upfrontPct, minInstallPct, maxInstallments, allowFullAlways); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/merchants?terms_set=1", http.StatusSeeOther)
+}
+
+func (a *App) adminSetPhoneWhitelist(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	whitelist := strings.TrimSpace(r.FormValue("phone_whitelist"))
+	if err := a.store.UpdateServicePhoneWhitelist(r.Context(), id, whitelist); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/admin/scanning?whitelist_set=1", http.StatusSeeOther)
 }
 
 func (a *App) adminPayments(w http.ResponseWriter, r *http.Request) {
@@ -1077,9 +1178,173 @@ func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {
 	a.renderAdmin(w, "webhooks.html", r, "Webhooks", map[string]any{"Webhooks": webhooks})
 }
 
+func (a *App) merchantScanner(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	services, err := a.store.ServicesByMerchantID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := map[string]any{"Services": services}
+	a.renderMerchant(w, "merchant_scanner.html", r, "Receipt scanner", data)
+}
+
+func (a *App) merchantInvoices(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	invoices, err := a.store.InvoicesByMerchantID(r.Context(), merchantID, 50, 0)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_invoices.html", r, "Invoices", map[string]any{"Invoices": invoices})
+}
+
+func (a *App) merchantPayments(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	payments, err := a.store.PaymentsByMerchantID(r.Context(), merchantID, 50, 0)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_payments.html", r, "Payments", map[string]any{"Payments": payments})
+}
+
+func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	merchant, err := a.store.MerchantByID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	services, err := a.store.ServicesByMerchantID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
+		"Merchant": merchant, "Services": services,
+	})
+}
+
+func (a *App) merchantUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	allowPartial := r.FormValue("allow_partial_payments") == "on"
+	minInvoiceKobo, _ := strconv.ParseInt(r.FormValue("min_invoice_amount_kobo"), 10, 64)
+	upfrontPct, _ := strconv.Atoi(r.FormValue("upfront_percent"))
+	minInstallPct, _ := strconv.Atoi(r.FormValue("min_installment_percent"))
+	maxInstallments, _ := strconv.Atoi(r.FormValue("max_installments"))
+	allowFullAlways := r.FormValue("allow_full_pay_always") == "on"
+	if err := a.store.UpdateMerchantPaymentTerms(r.Context(), merchantID, allowPartial, minInvoiceKobo, upfrontPct, minInstallPct, maxInstallments, allowFullAlways); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/settings?saved=1", http.StatusSeeOther)
+}
+
+func (a *App) merchantProfile(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	merchant, err := a.store.MerchantByID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_profile.html", r, "Business profile", map[string]any{"Merchant": merchant})
+}
+
+func (a *App) merchantUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	category := strings.TrimSpace(r.FormValue("category"))
+	description := strings.TrimSpace(r.FormValue("description"))
+	logoURL := strings.TrimSpace(r.FormValue("logo_url"))
+	if name == "" {
+		name = "Untitled"
+	}
+	if err := a.store.UpdateMerchantProfile(r.Context(), merchantID, name, category, description, logoURL); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/profile?saved=1", http.StatusSeeOther)
+}
+
+func (a *App) merchantSetPasswordPage(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		http.Error(w, "invalid link", http.StatusBadRequest)
+		return
+	}
+	merchantID, _, err := a.store.ValidateMerchantPasswordResetToken(r.Context(), token)
+	if err != nil {
+		a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Error": "This link has expired or has already been used.", "Invalid": true})
+		return
+	}
+	merchant, err := a.store.MerchantByID(r.Context(), merchantID)
+	if err != nil {
+		a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid link.", "Invalid": true})
+		return
+	}
+	a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Merchant": merchant, "Token": token})
+}
+
+func (a *App) merchantSetPasswordPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(r.FormValue("token"))
+	password := r.FormValue("password")
+	confirm := r.FormValue("confirm_password")
+	if token == "" || password == "" {
+		http.Error(w, "token and password required", http.StatusBadRequest)
+		return
+	}
+	if password != confirm {
+		a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Token": token, "Error": "Passwords do not match."})
+		return
+	}
+	if len(password) < 8 {
+		a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Token": token, "Error": "Password must be at least 8 characters."})
+		return
+	}
+	merchantID, _, err := a.store.ValidateMerchantPasswordResetToken(r.Context(), token)
+	if err != nil {
+		a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Error": "This link has expired or has already been used.", "Invalid": true})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "hash error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.UpdateMerchantPassword(r.Context(), merchantID, string(hash)); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	_ = a.store.UseMerchantPasswordResetToken(r.Context(), token)
+	a.render(w, "merchant_set_password.html", map[string]any{"AppName": a.cfg.AppName, "Done": true})
+}
+
 type contextKey string
 
 const csrfContextKey contextKey = "csrf"
+const merchantIDContextKey contextKey = "merchant_id"
+const merchantCSRFContextKey contextKey = "merchant_csrf"
 
 func (a *App) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1100,6 +1365,99 @@ func (a *App) requireAdmin(next http.Handler) http.Handler {
 func csrfFromContext(ctx context.Context) string {
 	value, _ := ctx.Value(csrfContextKey).(string)
 	return value
+}
+
+func merchantIDFromContext(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(merchantIDContextKey).(uuid.UUID)
+	return id
+}
+
+func merchantCSRFFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(merchantCSRFContextKey).(string)
+	return value
+}
+
+func (a *App) requireMerchant(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(merchantCookieName)
+		if err != nil {
+			http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
+			return
+		}
+		merchantID, _, csrf, err := a.store.ValidateMerchantSession(r.Context(), cookie.Value)
+		if err != nil {
+			http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
+			return
+		}
+		ctx := context.WithValue(r.Context(), merchantIDContextKey, merchantID)
+		ctx = context.WithValue(ctx, merchantCSRFContextKey, csrf)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (a *App) merchantLogin(w http.ResponseWriter, r *http.Request) {
+	a.render(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName})
+}
+
+func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	password := r.FormValue("password")
+	merchant, err := a.store.MerchantByEmail(r.Context(), email)
+	if err != nil || merchant.PasswordHash == "" ||
+		bcrypt.CompareHashAndPassword([]byte(merchant.PasswordHash), []byte(password)) != nil {
+		a.limiter.fail(clientIP(r))
+		a.renderStatus(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
+		return
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	csrf, err := randomToken(24)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	ownerID, err := a.store.MerchantOwnerID(r.Context(), merchant.ID)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateMerchantSession(r.Context(), merchant.ID, ownerID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	a.limiter.success(clientIP(r))
+	http.SetCookie(w, &http.Cookie{
+		Name: merchantCookieName, Value: token, Path: "/merchant", HttpOnly: true,
+		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
+	})
+	http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
+}
+
+func (a *App) merchantLogout(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if cookie, err := r.Cookie(merchantCookieName); err == nil {
+		_ = a.store.DeleteMerchantSession(r.Context(), cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{Name: merchantCookieName, Path: "/merchant", MaxAge: -1, HttpOnly: true})
+	http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
+}
+
+func (a *App) renderMerchant(w http.ResponseWriter, name string, r *http.Request, title string, data map[string]any) {
+	data["AppName"] = a.cfg.AppName
+	data["Title"] = title
+	data["CSRF"] = merchantCSRFFromContext(r.Context())
+	data["MerchantID"] = merchantIDFromContext(r.Context())
+	a.render(w, name, data)
 }
 
 func parseSMSWebhookPayload(r *http.Request, body []byte) (string, string, string) {

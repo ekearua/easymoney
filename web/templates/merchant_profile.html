@@ -1,0 +1,19 @@
+{{define "merchant_profile.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <h1>Business profile</h1>
+  {{if index . "Saved"}}<div class="alert success">Profile updated.</div>{{end}}
+  <section class="panel">
+    <form method="post" action="/merchant/profile">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Business name <input name="name" value="{{.Merchant.Name}}" required></label>
+      <label>Category <input name="category" value="{{.Merchant.Category}}"></label>
+      <label>Description <textarea name="description" rows="3">{{.Merchant.Description}}</textarea></label>
+      <label>Logo URL <input name="logo_url" value="{{.Merchant.LogoURL}}" placeholder="https://..."></label>
+      <button type="submit">Save profile</button>
+    </form>
+  </section>
+</main></body></html>
+{{end}}

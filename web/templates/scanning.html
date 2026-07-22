@@ -58,9 +58,15 @@
 
   <section class="panel">
     <h2>Registered services</h2>
-    <table><thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Receipts</th><th>Expiry</th><th>Status</th></tr></thead><tbody>
-    {{range .Services}}<tr><td>{{.Name}}</td><td>{{.ServiceType}}</td><td>{{.MerchantName}}</td><td>{{.AcceptedReceiptTypes}}</td><td>{{.TokenTTLSeconds}}s</td><td>{{if .Active}}active{{else}}inactive{{end}}</td></tr>{{else}}
-    <tr><td colspan="6">No registered services yet.</td></tr>{{end}}
+    {{if index . "WhitelistSet"}}<div class="alert success">Phone whitelist updated.</div>{{end}}
+    <table><thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Receipts</th><th>Expiry</th><th>Status</th><th>Phone whitelist</th></tr></thead><tbody>
+    {{range .Services}}<tr><td>{{.Name}}</td><td>{{.ServiceType}}</td><td>{{.MerchantName}}</td><td>{{.AcceptedReceiptTypes}}</td><td>{{.TokenTTLSeconds}}s</td><td>{{if .Active}}active{{else}}inactive{{end}}</td>
+    <td><form method="post" action="/admin/scanning/services/{{.ID}}/whitelist" style="display:flex;gap:4px;align-items:center">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <input name="phone_whitelist" value="{{.PhoneWhitelist}}" placeholder="+2348012345678,..." style="width:200px;font-size:0.85em">
+      <button type="submit" style="font-size:0.85em">Save</button>
+    </form></td></tr>{{else}}
+    <tr><td colspan="7">No registered services yet.</td></tr>{{end}}
     </tbody></table>
   </section>
 
