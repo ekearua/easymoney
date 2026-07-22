@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
@@ -230,13 +232,19 @@ func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment sto
 	}
 	scanURL := s.cfg.BaseURL + "/scan/" + token.Token
 	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
-	body := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\nShow this QR/code only to an authorised service reader. It is single-use and expires on %s.",
+	caption := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\nShow this QR/code only to an authorised service reader. It is single-use and expires on %s.",
 		token.ServiceName, token.ManualCode, scanURL, receiptURL, token.ExpiresAt.Format("02 Jan 2006, 15:04 MST"))
-	if err := s.store.EnqueueTextForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, body); err != nil {
-		s.logger.Error("receipt scan token enqueue failed", "payment_id", payment.ID, "channel", payment.Channel, "error", err)
+	png, err := qrcode.Encode(scanURL, qrcode.Medium, 512)
+	if err != nil {
+		s.logger.Error("QR code generation failed, falling back to text", "payment_id", payment.ID, "error", err)
+		return s.store.EnqueueTextForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, caption)
+	}
+	imageB64 := base64.StdEncoding.EncodeToString(png)
+	if err := s.store.EnqueueImageForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, imageB64, caption); err != nil {
+		s.logger.Error("receipt scan image enqueue failed", "payment_id", payment.ID, "channel", payment.Channel, "error", err)
 		return err
 	}
-	s.logger.Info("receipt scan token created and enqueued", "payment_id", payment.ID, "service", token.ServiceName, "channel", payment.Channel)
+	s.logger.Info("receipt scan token created and enqueued as image", "payment_id", payment.ID, "service", token.ServiceName, "channel", payment.Channel)
 	return nil
 }
 

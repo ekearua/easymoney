@@ -3827,6 +3827,16 @@ func (s *Store) EnqueueTextForChannel(ctx context.Context, userID uuid.UUID, cha
 	return err
 }
 
+// EnqueueImageForChannel adds a durable outbound image notification. The image
+// data is base64-encoded so the outbox worker can decode and upload it later.
+func (s *Store) EnqueueImageForChannel(ctx context.Context, userID uuid.UUID, channel, recipient, imageDataB64, caption string) error {
+	payload, _ := json.Marshal(map[string]any{"image_data": imageDataB64, "caption": caption})
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
+		VALUES($1,$2,$3,'image',$4)`, userID, channel, recipient, payload)
+	return err
+}
+
 // EnqueueTemplate adds a durable template notification for use outside the service window.
 func (s *Store) EnqueueTemplate(ctx context.Context, userID uuid.UUID, recipient, name, locale string, parameters []string) error {
 	payload, _ := json.Marshal(map[string]any{"name": name, "locale": locale, "parameters": parameters})

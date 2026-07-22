@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -203,6 +204,75 @@ func (c *Client) SendTemplate(ctx context.Context, to, name string, parameters [
 			}},
 		},
 	})
+}
+
+// SendImage uploads an image to WhatsApp media and sends it as an image message.
+func (c *Client) SendImage(ctx context.Context, to string, imageData []byte, caption string) error {
+	if c.accessToken == "" || c.phoneID == "" {
+		return errors.New("WhatsApp credentials are not configured")
+	}
+	mediaID, err := c.uploadMedia(ctx, imageData)
+	if err != nil {
+		return fmt.Errorf("WhatsApp media upload: %w", err)
+	}
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                recipientForCloudAPI(to),
+		"type":              "image",
+		"image":             map[string]any{"id": mediaID},
+	}
+	if caption != "" {
+		payload["image"] = map[string]any{"id": mediaID, "caption": caption}
+	}
+	return c.send(ctx, payload)
+}
+
+// uploadMedia posts image bytes to the WhatsApp media endpoint and returns the media ID.
+func (c *Client) uploadMedia(ctx context.Context, imageData []byte) (string, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("messaging_product", "whatsapp")
+	_ = writer.WriteField("type", "image/jpeg")
+	part, err := writer.CreateFormFile("file", "qr.jpg")
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(imageData); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
+	endpoint := fmt.Sprintf("https://graph.facebook.com/%s/%s/media", c.graphVersion, c.phoneID)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.accessToken)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := c.http.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("WhatsApp media request: %w", err)
+	}
+	defer response.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("WhatsApp media returned %s: %s", response.Status, strings.TrimSpace(string(respBody)))
+	}
+	var result struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("decode media response: %w", err)
+	}
+	if result.ID == "" {
+		return "", errors.New("WhatsApp media upload returned empty ID")
+	}
+	return result.ID, nil
 }
 
 func (c *Client) send(ctx context.Context, payload map[string]any) error {

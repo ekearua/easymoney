@@ -84,6 +84,7 @@ type Messenger interface {
 	SendInteractive(context.Context, InteractiveMessage) error
 	SendCheckout(context.Context, string, string, string) error
 	SendTemplate(context.Context, string, string, []string) error
+	SendImage(ctx context.Context, to string, imageData []byte, caption string) error
 }
 
 // EmailSender sends transactional onboarding and receipt email messages.

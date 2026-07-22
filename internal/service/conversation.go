@@ -223,6 +223,14 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoiceItemUnitPrice(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_add_item":
 		return s.handleInvoiceAddItem(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_edit_item":
+		return s.handleInvoiceEditItem(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_edit_field":
+		return s.handleInvoiceEditField(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_edit_value":
+		return s.handleInvoiceEditValue(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_remove_item":
+		return s.handleInvoiceRemoveItem(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_delivery_fee":
 		return s.handleInvoiceDeliveryFee(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_due_date":
@@ -1625,14 +1633,7 @@ func (s *ConversationService) handleInvoiceItemUnitPrice(ctx context.Context, ch
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:   recipient,
-		Body: invoiceItemsSummary("Item added. Current invoice items:", items) + "\n\nAdd another item?",
-		Buttons: []ports.InteractiveButton{
-			{ID: "invoice_add_yes", Title: "Add item"},
-			{ID: "invoice_add_no", Title: "Continue"},
-		},
-	})
+	return s.sendInvoiceAddItemPrompt(ctx, channel, recipient, session)
 }
 
 func (s *ConversationService) handleInvoiceSingleItemConcat(ctx context.Context, channel, recipient string, user store.User, session store.Session, name, qtyStr, priceStr string) error {
@@ -1661,14 +1662,7 @@ func (s *ConversationService) handleInvoiceSingleItemConcat(ctx context.Context,
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:   recipient,
-		Body: invoiceItemsSummary("Item added. Current invoice items:", existing) + "\n\nAdd another item?",
-		Buttons: []ports.InteractiveButton{
-			{ID: "invoice_add_yes", Title: "Add item"},
-			{ID: "invoice_add_no", Title: "Continue"},
-		},
-	})
+	return s.sendInvoiceAddItemPrompt(ctx, channel, recipient, session)
 }
 
 func (s *ConversationService) handleInvoiceBulkItems(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -1717,18 +1711,11 @@ func (s *ConversationService) handleInvoiceBulkItems(ctx context.Context, channe
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:   recipient,
-		Body: invoiceItemsSummary("Items added. Current invoice items:", items) + "\n\nAdd another item?",
-		Buttons: []ports.InteractiveButton{
-			{ID: "invoice_add_yes", Title: "Add item"},
-			{ID: "invoice_add_no", Title: "Continue"},
-		},
-	})
+	return s.sendInvoiceAddItemPrompt(ctx, channel, recipient, session)
 }
 
 func (s *ConversationService) handleInvoiceAddItem(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	switch strings.ToLower(input) {
+	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "invoice_add_yes", "yes", "add", "add item":
 		session.State = "invoice_item_name"
 		if err := s.saveSession(ctx, session); err != nil {
@@ -1740,27 +1727,272 @@ func (s *ConversationService) handleInvoiceAddItem(ctx context.Context, channel,
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "Delivery fee, if any? Send 0 if there is no delivery fee.")
+		return s.sendText(ctx, channel, recipient, "Delivery fee and due date? Send both or one at a time.\n\nExamples:\n• 500, 15 Aug\n• 0, now\n• 500 (due immediately)\n• now (no fee, immediate)")
+	case "invoice_edit_yes", "edit", "edit item":
+		items, err := invoiceItemsFromSession(session)
+		if err != nil || len(items) == 0 {
+			return s.sendText(ctx, channel, recipient, "No items to edit. Send an item name to add one.")
+		}
+		session.State = "invoice_edit_item"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, invoiceItemsNumbered(items)+"\n\nSend the item number to edit (e.g. 1)")
+	case "invoice_remove_yes", "remove", "remove item":
+		items, err := invoiceItemsFromSession(session)
+		if err != nil || len(items) == 0 {
+			return s.sendText(ctx, channel, recipient, "No items to remove.")
+		}
+		session.State = "invoice_remove_item"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, invoiceItemsNumbered(items)+"\n\nSend the item number to remove (e.g. 1)")
 	default:
-		return s.sendText(ctx, channel, recipient, "Choose Add item or Continue.")
+		return s.sendInvoiceAddItemPrompt(ctx, channel, recipient, session)
 	}
 }
 
-func (s *ConversationService) handleInvoiceDeliveryFee(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	fee := int64(0)
-	if !strings.EqualFold(strings.TrimSpace(input), "none") && strings.TrimSpace(input) != "0" {
-		amount, err := domain.ParseNGNAmount(input, 0, s.cfg.PaymentMaxKobo)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "Send the delivery fee as a naira amount, or 0 if none.")
-		}
-		fee = amount
+func (s *ConversationService) handleInvoiceEditItem(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	items, err := invoiceItemsFromSession(session)
+	if err != nil || len(items) == 0 {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
 	}
-	session.State = "invoice_due_date"
-	session.Data["invoice_delivery_fee_kobo"] = strconv.FormatInt(fee, 10)
+	idx, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || idx < 1 || idx > len(items) {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Send a number between 1 and %d.", len(items)))
+	}
+	session.State = "invoice_edit_field"
+	session.Data["invoice_edit_index"] = strconv.Itoa(idx - 1)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Send the due date for this invoice.\n\nExamples:\n• now (due immediately)\n• 15 Aug\n• 2026-08-15\n\nSend NOW or leave blank for immediate due date.")
+	item := items[idx-1]
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Editing item %d: %s (Qty %d × %s)\n\nWhat do you want to change?\n• name\n• quantity\n• price", idx, item.Description, item.Quantity, domain.FormatNGN(item.UnitPriceKobo)))
+}
+
+func (s *ConversationService) handleInvoiceEditField(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	items, err := invoiceItemsFromSession(session)
+	if err != nil || len(items) == 0 {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	field := strings.ToLower(strings.TrimSpace(input))
+	switch field {
+	case "name", "description", "item name":
+		session.State = "invoice_edit_value"
+		session.Data["invoice_edit_field"] = "name"
+	case "quantity", "qty", "count":
+		session.State = "invoice_edit_value"
+		session.Data["invoice_edit_field"] = "quantity"
+	case "price", "unit price", "amount":
+		session.State = "invoice_edit_value"
+		session.Data["invoice_edit_field"] = "price"
+	default:
+		return s.sendText(ctx, channel, recipient, "Send name, quantity, or price.")
+	}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	idx, _ := strconv.Atoi(session.Data["invoice_edit_index"])
+	item := items[idx]
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Send the new %s for \"%s\".", field, item.Description))
+}
+
+func (s *ConversationService) handleInvoiceEditValue(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	items, err := invoiceItemsFromSession(session)
+	if err != nil || len(items) == 0 {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	idx, _ := strconv.Atoi(session.Data["invoice_edit_index"])
+	if idx < 0 || idx >= len(items) {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	item := &items[idx]
+	field := session.Data["invoice_edit_field"]
+	switch field {
+	case "name":
+		name := strings.TrimSpace(input)
+		if len([]rune(name)) < 2 || len([]rune(name)) > 120 {
+			return s.sendText(ctx, channel, recipient, "Send an item description between 2 and 120 characters.")
+		}
+		item.Description = name
+	case "quantity":
+		qty, err := strconv.Atoi(strings.TrimSpace(input))
+		if err != nil || qty < 1 || qty > 1000 {
+			return s.sendText(ctx, channel, recipient, "Send a quantity between 1 and 1000.")
+		}
+		item.Quantity = qty
+		item.LineTotalKobo = int64(qty) * item.UnitPriceKobo
+	case "price":
+		price, err := domain.ParseNGNAmount(input, 100, s.cfg.PaymentMaxKobo)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, err.Error())
+		}
+		item.UnitPriceKobo = price
+		item.LineTotalKobo = int64(item.Quantity) * price
+	}
+	if err := putInvoiceItems(&session, items); err != nil {
+		return err
+	}
+	delete(session.Data, "invoice_edit_index")
+	delete(session.Data, "invoice_edit_field")
+	session.State = "invoice_add_item"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: invoiceItemsSummary("Item updated. Current invoice items:", items) + "\n\nWhat next?",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+			{ID: "invoice_edit_yes", Title: "Edit item"},
+			{ID: "invoice_remove_yes", Title: "Remove item"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoiceRemoveItem(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	items, err := invoiceItemsFromSession(session)
+	if err != nil || len(items) == 0 {
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
+	}
+	idx, err := strconv.Atoi(strings.TrimSpace(input))
+	if err != nil || idx < 1 || idx > len(items) {
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Send a number between 1 and %d.", len(items)))
+	}
+	removed := items[idx-1]
+	items = append(items[:idx-1], items[idx:]...)
+	for i := range items {
+		items[i].SortOrder = i + 1
+	}
+	if len(items) == 0 {
+		items = []store.InvoiceItem{}
+	}
+	if err := putInvoiceItems(&session, items); err != nil {
+		return err
+	}
+	session.State = "invoice_add_item"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	summary := fmt.Sprintf("Removed: %s", removed.Description)
+	if len(items) > 0 {
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To:   recipient,
+			Body: summary + "\n\n" + invoiceItemsSummary("Current invoice items:", items) + "\n\nWhat next?",
+			Buttons: []ports.InteractiveButton{
+				{ID: "invoice_add_yes", Title: "Add item"},
+				{ID: "invoice_edit_yes", Title: "Edit item"},
+				{ID: "invoice_remove_yes", Title: "Remove item"},
+			},
+		})
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: summary + "\n\nNo items left. Send an item name or description to add one.",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+		},
+	})
+}
+
+func invoiceItemsNumbered(items []store.InvoiceItem) string {
+	lines := []string{}
+	for i, item := range items {
+		lines = append(lines, fmt.Sprintf("%d. %s — Qty %d × %s", i+1, item.Description, item.Quantity, domain.FormatNGN(item.UnitPriceKobo)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (s *ConversationService) sendInvoiceAddItemPrompt(ctx context.Context, channel, recipient string, session store.Session) error {
+	items, err := invoiceItemsFromSession(session)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "That invoice session expired. Please start again.")
+	}
+	if len(items) > 0 {
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To:   recipient,
+			Body: invoiceItemsSummary("Current invoice items:", items),
+			Buttons: []ports.InteractiveButton{
+				{ID: "invoice_add_yes", Title: "Add item"},
+				{ID: "invoice_edit_yes", Title: "Edit item"},
+				{ID: "invoice_remove_yes", Title: "Remove item"},
+			},
+		})
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: "Add invoice items.\n\nSend one item per line: Name, Quantity, Price\nExample: Website design, 1, 25000\n\nOr send just the item name to enter details one at a time.",
+		Buttons: []ports.InteractiveButton{
+			{ID: "invoice_add_yes", Title: "Add item"},
+		},
+	})
+}
+
+func (s *ConversationService) handleInvoiceDeliveryFee(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	input = strings.TrimSpace(input)
+	fee := int64(0)
+	var dueAt time.Time
+	dueAtSet := false
+
+	parts := strings.Split(input, ",")
+	feeStr := strings.TrimSpace(parts[0])
+	dueStr := ""
+	if len(parts) > 1 {
+		dueStr = strings.TrimSpace(parts[1])
+	}
+
+	switch strings.ToLower(feeStr) {
+	case "", "none", "0", "no fee", "no delivery":
+		fee = 0
+	default:
+		amount, err := domain.ParseNGNAmount(feeStr, 0, s.cfg.PaymentMaxKobo)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "Send the delivery fee as a naira amount, or 0 if none.\n\nExamples:\n• 500, 15 Aug\n• 0, now\n• 500 (due immediately)\n• now (no fee, immediate)")
+		}
+		fee = amount
+	}
+
+	if dueStr == "" {
+		dueStr = feeStr
+		if fee == 0 {
+			dueStr = ""
+		}
+	}
+
+	switch strings.ToLower(dueStr) {
+	case "", "now", "skip", "none", "immediate":
+		dueAt = time.Now()
+		dueAtSet = true
+	default:
+		parsed, err := time.Parse("2006-01-02", dueStr)
+		if err != nil {
+			parsed, err = time.Parse("2 Jan 2006", dueStr)
+		}
+		if err != nil {
+			parsed, err = time.Parse("2 Jan", dueStr)
+		}
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "I couldn't understand the date. Send:\n• 500, 15 Aug\n• 0, now\n• 500 (due immediately)\n• now (no fee, immediate)")
+		}
+		if parsed.Year() == 0 {
+			parsed = parsed.AddDate(time.Now().Year(), 0, 0)
+		}
+		dueAt = parsed
+		dueAtSet = true
+	}
+
+	if !dueAtSet {
+		dueAt = time.Now()
+	}
+
+	session.State = "invoice_review"
+	session.Data["invoice_delivery_fee_kobo"] = strconv.FormatInt(fee, 10)
+	session.Data["invoice_due_date"] = dueAt.Format(time.RFC3339)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendInvoiceReview(ctx, channel, recipient, user, session)
 }
 
 func (s *ConversationService) handleInvoiceDueDate(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -3197,6 +3429,14 @@ func (s *ConversationService) sendText(ctx context.Context, channel, recipient, 
 		return err
 	}
 	return messenger.SendText(ctx, recipient, body)
+}
+
+func (s *ConversationService) sendImage(ctx context.Context, channel, recipient string, imageData []byte, caption string) error {
+	messenger, err := s.messengerFor(channel)
+	if err != nil {
+		return err
+	}
+	return messenger.SendImage(ctx, recipient, imageData, caption)
 }
 
 func (s *ConversationService) sendInteractive(ctx context.Context, channel string, message ports.InteractiveMessage) error {

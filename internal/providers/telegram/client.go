@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -167,6 +168,47 @@ func (c *Client) SendCheckout(ctx context.Context, to, body, url string) error {
 // SendTemplate degrades WhatsApp template notifications into normal Telegram messages.
 func (c *Client) SendTemplate(ctx context.Context, to, name string, parameters []string) error {
 	return c.SendText(ctx, to, strings.Join(parameters, "\n"))
+}
+
+// SendImage sends a photo with caption via the Telegram Bot API.
+func (c *Client) SendImage(ctx context.Context, to string, imageData []byte, caption string) error {
+	if c.botToken == "" {
+		return errors.New("Telegram bot token is not configured")
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("chat_id", to)
+	if caption != "" {
+		_ = writer.WriteField("caption", caption)
+	}
+	part, err := writer.CreateFormFile("photo", "qr.jpg")
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(imageData); err != nil {
+		return err
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/bot"+c.botToken+"/sendPhoto", &body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("Telegram request: %w", err)
+	}
+	defer response.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("Telegram returned %s: %s", response.Status, strings.TrimSpace(string(respBody)))
+	}
+	return nil
 }
 
 // AnswerCallback stops Telegram clients from showing a loading spinner after button taps.

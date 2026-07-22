@@ -326,6 +326,16 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			} else {
 				sendErr = a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
 			}
+		case "image":
+			var payload struct {
+				ImageData string `json:"image_data"`
+				Caption   string `json:"caption"`
+			}
+			if err := json.Unmarshal(message.Payload, &payload); err != nil {
+				sendErr = err
+			} else {
+				sendErr = a.sendOutboxImage(ctx, message.Channel, message.Recipient, payload.ImageData, payload.Caption)
+			}
 		case "template":
 			var payload struct {
 				Name       string   `json:"name"`
@@ -362,6 +372,24 @@ func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body strin
 		return a.telegram.SendText(ctx, recipient, body)
 	default:
 		return a.whatsapp.SendText(ctx, recipient, body)
+	}
+}
+
+func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageDataB64, caption string) error {
+	imageData, err := base64.StdEncoding.DecodeString(imageDataB64)
+	if err != nil {
+		return fmt.Errorf("decode image data: %w", err)
+	}
+	switch channel {
+	case service.ChannelSMS:
+		return nil
+	case service.ChannelTelegram:
+		if a.telegram == nil {
+			return errors.New("Telegram is not configured")
+		}
+		return a.telegram.SendImage(ctx, recipient, imageData, caption)
+	default:
+		return a.whatsapp.SendImage(ctx, recipient, imageData, caption)
 	}
 }
 
