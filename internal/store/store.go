@@ -1411,7 +1411,7 @@ func (s *Store) EnsureReceiptScanToken(ctx context.Context, paymentID uuid.UUID)
 	_, err = tx.Exec(ctx, `
 		INSERT INTO receipt_scan_tokens(payment_id,service_id,token,manual_code,receipt_type,expires_at)
 		VALUES($1,$2,$3,$4,$5,now()+($6::text || ' seconds')::interval)`,
-		paymentID, serviceID, token, manualCode, receiptType, ttlSeconds)
+		paymentID, serviceID, token, manualCode, receiptType, fmt.Sprintf("%d", ttlSeconds))
 	if err != nil {
 		return ReceiptScanTokenView{}, false, err
 	}
