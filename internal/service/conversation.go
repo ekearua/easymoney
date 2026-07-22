@@ -1840,15 +1840,7 @@ func (s *ConversationService) handleInvoiceEditValue(ctx context.Context, channe
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:   recipient,
-		Body: invoiceItemsSummary("Item updated. Current invoice items:", items) + "\n\nWhat next?",
-		Buttons: []ports.InteractiveButton{
-			{ID: "invoice_add_yes", Title: "Add item"},
-			{ID: "invoice_edit_yes", Title: "Edit item"},
-			{ID: "invoice_remove_yes", Title: "Remove item"},
-		},
-	})
+	return s.sendInteractive(ctx, channel, invoiceItemsActionList(recipient, invoiceItemsSummary("Item updated. Current invoice items:", items)+"\n\nWhat next?"))
 }
 
 func (s *ConversationService) handleInvoiceRemoveItem(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -1877,15 +1869,7 @@ func (s *ConversationService) handleInvoiceRemoveItem(ctx context.Context, chann
 	}
 	summary := fmt.Sprintf("Removed: %s", removed.Description)
 	if len(items) > 0 {
-		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-			To:   recipient,
-			Body: summary + "\n\n" + invoiceItemsSummary("Current invoice items:", items) + "\n\nWhat next?",
-			Buttons: []ports.InteractiveButton{
-				{ID: "invoice_add_yes", Title: "Add item"},
-				{ID: "invoice_edit_yes", Title: "Edit item"},
-				{ID: "invoice_remove_yes", Title: "Remove item"},
-			},
-		})
+		return s.sendInteractive(ctx, channel, invoiceItemsActionList(recipient, summary+"\n\n"+invoiceItemsSummary("Current invoice items:", items)+"\n\nWhat next?"))
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
@@ -1904,21 +1888,30 @@ func invoiceItemsNumbered(items []store.InvoiceItem) string {
 	return strings.Join(lines, "\n")
 }
 
+func invoiceItemsActionList(to, body string) ports.InteractiveMessage {
+	return ports.InteractiveMessage{
+		To:          to,
+		Body:        body,
+		ButtonLabel: "Actions",
+		Sections: []ports.InteractiveSection{{
+			Title: "Invoice items",
+			Rows: []ports.InteractiveRow{
+				{ID: "invoice_add_yes", Title: "Add item", Description: "Add another item"},
+				{ID: "invoice_edit_yes", Title: "Edit item", Description: "Change an existing item"},
+				{ID: "invoice_remove_yes", Title: "Remove item", Description: "Remove an item"},
+				{ID: "invoice_add_no", Title: "Continue", Description: "Proceed to delivery fee and due date"},
+			},
+		}},
+	}
+}
+
 func (s *ConversationService) sendInvoiceAddItemPrompt(ctx context.Context, channel, recipient string, session store.Session) error {
 	items, err := invoiceItemsFromSession(session)
 	if err != nil {
 		return s.sendText(ctx, channel, recipient, "That invoice session expired. Please start again.")
 	}
 	if len(items) > 0 {
-		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-			To:   recipient,
-			Body: invoiceItemsSummary("Current invoice items:", items),
-			Buttons: []ports.InteractiveButton{
-				{ID: "invoice_add_yes", Title: "Add item"},
-				{ID: "invoice_edit_yes", Title: "Edit item"},
-				{ID: "invoice_remove_yes", Title: "Remove item"},
-			},
-		})
+		return s.sendInteractive(ctx, channel, invoiceItemsActionList(recipient, invoiceItemsSummary("Current invoice items:", items)))
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
