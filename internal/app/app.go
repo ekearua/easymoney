@@ -845,10 +845,15 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 		http.Error(w, "invalid registration id", http.StatusBadRequest)
 		return
 	}
-	if _, err := a.store.ApproveMerchantRegistration(r.Context(), id); err != nil {
+	merchant, err := a.store.ApproveMerchantRegistration(r.Context(), id)
+	if err != nil {
 		a.logger.Warn("approve merchant registration failed", "registration_id", id, "error", err)
 		http.Error(w, "approval failed", http.StatusInternalServerError)
 		return
+	}
+	owner, err := a.store.MerchantOwnerByRegistrationID(r.Context(), id)
+	if err == nil {
+		a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name)
 	}
 	http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
 }

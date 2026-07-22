@@ -225,6 +225,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoiceAddItem(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_delivery_fee":
 		return s.handleInvoiceDeliveryFee(ctx, message.Channel, recipient, user, session, input)
+	case "invoice_due_date":
+		return s.handleInvoiceDueDate(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_review":
 		return s.handleInvoiceReview(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_pay_amount":
@@ -1753,8 +1755,38 @@ func (s *ConversationService) handleInvoiceDeliveryFee(ctx context.Context, chan
 		}
 		fee = amount
 	}
-	session.State = "invoice_review"
+	session.State = "invoice_due_date"
 	session.Data["invoice_delivery_fee_kobo"] = strconv.FormatInt(fee, 10)
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Send the due date for this invoice.\n\nExamples:\n• now (due immediately)\n• 15 Aug\n• 2026-08-15\n\nSend NOW or leave blank for immediate due date.")
+}
+
+func (s *ConversationService) handleInvoiceDueDate(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	input = strings.TrimSpace(input)
+	var dueAt time.Time
+	switch strings.ToLower(input) {
+	case "", "now", "skip", "none", "immediate":
+		dueAt = time.Now()
+	default:
+		parsed, err := time.Parse("2006-01-02", input)
+		if err != nil {
+			parsed, err = time.Parse("2 Jan 2006", input)
+		}
+		if err != nil {
+			parsed, err = time.Parse("2 Jan", input)
+		}
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "I couldn't understand that date. Send a date like 15 Aug or 2026-08-15, or send NOW for immediate due date.")
+		}
+		if parsed.Year() == 0 {
+			parsed = parsed.AddDate(time.Now().Year(), 0, 0)
+		}
+		dueAt = parsed
+	}
+	session.State = "invoice_review"
+	session.Data["invoice_due_date"] = dueAt.Format(time.RFC3339)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -1765,11 +1797,10 @@ func (s *ConversationService) handleInvoiceReview(ctx context.Context, channel, 
 	if input != "invoice_confirm" && !strings.EqualFold(input, "confirm") {
 		return s.sendInvoiceReview(ctx, channel, recipient, user, session)
 	}
-	merchant, items, fee, err := s.invoiceDraft(ctx, user, session)
+	merchant, items, fee, dueAt, err := s.invoiceDraft(ctx, user, session)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
 	}
-	dueAt := time.Now().Add(7 * 24 * time.Hour)
 	invoice, err := s.store.CreateInvoice(ctx, store.InvoiceSpec{
 		MerchantID:             merchant.ID,
 		CreatedByUserID:        user.ID,
@@ -2341,19 +2372,16 @@ func (s *ConversationService) handleInvoiceBankTransferConfirmation(ctx context.
 	if err != nil {
 		return err
 	}
-	invoice, changed, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID)
-	if err != nil {
-		return err
-	}
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	if changed {
-		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your transfer confirmation.\n\nInvoice: %s\nPaid now: %s\nInvoice status: %s\nTotal collected: %s of %s",
-			invoice.Reference, domain.FormatNGN(updated.AmountKobo), strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo)))
+	invoice, err := s.store.InvoiceByPaymentID(ctx, updated.ID)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "Thanks. Xego has recorded your transfer confirmation.")
 	}
-	return s.sendText(ctx, channel, recipient, "Thanks. Xego has recorded your transfer confirmation.")
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your transfer confirmation.\n\nInvoice: %s\nPaid now: %s\nInvoice status: %s\nTotal collected: %s of %s",
+		invoice.Reference, domain.FormatNGN(updated.AmountKobo), strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo)))
 }
 
 func (s *ConversationService) handleConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -2687,15 +2715,15 @@ func (s *ConversationService) sendMerchants(ctx context.Context, channel, recipi
 }
 
 func (s *ConversationService) sendInvoiceReview(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
-	merchant, items, fee, err := s.invoiceDraft(ctx, user, session)
+	merchant, items, fee, dueAt, err := s.invoiceDraft(ctx, user, session)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
 	}
 	subtotal := invoiceSubtotal(items)
 	total := subtotal + fee
 	body := invoiceItemsSummary("Review invoice", items)
-	body += fmt.Sprintf("\n\nMerchant: %s\nCustomer WhatsApp: %s\nCustomer email: %s\nSubtotal: %s\nDelivery fee: %s\nTotal: %s\nDue: 7 days from today\n\nGenerate this invoice?",
-		merchant.Name, session.Data["invoice_customer_phone"], session.Data["invoice_customer_email"], domain.FormatNGN(subtotal), domain.FormatNGN(fee), domain.FormatNGN(total))
+	body += fmt.Sprintf("\n\nMerchant: %s\nCustomer WhatsApp: %s\nCustomer email: %s\nSubtotal: %s\nDelivery fee: %s\nTotal: %s\nDue: %s\n\nGenerate this invoice?",
+		merchant.Name, session.Data["invoice_customer_phone"], session.Data["invoice_customer_email"], domain.FormatNGN(subtotal), domain.FormatNGN(fee), domain.FormatNGN(total), dueAt.Format("02 Jan 2006"))
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
 		Body: body,
@@ -2940,10 +2968,10 @@ func (s *ConversationService) dataOrderFromSession(ctx context.Context, session 
 	return s.store.DataOrderByID(ctx, orderID)
 }
 
-func (s *ConversationService) invoiceDraft(ctx context.Context, user store.User, session store.Session) (store.Merchant, []store.InvoiceItem, int64, error) {
+func (s *ConversationService) invoiceDraft(ctx context.Context, user store.User, session store.Session) (store.Merchant, []store.InvoiceItem, int64, time.Time, error) {
 	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
 	if err != nil {
-		return store.Merchant{}, nil, 0, err
+		return store.Merchant{}, nil, 0, time.Time{}, err
 	}
 	slug := session.Data["invoice_merchant_slug"]
 	var merchant store.Merchant
@@ -2956,14 +2984,20 @@ func (s *ConversationService) invoiceDraft(ctx context.Context, user store.User,
 		}
 	}
 	if !found {
-		return store.Merchant{}, nil, 0, fmt.Errorf("merchant not owned by user")
+		return store.Merchant{}, nil, 0, time.Time{}, fmt.Errorf("merchant not owned by user")
 	}
 	items, err := invoiceItemsFromSession(session)
 	if err != nil || len(items) == 0 {
-		return store.Merchant{}, nil, 0, fmt.Errorf("missing invoice items")
+		return store.Merchant{}, nil, 0, time.Time{}, fmt.Errorf("missing invoice items")
 	}
 	fee, _ := strconv.ParseInt(session.Data["invoice_delivery_fee_kobo"], 10, 64)
-	return merchant, items, fee, nil
+	dueAt := time.Now()
+	if raw := session.Data["invoice_due_date"]; raw != "" {
+		if parsed, pErr := time.Parse(time.RFC3339, raw); pErr == nil {
+			dueAt = parsed
+		}
+	}
+	return merchant, items, fee, dueAt, nil
 }
 
 func (s *ConversationService) invoicePaymentSession(ctx context.Context, session store.Session) (store.InvoiceView, int64, error) {
@@ -3122,6 +3156,28 @@ func (s *ConversationService) notifyInvoiceCustomer(ctx context.Context, invoice
 	if invoice.CustomerWhatsAppNumber != "" {
 		_ = s.sendText(ctx, ChannelWhatsApp, invoice.CustomerWhatsAppNumber, body)
 	}
+}
+
+// NotifyMerchantApproved sends a WhatsApp message to the merchant owner after approval.
+func (s *ConversationService) NotifyMerchantApproved(ctx context.Context, owner store.User, merchantName string) {
+	if owner.WhatsAppNumber == "" {
+		return
+	}
+	_ = s.sendText(ctx, ChannelWhatsApp, owner.WhatsAppNumber, fmt.Sprintf(
+		"Your merchant account has been approved!\n\nBusiness: %s\n\nYou can now generate invoices and receive payments through Xego. Send MENU to get started.",
+		merchantName))
+}
+
+// NotifyMerchantPayment sends a WhatsApp message to the merchant owner when an invoice payment is received.
+func (s *ConversationService) NotifyMerchantPayment(ctx context.Context, invoice store.InvoiceView, paymentAmount int64) {
+	owner, err := s.store.MerchantOwnerByInvoiceID(ctx, invoice.ID)
+	if err != nil || owner.WhatsAppNumber == "" {
+		return
+	}
+	_ = s.sendText(ctx, ChannelWhatsApp, owner.WhatsAppNumber, fmt.Sprintf(
+		"Invoice payment received!\n\nInvoice: %s\nCustomer: %s\nPaid now: %s\nTotal collected: %s of %s\nStatus: %s",
+		invoice.Reference, invoice.CustomerWhatsAppNumber, domain.FormatNGN(paymentAmount),
+		domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo), strings.ToUpper(invoice.Status)))
 }
 
 func (s *ConversationService) abandonSessionPayment(ctx context.Context, user store.User, session store.Session) {

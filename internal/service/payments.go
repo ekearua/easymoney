@@ -157,6 +157,7 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
+		s.notifyMerchantPayment(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -208,6 +209,7 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
+		s.notifyMerchantPayment(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -215,9 +217,12 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
 	token, created, err := s.store.EnsureReceiptScanToken(ctx, payment.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		s.logger.Warn("receipt scan token skipped: no matching registered service or payment not succeeded",
+			"payment_id", payment.ID, "merchant_id", payment.MerchantID)
 		return nil
 	}
 	if err != nil {
+		s.logger.Error("receipt scan token creation failed", "payment_id", payment.ID, "error", err)
 		return err
 	}
 	if !created {
@@ -227,7 +232,27 @@ func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment sto
 	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
 	body := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\nShow this QR/code only to an authorised service reader. It is single-use and expires on %s.",
 		token.ServiceName, token.ManualCode, scanURL, receiptURL, token.ExpiresAt.Format("02 Jan 2006, 15:04 MST"))
-	return s.store.EnqueueTextForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, body)
+	if err := s.store.EnqueueTextForChannel(ctx, payment.UserID, payment.Channel, payment.Recipient, body); err != nil {
+		s.logger.Error("receipt scan token enqueue failed", "payment_id", payment.ID, "channel", payment.Channel, "error", err)
+		return err
+	}
+	s.logger.Info("receipt scan token created and enqueued", "payment_id", payment.ID, "service", token.ServiceName, "channel", payment.Channel)
+	return nil
+}
+
+func (s *PaymentService) notifyMerchantPayment(ctx context.Context, payment store.PaymentView) {
+	invoice, err := s.store.InvoiceByPaymentID(ctx, payment.ID)
+	if err != nil {
+		return
+	}
+	owner, err := s.store.MerchantOwnerByInvoiceID(ctx, invoice.ID)
+	if err != nil || owner.WhatsAppNumber == "" {
+		return
+	}
+	_ = s.store.EnqueueTextForChannel(ctx, owner.ID, "whatsapp", owner.WhatsAppNumber, fmt.Sprintf(
+		"Invoice payment received!\n\nInvoice: %s\nCustomer: %s\nPaid now: %s\nTotal collected: %s of %s\nStatus: %s",
+		invoice.Reference, invoice.CustomerWhatsAppNumber, domain.FormatNGN(payment.AmountKobo),
+		domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo), strings.ToUpper(invoice.Status)))
 }
 
 func validateVerification(payment store.PaymentView, verification ports.Verification) error {

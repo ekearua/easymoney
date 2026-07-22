@@ -1245,6 +1245,31 @@ func (s *Store) RecentInvoicesForMerchantOwner(ctx context.Context, userID uuid.
 	return invoices, rows.Err()
 }
 
+// MerchantOwnerByRegistrationID returns the user who submitted a merchant registration.
+func (s *Store) MerchantOwnerByRegistrationID(ctx context.Context, registrationID uuid.UUID) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id,u.whatsapp_number,u.display_name,u.email
+		FROM merchant_registrations mr
+		JOIN users u ON u.id=mr.user_id
+		WHERE mr.id=$1`, registrationID).Scan(&u.ID, &u.WhatsAppNumber, &u.DisplayName, &u.Email)
+	return u, err
+}
+
+// MerchantOwnerByInvoiceID returns the merchant owner who owns the invoice's merchant.
+func (s *Store) MerchantOwnerByInvoiceID(ctx context.Context, invoiceID uuid.UUID) (User, error) {
+	var u User
+	err := s.pool.QueryRow(ctx, `
+		SELECT u.id,u.whatsapp_number,u.display_name,u.email
+		FROM invoices i
+		JOIN merchant_owners mo ON mo.merchant_id=i.merchant_id
+		JOIN users u ON u.id=mo.user_id
+		WHERE i.id=$1
+		ORDER BY mo.created_at ASC
+		LIMIT 1`, invoiceID).Scan(&u.ID, &u.WhatsAppNumber, &u.DisplayName, &u.Email)
+	return u, err
+}
+
 // CreateInvoicePayment links a newly created payment attempt to an invoice.
 func (s *Store) CreateInvoicePayment(ctx context.Context, invoiceID, paymentID, payerUserID uuid.UUID, amountKobo int64) error {
 	_, err := s.pool.Exec(ctx, `
