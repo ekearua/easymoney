@@ -12,8 +12,8 @@
     <div class="scanner-wrapper">
       <div id="qr-reader"></div>
       <div class="scanner-controls">
-        <button type="button" id="btn-scan" class="btn-scan" onclick="startScan()">Start camera</button>
-        <button type="button" id="btn-stop" class="btn-stop" onclick="stopScan()" style="display:none">Stop scanning</button>
+        <button type="button" id="btn-scan" class="btn-scan">Start camera</button>
+        <button type="button" id="btn-stop" class="btn-stop" style="display:none">Stop scanning</button>
       </div>
     </div>
   </section>
@@ -62,7 +62,7 @@
     return text;
   }
 
-  window.startScan = function() {
+  function startScan() {
     if (scanning) return;
     var el = document.getElementById('qr-reader');
     el.style.display = 'block';
@@ -85,9 +85,9 @@
     }).catch(function(err) {
       document.getElementById('scan-status').textContent = 'Camera error: ' + (err.message || err);
     });
-  };
+  }
 
-  window.stopScan = function() {
+  function stopScan() {
     if (scanner && scanning) {
       scanner.stop().then(function() { scanner.clear(); }).catch(function() {});
     }
@@ -95,7 +95,10 @@
     document.getElementById('btn-scan').style.display = '';
     document.getElementById('btn-stop').style.display = 'none';
     document.getElementById('scan-status').textContent = 'Position a receipt QR code inside the frame. The scan validates automatically.';
-  };
+  }
+
+  document.getElementById('btn-scan').addEventListener('click', startScan);
+  document.getElementById('btn-stop').addEventListener('click', stopScan);
 })();
 </script>
 </body></html>
