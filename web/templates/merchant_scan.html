@@ -13,7 +13,7 @@
       <div id="qr-reader"></div>
       <div class="scanner-controls">
         <button type="button" id="btn-scan" class="btn-scan">Start camera</button>
-        <button type="button" id="btn-stop" class="btn-stop" style="display:none">Stop scanning</button>
+        <button type="button" id="btn-stop" class="btn-stop hidden">Stop scanning</button>
       </div>
     </div>
   </section>
@@ -34,7 +34,7 @@
   {{if .Result}}
   <section class="panel">
     <h2>Result: <span class="status {{statusClass .Result.Status}}">{{.Result.Status}}</span></h2>
-    <dl style="margin-top:12px">
+    <dl class="result-dl">
       <div><dt>Receipt type</dt><dd>{{.Result.ReceiptType}}</dd></div>
       <div><dt>Service</dt><dd>{{.Result.ServiceName}}</dd></div>
       <div><dt>Merchant</dt><dd>{{.Result.MerchantName}}</dd></div>
@@ -50,56 +50,6 @@
 
 </main>
 <script src="/static/html5-qrcode.min.js"></script>
-<script>
-(function(){
-  var scanner = null;
-  var scanning = false;
-
-  function extractToken(decodedText) {
-    var text = decodedText.trim();
-    var match = text.match(/\/scan\/([^\/\s?#]+)/);
-    if (match) return decodeURIComponent(match[1]);
-    return text;
-  }
-
-  function startScan() {
-    if (scanning) return;
-    var el = document.getElementById('qr-reader');
-    el.style.display = 'block';
-    scanner = new Html5Qrcode('qr-reader');
-    scanner.start(
-      { facingMode: 'environment' },
-      { fps: 10, qrbox: { width: 250, height: 250 } },
-      function onScanSuccess(decodedText) {
-        stopScan();
-        var token = extractToken(decodedText);
-        document.getElementById('token-input').value = token;
-        document.getElementById('scan-form').submit();
-      },
-      function() {}
-    ).then(function() {
-      scanning = true;
-      document.getElementById('btn-scan').style.display = 'none';
-      document.getElementById('btn-stop').style.display = '';
-      document.getElementById('scan-status').textContent = 'Scanning... point camera at QR code.';
-    }).catch(function(err) {
-      document.getElementById('scan-status').textContent = 'Camera error: ' + (err.message || err);
-    });
-  }
-
-  function stopScan() {
-    if (scanner && scanning) {
-      scanner.stop().then(function() { scanner.clear(); }).catch(function() {});
-    }
-    scanning = false;
-    document.getElementById('btn-scan').style.display = '';
-    document.getElementById('btn-stop').style.display = 'none';
-    document.getElementById('scan-status').textContent = 'Position a receipt QR code inside the frame. The scan validates automatically.';
-  }
-
-  document.getElementById('btn-scan').addEventListener('click', startScan);
-  document.getElementById('btn-stop').addEventListener('click', stopScan);
-})();
-</script>
+<script src="/static/scanner.js"></script>
 </body></html>
 {{end}}
