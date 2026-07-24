@@ -399,6 +399,12 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	if ref, ok := invoiceReferenceFromPAY(input); ok {
 		return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
 	}
+	if strings.HasPrefix(strings.ToLower(input), "pay_invoice:") {
+		ref := strings.TrimSpace(input[len("pay_invoice:"):])
+		if ref != "" {
+			return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
+		}
+	}
 	if code, ok := thriftJoinNameFromInput(input); ok {
 		return s.startThriftJoin(ctx, channel, recipient, user, session, code)
 	}
@@ -877,8 +883,9 @@ func (s *ConversationService) handleThriftTarget(ctx context.Context, channel, r
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare the group name with members. They can send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
-		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.Name, group.Name))
+	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, webLink, group.Name, group.Name))
 }
 
 func (s *ConversationService) handleThriftConcatCreation(ctx context.Context, channel, recipient string, user store.User, session store.Session, parsed thriftConcatResult) error {
@@ -968,8 +975,9 @@ func (s *ConversationService) handleThriftConcatReview(ctx context.Context, chan
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare the group name with members. They can send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
-		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, group.Name, group.Name))
+	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, webLink, group.Name, group.Name))
 }
 
 func (s *ConversationService) startThriftEdit(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
@@ -3407,13 +3415,21 @@ func invoiceReferenceFromPAY(input string) (string, bool) {
 
 func (s *ConversationService) notifyInvoiceCustomer(ctx context.Context, invoice store.InvoiceView) {
 	link := s.cfg.BaseURL + "/invoices/" + invoice.Reference
-	body := fmt.Sprintf("Xego invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nTo pay in WhatsApp, reply with:\nPAY %s\n\nYou may pay the full balance or choose a split/partial amount during payment.",
+	emailBody := fmt.Sprintf("Xego invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nTo pay, visit the link above or open WhatsApp and send PAY %s to Xego.",
 		invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)
 	if s.email != nil && invoice.CustomerEmail != "" {
-		_ = s.email.Send(ctx, invoice.CustomerEmail, "Xego invoice "+invoice.Reference, body)
+		_ = s.email.Send(ctx, invoice.CustomerEmail, "Xego invoice "+invoice.Reference, emailBody)
 	}
 	if invoice.CustomerWhatsAppNumber != "" {
-		_ = s.sendText(ctx, ChannelWhatsApp, invoice.CustomerWhatsAppNumber, body)
+		buttonID := "pay_invoice:" + invoice.Reference
+		_ = s.sendInteractive(ctx, ChannelWhatsApp, ports.InteractiveMessage{
+			To: invoice.CustomerWhatsAppNumber,
+			Body: fmt.Sprintf("Xego invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nYou may pay the full balance or choose a split/partial amount during payment.",
+				invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link),
+			Buttons: []ports.InteractiveButton{
+				{ID: buttonID, Title: "Pay now"},
+			},
+		})
 	}
 }
 

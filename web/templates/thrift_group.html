@@ -1,8 +1,10 @@
 {{define "thrift_group.html"}}
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Group.Name}} - {{.AppName}} Thrift</title><link rel="stylesheet" href="/static/styles.css"></head>
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Group.Name}} - {{.AppName}} Thrift</title><link rel="stylesheet" href="/static/styles.css">
+</head>
 <body class="receipt-body"><main class="receipt">
   <p class="eyebrow">Xego thrift group</p>
   <h1>{{.Group.Name}}</h1>
@@ -29,8 +31,13 @@
     {{range $index, $member := .Members}}<div><dt>#{{inc $index}} {{$member.UserName}}</dt><dd>{{$member.Status}}</dd></div>{{end}}
   </dl>
   {{end}}
-  <p>To join or contribute, send this message to Xego on WhatsApp:</p>
+  {{if eq .Group.Status "inviting"}}
+  <a class="button-primary" href="https://wa.me/?text={{printf "JOIN %s" .Group.Name | urlquery}}" target="_blank" rel="noopener">Join on WhatsApp</a>
+  <p class="muted" style="margin-top:8px">Or open WhatsApp and send this message to Xego:</p>
   <p class="mono">JOIN {{.Group.Name}}</p>
-  <p class="muted">Or CONTRIBUTE {{.Group.Name}} when there is an active contribution cycle.</p>
+  {{else}}
+  <p>To contribute, send this message to Xego on WhatsApp:</p>
+  <p class="mono">CONTRIBUTE {{.Group.Name}}</p>
+  {{end}}
 </main></body></html>
 {{end}}

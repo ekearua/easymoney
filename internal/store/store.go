@@ -4173,7 +4173,11 @@ func normalizeStorePhone(value string) string {
 func phoneInWhitelist(phone, whitelist string) bool {
 	phone = normalizeStorePhone(phone)
 	for _, entry := range strings.Split(whitelist, ",") {
-		if normalizeStorePhone(strings.TrimSpace(entry)) == phone {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if normalizeStorePhone(entry) == phone {
 			return true
 		}
 	}
