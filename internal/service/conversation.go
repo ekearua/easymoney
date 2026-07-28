@@ -129,6 +129,31 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		}
 		return s.sendMenu(ctx, message.Channel, recipient)
 	}
+	if isInterruptibleState(session.State) {
+		if interruptType, interruptArg := isPaymentInterrupt(input); interruptType != "" {
+			flowDesc := describeCurrentFlow(session)
+			prevData, _ := json.Marshal(session.Data)
+			prevState := session.State
+			session.State = "confirm_session_switch"
+			session.Data = map[string]string{
+				"pending_type": interruptType,
+				"pending_arg":  interruptArg,
+				"prev_state":   prevState,
+				"prev_data":    string(prevData),
+			}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendInteractive(ctx, message.Channel, ports.InteractiveMessage{
+				To:   recipient,
+				Body: fmt.Sprintf("You're currently %s.\n\nSwitch to something else?", flowDesc),
+				Buttons: []ports.InteractiveButton{
+					{ID: "switch_yes", Title: "Switch"},
+					{ID: "switch_no", Title: "Continue current"},
+				},
+			})
+		}
+	}
 
 	switch session.State {
 	case "select_merchant":
@@ -245,6 +270,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoicePayBank(ctx, message.Channel, recipient, user, session, input)
 	case "await_invoice_bank_transfer":
 		return s.handleInvoiceBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
+	case "confirm_session_switch":
+		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
 	default:
 		return s.handleMenu(ctx, message.Channel, recipient, user, session, input)
 	}
@@ -2578,6 +2605,20 @@ func (s *ConversationService) handleDataBankTransferConfirmation(ctx context.Con
 	return s.sendText(ctx, channel, recipient, "Thanks. Xego has received your transfer confirmation. Your data order will be fulfilled after payment confirmation is processed.")
 }
 
+func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel, recipient string, invoice store.InvoiceView, amount int64) error {
+	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
+			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "method_card", Title: "Card checkout"},
+			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
 func (s *ConversationService) sendCardReview(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
@@ -2649,6 +2690,59 @@ func (s *ConversationService) handleInvoiceBankTransferConfirmation(ctx context.
 	}
 	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your transfer confirmation.\n\nInvoice: %s\nPaid now: %s\nInvoice status: %s\nTotal collected: %s of %s",
 		invoice.Reference, domain.FormatNGN(updated.AmountKobo), strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo)))
+}
+
+func (s *ConversationService) handleSessionSwitchConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "switch_yes", "yes", "switch", "confirm":
+		interruptType := session.Data["pending_type"]
+		interruptArg := session.Data["pending_arg"]
+		prevState := session.Data["prev_state"]
+		prevDataRaw := session.Data["prev_data"]
+		var prevData map[string]string
+		if prevDataRaw != "" {
+			_ = json.Unmarshal([]byte(prevDataRaw), &prevData)
+		}
+		if prevState != "" {
+			oldSession := store.Session{UserID: user.ID, State: prevState, Data: prevData}
+			s.abandonSessionPayment(ctx, user, oldSession)
+		}
+		switch interruptType {
+		case "invoice_payment":
+			session.Data = map[string]string{"invoice_reference": interruptArg}
+			return s.startInvoicePayment(ctx, channel, recipient, user, session, interruptArg)
+		case "thrift_contribution":
+			session.Data = map[string]string{}
+			return s.startThriftContribution(ctx, channel, recipient, user, session, interruptArg)
+		default:
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That session expired. Please start again.")
+		}
+	case "switch_no", "no", "continue", "stay":
+		prevState := session.Data["prev_state"]
+		prevDataRaw := session.Data["prev_data"]
+		if prevState == "" {
+			return s.resetWithMessage(ctx, channel, recipient, user, session, "That session expired. Please start again.")
+		}
+		var prevData map[string]string
+		if prevDataRaw != "" {
+			_ = json.Unmarshal([]byte(prevDataRaw), &prevData)
+		}
+		session.State = prevState
+		session.Data = prevData
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.redispatchToState(ctx, channel, recipient, user, session)
+	default:
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To:   recipient,
+			Body: "Choose Switch to change what you're doing, or Continue current to stay on your current payment.",
+			Buttons: []ports.InteractiveButton{
+				{ID: "switch_yes", Title: "Switch"},
+				{ID: "switch_no", Title: "Continue current"},
+			},
+		})
+	}
 }
 
 func (s *ConversationService) handleConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -3175,7 +3269,7 @@ func (s *ConversationService) sendThriftDetails(ctx context.Context, channel, re
 
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
-		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN <group name> joins an inviting group.\nSTART <group name> (or ACTIVATE) lets the creator set payout rotation.\nCONTRIBUTE <group name> starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
+		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN <group name> joins an inviting group.\nSTART <group name> (or ACTIVATE) lets the creator set payout rotation.\nCONTRIBUTE <group name> starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nIf you're in the middle of a payment and need to switch to something else (like paying an invoice), just send the new payment command. Xego will ask if you want to switch or continue your current payment.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
 }
 
 func (s *ConversationService) rejectedPhoneMessage() string {
@@ -3462,6 +3556,21 @@ func (s *ConversationService) NotifyMerchantPayment(ctx context.Context, invoice
 func (s *ConversationService) abandonSessionPayment(ctx context.Context, user store.User, session store.Session) {
 	payment, err := s.paymentFromSession(ctx, user, session)
 	if err != nil {
+		if raw := session.Data["prev_data"]; raw != "" {
+			var prevData map[string]string
+			if json.Unmarshal([]byte(raw), &prevData) == nil {
+				if pid, ok := prevData["payment_id"]; ok {
+					if id, pErr := uuid.Parse(pid); pErr == nil {
+						if p, fErr := s.store.PaymentByID(ctx, id); fErr == nil && p.UserID == user.ID {
+							switch p.Status {
+							case domain.StatusDraft, domain.StatusAwaitingConfirmation, domain.StatusInitialized, domain.StatusPending:
+								_, _ = s.store.TransitionPayment(ctx, p.ID, domain.StatusAbandoned, "conversation.cancel", map[string]any{"reason": "customer_cancelled"})
+							}
+						}
+					}
+				}
+			}
+		}
 		return
 	}
 	switch payment.Status {
@@ -3786,4 +3895,175 @@ func normalizeChannel(channel string) string {
 		return ChannelTelegram
 	}
 	return ChannelWhatsApp
+}
+
+func isInterruptibleState(state string) bool {
+	switch state {
+	case "select_payment_method", "confirm_payment", "select_transfer_bank", "await_bank_transfer",
+		"invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer",
+		"thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer",
+		"select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer":
+		return true
+	default:
+		return false
+	}
+}
+
+func isPaymentInterrupt(input string) (string, string) {
+	if ref, ok := invoiceReferenceFromPAY(input); ok {
+		return "invoice_payment", ref
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(input)), "pay_invoice:") {
+		ref := strings.TrimSpace(input[len("pay_invoice:"):])
+		if ref != "" {
+			return "invoice_payment", ref
+		}
+	}
+	if code, ok := thriftContributeNameFromInput(input); ok {
+		return "thrift_contribution", code
+	}
+	return "", ""
+}
+
+func describeCurrentFlow(session store.Session) string {
+	switch session.State {
+	case "select_payment_method":
+		merchant := session.Data["merchant_slug"]
+		amount := session.Data["amount_kobo"]
+		if amount != "" {
+			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
+				return fmt.Sprintf("selecting payment method for %s to %s", domain.FormatNGN(kobo), merchant)
+			}
+		}
+		return fmt.Sprintf("selecting a payment method for %s", merchant)
+	case "confirm_payment":
+		merchant := session.Data["merchant_slug"]
+		amount := session.Data["amount_kobo"]
+		if amount != "" {
+			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
+				return fmt.Sprintf("confirming card payment of %s to %s", domain.FormatNGN(kobo), merchant)
+			}
+		}
+		return fmt.Sprintf("confirming a card payment to %s", merchant)
+	case "select_transfer_bank":
+		merchant := session.Data["merchant_slug"]
+		amount := session.Data["amount_kobo"]
+		if amount != "" {
+			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
+				return fmt.Sprintf("selecting a bank for %s transfer to %s", domain.FormatNGN(kobo), merchant)
+			}
+		}
+		return fmt.Sprintf("selecting a bank for transfer to %s", merchant)
+	case "await_bank_transfer":
+		merchant := session.Data["merchant_slug"]
+		amount := session.Data["amount_kobo"]
+		if amount != "" {
+			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
+				return fmt.Sprintf("waiting for your bank transfer of %s to %s", domain.FormatNGN(kobo), merchant)
+			}
+		}
+		return fmt.Sprintf("waiting for your bank transfer to %s", merchant)
+	case "invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer":
+		ref := session.Data["invoice_reference"]
+		if ref != "" {
+			return fmt.Sprintf("paying invoice %s", ref)
+		}
+		return "paying an invoice"
+	case "thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer":
+		name := session.Data["thrift_name"]
+		if name != "" {
+			return fmt.Sprintf("paying a thrift contribution to %s", name)
+		}
+		return "paying a thrift contribution"
+	case "select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer":
+		return "purchasing mobile data"
+	default:
+		return "in a payment flow"
+	}
+}
+
+func (s *ConversationService) redispatchToState(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	switch session.State {
+	case "select_payment_method":
+		merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That payment session expired. Please start again.")
+		}
+		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+	case "confirm_payment":
+		merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That payment session expired. Please start again.")
+		}
+		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
+	case "select_transfer_bank":
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	case "await_bank_transfer":
+		payment, err := s.paymentFromSession(ctx, user, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
+	case "invoice_pay_amount":
+		invoice, err := s.store.InvoiceByReference(ctx, session.Data["invoice_reference"])
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That invoice session expired. Please start again.")
+		}
+		remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Invoice %s\n\nMerchant: %s\nTotal: %s\nPaid so far: %s\nRemaining: %s\n\nHow much would you like to pay now?\nSend FULL to pay the remaining balance, or enter a naira amount for a split/partial payment.",
+				invoice.Reference, invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(remaining)))
+	case "invoice_pay_method":
+		invoice, err := s.store.InvoiceByReference(ctx, session.Data["invoice_reference"])
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That invoice session expired. Please start again.")
+		}
+		amount, _ := strconv.ParseInt(session.Data["invoice_pay_amount_kobo"], 10, 64)
+		return s.sendInvoicePayMethods(ctx, channel, recipient, invoice, amount)
+	case "invoice_pay_bank":
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	case "await_invoice_bank_transfer":
+		payment, err := s.paymentFromSession(ctx, user, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
+	case "thrift_pay_method":
+		contribution, err := s.thriftContributionFromSession(ctx, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That thrift session expired. Please start again.")
+		}
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To: recipient,
+			Body: fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
+				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
+			Buttons: []ports.InteractiveButton{
+				{ID: "method_card", Title: "Card checkout"},
+				{ID: "method_bank_transfer", Title: "Bank transfer"},
+				{ID: "cancel_payment", Title: "Cancel"},
+			},
+		})
+	case "thrift_pay_bank":
+		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+	case "await_thrift_bank_transfer":
+		payment, err := s.paymentFromSession(ctx, user, session)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
+		}
+		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
+	default:
+		return s.sendText(ctx, channel, recipient, "That session expired. Please start again.")
+	}
 }
