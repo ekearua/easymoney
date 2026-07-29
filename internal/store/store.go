@@ -854,13 +854,23 @@ func (s *Store) SearchMerchants(ctx context.Context, query string, offset, limit
 		FROM merchants
 		WHERE active=true`
 	if search != "" {
-		args = append(args, "%"+search+"%")
+		args = append(args, search)
 		sql += ` AND (
-			lower(name) LIKE $3 OR lower(category) LIKE $3 OR
-			lower(description) LIKE $3 OR lower(search_keywords) LIKE $3
+			word_similarity(lower(name), $3) > 0.4 OR
+			word_similarity(lower(category), $3) > 0.4 OR
+			word_similarity(lower(description), $3) > 0.4 OR
+			word_similarity(lower(search_keywords), $3) > 0.4
 		)`
+		sql += ` ORDER BY GREATEST(
+			word_similarity(lower(name), $3),
+			word_similarity(lower(category), $3),
+			word_similarity(lower(description), $3),
+			word_similarity(lower(search_keywords), $3)
+		) DESC, sort_order, name`
+	} else {
+		sql += ` ORDER BY sort_order, name`
 	}
-	sql += ` ORDER BY sort_order, name LIMIT $1 OFFSET $2`
+	sql += ` LIMIT $1 OFFSET $2`
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, false, err
@@ -895,13 +905,23 @@ func (s *Store) SearchMerchantsExcludingUserRecents(ctx context.Context, userID 
 				WHERE r.user_id=$3 AND r.merchant_id=m.id
 			)`
 	if search != "" {
-		args = append(args, "%"+search+"%")
+		args = append(args, search)
 		sql += ` AND (
-			lower(name) LIKE $4 OR lower(category) LIKE $4 OR
-			lower(description) LIKE $4 OR lower(search_keywords) LIKE $4
+			word_similarity(lower(m.name), $4) > 0.4 OR
+			word_similarity(lower(m.category), $4) > 0.4 OR
+			word_similarity(lower(m.description), $4) > 0.4 OR
+			word_similarity(lower(m.search_keywords), $4) > 0.4
 		)`
+		sql += ` ORDER BY GREATEST(
+			word_similarity(lower(m.name), $4),
+			word_similarity(lower(m.category), $4),
+			word_similarity(lower(m.description), $4),
+			word_similarity(lower(m.search_keywords), $4)
+		) DESC, m.sort_order, m.name`
+	} else {
+		sql += ` ORDER BY m.sort_order, m.name`
 	}
-	sql += ` ORDER BY sort_order, name LIMIT $1 OFFSET $2`
+	sql += ` LIMIT $1 OFFSET $2`
 	rows, err := s.pool.Query(ctx, sql, args...)
 	if err != nil {
 		return nil, false, err
