@@ -11,7 +11,7 @@
         <label>Service name <input name="name" value="{{if .Edit}}{{.Service.Name}}{{end}}" required></label>
         <label>Unit price (kobo) <input type="number" name="unit_price_kobo" value="{{if .Edit}}{{.Service.UnitPriceKobo}}{{end}}" min="1" required></label>
         <label>Quantity available
-          <input type="number" name="quantity_available" value="{{if .Edit}}{{if lt .Service.QuantityAvailable 0}}-1{{else}}{{.Service.QuantityAvailable}}{{end}}{{else}}-1" min="-1">
+          <input type="number" name="quantity_available" value="{{if .Edit}}{{.Service.QuantityAvailable}}{{else}}-1{{end}}" min="-1">
           <small class="muted">-1 for unlimited</small>
         </label>
         <label>Expiry date (optional)
