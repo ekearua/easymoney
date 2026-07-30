@@ -158,6 +158,12 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	switch session.State {
 	case "select_merchant":
 		return s.handleMerchant(ctx, message.Channel, recipient, user, session, input)
+	case "select_service_or_amount":
+		return s.handleServiceOrAmount(ctx, message.Channel, recipient, user, session, input)
+	case "enter_service_quantity":
+		return s.handleServiceQuantity(ctx, message.Channel, recipient, user, session, input)
+	case "confirm_service_purchase":
+		return s.handleConfirmServicePurchase(ctx, message.Channel, recipient, user, session, input)
 	case "enter_amount":
 		return s.handleAmount(ctx, message.Channel, recipient, user, session, input)
 	case "select_payment_method":
@@ -555,9 +561,20 @@ func (s *ConversationService) handleMerchant(ctx context.Context, channel, recip
 	if err := s.store.TouchRecentMerchant(ctx, user.ID, merchant.ID); err != nil {
 		return err
 	}
-	session.State = "enter_amount"
 	session.Data["merchant_slug"] = merchant.Slug
 	delete(session.Data, "merchant_query")
+	services, err := s.store.ListActiveMerchantServices(ctx, merchant.ID)
+	if err != nil {
+		return err
+	}
+	if len(services) > 0 {
+		session.State = "select_service_or_amount"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendServicePicker(ctx, channel, recipient, merchant, services)
+	}
+	session.State = "enter_amount"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -2105,6 +2122,118 @@ func (s *ConversationService) handleAmount(ctx context.Context, channel, recipie
 	return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 }
 
+func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	merchant, err := s.store.MerchantBySlug(ctx, session.Data["merchant_slug"])
+	if err != nil {
+		session.State = "select_merchant"
+		_ = s.saveSession(ctx, session)
+		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
+	}
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return s.sendText(ctx, channel, recipient, "Send the number of a service above, or type CUSTOM to enter an amount.")
+	}
+	if strings.EqualFold(input, "custom") || strings.EqualFold(input, "custom amount") {
+		session.State = "enter_amount"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("How much would you like to pay %s?\n\nEnter an amount between %s and %s. Example: 2500",
+				merchant.Name,
+				domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
+	}
+	services, err := s.store.ListActiveMerchantServices(ctx, merchant.ID)
+	if err != nil {
+		return err
+	}
+	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(services) {
+		svc := services[n-1]
+		session.Data["service_id"] = svc.ID.String()
+		session.Data["service_name"] = svc.Name
+		session.Data["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+		session.State = "enter_service_quantity"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+	}
+	lower := strings.ToLower(input)
+	for _, svc := range services {
+		if strings.Contains(strings.ToLower(svc.Name), lower) {
+			session.Data["service_id"] = svc.ID.String()
+			session.Data["service_name"] = svc.Name
+			session.Data["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+			session.State = "enter_service_quantity"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+		}
+	}
+	return s.sendServicePicker(ctx, channel, recipient, merchant, services)
+}
+
+func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	qty := 1
+	input = strings.TrimSpace(input)
+	if input != "" {
+		n, err := strconv.Atoi(input)
+		if err == nil && n > 0 {
+			qty = n
+		}
+	}
+	unitPrice, _ := strconv.ParseInt(session.Data["unit_price_kobo"], 10, 64)
+	total := int64(qty) * unitPrice
+	if total < s.cfg.PaymentMinKobo || total > s.cfg.PaymentMaxKobo {
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Total is %s which is outside the allowed range (%s–%s). Try a different quantity.",
+				domain.FormatNGN(total), domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
+	}
+	serviceID := session.Data["service_id"]
+	svc, err := s.store.MerchantServiceByID(ctx, uuid.MustParse(serviceID))
+	if err != nil {
+		return err
+	}
+	if svc.QuantityAvailable >= 0 && qty > svc.QuantityAvailable {
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Sorry, only %d available. Enter a smaller quantity.", svc.QuantityAvailable))
+	}
+	session.Data["service_quantity"] = strconv.Itoa(qty)
+	session.Data["amount_kobo"] = strconv.FormatInt(total, 10)
+	session.State = "confirm_service_purchase"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient,
+		fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+			svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total)))
+}
+
+func (s *ConversationService) handleConfirmServicePurchase(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	input = strings.TrimSpace(input)
+	if strings.EqualFold(input, "confirm") {
+		merchant, err := s.store.MerchantBySlug(ctx, session.Data["merchant_slug"])
+		if err != nil {
+			return err
+		}
+		amount, _ := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
+		session.State = "select_payment_method"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+	}
+	session.State = "select_merchant"
+	session.Data = map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "Purchase cancelled. Select a merchant to start again.")
+}
+
 func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
 	if err != nil {
@@ -2112,10 +2241,15 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		_ = s.saveSession(ctx, session)
 		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
 	}
+	serviceIDStr := session.Data["service_id"]
+	serviceQtyStr := session.Data["service_quantity"]
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
 		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
 		if err != nil {
+			return err
+		}
+		if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr); err != nil {
 			return err
 		}
 		session.State = "confirm_payment"
@@ -2126,6 +2260,8 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		session.State = "select_transfer_bank"
+		session.Data["service_id"] = serviceIDStr
+		session.Data["service_quantity"] = serviceQtyStr
 		delete(session.Data, "bank_query")
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -2134,6 +2270,26 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
+}
+
+func (s *ConversationService) recordServicePurchase(ctx context.Context, paymentID uuid.UUID, serviceIDStr, qtyStr string) error {
+	if serviceIDStr == "" || qtyStr == "" {
+		return nil
+	}
+	serviceID, err := uuid.Parse(serviceIDStr)
+	if err != nil {
+		return nil
+	}
+	qty, _ := strconv.Atoi(qtyStr)
+	if qty <= 0 {
+		qty = 1
+	}
+	svc, err := s.store.MerchantServiceByID(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	total := int64(qty) * svc.UnitPriceKobo
+	return s.store.CreateServicePurchase(ctx, serviceID, paymentID, qty, svc.UnitPriceKobo, total)
 }
 
 func (s *ConversationService) startInvoicePayment(ctx context.Context, channel, recipient string, user store.User, session store.Session, reference string) error {
@@ -2361,6 +2517,9 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, channel, r
 	}
 	payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 	if err != nil {
+		return err
+	}
+	if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"]); err != nil {
 		return err
 	}
 	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
@@ -3093,6 +3252,24 @@ func (s *ConversationService) sendInvoiceReview(ctx context.Context, channel, re
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
+}
+
+func (s *ConversationService) sendServicePicker(ctx context.Context, channel, recipient string, merchant store.Merchant, services []store.MerchantService) error {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("What would you like to pay %s for?\n", merchant.Name))
+	for i, svc := range services {
+		expiryText := ""
+		if svc.ExpiresAt != nil {
+			expiryText = fmt.Sprintf(" (expires %s)", svc.ExpiresAt.Format("02 Jan 2006"))
+		}
+		availText := ""
+		if svc.QuantityAvailable >= 0 {
+			availText = fmt.Sprintf(" [%d left]", svc.QuantityAvailable)
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s — %s%s%s", i+1, svc.Name, domain.FormatNGN(svc.UnitPriceKobo), availText, expiryText))
+	}
+	sb.WriteString("\n\nSend the number of your choice, or type CUSTOM to enter an amount.")
+	return s.sendText(ctx, channel, recipient, sb.String())
 }
 
 func (s *ConversationService) sendMerchantPicker(ctx context.Context, channel, recipient string, user store.User, query string, page int) error {

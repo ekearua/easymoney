@@ -275,17 +275,19 @@ type ServiceReaderView struct {
 
 // ReceiptScanTokenView is the QR/manual token customers present to a service.
 type ReceiptScanTokenView struct {
-	ID          uuid.UUID
-	PaymentID   uuid.UUID
-	ServiceID   uuid.UUID
-	ServiceName string
-	Token       string
-	ManualCode  string
-	ReceiptType string
-	ExpiresAt   time.Time
-	ConsumedAt  *time.Time
-	RevokedAt   *time.Time
-	CreatedAt   time.Time
+	ID             uuid.UUID
+	PaymentID      uuid.UUID
+	ServiceID      uuid.UUID
+	ServiceName    string
+	Token          string
+	ManualCode     string
+	ReceiptType    string
+	ExpiresAt      time.Time
+	ConsumedAt     *time.Time
+	RevokedAt      *time.Time
+	UsesTotal      int
+	UsesRemaining  int
+	CreatedAt      time.Time
 }
 
 // ReceiptScanAttemptView is one scanner validation attempt for audit.
@@ -315,6 +317,8 @@ type ReceiptScanResult struct {
 	ManualCode     string `json:"manual_code,omitempty"`
 	ProviderRef    string `json:"provider_reference,omitempty"`
 	ConsumedAtText string `json:"consumed_at,omitempty"`
+	UsesRemaining  int    `json:"uses_remaining,omitempty"`
+	UsesTotal      int    `json:"uses_total,omitempty"`
 }
 
 // Session persists a user's current conversation state.
@@ -1416,7 +1420,7 @@ func (s *Store) InvoiceByPaymentID(ctx context.Context, paymentID uuid.UUID) (In
 // EnsureReceiptScanToken creates a single-use scan token for successful
 // payments that match an active registered service. It is idempotent so payment
 // webhook retries cannot create multiple customer-facing scan codes.
-func (s *Store) EnsureReceiptScanToken(ctx context.Context, paymentID uuid.UUID) (ReceiptScanTokenView, bool, error) {
+func (s *Store) EnsureReceiptScanToken(ctx context.Context, paymentID uuid.UUID, uses int) (ReceiptScanTokenView, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ReceiptScanTokenView{}, false, err
@@ -1465,10 +1469,13 @@ func (s *Store) EnsureReceiptScanToken(ctx context.Context, paymentID uuid.UUID)
 	if err != nil {
 		return ReceiptScanTokenView{}, false, err
 	}
+	if uses < 1 {
+		uses = 1
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO receipt_scan_tokens(payment_id,service_id,token,manual_code,receipt_type,expires_at)
-		VALUES($1,$2,$3,$4,$5,now()+($6::text || ' seconds')::interval)`,
-		paymentID, serviceID, token, manualCode, receiptType, fmt.Sprintf("%d", ttlSeconds))
+		INSERT INTO receipt_scan_tokens(payment_id,service_id,token,manual_code,receipt_type,expires_at,uses_total,uses_remaining)
+		VALUES($1,$2,$3,$4,$5,now()+($6::text || ' seconds')::interval,$7,$7)`,
+		paymentID, serviceID, token, manualCode, receiptType, fmt.Sprintf("%d", ttlSeconds), uses)
 	if err != nil {
 		return ReceiptScanTokenView{}, false, err
 	}
@@ -1497,12 +1504,14 @@ func scanTokenByPaymentTx(ctx context.Context, tx pgx.Tx, paymentID uuid.UUID) (
 	var view ReceiptScanTokenView
 	err := tx.QueryRow(ctx, `
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,
-		       rst.receipt_type,rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at
+		       rst.receipt_type,rst.expires_at,rst.consumed_at,rst.revoked_at,
+		       rst.uses_total,rst.uses_remaining,rst.created_at
 		FROM receipt_scan_tokens rst
 		JOIN registered_services rs ON rs.id=rst.service_id
 		WHERE rst.payment_id=$1`, paymentID).Scan(
 		&view.ID, &view.PaymentID, &view.ServiceID, &view.ServiceName, &view.Token, &view.ManualCode,
-		&view.ReceiptType, &view.ExpiresAt, &view.ConsumedAt, &view.RevokedAt, &view.CreatedAt,
+		&view.ReceiptType, &view.ExpiresAt, &view.ConsumedAt, &view.RevokedAt,
+		&view.UsesTotal, &view.UsesRemaining, &view.CreatedAt,
 	)
 	return view, err
 }
@@ -1698,7 +1707,7 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 	var phoneWhitelist string
 	err = tx.QueryRow(ctx, `
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
-		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at,
+		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.uses_total,rst.uses_remaining,rst.created_at,
 		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
 		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
@@ -1711,7 +1720,8 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		WHERE rst.token=$1 OR rst.manual_code=$1
 		FOR UPDATE`, tokenValue).Scan(
 		&token.ID, &token.PaymentID, &token.ServiceID, &token.ServiceName, &token.Token, &token.ManualCode,
-		&token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt, &token.CreatedAt,
+		&token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt,
+		&token.UsesTotal, &token.UsesRemaining, &token.CreatedAt,
 		&payment.ID, &payment.UserID, &payment.MerchantID, &payment.AmountKobo, &payment.Currency,
 		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
 		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
@@ -1733,7 +1743,11 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		}
 	}
 	if status == "valid_consumed" {
-		tag, err := tx.Exec(ctx, `UPDATE receipt_scan_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, token.ID)
+		tag, err := tx.Exec(ctx, `
+			UPDATE receipt_scan_tokens
+			SET uses_remaining = uses_remaining - 1,
+			    consumed_at = CASE WHEN uses_remaining <= 1 THEN now() ELSE consumed_at END
+			WHERE id=$1 AND uses_remaining > 0 AND consumed_at IS NULL`, token.ID)
 		if err != nil {
 			return ReceiptScanResult{}, err
 		}
@@ -1749,17 +1763,19 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		return ReceiptScanResult{}, err
 	}
 	result := ReceiptScanResult{
-		Status:        status,
-		ReceiptType:   token.ReceiptType,
-		ServiceName:   token.ServiceName,
-		MerchantName:  payment.MerchantName,
-		Amount:        domain.FormatNGN(payment.AmountKobo),
-		AmountKobo:    payment.AmountKobo,
-		PaymentStatus: string(payment.Status),
-		CustomerName:  payment.UserName,
-		CustomerPhone: maskForScan(payment.WhatsAppNumber),
-		ManualCode:    token.ManualCode,
-		ProviderRef:   payment.ProviderReference,
+		Status:         status,
+		ReceiptType:    token.ReceiptType,
+		ServiceName:    token.ServiceName,
+		MerchantName:   payment.MerchantName,
+		Amount:         domain.FormatNGN(payment.AmountKobo),
+		AmountKobo:     payment.AmountKobo,
+		PaymentStatus:  string(payment.Status),
+		CustomerName:   payment.UserName,
+		CustomerPhone:  maskForScan(payment.WhatsAppNumber),
+		ManualCode:     token.ManualCode,
+		ProviderRef:    payment.ProviderReference,
+		UsesRemaining:  token.UsesRemaining - 1,
+		UsesTotal:      token.UsesTotal,
 	}
 	if status == "valid_consumed" {
 		result.ConsumedAtText = time.Now().Format(time.RFC3339)
@@ -1785,7 +1801,7 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 	var phoneWhitelist string
 	err = tx.QueryRow(ctx, `
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
-		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at,
+		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.uses_total,rst.uses_remaining,rst.created_at,
 		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
 		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
@@ -1798,7 +1814,8 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		WHERE (rst.token=$1 OR rst.manual_code=$1) AND p.merchant_id=$2
 		FOR UPDATE`, tokenValue, merchantID).Scan(
 		&token.ID, &token.PaymentID, &token.ServiceID, &token.ServiceName, &token.Token, &token.ManualCode,
-		&token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt, &token.CreatedAt,
+		&token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt,
+		&token.UsesTotal, &token.UsesRemaining, &token.CreatedAt,
 		&payment.ID, &payment.UserID, &payment.MerchantID, &payment.AmountKobo, &payment.Currency,
 		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
 		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
@@ -1823,7 +1840,7 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		status = "revoked"
 	case now.After(token.ExpiresAt):
 		status = "expired"
-	case token.ConsumedAt != nil:
+	case token.UsesRemaining <= 0:
 		status = "already_used"
 	}
 	if status == "valid_consumed" && phoneWhitelist != "" {
@@ -1832,7 +1849,11 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		}
 	}
 	if status == "valid_consumed" {
-		tag, err := tx.Exec(ctx, `UPDATE receipt_scan_tokens SET consumed_at=now() WHERE id=$1 AND consumed_at IS NULL`, token.ID)
+		tag, err := tx.Exec(ctx, `
+			UPDATE receipt_scan_tokens
+			SET uses_remaining = uses_remaining - 1,
+			    consumed_at = CASE WHEN uses_remaining <= 1 THEN now() ELSE consumed_at END
+			WHERE id=$1 AND uses_remaining > 0 AND consumed_at IS NULL`, token.ID)
 		if err != nil {
 			return ReceiptScanResult{}, err
 		}
@@ -1846,17 +1867,19 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		uuid.NullUUID{},
 		status, remoteAddr, map[string]any{"receipt_type": token.ReceiptType, "source": "merchant_portal"})
 	result := ReceiptScanResult{
-		Status:        status,
-		ReceiptType:   token.ReceiptType,
-		ServiceName:   token.ServiceName,
-		MerchantName:  payment.MerchantName,
-		Amount:        domain.FormatNGN(payment.AmountKobo),
-		AmountKobo:    payment.AmountKobo,
-		PaymentStatus: string(payment.Status),
-		CustomerName:  payment.UserName,
-		CustomerPhone: maskForScan(payment.WhatsAppNumber),
-		ManualCode:    token.ManualCode,
-		ProviderRef:   payment.ProviderReference,
+		Status:         status,
+		ReceiptType:    token.ReceiptType,
+		ServiceName:    token.ServiceName,
+		MerchantName:   payment.MerchantName,
+		Amount:         domain.FormatNGN(payment.AmountKobo),
+		AmountKobo:     payment.AmountKobo,
+		PaymentStatus:  string(payment.Status),
+		CustomerName:   payment.UserName,
+		CustomerPhone:  maskForScan(payment.WhatsAppNumber),
+		ManualCode:     token.ManualCode,
+		ProviderRef:    payment.ProviderReference,
+		UsesRemaining:  token.UsesRemaining - 1,
+		UsesTotal:      token.UsesTotal,
 	}
 	if status == "valid_consumed" {
 		result.ConsumedAtText = time.Now().Format(time.RFC3339)
@@ -1877,7 +1900,7 @@ func scanValidationStatus(reader ServiceReaderView, token ReceiptScanTokenView, 
 		return "revoked"
 	case now.After(token.ExpiresAt):
 		return "expired"
-	case token.ConsumedAt != nil:
+	case token.UsesRemaining <= 0:
 		return "already_used"
 	default:
 		return "valid_consumed"
@@ -1934,7 +1957,8 @@ func maskForScan(value string) string {
 func (s *Store) ListReceiptScanTokens(ctx context.Context, limit int) ([]ReceiptScanTokenView, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,
-		       rst.receipt_type,rst.expires_at,rst.consumed_at,rst.revoked_at,rst.created_at
+		       rst.receipt_type,rst.expires_at,rst.consumed_at,rst.revoked_at,
+		       rst.uses_total,rst.uses_remaining,rst.created_at
 		FROM receipt_scan_tokens rst
 		JOIN registered_services rs ON rs.id=rst.service_id
 		ORDER BY rst.created_at DESC
@@ -1946,7 +1970,7 @@ func (s *Store) ListReceiptScanTokens(ctx context.Context, limit int) ([]Receipt
 	var tokens []ReceiptScanTokenView
 	for rows.Next() {
 		var token ReceiptScanTokenView
-		if err := rows.Scan(&token.ID, &token.PaymentID, &token.ServiceID, &token.ServiceName, &token.Token, &token.ManualCode, &token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt, &token.CreatedAt); err != nil {
+		if err := rows.Scan(&token.ID, &token.PaymentID, &token.ServiceID, &token.ServiceName, &token.Token, &token.ManualCode, &token.ReceiptType, &token.ExpiresAt, &token.ConsumedAt, &token.RevokedAt, &token.UsesTotal, &token.UsesRemaining, &token.CreatedAt); err != nil {
 			return nil, err
 		}
 		tokens = append(tokens, token)
@@ -4407,6 +4431,233 @@ func (s *Store) InvoicesByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 		invoices = append(invoices, invoice)
 	}
 	return invoices, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Merchant Services (user-created services/events)
+// ---------------------------------------------------------------------------
+
+// MerchantService is a service or event created by a merchant for customers to pay for.
+type MerchantService struct {
+	ID                uuid.UUID
+	MerchantID        uuid.UUID
+	Name              string
+	Description       string
+	UnitPriceKobo     int64
+	QuantityAvailable int
+	ExpiresAt         *time.Time
+	IsActive          bool
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// ServicePurchaseView links a service purchase to a payment with customer info.
+type ServicePurchaseView struct {
+	ID            uuid.UUID
+	ServiceID     uuid.UUID
+	ServiceName   string
+	PaymentID     uuid.UUID
+	UserID        uuid.UUID
+	UserName      string
+	WhatsAppNumber string
+	Quantity      int
+	UnitPriceKobo int64
+	TotalKobo     int64
+	CreatedAt     time.Time
+}
+
+// CreateMerchantService creates a new service for a merchant.
+func (s *Store) CreateMerchantService(ctx context.Context, merchantID uuid.UUID, name, description string, unitPriceKobo int64, quantityAvailable int, expiresAt *time.Time) (MerchantService, error) {
+	id := uuid.New()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO merchant_services(id,merchant_id,name,description,unit_price_kobo,quantity_available,expires_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7)`, id, merchantID, name, description, unitPriceKobo, quantityAvailable, expiresAt)
+	if err != nil {
+		return MerchantService{}, err
+	}
+	return s.MerchantServiceByID(ctx, id)
+}
+
+// UpdateMerchantService updates a merchant's service.
+func (s *Store) UpdateMerchantService(ctx context.Context, serviceID uuid.UUID, name, description string, unitPriceKobo int64, quantityAvailable int, expiresAt *time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchant_services SET
+			name=$2, description=$3, unit_price_kobo=$4, quantity_available=$5,
+			expires_at=$6, updated_at=now()
+		WHERE id=$1`, serviceID, name, description, unitPriceKobo, quantityAvailable, expiresAt)
+	return err
+}
+
+// MerchantServiceByID returns one service by ID.
+func (s *Store) MerchantServiceByID(ctx context.Context, id uuid.UUID) (MerchantService, error) {
+	var svc MerchantService
+	err := s.pool.QueryRow(ctx, `
+		SELECT id,merchant_id,name,description,unit_price_kobo,quantity_available,expires_at,is_active,created_at,updated_at
+		FROM merchant_services WHERE id=$1`, id).Scan(
+		&svc.ID, &svc.MerchantID, &svc.Name, &svc.Description, &svc.UnitPriceKobo,
+		&svc.QuantityAvailable, &svc.ExpiresAt, &svc.IsActive, &svc.CreatedAt, &svc.UpdatedAt)
+	return svc, err
+}
+
+// ListMerchantServices returns all services for a merchant, ordered by active+non-expired first.
+func (s *Store) ListMerchantServices(ctx context.Context, merchantID uuid.UUID) ([]MerchantService, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,merchant_id,name,description,unit_price_kobo,quantity_available,expires_at,is_active,created_at,updated_at
+		FROM merchant_services
+		WHERE merchant_id=$1
+		ORDER BY
+			CASE WHEN is_active=true AND (expires_at IS NULL OR expires_at > now()) THEN 0 ELSE 1 END,
+			created_at DESC`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var services []MerchantService
+	for rows.Next() {
+		var svc MerchantService
+		if err := rows.Scan(&svc.ID, &svc.MerchantID, &svc.Name, &svc.Description, &svc.UnitPriceKobo,
+			&svc.QuantityAvailable, &svc.ExpiresAt, &svc.IsActive, &svc.CreatedAt, &svc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		services = append(services, svc)
+	}
+	return services, rows.Err()
+}
+
+// ListActiveMerchantServices returns active, non-expired services for a merchant.
+func (s *Store) ListActiveMerchantServices(ctx context.Context, merchantID uuid.UUID) ([]MerchantService, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,merchant_id,name,description,unit_price_kobo,quantity_available,expires_at,is_active,created_at,updated_at
+		FROM merchant_services
+		WHERE merchant_id=$1 AND is_active=true AND (expires_at IS NULL OR expires_at > now())
+		ORDER BY created_at DESC`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var services []MerchantService
+	for rows.Next() {
+		var svc MerchantService
+		if err := rows.Scan(&svc.ID, &svc.MerchantID, &svc.Name, &svc.Description, &svc.UnitPriceKobo,
+			&svc.QuantityAvailable, &svc.ExpiresAt, &svc.IsActive, &svc.CreatedAt, &svc.UpdatedAt); err != nil {
+			return nil, err
+		}
+		services = append(services, svc)
+	}
+	return services, rows.Err()
+}
+
+// ToggleMerchantService toggles is_active for a service, verifying the merchant owns it.
+func (s *Store) ToggleMerchantService(ctx context.Context, serviceID, merchantID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchant_services SET is_active=NOT is_active, updated_at=now()
+		WHERE id=$1 AND merchant_id=$2`, serviceID, merchantID)
+	return err
+}
+
+// CreateServicePurchase records a service purchase.
+func (s *Store) CreateServicePurchase(ctx context.Context, serviceID, paymentID uuid.UUID, quantity int, unitPriceKobo, totalKobo int64) error {
+	id := uuid.New()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO service_purchases(id,service_id,payment_id,quantity,unit_price_kobo,total_kobo)
+		VALUES($1,$2,$3,$4,$5,$6)`, id, serviceID, paymentID, quantity, unitPriceKobo, totalKobo)
+	return err
+}
+
+// ConfirmServicePurchase decrements inventory when a service payment succeeds.
+func (s *Store) ConfirmServicePurchase(ctx context.Context, paymentID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchant_services ms
+		SET quantity_available = ms.quantity_available - sp.quantity, updated_at=now()
+		FROM service_purchases sp
+		WHERE sp.payment_id=$1 AND ms.id=sp.service_id
+		  AND ms.quantity_available >= 0
+		  AND ms.quantity_available >= sp.quantity`, paymentID)
+	return err
+}
+
+// ServicePurchasesByMerchantID returns all purchases for a merchant's services.
+func (s *Store) ServicePurchasesByMerchantID(ctx context.Context, merchantID uuid.UUID) ([]ServicePurchaseView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT sp.id,sp.service_id,ms.name,sp.payment_id,p.user_id,
+		       u.display_name,COALESCE(u.whatsapp_number,''),
+		       sp.quantity,sp.unit_price_kobo,sp.total_kobo,sp.created_at
+		FROM service_purchases sp
+		JOIN merchant_services ms ON ms.id=sp.service_id
+		JOIN payments p ON p.id=sp.payment_id
+		JOIN users u ON u.id=p.user_id
+		WHERE ms.merchant_id=$1
+		ORDER BY sp.created_at DESC`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var purchases []ServicePurchaseView
+	for rows.Next() {
+		var p ServicePurchaseView
+		if err := rows.Scan(&p.ID, &p.ServiceID, &p.ServiceName, &p.PaymentID, &p.UserID,
+			&p.UserName, &p.WhatsAppNumber, &p.Quantity, &p.UnitPriceKobo, &p.TotalKobo, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		purchases = append(purchases, p)
+	}
+	return purchases, rows.Err()
+}
+
+// ServicePurchasesByServiceID returns purchases for a specific service.
+func (s *Store) ServicePurchasesByServiceID(ctx context.Context, serviceID uuid.UUID) ([]ServicePurchaseView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT sp.id,sp.service_id,ms.name,sp.payment_id,p.user_id,
+		       u.display_name,COALESCE(u.whatsapp_number,''),
+		       sp.quantity,sp.unit_price_kobo,sp.total_kobo,sp.created_at
+		FROM service_purchases sp
+		JOIN merchant_services ms ON ms.id=sp.service_id
+		JOIN payments p ON p.id=sp.payment_id
+		JOIN users u ON u.id=p.user_id
+		WHERE sp.service_id=$1
+		ORDER BY sp.created_at DESC`, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var purchases []ServicePurchaseView
+	for rows.Next() {
+		var p ServicePurchaseView
+		if err := rows.Scan(&p.ID, &p.ServiceID, &p.ServiceName, &p.PaymentID, &p.UserID,
+			&p.UserName, &p.WhatsAppNumber, &p.Quantity, &p.UnitPriceKobo, &p.TotalKobo, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		purchases = append(purchases, p)
+	}
+	return purchases, rows.Err()
+}
+
+// UpdateMerchantServiceTTL updates the token_ttl_seconds on a merchant's registered service.
+func (s *Store) UpdateMerchantServiceTTL(ctx context.Context, merchantID uuid.UUID, ttlSeconds int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE registered_services SET token_ttl_seconds=$2, updated_at=now()
+		WHERE merchant_id=$1 AND service_type='merchant'`, merchantID, ttlSeconds)
+	return err
+}
+
+// MerchantServiceTTL returns the current token TTL in seconds for a merchant's registered service.
+func (s *Store) MerchantServiceTTL(ctx context.Context, merchantID uuid.UUID) (int, error) {
+	var ttl int
+	err := s.pool.QueryRow(ctx, `
+		SELECT token_ttl_seconds FROM registered_services
+		WHERE merchant_id=$1 AND service_type='merchant'`, merchantID).Scan(&ttl)
+	return ttl, err
+}
+
+// ServicePurchaseQuantityByPaymentID returns the quantity purchased for a payment, or 1 if none.
+func (s *Store) ServicePurchaseQuantityByPaymentID(ctx context.Context, paymentID uuid.UUID) (int, error) {
+	var qty int
+	err := s.pool.QueryRow(ctx, `
+		SELECT quantity FROM service_purchases WHERE payment_id=$1`, paymentID).Scan(&qty)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 1, nil
+	}
+	return qty, err
 }
 
 // PaymentsByMerchantID returns payments linked to a merchant, most recent first.

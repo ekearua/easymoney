@@ -1,0 +1,29 @@
+{{define "merchant_service_form.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <h1>{{if .Edit}}Edit{{else}}New{{end}} service</h1>
+  <section class="panel">
+    <form method="post" action="{{if .Edit}}/merchant/services/{{.Service.ID}}/edit{{else}}/merchant/services/new{{end}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="form-grid">
+        <label>Service name <input name="name" value="{{if .Edit}}{{.Service.Name}}{{end}}" required></label>
+        <label>Unit price (kobo) <input type="number" name="unit_price_kobo" value="{{if .Edit}}{{.Service.UnitPriceKobo}}{{end}}" min="1" required></label>
+        <label>Quantity available
+          <input type="number" name="quantity_available" value="{{if .Edit}}{{if lt .Service.QuantityAvailable 0}}-1{{else}}{{.Service.QuantityAvailable}}{{end}}{{else}}-1" min="-1">
+          <small class="muted">-1 for unlimited</small>
+        </label>
+        <label>Expiry date (optional)
+          <input type="date" name="expires_at" value="{{if .Edit}}{{if .Service.ExpiresAt}}{{.Service.ExpiresAt.Format "2006-01-02"}}{{end}}{{end}}">
+          <small class="muted">Leave blank for no expiry</small>
+        </label>
+      </div>
+      <label>Description
+        <textarea name="description" rows="3">{{if .Edit}}{{.Service.Description}}{{end}}</textarea>
+      </label>
+      <button type="submit">{{if .Edit}}Update{{else}}Create{{end}} service</button>
+    </form>
+  </section>
+</main></body></html>
+{{end}}

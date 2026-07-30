@@ -1,0 +1,17 @@
+{{define "merchant_service_payments.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Service payments</h1><p class="muted">{{.Service.Name}}</p></div>
+  <a href="/merchant/services">← Back to services</a>
+</header>
+<div class="table-wrap"><table><thead><tr><th>Customer</th><th>Quantity</th><th>Unit price</th><th>Total</th><th>Date</th></tr></thead><tbody>
+{{range .Purchases}}<tr>
+  <td>{{.UserName}}<br><span class="mono">{{.WhatsAppNumber}}</span></td>
+  <td>{{.Quantity}}</td>
+  <td>{{money .UnitPriceKobo}}</td>
+  <td><strong>{{money .TotalKobo}}</strong></td>
+  <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+</tr>{{else}}<tr><td colspan="5">No payments for this service yet.</td></tr>{{end}}</tbody></table></div>
+</main></body></html>
+{{end}}

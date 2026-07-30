@@ -156,6 +156,9 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
@@ -208,6 +211,9 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
@@ -217,7 +223,11 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 }
 
 func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
-	token, created, err := s.store.EnsureReceiptScanToken(ctx, payment.ID)
+	uses, err := s.store.ServicePurchaseQuantityByPaymentID(ctx, payment.ID)
+	if err != nil {
+		return err
+	}
+	token, created, err := s.store.EnsureReceiptScanToken(ctx, payment.ID, uses)
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.logger.Warn("receipt scan token skipped: no matching registered service or payment not succeeded",
 			"payment_id", payment.ID, "merchant_id", payment.MerchantID)
@@ -232,8 +242,12 @@ func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment sto
 	}
 	scanURL := s.cfg.BaseURL + "/scan/" + token.Token
 	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
-	caption := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\nShow this QR/code only to an authorised service reader. It is single-use and expires on %s.",
-		token.ServiceName, token.ManualCode, scanURL, receiptURL, token.ExpiresAt.Format("02 Jan 2006, 15:04 MST"))
+	usesText := "single-use"
+	if uses > 1 {
+		usesText = fmt.Sprintf("%d uses", uses)
+	}
+	caption := fmt.Sprintf("Xego receipt scan code\n\nService: %s\nCode: %s\nScan link: %s\nReceipt: %s\n\n%s · expires %s.",
+		token.ServiceName, token.ManualCode, scanURL, receiptURL, usesText, token.ExpiresAt.Format("02 Jan 2006, 15:04 MST"))
 	png, err := qrcode.Encode(scanURL, qrcode.Medium, 512)
 	if err != nil {
 		s.logger.Error("QR code generation failed, falling back to text", "payment_id", payment.ID, "error", err)

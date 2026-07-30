@@ -2,7 +2,7 @@
 <nav class="topbar" hx-boost="true">
   <a class="brand" href="/merchant/scanner">{{.AppName}}</a>
   <div class="navlinks">
-    <a href="/merchant/scanner">Scanner</a><a href="/merchant/invoices">Invoices</a><a href="/merchant/payments">Payments</a><a href="/merchant/settings">Settings</a><a href="/merchant/profile">Profile</a>
+    <a href="/merchant/scanner">Scanner</a><a href="/merchant/services">Services</a><a href="/merchant/invoices">Invoices</a><a href="/merchant/payments">Payments</a><a href="/merchant/settings">Settings</a><a href="/merchant/profile">Profile</a>
     <form method="post" action="/merchant/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="link-button">Sign out</button></form>
   </div>
 </nav>

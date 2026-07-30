@@ -37,6 +37,14 @@
         Always allow full payment regardless of rules above
       </label>
 
+      <h2>QR / NFC code validity</h2>
+      <p class="muted">How long should payment QR codes and scan tokens remain valid?</p>
+      <div class="form-grid">
+        <label>Validity period (hours)
+          <input type="number" name="qr_validity_hours" value="{{.QRValidityHours}}" min="1" max="720">
+        </label>
+      </div>
+
       <button type="submit">Save settings</button>
     </form>
   </section>

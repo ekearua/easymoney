@@ -256,6 +256,13 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/settings", a.merchantUpdateSettings)
 		m.Get("/merchant/profile", a.merchantProfile)
 		m.Post("/merchant/profile", a.merchantUpdateProfile)
+		m.Get("/merchant/services", a.merchantServicesList)
+		m.Get("/merchant/services/new", a.merchantServiceNewForm)
+		m.Post("/merchant/services/new", a.merchantServiceCreate)
+		m.Get("/merchant/services/{id}/edit", a.merchantServiceEditForm)
+		m.Post("/merchant/services/{id}/edit", a.merchantServiceUpdate)
+		m.Post("/merchant/services/{id}/toggle", a.merchantServiceToggle)
+		m.Get("/merchant/services/{id}/payments", a.merchantServicePayments)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
@@ -1250,6 +1257,166 @@ func (a *App) merchantUpdateServiceWhitelist(w http.ResponseWriter, r *http.Requ
 	http.Redirect(w, r, "/merchant/scanner?whitelist_saved=1", http.StatusSeeOther)
 }
 
+// ---------------------------------------------------------------------------
+// Merchant services/events handlers
+// ---------------------------------------------------------------------------
+
+func (a *App) merchantServicesList(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	services, err := a.store.ListMerchantServices(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	purchases, err := a.store.ServicePurchasesByMerchantID(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_services_list.html", r, "Services", map[string]any{
+		"Services": services, "Purchases": purchases,
+	})
+}
+
+func (a *App) merchantServiceNewForm(w http.ResponseWriter, r *http.Request) {
+	a.renderMerchant(w, "merchant_service_form.html", r, "New service", map[string]any{"Edit": false})
+}
+
+func (a *App) merchantServiceCreate(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	description := strings.TrimSpace(r.FormValue("description"))
+	unitPrice, _ := strconv.ParseInt(r.FormValue("unit_price_kobo"), 10, 64)
+	qtyAvailable, _ := strconv.Atoi(r.FormValue("quantity_available"))
+	if name == "" || unitPrice <= 0 {
+		http.Error(w, "name and unit price required", http.StatusBadRequest)
+		return
+	}
+	if qtyAvailable < -1 {
+		qtyAvailable = -1
+	}
+	var expiresAt *time.Time
+	if expiryStr := strings.TrimSpace(r.FormValue("expires_at")); expiryStr != "" {
+		if t, err := time.Parse("2006-01-02", expiryStr); err == nil {
+			expiresAt = &t
+		}
+	}
+	if _, err := a.store.CreateMerchantService(r.Context(), merchantID, name, description, unitPrice, qtyAvailable, expiresAt); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/services?created=1", http.StatusSeeOther)
+}
+
+func (a *App) merchantServiceEditForm(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	serviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	svc, err := a.store.MerchantServiceByID(r.Context(), serviceID)
+	if err != nil || svc.MerchantID != merchantID {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+	a.renderMerchant(w, "merchant_service_form.html", r, "Edit service", map[string]any{
+		"Service": svc, "Edit": true,
+	})
+}
+
+func (a *App) merchantServiceUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	serviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	svc, err := a.store.MerchantServiceByID(r.Context(), serviceID)
+	if err != nil || svc.MerchantID != merchantID {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	description := strings.TrimSpace(r.FormValue("description"))
+	unitPrice, _ := strconv.ParseInt(r.FormValue("unit_price_kobo"), 10, 64)
+	qtyAvailable, _ := strconv.Atoi(r.FormValue("quantity_available"))
+	if name == "" || unitPrice <= 0 {
+		http.Error(w, "name and unit price required", http.StatusBadRequest)
+		return
+	}
+	if qtyAvailable < -1 {
+		qtyAvailable = -1
+	}
+	var expiresAt *time.Time
+	if expiryStr := strings.TrimSpace(r.FormValue("expires_at")); expiryStr != "" {
+		if t, err := time.Parse("2006-01-02", expiryStr); err == nil {
+			expiresAt = &t
+		}
+	}
+	if err := a.store.UpdateMerchantService(r.Context(), serviceID, name, description, unitPrice, qtyAvailable, expiresAt); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/services?saved=1", http.StatusSeeOther)
+}
+
+func (a *App) merchantServiceToggle(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID := merchantIDFromContext(r.Context())
+	serviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	if err := a.store.ToggleMerchantService(r.Context(), serviceID, merchantID); err != nil {
+		http.Error(w, "toggle failed", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/merchant/services?toggled=1", http.StatusSeeOther)
+}
+
+func (a *App) merchantServicePayments(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	serviceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid service id", http.StatusBadRequest)
+		return
+	}
+	svc, err := a.store.MerchantServiceByID(r.Context(), serviceID)
+	if err != nil || svc.MerchantID != merchantID {
+		http.Error(w, "service not found", http.StatusNotFound)
+		return
+	}
+	purchases, err := a.store.ServicePurchasesByServiceID(r.Context(), serviceID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_service_payments.html", r, "Service payments", map[string]any{
+		"Service": svc, "Purchases": purchases,
+	})
+}
+
 func (a *App) merchantInvoices(w http.ResponseWriter, r *http.Request) {
 	merchantID := merchantIDFromContext(r.Context())
 	invoices, err := a.store.InvoicesByMerchantID(r.Context(), merchantID, 50, 0)
@@ -1282,8 +1449,12 @@ func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
+	qrTTL, err := a.store.MerchantServiceTTL(r.Context(), merchantID)
+	if err != nil {
+		qrTTL = 86400
+	}
 	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
-		"Merchant": merchant, "Services": services,
+		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600,
 	})
 }
 
@@ -1306,6 +1477,9 @@ func (a *App) merchantUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.UpdateMerchantPaymentTerms(r.Context(), merchantID, allowPartial, minInvoiceKobo, upfrontPct, minInstallPct, maxInstallments, allowFullAlways); err != nil {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
+	}
+	if hours, err := strconv.Atoi(r.FormValue("qr_validity_hours")); err == nil && hours >= 1 && hours <= 720 {
+		_ = a.store.UpdateMerchantServiceTTL(r.Context(), merchantID, hours*3600)
 	}
 	http.Redirect(w, r, "/merchant/settings?saved=1", http.StatusSeeOther)
 }

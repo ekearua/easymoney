@@ -1,0 +1,31 @@
+{{define "merchant_services_list.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Services</h1></div>
+    <a class="btn-scan" href="/merchant/services/new" style="text-decoration:none">+ New service</a>
+  </header>
+  {{if index . "Created"}}<div class="alert success">Service created.</div>{{end}}
+  {{if index . "Saved"}}<div class="alert success">Service updated.</div>{{end}}
+  {{if index . "Toggled"}}<div class="alert success">Service status updated.</div>{{end}}
+  {{if .Services}}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Price</th><th>Available</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  {{range .Services}}<tr>
+    <td><strong>{{.Name}}</strong>{{if .Description}}<br><span class="muted">{{.Description}}</span>{{end}}</td>
+    <td>{{money .UnitPriceKobo}}</td>
+    <td>{{if lt .QuantityAvailable 0}}Unlimited{{else}}{{.QuantityAvailable}}{{end}}</td>
+    <td>{{if .ExpiresAt}}{{.ExpiresAt.Format "02 Jan 2006"}}{{else}}—{{end}}</td>
+    <td>{{if .IsActive}}<span class="status succeeded">Active</span>{{else}}<span class="status failed">Inactive</span>{{end}}</td>
+    <td>
+      <a href="/merchant/services/{{.ID}}/edit">Edit</a>
+      <form method="post" action="/merchant/services/{{.ID}}/toggle" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="link-button">{{if .IsActive}}Deactivate{{else}}Activate{{end}}</button>
+      </form>
+      <a href="/merchant/services/{{.ID}}/payments">Payments</a>
+    </td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No services yet. Create your first service or event for customers to pay for.</p></div>{{end}}
+</main></body></html>
+{{end}}
