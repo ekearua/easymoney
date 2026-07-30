@@ -2212,9 +2212,10 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
+		fieldOrder := buildCustomFieldsNames(customFields)
 		return s.sendText(ctx, channel, recipient,
-			fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\n%s\n\nSend all values separated by commas (e.g. A12, yes).",
-				svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total), session.Data["custom_fields_prompt"]))
+			fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\n%s\n\nSend all values separated by commas in this order: %s\nExample: %s",
+				svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total), session.Data["custom_fields_prompt"], fieldOrder, buildCustomFieldsExample(customFields)))
 	}
 	session.State = "confirm_service_purchase"
 	if err := s.saveSession(ctx, session); err != nil {
@@ -2223,6 +2224,27 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
 			svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total)))
+}
+
+func buildCustomFieldsNames(fields []store.ServiceCustomField) string {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.FieldName
+	}
+	return strings.Join(names, ", ")
+}
+
+func buildCustomFieldsExample(fields []store.ServiceCustomField) string {
+	vals := make([]string, len(fields))
+	for i, f := range fields {
+		switch f.FieldType {
+		case "number":
+			vals[i] = strconv.Itoa(i + 1)
+		default:
+			vals[i] = "value" + strconv.Itoa(i+1)
+		}
+	}
+	return strings.Join(vals, ", ")
 }
 
 func buildCustomFieldsPrompt(fields []store.ServiceCustomField) string {
