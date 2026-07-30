@@ -36,7 +36,7 @@ func TestNormalizeAcceptedReceiptTypes(t *testing.T) {
 func TestScanValidationStatus(t *testing.T) {
 	serviceID := uuid.New()
 	reader := ServiceReaderView{ServiceID: serviceID, Active: true}
-	token := ReceiptScanTokenView{ServiceID: serviceID, ExpiresAt: time.Now().Add(time.Hour)}
+	token := ReceiptScanTokenView{ServiceID: serviceID, ExpiresAt: time.Now().Add(time.Hour), UsesRemaining: 1}
 	payment := PaymentView{Payment: domain.Payment{Status: domain.StatusSucceeded}}
 
 	if got := scanValidationStatus(reader, token, payment, true); got != "valid_consumed" {
@@ -49,7 +49,7 @@ func TestScanValidationStatus(t *testing.T) {
 		t.Fatalf("wrong service status=%q", got)
 	}
 
-	token.ConsumedAt = ptrTime(time.Now())
+	token.UsesRemaining = 0
 	if got := scanValidationStatus(reader, token, payment, true); got != "already_used" {
 		t.Fatalf("consumed status=%q", got)
 	}
