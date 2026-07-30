@@ -22,8 +22,41 @@
       <label>Description
         <textarea name="description" rows="3">{{if .Edit}}{{.Service.Description}}{{end}}</textarea>
       </label>
+
+      <hr>
+      <h3>Custom fields <small class="muted">(optional – collect extra info from customers)</small></h3>
+      <div id="cf-list">
+        {{range $i, $f := .CustomFields}}
+        <div class="cf-row">
+          <input name="cf_name[]" placeholder="Field name (e.g. Seat number)" value="{{$f.FieldName}}">
+          <select name="cf_type[]">
+            <option value="text" {{if eq $f.FieldType "text"}}selected{{end}}>Text</option>
+            <option value="number" {{if eq $f.FieldType "number"}}selected{{end}}>Number</option>
+            <option value="select" {{if eq $f.FieldType "select"}}selected{{end}}>Select</option>
+          </select>
+          <input name="cf_options[]" placeholder="Options (comma-separated, for Select)" value="{{$f.FieldOptions}}">
+          <label class="checkbox-row"><input type="checkbox" name="cf_required[]" value="1" {{if $f.IsRequired}}checked{{end}}> Required</label>
+          <button type="button" class="btn-sm danger" onclick="this.parentElement.remove()">✕</button>
+        </div>
+        {{end}}
+      </div>
+      <button type="button" class="btn-sm" onclick="addCustomField()">+ Add field</button>
+
       <button type="submit">{{if .Edit}}Update{{else}}Create{{end}} service</button>
     </form>
   </section>
-</main></body></html>
+</main>
+<script>
+function addCustomField() {
+  const div = document.createElement('div');
+  div.className = 'cf-row';
+  div.innerHTML = '<input name="cf_name[]" placeholder="Field name (e.g. Seat number)">' +
+    '<select name="cf_type[]"><option value="text">Text</option><option value="number">Number</option><option value="select">Select</option></select>' +
+    '<input name="cf_options[]" placeholder="Options (comma-separated, for Select)">' +
+    '<label class="checkbox-row"><input type="checkbox" name="cf_required[]" value="1"> Required</label>' +
+    '<button type="button" class="btn-sm danger" onclick="this.parentElement.remove()">✕</button>';
+  document.getElementById('cf-list').appendChild(div);
+}
+</script>
+</body></html>
 {{end}}

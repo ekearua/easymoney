@@ -4466,6 +4466,34 @@ type ServicePurchaseView struct {
 	CreatedAt     time.Time
 }
 
+// ServiceCustomField is a custom data field defined by a merchant for a service.
+type ServiceCustomField struct {
+	ID           uuid.UUID
+	ServiceID    uuid.UUID
+	FieldName    string
+	FieldType    string
+	FieldOptions string
+	IsRequired   bool
+	SortOrder    int
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// ServicePurchaseCustomDataValue holds one custom field value for a purchase.
+type ServicePurchaseCustomDataValue struct {
+	FieldName  string
+	FieldValue string
+}
+
+// CustomFieldSpec is input for creating/updating a custom field definition.
+type CustomFieldSpec struct {
+	FieldName    string
+	FieldType    string
+	FieldOptions string
+	IsRequired   bool
+	SortOrder    int
+}
+
 // CreateMerchantService creates a new service for a merchant.
 func (s *Store) CreateMerchantService(ctx context.Context, merchantID uuid.UUID, name, description string, unitPriceKobo int64, quantityAvailable int, expiresAt *time.Time) (MerchantService, error) {
 	id := uuid.New()
@@ -4556,12 +4584,12 @@ func (s *Store) ToggleMerchantService(ctx context.Context, serviceID, merchantID
 }
 
 // CreateServicePurchase records a service purchase.
-func (s *Store) CreateServicePurchase(ctx context.Context, serviceID, paymentID uuid.UUID, quantity int, unitPriceKobo, totalKobo int64) error {
+func (s *Store) CreateServicePurchase(ctx context.Context, serviceID, paymentID uuid.UUID, quantity int, unitPriceKobo, totalKobo int64) (uuid.UUID, error) {
 	id := uuid.New()
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO service_purchases(id,service_id,payment_id,quantity,unit_price_kobo,total_kobo)
 		VALUES($1,$2,$3,$4,$5,$6)`, id, serviceID, paymentID, quantity, unitPriceKobo, totalKobo)
-	return err
+	return id, err
 }
 
 // ConfirmServicePurchase decrements inventory when a service payment succeeds.
@@ -4658,6 +4686,103 @@ func (s *Store) ServicePurchaseQuantityByPaymentID(ctx context.Context, paymentI
 		return 1, nil
 	}
 	return qty, err
+}
+
+// ---------------------------------------------------------------------------
+// Custom fields per service
+// ---------------------------------------------------------------------------
+
+// SetServiceCustomFields replaces all custom fields for a service (delete + insert in a transaction).
+func (s *Store) SetServiceCustomFields(ctx context.Context, serviceID uuid.UUID, fields []CustomFieldSpec) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM service_custom_fields WHERE service_id=$1`, serviceID); err != nil {
+		return err
+	}
+	for i, f := range fields {
+		if f.FieldName == "" {
+			continue
+		}
+		fieldType := f.FieldType
+		if fieldType == "" {
+			fieldType = "text"
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO service_custom_fields(service_id,field_name,field_type,field_options,is_required,sort_order)
+			VALUES($1,$2,$3,$4,$5,$6)`, serviceID, f.FieldName, fieldType, f.FieldOptions, f.IsRequired, i)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// ListServiceCustomFields returns all custom fields for a service ordered by sort_order.
+func (s *Store) ListServiceCustomFields(ctx context.Context, serviceID uuid.UUID) ([]ServiceCustomField, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,service_id,field_name,field_type,field_options,is_required,sort_order,created_at,updated_at
+		FROM service_custom_fields
+		WHERE service_id=$1
+		ORDER BY sort_order`, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var fields []ServiceCustomField
+	for rows.Next() {
+		var f ServiceCustomField
+		if err := rows.Scan(&f.ID, &f.ServiceID, &f.FieldName, &f.FieldType, &f.FieldOptions, &f.IsRequired, &f.SortOrder, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			return nil, err
+		}
+		fields = append(fields, f)
+	}
+	return fields, rows.Err()
+}
+
+// SavePurchaseCustomData stores custom field values for a service purchase.
+func (s *Store) SavePurchaseCustomData(ctx context.Context, purchaseID uuid.UUID, fieldMap map[string]string) error {
+	for fieldName, fieldValue := range fieldMap {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO service_purchase_custom_data(purchase_id,field_id,field_name,field_value)
+			SELECT $1, id, $3, $4 FROM service_custom_fields WHERE service_id=(
+				SELECT service_id FROM service_purchases WHERE id=$1
+			) AND field_name=$2
+			LIMIT 1`, purchaseID, fieldName, fieldName, fieldValue)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PurchaseCustomDataByPurchaseIDs returns custom data for a set of purchase IDs.
+// Returns a map of purchaseID → []ServicePurchaseCustomDataValue.
+func (s *Store) PurchaseCustomDataByPurchaseIDs(ctx context.Context, purchaseIDs []uuid.UUID) (map[uuid.UUID][]ServicePurchaseCustomDataValue, error) {
+	if len(purchaseIDs) == 0 {
+		return map[uuid.UUID][]ServicePurchaseCustomDataValue{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT purchase_id, field_name, field_value
+		FROM service_purchase_custom_data
+		WHERE purchase_id = ANY($1)
+		ORDER BY purchase_id, field_name`, purchaseIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[uuid.UUID][]ServicePurchaseCustomDataValue)
+	for rows.Next() {
+		var pid uuid.UUID
+		var v ServicePurchaseCustomDataValue
+		if err := rows.Scan(&pid, &v.FieldName, &v.FieldValue); err != nil {
+			return nil, err
+		}
+		result[pid] = append(result[pid], v)
+	}
+	return result, rows.Err()
 }
 
 // PaymentsByMerchantID returns payments linked to a merchant, most recent first.

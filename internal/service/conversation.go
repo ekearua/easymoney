@@ -164,6 +164,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleServiceQuantity(ctx, message.Channel, recipient, user, session, input)
 	case "confirm_service_purchase":
 		return s.handleConfirmServicePurchase(ctx, message.Channel, recipient, user, session, input)
+	case "collect_custom_fields":
+		return s.handleCollectCustomFields(ctx, message.Channel, recipient, user, session, input)
 	case "enter_amount":
 		return s.handleAmount(ctx, message.Channel, recipient, user, session, input)
 	case "select_payment_method":
@@ -2203,6 +2205,17 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 	}
 	session.Data["service_quantity"] = strconv.Itoa(qty)
 	session.Data["amount_kobo"] = strconv.FormatInt(total, 10)
+	customFields, _ := s.store.ListServiceCustomFields(ctx, svc.ID)
+	if len(customFields) > 0 {
+		session.Data["custom_fields_prompt"] = buildCustomFieldsPrompt(customFields)
+		session.State = "collect_custom_fields"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\n%s\n\nSend all values separated by commas (e.g. A12, yes).",
+				svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total), session.Data["custom_fields_prompt"]))
+	}
 	session.State = "confirm_service_purchase"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
@@ -2210,6 +2223,69 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
 			svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total)))
+}
+
+func buildCustomFieldsPrompt(fields []store.ServiceCustomField) string {
+	var sb strings.Builder
+	sb.WriteString("This service requires the following info:")
+	for _, f := range fields {
+		req := ""
+		if f.IsRequired {
+			req = " (required)"
+		}
+		sb.WriteString(fmt.Sprintf("\n• %s%s", f.FieldName, req))
+	}
+	return sb.String()
+}
+
+func (s *ConversationService) handleCollectCustomFields(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	input = strings.TrimSpace(input)
+	if strings.EqualFold(input, "skip") {
+		session.State = "confirm_service_purchase"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		unitP, _ := strconv.ParseInt(session.Data["unit_price_kobo"], 10, 64)
+		amt, _ := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Service: %s\nQuantity: %s\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+				session.Data["service_name"], session.Data["service_quantity"], domain.FormatNGN(unitP), domain.FormatNGN(amt)))
+	}
+	serviceID, _ := uuid.Parse(session.Data["service_id"])
+	fields, err := s.store.ListServiceCustomFields(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(input, ",")
+	var fieldValues []string
+	fieldMap := make(map[string]string)
+	for i, f := range fields {
+		var val string
+		if i < len(parts) {
+			val = strings.TrimSpace(parts[i])
+		}
+		if f.IsRequired && val == "" {
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("%s is required. Please send all values again separated by commas.", f.FieldName))
+		}
+		fieldValues = append(fieldValues, val)
+		fieldMap[f.FieldName] = val
+	}
+	data, _ := json.Marshal(fieldMap)
+	session.Data["custom_data_json"] = string(data)
+	session.State = "confirm_service_purchase"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	prompt := ""
+	for _, f := range fields {
+		prompt += fmt.Sprintf("%s: %s\n", f.FieldName, fieldMap[f.FieldName])
+	}
+	unitP, _ := strconv.ParseInt(session.Data["unit_price_kobo"], 10, 64)
+	amt, _ := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
+	return s.sendText(ctx, channel, recipient,
+		fmt.Sprintf("Service: %s\nQuantity: %s\nUnit price: %s\nTotal: %s\n%s\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+			session.Data["service_name"], session.Data["service_quantity"], domain.FormatNGN(unitP), domain.FormatNGN(amt), prompt))
 }
 
 func (s *ConversationService) handleConfirmServicePurchase(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -2249,7 +2325,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		if err != nil {
 			return err
 		}
-		if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr); err != nil {
+		if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
 			return err
 		}
 		session.State = "confirm_payment"
@@ -2272,7 +2348,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	}
 }
 
-func (s *ConversationService) recordServicePurchase(ctx context.Context, paymentID uuid.UUID, serviceIDStr, qtyStr string) error {
+func (s *ConversationService) recordServicePurchase(ctx context.Context, paymentID uuid.UUID, serviceIDStr, qtyStr, customDataJSON string) error {
 	if serviceIDStr == "" || qtyStr == "" {
 		return nil
 	}
@@ -2289,7 +2365,17 @@ func (s *ConversationService) recordServicePurchase(ctx context.Context, payment
 		return err
 	}
 	total := int64(qty) * svc.UnitPriceKobo
-	return s.store.CreateServicePurchase(ctx, serviceID, paymentID, qty, svc.UnitPriceKobo, total)
+	purchaseID, err := s.store.CreateServicePurchase(ctx, serviceID, paymentID, qty, svc.UnitPriceKobo, total)
+	if err != nil {
+		return err
+	}
+	if customDataJSON != "" {
+		var fieldMap map[string]string
+		if err := json.Unmarshal([]byte(customDataJSON), &fieldMap); err == nil && len(fieldMap) > 0 {
+			_ = s.store.SavePurchaseCustomData(ctx, purchaseID, fieldMap)
+		}
+	}
+	return nil
 }
 
 func (s *ConversationService) startInvoicePayment(ctx context.Context, channel, recipient string, user store.User, session store.Session, reference string) error {
@@ -2519,7 +2605,7 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, channel, r
 	if err != nil {
 		return err
 	}
-	if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"]); err != nil {
+	if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
 		return err
 	}
 	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)

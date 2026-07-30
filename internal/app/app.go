@@ -1279,7 +1279,7 @@ func (a *App) merchantServicesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) merchantServiceNewForm(w http.ResponseWriter, r *http.Request) {
-	a.renderMerchant(w, "merchant_service_form.html", r, "New service", map[string]any{"Edit": false})
+	a.renderMerchant(w, "merchant_service_form.html", r, "New service", map[string]any{"Edit": false, "CustomFields": []store.ServiceCustomField{}})
 }
 
 func (a *App) merchantServiceCreate(w http.ResponseWriter, r *http.Request) {
@@ -1309,11 +1309,49 @@ func (a *App) merchantServiceCreate(w http.ResponseWriter, r *http.Request) {
 			expiresAt = &t
 		}
 	}
-	if _, err := a.store.CreateMerchantService(r.Context(), merchantID, name, description, unitPrice, qtyAvailable, expiresAt); err != nil {
+	svc, err := a.store.CreateMerchantService(r.Context(), merchantID, name, description, unitPrice, qtyAvailable, expiresAt)
+	if err != nil {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
+	if err := a.saveCustomFields(r, svc.ID); err != nil {
+		a.logger.Error("save custom fields", "error", err)
+	}
 	http.Redirect(w, r, "/merchant/services?created=1", http.StatusSeeOther)
+}
+
+func (a *App) saveCustomFields(r *http.Request, serviceID uuid.UUID) error {
+	names := r.Form["cf_name[]"]
+	types := r.Form["cf_type[]"]
+	reqStrs := r.Form["cf_required[]"]
+	options := r.Form["cf_options[]"]
+	var fields []store.CustomFieldSpec
+	for i, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		ft := "text"
+		if i < len(types) {
+			ft = types[i]
+		}
+		isReq := false
+		if i < len(reqStrs) && reqStrs[i] == "1" {
+			isReq = true
+		}
+		opts := ""
+		if i < len(options) {
+			opts = options[i]
+		}
+		fields = append(fields, store.CustomFieldSpec{
+			FieldName:    n,
+			FieldType:    ft,
+			FieldOptions: opts,
+			IsRequired:   isReq,
+			SortOrder:    i,
+		})
+	}
+	return a.store.SetServiceCustomFields(r.Context(), serviceID, fields)
 }
 
 func (a *App) merchantServiceEditForm(w http.ResponseWriter, r *http.Request) {
@@ -1328,8 +1366,9 @@ func (a *App) merchantServiceEditForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service not found", http.StatusNotFound)
 		return
 	}
+	customFields, _ := a.store.ListServiceCustomFields(r.Context(), serviceID)
 	a.renderMerchant(w, "merchant_service_form.html", r, "Edit service", map[string]any{
-		"Service": svc, "Edit": true,
+		"Service": svc, "Edit": true, "CustomFields": customFields,
 	})
 }
 
@@ -1374,6 +1413,9 @@ func (a *App) merchantServiceUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
+	if err := a.saveCustomFields(r, serviceID); err != nil {
+		a.logger.Error("save custom fields", "error", err)
+	}
 	http.Redirect(w, r, "/merchant/services?saved=1", http.StatusSeeOther)
 }
 
@@ -1412,8 +1454,13 @@ func (a *App) merchantServicePayments(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
+	purchaseIDs := make([]uuid.UUID, len(purchases))
+	for i, p := range purchases {
+		purchaseIDs[i] = p.ID
+	}
+	customData, _ := a.store.PurchaseCustomDataByPurchaseIDs(r.Context(), purchaseIDs)
 	a.renderMerchant(w, "merchant_service_payments.html", r, "Service payments", map[string]any{
-		"Service": svc, "Purchases": purchases,
+		"Service": svc, "Purchases": purchases, "CustomData": customData,
 	})
 }
 
