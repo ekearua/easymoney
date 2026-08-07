@@ -1,0 +1,70 @@
+{{define "admin_users.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Access control</p><h1>Admin accounts</h1></div></header>
+
+<section class="panel">
+  <h2>Add operator</h2>
+  <p class="muted">Roles: <strong>admin</strong> (full control) · <strong>compliance</strong> (approve merchants, read operations) · <strong>support</strong> (read operations, reset merchant passwords) · <strong>readonly</strong> (view dashboards only).</p>
+  <form method="post" action="/admin/admins">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="form-grid">
+      <label>Email<input type="email" name="email" autocomplete="off" required></label>
+      <label>Temporary password<input type="password" name="password" autocomplete="new-password" required></label>
+      <label>Role
+        <select name="role">
+          <option value="readonly">Read only</option>
+          <option value="support">Support</option>
+          <option value="compliance">Compliance</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+    </div>
+    <button type="submit">Create account</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Operators</h2>
+  <div class="table-wrap"><table><thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+  {{range .Admins}}<tr>
+    <td>{{.Email}}{{if eq .ID $.CurrentAdminID}} <span class="status ok">you</span>{{end}}</td>
+    <td>
+      <form method="post" action="/admin/admins/{{.ID}}/role" style="display:flex;gap:4px;align-items:center">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <select name="role" {{if eq .ID $.CurrentAdminID}}disabled{{end}}>
+          <option value="readonly" {{if eq .Role "readonly"}}selected{{end}}>Read only</option>
+          <option value="support" {{if eq .Role "support"}}selected{{end}}>Support</option>
+          <option value="compliance" {{if eq .Role "compliance"}}selected{{end}}>Compliance</option>
+          <option value="admin" {{if eq .Role "admin"}}selected{{end}}>Admin</option>
+        </select>
+        {{if ne .ID $.CurrentAdminID}}<button type="submit">Change</button>{{end}}
+      </form>
+    </td>
+    <td>{{if .Enabled}}<span class="status ok">Enabled</span>{{else}}<span class="status disabled">Disabled</span>{{end}}</td>
+    <td>{{.CreatedAt.Format "02 Jan 2006"}}</td>
+    <td style="white-space:nowrap">
+      {{if ne .ID $.CurrentAdminID}}
+      <form method="post" action="/admin/admins/{{.ID}}/enabled" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
+        <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+      </form>
+      <details style="display:inline-block;margin-left:4px"><summary>Reset password</summary>
+        <form method="post" action="/admin/admins/{{.ID}}/password" style="display:flex;gap:4px;align-items:end">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="password" name="password" placeholder="New password" autocomplete="new-password" required>
+          <button type="submit">Set</button>
+        </form>
+      </details>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="5">No operator accounts yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}
