@@ -5,10 +5,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,8 +20,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 
+	"whatsapp-payment-demo/internal/crypto"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/redact"
 )
 
 //go:embed migrations/*.sql
@@ -30,6 +33,127 @@ var migrationFiles embed.FS
 // Store wraps PostgreSQL operations used by the application.
 type Store struct {
 	pool *pgxpool.Pool
+
+	// EmailResendCooldown gates how often a new confirmation code can be
+	// requested for the same user and email.
+	EmailResendCooldown time.Duration
+
+	// dataKey is the AES-256-GCM key for application-level encryption at rest.
+	// When empty the store runs in plaintext passthrough (dev without the env
+	// var); production requires DATA_ENCRYPTION_KEY in config.
+	dataKey []byte
+}
+
+// SetDataKey configures the encryption-at-rest key. It must be called before
+// any payload/session reads or writes.
+func (s *Store) SetDataKey(key []byte) {
+	s.dataKey = append([]byte(nil), key...)
+}
+
+// sealValue encrypts plaintext at rest, or returns it unchanged in
+// no-key passthrough mode.
+func (s *Store) sealValue(plain []byte) (string, error) {
+	if len(s.dataKey) == 0 {
+		return string(plain), nil
+	}
+	return crypto.Seal(s.dataKey, plain)
+}
+
+// openValue decrypts a stored value. Legacy plaintext rows pass through;
+// encrypted envelopes require the configured key.
+func (s *Store) openValue(value string) ([]byte, error) {
+	return crypto.Open(s.dataKey, value)
+}
+
+// EncryptLegacyAtRest rewrites any remaining plaintext chat payload rows to
+// sealed envelopes (batched, keyset-paginated). It is safe to run repeatedly.
+func (s *Store) EncryptLegacyAtRest(ctx context.Context) (int, error) {
+	if len(s.dataKey) == 0 {
+		return 0, nil
+	}
+	encrypted := 0
+	seal := func(key any, table, keyCol, payload string) error {
+		sealed, err := crypto.Seal(s.dataKey, []byte(payload))
+		if err != nil {
+			return err
+		}
+		_, err = s.pool.Exec(ctx, fmt.Sprintf(`UPDATE %s SET payload=$2 WHERE %s=$1`, table, keyCol), key, sealed)
+		return err
+	}
+
+	var textCursor string
+	for {
+		rows, err := s.pool.Query(ctx, `
+			SELECT provider_message_id, payload FROM inbound_messages
+			WHERE payload NOT LIKE 'enc:v1:%' AND provider_message_id > $1
+			ORDER BY provider_message_id LIMIT 500`, textCursor)
+		if err != nil {
+			return encrypted, err
+		}
+		var keys []string
+		var payloads []string
+		for rows.Next() {
+			var key, payload string
+			if err := rows.Scan(&key, &payload); err != nil {
+				rows.Close()
+				return encrypted, err
+			}
+			keys = append(keys, key)
+			payloads = append(payloads, payload)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return encrypted, err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		for i := range keys {
+			if err := seal(keys[i], "inbound_messages", "provider_message_id", payloads[i]); err != nil {
+				return encrypted, err
+			}
+			encrypted++
+		}
+		textCursor = keys[len(keys)-1]
+	}
+
+	var idCursor int64
+	for {
+		rows, err := s.pool.Query(ctx, `
+			SELECT id, payload FROM message_outbox
+			WHERE payload NOT LIKE 'enc:v1:%' AND id > $1
+			ORDER BY id LIMIT 500`, idCursor)
+		if err != nil {
+			return encrypted, err
+		}
+		var keys []int64
+		var payloads []string
+		for rows.Next() {
+			var key int64
+			var payload string
+			if err := rows.Scan(&key, &payload); err != nil {
+				rows.Close()
+				return encrypted, err
+			}
+			keys = append(keys, key)
+			payloads = append(payloads, payload)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return encrypted, err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		for i := range keys {
+			if err := seal(keys[i], "message_outbox", "id", payloads[i]); err != nil {
+				return encrypted, err
+			}
+			encrypted++
+		}
+		idCursor = keys[len(keys)-1]
+	}
+	return encrypted, nil
 }
 
 // User is a WhatsApp customer profile.
@@ -54,25 +178,44 @@ type User struct {
 	UpdatedAt           time.Time
 }
 
+// Admin role names for the RBAC admin console.
+const (
+	RoleAdmin      = "admin"
+	RoleCompliance = "compliance"
+	RoleSupport    = "support"
+	RoleReadOnly   = "readonly"
+)
+
+// AdminUser is a named operator account on the admin console.
+type AdminUser struct {
+	ID           uuid.UUID
+	Email        string
+	PasswordHash string
+	Role         string
+	Enabled      bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 // Merchant is a curated payment recipient.
 type Merchant struct {
-	ID                      uuid.UUID
-	Slug                    string
-	Name                    string
-	Category                string
-	Description             string
-	LogoURL                 string
-	Active                  bool
-	SearchKeywords          string
-	SortOrder               int
-	CreatedAt               time.Time
-	PasswordHash            string
-	AllowPartialPayments    bool
-	MinInvoiceAmountKobo    int64
-	UpfrontPercent          int
-	MinInstallmentPercent   int
-	MaxInstallments         int
-	AllowFullPayAlways      bool
+	ID                    uuid.UUID
+	Slug                  string
+	Name                  string
+	Category              string
+	Description           string
+	LogoURL               string
+	Active                bool
+	SearchKeywords        string
+	SortOrder             int
+	CreatedAt             time.Time
+	PasswordHash          string
+	AllowPartialPayments  bool
+	MinInvoiceAmountKobo  int64
+	UpfrontPercent        int
+	MinInstallmentPercent int
+	MaxInstallments       int
+	AllowFullPayAlways    bool
 }
 
 // MerchantRegistration is a chat-submitted merchant onboarding request.
@@ -275,19 +418,19 @@ type ServiceReaderView struct {
 
 // ReceiptScanTokenView is the QR/manual token customers present to a service.
 type ReceiptScanTokenView struct {
-	ID             uuid.UUID
-	PaymentID      uuid.UUID
-	ServiceID      uuid.UUID
-	ServiceName    string
-	Token          string
-	ManualCode     string
-	ReceiptType    string
-	ExpiresAt      time.Time
-	ConsumedAt     *time.Time
-	RevokedAt      *time.Time
-	UsesTotal      int
-	UsesRemaining  int
-	CreatedAt      time.Time
+	ID            uuid.UUID
+	PaymentID     uuid.UUID
+	ServiceID     uuid.UUID
+	ServiceName   string
+	Token         string
+	ManualCode    string
+	ReceiptType   string
+	ExpiresAt     time.Time
+	ConsumedAt    *time.Time
+	RevokedAt     *time.Time
+	UsesTotal     int
+	UsesRemaining int
+	CreatedAt     time.Time
 }
 
 // ReceiptScanAttemptView is one scanner validation attempt for audit.
@@ -534,8 +677,28 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 // Migrate applies embedded SQL migrations in filename order.
+// migrationLockKey is a fixed advisory-lock key that serializes concurrent
+// migration runners (multiple replicas / overlapping `migrate` invocations).
+const migrationLockKey int64 = 0x7865676f5f6d6967
+
+// Migrate applies all pending embedded SQL migrations. A session-level
+// advisory lock is held for the whole run so two processes can never apply
+// migrations concurrently, even across multiple app instances (C24).
 func (s *Store) Migrate(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx, `
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire migration connection: %w", err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, migrationLockKey) }()
+	return migrateOn(ctx, conn)
+}
+
+func migrateOn(ctx context.Context, conn *pgxpool.Conn) error {
+	if _, err := conn.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			name text PRIMARY KEY,
 			applied_at timestamptz NOT NULL DEFAULT now()
@@ -552,7 +715,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			continue
 		}
 		var applied bool
-		if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)`, entry.Name()).Scan(&applied); err != nil {
+		if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name=$1)`, entry.Name()).Scan(&applied); err != nil {
 			return fmt.Errorf("check migration %s: %w", entry.Name(), err)
 		}
 		if applied {
@@ -562,7 +725,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
-		tx, err := s.pool.Begin(ctx)
+		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", entry.Name(), err)
 		}
@@ -670,17 +833,57 @@ func (s *Store) UpdateUserEmail(ctx context.Context, id uuid.UUID, email string)
 	return err
 }
 
+// ErrResendTooSoon is returned when a new confirmation code is requested
+// before the resend cooldown has elapsed.
+var ErrResendTooSoon = errors.New("confirmation code resend is still on cooldown")
+
+// defaultEmailResendCooldown applies when no explicit cooldown is configured.
+const defaultEmailResendCooldown = 60 * time.Second
+
 // CreateEmailVerificationCode stores a hashed one-time confirmation code.
+// Previous unconsumed codes for the same user and email are invalidated so
+// a resend cannot reset the attempt counter of an older active code.
 func (s *Store) CreateEmailVerificationCode(ctx context.Context, userID uuid.UUID, email string, codeHash []byte, expiresAt time.Time) error {
-	_, err := s.pool.Exec(ctx, `
+	cooldown := s.EmailResendCooldown
+	if cooldown <= 0 {
+		cooldown = defaultEmailResendCooldown
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var recent bool
+	err = tx.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM email_verification_codes
+			WHERE user_id=$1 AND lower(email)=lower($2) AND consumed_at IS NULL
+			  AND created_at > now() - $3::interval
+		)`, userID, email, cooldown).Scan(&recent)
+	if err != nil {
+		return err
+	}
+	if recent {
+		return ErrResendTooSoon
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE email_verification_codes SET consumed_at=now()
+		WHERE user_id=$1 AND lower(email)=lower($2) AND consumed_at IS NULL`, userID, email); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO email_verification_codes(user_id,email,code_hash,expires_at)
 		VALUES($1,lower($2),$3,$4)`, userID, email, codeHash, expiresAt)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
-// VerifyEmailCode consumes the latest valid code when the submitted hash
-// matches. Mismatches increment attempts so repeated guessing is bounded.
-func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email string, codeHash []byte) (bool, error) {
+// VerifyEmailCode consumes the latest valid code when the submitted
+// candidate matches the stored bcrypt hash. Mismatches increment attempts
+// so repeated guessing is bounded.
+func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email string, candidate []byte) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -702,7 +905,7 @@ func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email str
 	if err != nil {
 		return false, err
 	}
-	if attempts >= 5 || !equalBytes(stored, codeHash) {
+	if attempts >= 5 || bcrypt.CompareHashAndPassword(stored, candidate) != nil {
 		_, err = tx.Exec(ctx, `UPDATE email_verification_codes SET attempts=attempts+1 WHERE id=$1`, id)
 		if err != nil {
 			return false, err
@@ -732,10 +935,6 @@ func (s *Store) VerifyEmailCode(ctx context.Context, userID uuid.UUID, email str
 		return false, err
 	}
 	return true, tx.Commit(ctx)
-}
-
-func equalBytes(left, right []byte) bool {
-	return len(left) == len(right) && subtle.ConstantTimeCompare(left, right) == 1
 }
 
 func newMerchantRegistrationReference() string {
@@ -1763,19 +1962,19 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		return ReceiptScanResult{}, err
 	}
 	result := ReceiptScanResult{
-		Status:         status,
-		ReceiptType:    token.ReceiptType,
-		ServiceName:    token.ServiceName,
-		MerchantName:   payment.MerchantName,
-		Amount:         domain.FormatNGN(payment.AmountKobo),
-		AmountKobo:     payment.AmountKobo,
-		PaymentStatus:  string(payment.Status),
-		CustomerName:   payment.UserName,
-		CustomerPhone:  maskForScan(payment.WhatsAppNumber),
-		ManualCode:     token.ManualCode,
-		ProviderRef:    payment.ProviderReference,
-		UsesRemaining:  token.UsesRemaining - 1,
-		UsesTotal:      token.UsesTotal,
+		Status:        status,
+		ReceiptType:   token.ReceiptType,
+		ServiceName:   token.ServiceName,
+		MerchantName:  payment.MerchantName,
+		Amount:        domain.FormatNGN(payment.AmountKobo),
+		AmountKobo:    payment.AmountKobo,
+		PaymentStatus: string(payment.Status),
+		CustomerName:  payment.UserName,
+		CustomerPhone: maskForScan(payment.WhatsAppNumber),
+		ManualCode:    token.ManualCode,
+		ProviderRef:   payment.ProviderReference,
+		UsesRemaining: token.UsesRemaining - 1,
+		UsesTotal:     token.UsesTotal,
 	}
 	if status == "valid_consumed" {
 		result.ConsumedAtText = time.Now().Format(time.RFC3339)
@@ -1867,19 +2066,19 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		uuid.NullUUID{},
 		status, remoteAddr, map[string]any{"receipt_type": token.ReceiptType, "source": "merchant_portal"})
 	result := ReceiptScanResult{
-		Status:         status,
-		ReceiptType:    token.ReceiptType,
-		ServiceName:    token.ServiceName,
-		MerchantName:   payment.MerchantName,
-		Amount:         domain.FormatNGN(payment.AmountKobo),
-		AmountKobo:     payment.AmountKobo,
-		PaymentStatus:  string(payment.Status),
-		CustomerName:   payment.UserName,
-		CustomerPhone:  maskForScan(payment.WhatsAppNumber),
-		ManualCode:     token.ManualCode,
-		ProviderRef:    payment.ProviderReference,
-		UsesRemaining:  token.UsesRemaining - 1,
-		UsesTotal:      token.UsesTotal,
+		Status:        status,
+		ReceiptType:   token.ReceiptType,
+		ServiceName:   token.ServiceName,
+		MerchantName:  payment.MerchantName,
+		Amount:        domain.FormatNGN(payment.AmountKobo),
+		AmountKobo:    payment.AmountKobo,
+		PaymentStatus: string(payment.Status),
+		CustomerName:  payment.UserName,
+		CustomerPhone: maskForScan(payment.WhatsAppNumber),
+		ManualCode:    token.ManualCode,
+		ProviderRef:   payment.ProviderReference,
+		UsesRemaining: token.UsesRemaining - 1,
+		UsesTotal:     token.UsesTotal,
 	}
 	if status == "valid_consumed" {
 		result.ConsumedAtText = time.Now().Format(time.RFC3339)
@@ -3234,16 +3433,46 @@ func (s *Store) DeferDataOrderFulfilment(ctx context.Context, orderID uuid.UUID,
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var alreadyNotified bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM message_outbox m
-			JOIN data_orders d ON d.user_id=m.user_id
-			WHERE d.id=$1
-			  AND m.payload->>'body' ILIKE '%Status: PROCESSING%'
-			  AND m.payload->>'body' ILIKE '%' || d.request_code || '%'
-		)`, orderID).Scan(&alreadyNotified); err != nil {
+	// The processing notification check cannot run in SQL because payloads are
+	// encrypted at rest; decrypt candidate messages and compare in Go.
+	var requestCode string
+	if err := tx.QueryRow(ctx, `SELECT request_code FROM data_orders WHERE id=$1`, orderID).Scan(&requestCode); err != nil {
+		return err
+	}
+	alreadyNotified := false
+	rows, err := tx.Query(ctx, `
+		SELECT m.payload
+		FROM message_outbox m
+		JOIN data_orders d ON d.user_id=m.user_id
+		WHERE d.id=$1`, orderID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var sealed string
+		if err := rows.Scan(&sealed); err != nil {
+			rows.Close()
+			return err
+		}
+		raw, err := s.openValue(sealed)
+		if err != nil {
+			rows.Close()
+			return err
+		}
+		var body struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(raw, &body); err != nil {
+			rows.Close()
+			return err
+		}
+		if strings.Contains(body.Body, "Status: PROCESSING") && strings.Contains(body.Body, requestCode) {
+			alreadyNotified = true
+			break
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return err
 	}
 	changed, err := s.transitionDataOrderTx(ctx, tx, orderID, domain.DataOrderPaid, "data.provider.pending", map[string]any{"provider_reference": providerReference, "message": message}, func(tx pgx.Tx) error {
@@ -3257,9 +3486,13 @@ func (s *Store) DeferDataOrderFulfilment(ctx context.Context, orderID uuid.UUID,
 		if outbox.Channel == "" {
 			outbox.Channel = "whatsapp"
 		}
+		sealed, err := s.sealValue(outbox.Payload)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, sealed); err != nil {
 			return err
 		}
 	}
@@ -3290,7 +3523,7 @@ func (s *Store) transitionDataOrderWithOutbox(ctx context.Context, orderID uuid.
 		if to == domain.DataOrderFulfilled {
 			fulfilledClause = ", fulfilled_at=COALESCE(fulfilled_at, now())"
 		}
-		_, err := tx.Exec(ctx, `UPDATE data_orders SET provider_reference=$2, failure_reason=$3`+fulfilledClause+` WHERE id=$1`, orderID, providerReference, failureReason)
+		_, err := tx.Exec(ctx, `UPDATE data_orders SET provider_reference=$2, failure_reason=$3`+fulfilledClause+` WHERE id=$1`, orderID, providerReference, redact.Error(failureReason, redact.DefaultMaxLen))
 		return err
 	})
 	if err != nil {
@@ -3299,9 +3532,13 @@ func (s *Store) transitionDataOrderWithOutbox(ctx context.Context, orderID uuid.
 	if outbox.Channel == "" {
 		outbox.Channel = "whatsapp"
 	}
+	sealed, err := s.sealValue(outbox.Payload)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, sealed); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -3375,7 +3612,7 @@ func (s *Store) CompleteSMSRequest(ctx context.Context, id, command, requestCode
 	_, err := s.pool.Exec(ctx, `
 		UPDATE sms_requests
 		SET command=$2,request_code=$3,processing_status=$4,response_body=$5,error_message=$6,processed_at=now()
-		WHERE provider_message_id=$1`, id, command, requestCode, status, responseBody, errorMessage)
+		WHERE provider_message_id=$1`, id, command, requestCode, status, responseBody, redact.Error(errorMessage, redact.DefaultMaxLen))
 	return err
 }
 
@@ -3495,9 +3732,13 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 	if err != nil {
 		return false, err
 	}
+	sealed, err := s.sealValue(payload)
+	if err != nil {
+		return false, err
+	}
 	tag, err := s.pool.Exec(ctx, `
 		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload)
-		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, payload)
+		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, sealed)
 	return tag.RowsAffected() == 1, err
 }
 
@@ -3520,13 +3761,18 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	var messages []InboundMessage
 	for rows.Next() {
 		var message InboundMessage
-		var payload []byte
+		var payload string
 		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		raw, err := s.openValue(payload)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
 		var normalized map[string]string
-		if err := json.Unmarshal(payload, &normalized); err != nil {
+		if err := json.Unmarshal(raw, &normalized); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -3563,7 +3809,7 @@ func (s *Store) RetryInboundMessage(ctx context.Context, id string, attempts int
 	delay := time.Duration(1<<min(nextAttempts, 6)) * time.Minute
 	_, err := s.pool.Exec(ctx, `
 		UPDATE inbound_messages SET status=$2,last_error=$3,available_at=$4
-		WHERE provider_message_id=$1`, id, status, truncate(message, 500), time.Now().Add(delay))
+		WHERE provider_message_id=$1`, id, status, redact.Error(message, redact.DefaultMaxLen), time.Now().Add(delay))
 	return err
 }
 
@@ -3643,9 +3889,13 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		if outbox.Channel == "" {
 			outbox.Channel = "whatsapp"
 		}
+		sealed, err := s.sealValue(outbox.Payload)
+		if err != nil {
+			return false, err
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+			VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, sealed); err != nil {
 			return false, err
 		}
 	}
@@ -3809,9 +4059,13 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 	if outbox.Channel == "" {
 		outbox.Channel = "whatsapp"
 	}
+	sealed, err := s.sealValue(outbox.Payload)
+	if err != nil {
+		return false, err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, outbox.Payload); err != nil {
+		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, sealed); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -3929,7 +4183,7 @@ func (s *Store) CompleteWebhook(ctx context.Context, id int64, processingStatus,
 	_, err := s.pool.Exec(ctx, `
 		UPDATE webhook_deliveries
 		SET processing_status=$2,error_message=$3,processed_at=now()
-		WHERE id=$1`, id, processingStatus, errorMessage)
+		WHERE id=$1`, id, processingStatus, redact.Error(errorMessage, redact.DefaultMaxLen))
 	return err
 }
 
@@ -3987,7 +4241,7 @@ func (s *Store) RetryWebhook(ctx context.Context, id int64, attempts int, messag
 	_, err := s.pool.Exec(ctx, `
 		UPDATE webhook_deliveries
 		SET processing_status=$2,error_message=$3,available_at=$4
-		WHERE id=$1`, id, status, truncate(message, 500), time.Now().Add(delay))
+		WHERE id=$1`, id, status, redact.Error(message, redact.DefaultMaxLen), time.Now().Add(delay))
 	return err
 }
 
@@ -4021,9 +4275,13 @@ func (s *Store) EnqueueText(ctx context.Context, userID uuid.UUID, recipient, bo
 // aligned with WhatsApp and Telegram payment flows.
 func (s *Store) EnqueueTextForChannel(ctx context.Context, userID uuid.UUID, channel, recipient, body string) error {
 	payload, _ := json.Marshal(map[string]any{"body": body})
-	_, err := s.pool.Exec(ctx, `
+	sealed, err := s.sealValue(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,$2,$3,'text',$4)`, userID, channel, recipient, payload)
+		VALUES($1,$2,$3,'text',$4)`, userID, channel, recipient, sealed)
 	return err
 }
 
@@ -4031,18 +4289,26 @@ func (s *Store) EnqueueTextForChannel(ctx context.Context, userID uuid.UUID, cha
 // data is base64-encoded so the outbox worker can decode and upload it later.
 func (s *Store) EnqueueImageForChannel(ctx context.Context, userID uuid.UUID, channel, recipient, imageDataB64, caption string) error {
 	payload, _ := json.Marshal(map[string]any{"image_data": imageDataB64, "caption": caption})
-	_, err := s.pool.Exec(ctx, `
+	sealed, err := s.sealValue(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,$2,$3,'image',$4)`, userID, channel, recipient, payload)
+		VALUES($1,$2,$3,'image',$4)`, userID, channel, recipient, sealed)
 	return err
 }
 
 // EnqueueTemplate adds a durable template notification for use outside the service window.
 func (s *Store) EnqueueTemplate(ctx context.Context, userID uuid.UUID, recipient, name, locale string, parameters []string) error {
 	payload, _ := json.Marshal(map[string]any{"name": name, "locale": locale, "parameters": parameters})
-	_, err := s.pool.Exec(ctx, `
+	sealed, err := s.sealValue(payload)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,'whatsapp',$2,'template',$3)`, userID, recipient, payload)
+		VALUES($1,'whatsapp',$2,'template',$3)`, userID, recipient, sealed)
 	return err
 }
 
@@ -4070,6 +4336,12 @@ func (s *Store) ClaimOutbox(ctx context.Context, limit int) ([]OutboxMessage, er
 			rows.Close()
 			return nil, err
 		}
+		raw, err := s.openValue(string(message.Payload))
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		message.Payload = raw
 		messages = append(messages, message)
 	}
 	rows.Close()
@@ -4099,26 +4371,138 @@ func (s *Store) RetryOutbox(ctx context.Context, id int64, attempts int, message
 	_, err := s.pool.Exec(ctx, `
 		UPDATE message_outbox
 		SET status=$2,attempts=$3,last_error=$4,available_at=$5
-		WHERE id=$1`, id, status, nextAttempts, truncate(message, 500), time.Now().Add(delay))
+		WHERE id=$1`, id, status, nextAttempts, redact.Error(message, redact.DefaultMaxLen), time.Now().Add(delay))
 	return err
 }
 
 // CreateAdminSession persists only a hash of the bearer token.
-func (s *Store) CreateAdminSession(ctx context.Context, token, csrf string, expiresAt time.Time) error {
-	hash := sha256.Sum256([]byte(token))
+// EnsureAdminUser upserts the bootstrap admin account from config. The role
+// stays 'admin' and the account stays enabled so deployments always keep a
+// recovery account; the password hash is updated when config changes.
+func (s *Store) EnsureAdminUser(ctx context.Context, email, passwordHash string) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO admin_sessions(token_hash,csrf_token,expires_at) VALUES($1,$2,$3)`,
-		hash[:], csrf, expiresAt)
+		INSERT INTO admin_users(email, password_hash, role, enabled)
+		VALUES($1, $2, $3, true)
+		ON CONFLICT (email) DO UPDATE SET
+			password_hash=EXCLUDED.password_hash,
+			role='admin',
+			enabled=true,
+			updated_at=now()`,
+		email, passwordHash, RoleAdmin)
 	return err
 }
 
-// ValidateAdminSession resolves a session and its CSRF token.
-func (s *Store) ValidateAdminSession(ctx context.Context, token string) (string, error) {
-	hash := sha256.Sum256([]byte(token))
-	var csrf string
+// AdminUserByEmail returns an admin account by email, including the hash.
+func (s *Store) AdminUserByEmail(ctx context.Context, email string) (*AdminUser, error) {
+	var user AdminUser
 	err := s.pool.QueryRow(ctx, `
-		SELECT csrf_token FROM admin_sessions WHERE token_hash=$1 AND expires_at > now()`, hash[:]).Scan(&csrf)
-	return csrf, err
+		SELECT id, email, password_hash, role, enabled, created_at, updated_at
+		FROM admin_users WHERE email=$1`, email).Scan(
+		&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.Enabled,
+		&user.CreatedAt, &user.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &user, err
+}
+
+// AdminUserByID returns an admin account without the password hash.
+func (s *Store) AdminUserByID(ctx context.Context, id uuid.UUID) (*AdminUser, error) {
+	var user AdminUser
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, email, password_hash, role, enabled, created_at, updated_at
+		FROM admin_users WHERE id=$1`, id).Scan(
+		&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.Enabled,
+		&user.CreatedAt, &user.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &user, err
+}
+
+// ListAdminUsers returns all admin accounts (hashes excluded) for the
+// admin management page.
+func (s *Store) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, email, password_hash, role, enabled, created_at, updated_at
+		FROM admin_users ORDER BY email`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []AdminUser{}
+	for rows.Next() {
+		var user AdminUser
+		if err := rows.Scan(
+			&user.ID, &user.Email, &user.PasswordHash, &user.Role, &user.Enabled,
+			&user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+// CreateAdminUser provisions a new operator account.
+func (s *Store) CreateAdminUser(ctx context.Context, email, passwordHash, role string) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO admin_users(email, password_hash, role)
+		VALUES($1, $2, $3)`, email, passwordHash, role)
+	return err
+}
+
+// UpdateAdminUserRole changes an operator's role.
+func (s *Store) UpdateAdminUserRole(ctx context.Context, id uuid.UUID, role string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE admin_users SET role=$1, updated_at=now() WHERE id=$2`, role, id)
+	return err
+}
+
+// SetAdminUserEnabled enables or disables an operator account.
+func (s *Store) SetAdminUserEnabled(ctx context.Context, id uuid.UUID, enabled bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE admin_users SET enabled=$1, updated_at=now() WHERE id=$2`, enabled, id)
+	return err
+}
+
+// UpdateAdminUserPassword replaces an operator's password hash.
+func (s *Store) UpdateAdminUserPassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE admin_users SET password_hash=$1, updated_at=now() WHERE id=$2`, passwordHash, id)
+	return err
+}
+
+func (s *Store) CreateAdminSession(ctx context.Context, adminID uuid.UUID, token, csrf string, expiresAt time.Time) error {
+	hash := sha256.Sum256([]byte(token))
+	sealedCSRF, err := s.sealValue([]byte(csrf))
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO admin_sessions(token_hash,csrf_token,expires_at,admin_id) VALUES($1,$2,$3,$4)`,
+		hash[:], sealedCSRF, expiresAt, adminID)
+	return err
+}
+
+// ValidateAdminSession resolves a session, its CSRF token, and the admin
+// account role. Disabled accounts and sessions past expiry are rejected.
+func (s *Store) ValidateAdminSession(ctx context.Context, token string) (adminID uuid.UUID, role string, email string, csrf string, err error) {
+	hash := sha256.Sum256([]byte(token))
+	var sealedCSRF string
+	err = s.pool.QueryRow(ctx, `
+		SELECT s.admin_id, u.role, u.email, s.csrf_token
+		FROM admin_sessions s
+		JOIN admin_users u ON u.id = s.admin_id
+		WHERE s.token_hash=$1 AND s.expires_at > now() AND u.enabled`,
+		hash[:]).Scan(&adminID, &role, &email, &sealedCSRF)
+	if err != nil {
+		return adminID, role, email, "", err
+	}
+	raw, err := s.openValue(sealedCSRF)
+	if err != nil {
+		return adminID, role, email, "", err
+	}
+	return adminID, role, email, string(raw), nil
 }
 
 // DeleteAdminSession invalidates one login.
@@ -4126,6 +4510,178 @@ func (s *Store) DeleteAdminSession(ctx context.Context, token string) error {
 	hash := sha256.Sum256([]byte(token))
 	_, err := s.pool.Exec(ctx, `DELETE FROM admin_sessions WHERE token_hash=$1`, hash[:])
 	return err
+}
+
+// AuditLog is one tamper-evident entry in the admin audit trail.
+type AuditLog struct {
+	ID           int64
+	OccurredAt   time.Time
+	ActorType    string
+	ActorID      uuid.NullUUID
+	ActorEmail   sql.NullString
+	IP           sql.NullString
+	Action       string
+	ResourceType sql.NullString
+	ResourceID   sql.NullString
+	Details      map[string]any
+	PrevHash     string
+	Hash         string
+}
+
+// auditHash binds one entry to its predecessor. Any field edit changes the
+// hash, and edits are also rejected by the append-only trigger.
+func auditHash(prevHash string, entry AuditLog) string {
+	details, err := json.Marshal(entry.Details)
+	if err != nil {
+		details = []byte("{}")
+	}
+	fields := []string{
+		prevHash,
+		entry.OccurredAt.UTC().Format(time.RFC3339Nano),
+		entry.ActorType,
+		entry.ActorID.UUID.String(),
+		entry.ActorEmail.String,
+		entry.IP.String,
+		entry.Action,
+		entry.ResourceType.String,
+		entry.ResourceID.String,
+		string(details),
+	}
+	sum := sha256.Sum256([]byte(strings.Join(fields, "|")))
+	return hex.EncodeToString(sum[:])
+}
+
+// AppendAuditLog records a privileged action. The insert is serialized on the
+// tail row so the hash chain cannot fork under concurrency.
+func (s *Store) AppendAuditLog(ctx context.Context, entry AuditLog) (AuditLog, error) {
+	if entry.ActorID.UUID == uuid.Nil {
+		entry.ActorID.Valid = false
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return entry, fmt.Errorf("begin audit log: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var prevHash string
+	if err := tx.QueryRow(ctx, `SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1 FOR UPDATE`).Scan(&prevHash); err != nil && err != pgx.ErrNoRows {
+		return entry, fmt.Errorf("read audit tail: %w", err)
+	}
+	var ip any
+	if entry.IP.Valid {
+		ip = entry.IP.String
+	}
+	entry.OccurredAt = time.Now().UTC().Truncate(time.Microsecond)
+	entry.Hash = auditHash(prevHash, entry)
+	entry.PrevHash = prevHash
+	err = tx.QueryRow(ctx, `
+		INSERT INTO audit_logs(occurred_at, actor_type, actor_id, actor_email, ip, action, resource_type, resource_id, details, prev_hash, hash)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		RETURNING id, occurred_at`,
+		entry.OccurredAt, entry.ActorType, entry.ActorID, entry.ActorEmail, ip,
+		entry.Action, entry.ResourceType, entry.ResourceID,
+		entry.Details, prevHash, entry.Hash,
+	).Scan(&entry.ID, &entry.OccurredAt)
+	if err != nil {
+		return entry, fmt.Errorf("insert audit log: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return entry, fmt.Errorf("commit audit log: %w", err)
+	}
+	return entry, nil
+}
+
+// ListAuditLogs returns recent entries, newest first.
+func (s *Store) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, occurred_at, actor_type, COALESCE(actor_id::text,''), COALESCE(actor_email,''),
+			COALESCE(ip::text,''), action, COALESCE(resource_type,''), COALESCE(resource_id,''),
+			details, prev_hash, hash
+		FROM audit_logs ORDER BY id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var logs []AuditLog
+	for rows.Next() {
+		var entry AuditLog
+		var details []byte
+		if err := rows.Scan(&entry.ID, &entry.OccurredAt, &entry.ActorType, &entry.ActorID.UUID,
+			&entry.ActorEmail.String, &entry.IP.String, &entry.Action, &entry.ResourceType.String,
+			&entry.ResourceID.String, &details, &entry.PrevHash, &entry.Hash); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(details, &entry.Details)
+		entry.ActorID.Valid = entry.ActorID.UUID != uuid.Nil
+		entry.ActorEmail.Valid = entry.ActorEmail.String != ""
+		entry.IP.Valid = entry.IP.String != ""
+		entry.ResourceType.Valid = entry.ResourceType.String != ""
+		entry.ResourceID.Valid = entry.ResourceID.String != ""
+		if entry.Details == nil {
+			entry.Details = map[string]any{}
+		}
+		logs = append(logs, entry)
+	}
+	return logs, rows.Err()
+}
+
+// VerifyAuditChain recomputes every hash and checks linkage. It returns the
+// number of entries and the index of the first broken entry (-1 if sound).
+func (s *Store) VerifyAuditChain(ctx context.Context) (int, int, error) {
+	var count int
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs`).Scan(&count); err != nil {
+		return 0, -1, err
+	}
+	var cursor int64
+	var prevHash string
+	expected := prevHash
+	broken := -1
+	seen := 0
+	for {
+		rows, err := s.pool.Query(ctx, `
+			SELECT id, occurred_at, actor_type, COALESCE(actor_id::text,''), COALESCE(actor_email,''),
+				COALESCE(ip::text,''), action, COALESCE(resource_type,''), COALESCE(resource_id,''),
+				details, prev_hash, hash
+			FROM audit_logs WHERE id > $1 ORDER BY id ASC LIMIT 1000`, cursor)
+		if err != nil {
+			return 0, -1, err
+		}
+		var batch []AuditLog
+		for rows.Next() {
+			var entry AuditLog
+			var details []byte
+			if err := rows.Scan(&entry.ID, &entry.OccurredAt, &entry.ActorType, &entry.ActorID.UUID,
+				&entry.ActorEmail.String, &entry.IP.String, &entry.Action, &entry.ResourceType.String,
+				&entry.ResourceID.String, &details, &entry.PrevHash, &entry.Hash); err != nil {
+				rows.Close()
+				return 0, -1, err
+			}
+			_ = json.Unmarshal(details, &entry.Details)
+			entry.ActorID.Valid = entry.ActorID.UUID != uuid.Nil
+			batch = append(batch, entry)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, -1, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, entry := range batch {
+			recomputed := auditHash(prevHash, entry)
+			if entry.PrevHash != expected || recomputed != entry.Hash {
+				broken = seen
+				return count, broken, nil
+			}
+			prevHash = entry.Hash
+			expected = entry.Hash
+			cursor = entry.ID
+			seen++
+		}
+	}
+	return count, broken, nil
 }
 
 // Metrics returns a compact operational summary.
@@ -4155,48 +4711,866 @@ func (s *Store) Metrics(ctx context.Context) (Metrics, error) {
 	return metrics, err
 }
 
-// PurgeBefore removes demo personal data and operational records older than the cutoff.
-func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (int64, error) {
-	tx, err := s.pool.Begin(ctx)
+// LegalHold is one retention-exempt subject (C29). While a hold is active the
+// purge worker never archives or deletes that subject.
+type LegalHold struct {
+	ID          int64
+	SubjectType string
+	SubjectID   string
+	Reason      string
+	CreatedBy   string
+	CreatedAt   time.Time
+	ExpiresAt   *time.Time
+}
+
+// AddLegalHold freezes a subject so retention never purges it. A NULL
+// expiresAt means the hold is indefinite.
+func (s *Store) AddLegalHold(ctx context.Context, subjectType, subjectID, reason, createdBy string, expiresAt *time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO legal_holds(subject_type, subject_id, reason, created_by, expires_at)
+		VALUES($1,$2,$3,$4,$5)
+		ON CONFLICT (subject_type, subject_id)
+		DO UPDATE SET reason=EXCLUDED.reason, expires_at=EXCLUDED.expires_at`,
+		subjectType, subjectID, reason, createdBy, expiresAt)
+	return err
+}
+
+// RemoveLegalHold clears a freeze so normal retention applies again.
+func (s *Store) RemoveLegalHold(ctx context.Context, subjectType, subjectID string) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM legal_holds WHERE subject_type=$1 AND subject_id=$2`, subjectType, subjectID)
+	return err
+}
+
+// ListLegalHolds returns every active hold, newest first.
+func (s *Store) ListLegalHolds(ctx context.Context) ([]LegalHold, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, subject_type, subject_id, reason, created_by, created_at, expires_at
+		FROM legal_holds
+		WHERE expires_at IS NULL OR expires_at > now()
+		ORDER BY created_at DESC`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `DELETE FROM admin_sessions WHERE expires_at < now()`); err != nil {
-		return 0, err
+	defer rows.Close()
+	var holds []LegalHold
+	for rows.Next() {
+		var h LegalHold
+		if err := rows.Scan(&h.ID, &h.SubjectType, &h.SubjectID, &h.Reason, &h.CreatedBy, &h.CreatedAt, &h.ExpiresAt); err != nil {
+			return nil, err
+		}
+		holds = append(holds, h)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM email_verification_codes WHERE expires_at < now() OR created_at < $1`, cutoff); err != nil {
-		return 0, err
+	return holds, rows.Err()
+}
+
+// ArchiveLedgerEntry is one append-only snapshot of a record removed by retention.
+type ArchiveLedgerEntry struct {
+	ID         int64
+	ArchivedAt time.Time
+	RecordType string
+	SubjectID  string
+	Payload    map[string]any
+	PrevHash   string
+	Hash       string
+}
+
+// ListArchiveLedger returns recent archived snapshots, newest first.
+func (s *Store) ListArchiveLedger(ctx context.Context, limit int) ([]ArchiveLedgerEntry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM webhook_deliveries WHERE received_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM inbound_messages WHERE received_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM conversation_sessions WHERE expires_at < now() OR updated_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM message_outbox WHERE created_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM sms_requests WHERE received_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM data_orders WHERE created_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx, `DELETE FROM payments WHERE created_at < $1`, cutoff); err != nil {
-		return 0, err
-	}
-	tag, err := tx.Exec(ctx, `
-		DELETE FROM users u
-		WHERE u.updated_at < $1
-		  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id=u.id)`, cutoff)
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, archived_at, record_type, subject_id, payload, prev_hash, hash
+		FROM archive_ledger ORDER BY id DESC LIMIT $1`, limit)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return tag.RowsAffected(), tx.Commit(ctx)
+	defer rows.Close()
+	var entries []ArchiveLedgerEntry
+	for rows.Next() {
+		var e ArchiveLedgerEntry
+		var payload []byte
+		if err := rows.Scan(&e.ID, &e.ArchivedAt, &e.RecordType, &e.SubjectID, &payload, &e.PrevHash, &e.Hash); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(payload, &e.Payload)
+		if e.Payload == nil {
+			e.Payload = map[string]any{}
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+// purgeBatch deletes up to limit rows from table ordered by keyColumn and
+// matching the predicate (a WHERE fragment). Returns rows removed. Designed so
+// retention never holds a table-wide lock for long.
+func (s *Store) purgeBatch(ctx context.Context, table, keyColumn, predicate string, limit int, args ...any) (int64, error) {
+	var total int64
+	for {
+		q := fmt.Sprintf(`DELETE FROM %s WHERE %s IN (
+			SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT %d)`,
+			table, keyColumn, keyColumn, table, predicate, keyColumn, limit)
+		tag, err := s.pool.Exec(ctx, q, args...)
+		if err != nil {
+			return total, err
+		}
+		n := tag.RowsAffected()
+		total += n
+		if n < int64(limit) {
+			break
+		}
+	}
+	return total, nil
+}
+
+// archiveHash chains an archive snapshot to its predecessor, mirroring the
+// audit log's tamper-evident scheme.
+func archiveHash(prevHash, recordType, subjectID string, payload []byte) string {
+	sum := sha256.Sum256([]byte(prevHash + "|" + recordType + "|" + subjectID + "|" + string(payload)))
+	return hex.EncodeToString(sum[:])
+}
+
+// appendArchive writes one immutable snapshot into archive_ledger. The insert
+// is serialized on the tail row so the hash chain cannot fork.
+func (s *Store) appendArchive(ctx context.Context, tx pgx.Tx, recordType, subjectID string, payload []byte) error {
+	var prevHash string
+	if err := tx.QueryRow(ctx, `SELECT hash FROM archive_ledger ORDER BY id DESC LIMIT 1 FOR UPDATE`).Scan(&prevHash); err != nil && err != pgx.ErrNoRows {
+		return err
+	}
+	hash := archiveHash(prevHash, recordType, subjectID, payload)
+	_, err := tx.Exec(ctx, `
+		INSERT INTO archive_ledger(record_type, subject_id, payload, prev_hash, hash)
+		VALUES($1,$2,$3,$4,$5)`, recordType, subjectID, payload, prevHash, hash)
+	return err
+}
+
+// archivedSubject returns true when a legal hold covers a subject, so the purge
+// worker skips it.
+func (s *Store) archivedSubject(ctx context.Context, tx pgx.Tx, subjectType, subjectID string) (bool, error) {
+	var found bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM legal_holds
+			WHERE subject_type=$1 AND subject_id=$2 AND (expires_at IS NULL OR expires_at > now())
+		)`, subjectType, subjectID).Scan(&found)
+	return found, err
+}
+
+// PurgeReport summarizes one retention run.
+type PurgeReport struct {
+	UsersPurged       int64
+	PaymentsArchived  int64
+	PaymentsPurged    int64
+	InvoicesArchived  int64
+	InvoicesPurged    int64
+	ThriftPurged      int64
+	OperationalPurged int64
+	AuditArchived     int64
+	AuditPurged       int64
+	RowsSkippedByHold int64
+}
+
+// PurgeBefore removes demo personal data and operational records older than
+// the cutoff. Financial records (payments, invoices, thrift) are snapshotted
+// into the append-only archive ledger BEFORE they are hard-deleted, so MLPA
+// record keeping survives retention. Every delete is batched (keyset, LIMIT)
+// and legal holds are respected at the user and record level.
+func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport, error) {
+	var report PurgeReport
+	batch := 500
+
+	holds, err := s.ListLegalHolds(ctx)
+	if err != nil {
+		return report, err
+	}
+	report.RowsSkippedByHold = int64(len(holds))
+
+	// Expired sessions, tokens and verification codes.
+	if _, err := s.purgeBatch(ctx, "admin_sessions", "token_hash", `expires_at < now()`, batch); err != nil {
+		return report, err
+	}
+	if _, err := s.purgeBatch(ctx, "merchant_sessions", "token_hash", `expires_at < now()`, batch); err != nil {
+		return report, err
+	}
+	if _, err := s.purgeBatch(ctx, "totp_pending_logins", "token_hash", `expires_at < now()`, batch); err != nil {
+		return report, err
+	}
+	if _, err := s.purgeBatch(ctx, "merchant_password_reset_tokens", "token_hash", `expires_at < now()`, batch); err != nil {
+		return report, err
+	}
+	if _, err := s.purgeBatch(ctx, "email_verification_codes", "id", `expires_at < now() OR created_at < $1`, batch, cutoff); err != nil {
+		return report, err
+	}
+	if _, err := s.purgeBatch(ctx, "conversation_sessions", "user_id", `expires_at < now() OR updated_at < $1`, batch, cutoff); err != nil {
+		return report, err
+	}
+
+	// Operational chat/webhook/sms data.
+	for _, t := range []struct {
+		table, key, pred string
+	}{
+		{"webhook_deliveries", "id", `received_at < $1`},
+		{"inbound_messages", "provider_message_id", `received_at < $1`},
+		{"message_outbox", "id", `created_at < $1`},
+		{"sms_requests", "provider_message_id", `received_at < $1`},
+		{"merchant_registrations", "id", `created_at < $1`},
+	} {
+		n, err := s.purgeBatch(ctx, t.table, t.key, t.pred, batch, cutoff)
+		if err != nil {
+			return report, err
+		}
+		report.OperationalPurged += n
+	}
+
+	// Financial records: archive first, then hard-delete in batches.
+	paymentsArchived, paymentsPurged, err := s.archiveAndPurgePayments(ctx, cutoff)
+	if err != nil {
+		return report, err
+	}
+	report.PaymentsArchived = paymentsArchived
+	report.PaymentsPurged = paymentsPurged
+
+	invoicesArchived, invoicesPurged, err := s.archiveAndPurgeInvoices(ctx, cutoff)
+	if err != nil {
+		return report, err
+	}
+	report.InvoicesArchived = invoicesArchived
+	report.InvoicesPurged = invoicesPurged
+
+	thriftPurged, err := s.archiveAndPurgeThrift(ctx, cutoff)
+	if err != nil {
+		return report, err
+	}
+	report.ThriftPurged = thriftPurged
+
+	// Data orders reference payments (SET NULL on delete) and users (cascade).
+	n, err := s.purgeBatch(ctx, "data_orders", "id", `created_at < $1`, batch, cutoff)
+	if err != nil {
+		return report, err
+	}
+	report.OperationalPurged += n
+
+	auditArchived, auditPurged, err := s.archiveAndPurgeAudit(ctx, cutoff)
+	if err != nil {
+		return report, err
+	}
+	report.AuditArchived = auditArchived
+	report.AuditPurged = auditPurged
+
+	// Users: only those inactive beyond the cutoff with no financial footprint
+	// and no active legal hold. Everything else cascades or is skipped.
+	for {
+		var id uuid.UUID
+		err := s.pool.QueryRow(ctx, `
+			SELECT u.id FROM users u
+			WHERE u.updated_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.user_id=u.id)
+			  AND NOT EXISTS (SELECT 1 FROM invoices i WHERE i.created_by_user_id=u.id)
+			  AND NOT EXISTS (SELECT 1 FROM thrift_groups tg WHERE tg.creator_user_id=u.id)
+			  AND NOT EXISTS (SELECT 1 FROM thrift_members tm WHERE tm.user_id=u.id)
+			  AND NOT EXISTS (SELECT 1 FROM merchant_owners mo WHERE mo.user_id=u.id)
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='user' AND h.subject_id=u.id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			ORDER BY u.id LIMIT 1`, cutoff).Scan(&id)
+		if err == pgx.ErrNoRows {
+			break
+		}
+		if err != nil {
+			return report, err
+		}
+		tag, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
+		if err != nil {
+			return report, err
+		}
+		if tag.RowsAffected() == 0 {
+			break
+		}
+		report.UsersPurged++
+	}
+	return report, nil
+}
+
+// archiveAndPurgePayments snapshots payments (and their events) into the ledger
+// before deleting them, skipping anything under a legal hold.
+func (s *Store) archiveAndPurgePayments(ctx context.Context, cutoff time.Time) (int64, int64, error) {
+	var archived, purged int64
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return archived, purged, err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT p.id FROM payments p
+			WHERE p.created_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='payment' AND h.subject_id=p.id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='user' AND h.subject_id=p.user_id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			ORDER BY p.id LIMIT 100`, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if len(ids) == 0 {
+			_ = tx.Commit(ctx)
+			break
+		}
+		for _, id := range ids {
+			payload, err := paymentArchivePayload(ctx, tx, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			if err := s.appendArchive(ctx, tx, "payment", id.String(), payload); err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM payments WHERE id = ANY($1)`, ids)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return archived, purged, err
+		}
+		archived += int64(len(ids))
+		purged += tag.RowsAffected()
+	}
+	return archived, purged, nil
+}
+
+// archiveAndPurgeInvoices snapshots invoices (items + payments) before deleting.
+func (s *Store) archiveAndPurgeInvoices(ctx context.Context, cutoff time.Time) (int64, int64, error) {
+	var archived, purged int64
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return archived, purged, err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT i.id FROM invoices i
+			WHERE i.created_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='invoice' AND h.subject_id=i.id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='user' AND h.subject_id=i.created_by_user_id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			ORDER BY i.id LIMIT 100`, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if len(ids) == 0 {
+			_ = tx.Commit(ctx)
+			break
+		}
+		for _, id := range ids {
+			payload, err := invoiceArchivePayload(ctx, tx, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			if err := s.appendArchive(ctx, tx, "invoice", id.String(), payload); err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM invoices WHERE id = ANY($1)`, ids)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return archived, purged, err
+		}
+		archived += int64(len(ids))
+		purged += tag.RowsAffected()
+	}
+	return archived, purged, nil
+}
+
+// archiveAndPurgeThrift archives completed/cancelled thrift groups with their
+// cycles, memberships, contributions and payouts, then deletes them.
+func (s *Store) archiveAndPurgeThrift(ctx context.Context, cutoff time.Time) (int64, error) {
+	var purged int64
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return purged, err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT tg.id FROM thrift_groups tg
+			WHERE tg.status IN ('completed','cancelled')
+			  AND tg.updated_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='thrift_group' AND h.subject_id=tg.id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='user' AND h.subject_id=tg.creator_user_id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			ORDER BY tg.id LIMIT 100`, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return purged, err
+		}
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				_ = tx.Rollback(ctx)
+				return purged, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = tx.Rollback(ctx)
+			return purged, err
+		}
+		if len(ids) == 0 {
+			_ = tx.Commit(ctx)
+			break
+		}
+		for _, id := range ids {
+			payload, err := thriftArchivePayload(ctx, tx, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return purged, err
+			}
+			if err := s.appendArchive(ctx, tx, "thrift_group", id.String(), payload); err != nil {
+				_ = tx.Rollback(ctx)
+				return purged, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM thrift_groups WHERE id = ANY($1)`, ids)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return purged, err
+		}
+		purged += tag.RowsAffected()
+	}
+	return purged, nil
+}
+
+// archiveAndPurgeAudit snapshots audit rows older than the cutoff into the
+// ledger, then purges them from the live (append-only) table. The append-only
+// trigger is briefly disabled for the purge and re-enabled afterwards; the new
+// head row is re-rooted so the retained chain still verifies.
+func (s *Store) archiveAndPurgeAudit(ctx context.Context, cutoff time.Time) (int64, int64, error) {
+	var archived, purged int64
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return archived, purged, err
+		}
+		if _, err := tx.Exec(ctx, `ALTER TABLE audit_logs DISABLE TRIGGER ALL`); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM audit_logs
+			WHERE occurred_at < $1
+			ORDER BY id LIMIT 500`, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if len(ids) == 0 {
+			if _, err := tx.Exec(ctx, `ALTER TABLE audit_logs ENABLE TRIGGER ALL`); err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			_ = tx.Commit(ctx)
+			break
+		}
+		for _, id := range ids {
+			payload, err := auditArchivePayload(ctx, tx, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			if err := s.appendArchive(ctx, tx, "audit", fmt.Sprintf("%d", id), payload); err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM audit_logs WHERE id = ANY($1)`, ids)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if err := rerootAuditChain(ctx, tx); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if _, err := tx.Exec(ctx, `ALTER TABLE audit_logs ENABLE TRIGGER ALL`); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return archived, purged, err
+		}
+		archived += int64(len(ids))
+		purged += tag.RowsAffected()
+	}
+	return archived, purged, nil
+}
+
+// rerootAuditChain points the first remaining audit row at an empty predecessor
+// so VerifyAuditChain still passes after the oldest entries were purged.
+func rerootAuditChain(ctx context.Context, tx pgx.Tx) error {
+	var id int64
+	err := tx.QueryRow(ctx, `SELECT id FROM audit_logs ORDER BY id ASC LIMIT 1`).Scan(&id)
+	if err == pgx.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var entry AuditLog
+	var details []byte
+	if err := tx.QueryRow(ctx, `
+		SELECT occurred_at, actor_type, COALESCE(actor_id::text,''), COALESCE(actor_email,''),
+		       COALESCE(ip::text,''), action, COALESCE(resource_type,''), COALESCE(resource_id,''),
+		       details
+		FROM audit_logs WHERE id=$1`, id).Scan(
+		&entry.OccurredAt, &entry.ActorType, &entry.ActorID.UUID, &entry.ActorEmail.String,
+		&entry.IP.String, &entry.Action, &entry.ResourceType.String, &entry.ResourceID.String,
+		&details); err != nil {
+		return err
+	}
+	_ = json.Unmarshal(details, &entry.Details)
+	entry.ActorID.Valid = entry.ActorID.UUID != uuid.Nil
+	entry.ActorEmail.Valid = entry.ActorEmail.String != ""
+	entry.IP.Valid = entry.IP.String != ""
+	entry.ResourceType.Valid = entry.ResourceType.String != ""
+	entry.ResourceID.Valid = entry.ResourceID.String != ""
+	hash := auditHash("", entry)
+	_, err = tx.Exec(ctx, `UPDATE audit_logs SET prev_hash='', hash=$2 WHERE id=$1`, id, hash)
+	return err
+}
+
+// paymentArchivePayload builds the ledger snapshot for a payment and its events.
+func paymentArchivePayload(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]byte, error) {
+	var p domain.Payment
+	var paidAt *time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT id, user_id, merchant_id, amount_kobo, currency, status, provider,
+		       provider_reference, channel, recipient, checkout_url, receipt_token,
+		       failure_reason, created_at, updated_at, paid_at
+		FROM payments WHERE id=$1`, id).Scan(
+		&p.ID, &p.UserID, &p.MerchantID, &p.AmountKobo, &p.Currency, &p.Status, &p.Provider,
+		&p.ProviderReference, &p.Channel, &p.Recipient, &p.CheckoutURL, &p.ReceiptToken,
+		&p.FailureReason, &p.CreatedAt, &p.UpdatedAt, &paidAt)
+	if err != nil {
+		return nil, err
+	}
+	if paidAt != nil {
+		p.PaidAt = paidAt
+	}
+	events, err := paymentEventsPayload(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{"payment": p, "events": events})
+}
+
+func paymentEventsPayload(ctx context.Context, tx pgx.Tx, paymentID uuid.UUID) ([]map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT from_status, to_status, source, detail, created_at
+		FROM payment_events WHERE payment_id=$1 ORDER BY id`, paymentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []map[string]any
+	for rows.Next() {
+		var from, to, source string
+		var detail []byte
+		var createdAt time.Time
+		if err := rows.Scan(&from, &to, &source, &detail, &createdAt); err != nil {
+			return nil, err
+		}
+		var details map[string]any
+		_ = json.Unmarshal(detail, &details)
+		events = append(events, map[string]any{
+			"from_status": from, "to_status": to, "source": source, "detail": details, "created_at": createdAt,
+		})
+	}
+	return events, rows.Err()
+}
+
+func invoiceArchivePayload(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]byte, error) {
+	var (
+		invoiceID, merchantID, createdBy uuid.UUID
+		customerPhone, customerEmail     string
+		reference, status                string
+		deliveryFee, subtotal, total     int64
+		amountPaid                       int64
+		dueAt, paidAt                    *time.Time
+		createdAt, updatedAt             time.Time
+	)
+	if err := tx.QueryRow(ctx, `
+		SELECT id, merchant_id, created_by_user_id, customer_whatsapp_number, customer_email,
+		       reference, status, delivery_fee_kobo, subtotal_kobo, total_kobo, amount_paid_kobo,
+		       due_at, created_at, updated_at, paid_at
+		FROM invoices WHERE id=$1`, id).Scan(
+		&invoiceID, &merchantID, &createdBy, &customerPhone, &customerEmail,
+		&reference, &status, &deliveryFee, &subtotal, &total, &amountPaid,
+		&dueAt, &createdAt, &updatedAt, &paidAt); err != nil {
+		return nil, err
+	}
+	items, err := invoiceItemsPayload(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	payments, err := invoicePaymentsPayload(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"invoice": map[string]any{
+			"id": invoiceID, "merchant_id": merchantID, "created_by_user_id": createdBy,
+			"customer_whatsapp_number": customerPhone, "customer_email": customerEmail,
+			"reference": reference, "status": status, "delivery_fee_kobo": deliveryFee,
+			"subtotal_kobo": subtotal, "total_kobo": total, "amount_paid_kobo": amountPaid,
+			"due_at": dueAt, "created_at": createdAt, "updated_at": updatedAt, "paid_at": paidAt,
+		},
+		"items": items, "invoice_payments": payments,
+	})
+}
+
+func invoiceItemsPayload(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUID) ([]map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT description, quantity, unit_price_kobo, line_total_kobo, sort_order
+		FROM invoice_items WHERE invoice_id=$1 ORDER BY sort_order`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []map[string]any
+	for rows.Next() {
+		var description string
+		var quantity, unitPrice, lineTotal int64
+		var sortOrder int
+		if err := rows.Scan(&description, &quantity, &unitPrice, &lineTotal, &sortOrder); err != nil {
+			return nil, err
+		}
+		items = append(items, map[string]any{
+			"description": description, "quantity": quantity,
+			"unit_price_kobo": unitPrice, "line_total_kobo": lineTotal, "sort_order": sortOrder,
+		})
+	}
+	return items, rows.Err()
+}
+
+func invoicePaymentsPayload(ctx context.Context, tx pgx.Tx, invoiceID uuid.UUID) ([]map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, payment_id, payer_user_id, amount_kobo, status, created_at, updated_at
+		FROM invoice_payments WHERE invoice_id=$1 ORDER BY created_at`, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var payments []map[string]any
+	for rows.Next() {
+		var id, paymentID, payerID uuid.UUID
+		var amount int64
+		var status string
+		var createdAt, updatedAt time.Time
+		if err := rows.Scan(&id, &paymentID, &payerID, &amount, &status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		payments = append(payments, map[string]any{
+			"id": id, "payment_id": paymentID, "payer_user_id": payerID,
+			"amount_kobo": amount, "status": status, "created_at": createdAt, "updated_at": updatedAt,
+		})
+	}
+	return payments, rows.Err()
+}
+
+func thriftArchivePayload(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) ([]byte, error) {
+	var (
+		id, creatorUserID uuid.UUID
+		name              string
+		amountKobo        int64
+		frequency         string
+		targetMembers     int
+		inviteCode        string
+		status            string
+		currentCycle      int
+		activatedAt       *time.Time
+		completedAt       *time.Time
+		cancelledAt       *time.Time
+		createdAt         time.Time
+		updatedAt         time.Time
+	)
+	if err := tx.QueryRow(ctx, `
+		SELECT id, creator_user_id, name, contribution_amount_kobo, frequency, target_member_count,
+		       invite_code, status, current_cycle, created_at, updated_at, activated_at, completed_at, cancelled_at
+		FROM thrift_groups WHERE id=$1`, groupID).Scan(
+		&id, &creatorUserID, &name, &amountKobo, &frequency, &targetMembers,
+		&inviteCode, &status, &currentCycle, &createdAt, &updatedAt, &activatedAt, &completedAt, &cancelledAt); err != nil {
+		return nil, err
+	}
+	members, err := thriftMembersPayload(ctx, tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	cycles, err := thriftCyclesPayload(ctx, tx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"thrift_group": map[string]any{
+			"id": id, "creator_user_id": creatorUserID, "name": name,
+			"contribution_amount_kobo": amountKobo, "frequency": frequency, "target_member_count": targetMembers,
+			"invite_code": inviteCode, "status": status, "current_cycle": currentCycle,
+			"created_at": createdAt, "updated_at": updatedAt,
+			"activated_at": activatedAt, "completed_at": completedAt, "cancelled_at": cancelledAt,
+		},
+		"members": members,
+		"cycles":  cycles,
+	})
+}
+
+func thriftMembersPayload(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) ([]map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, user_id, status, payout_position, joined_at, confirmed_at, removed_at
+		FROM thrift_members WHERE group_id=$1 ORDER BY joined_at`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []map[string]any
+	for rows.Next() {
+		var id, userID uuid.UUID
+		var status string
+		var position *int
+		var joinedAt, confirmedAt time.Time
+		var removedAt *time.Time
+		if err := rows.Scan(&id, &userID, &status, &position, &joinedAt, &confirmedAt, &removedAt); err != nil {
+			return nil, err
+		}
+		members = append(members, map[string]any{
+			"id": id, "user_id": userID, "status": status, "payout_position": position,
+			"joined_at": joinedAt, "confirmed_at": confirmedAt, "removed_at": removedAt,
+		})
+	}
+	return members, rows.Err()
+}
+
+func thriftCyclesPayload(ctx context.Context, tx pgx.Tx, groupID uuid.UUID) ([]map[string]any, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT c.id, c.cycle_number, c.due_at, c.payout_member_id, c.status,
+		       (SELECT json_agg(cc) FROM (
+		           SELECT id, member_id, payment_id, amount_kobo, status, paid_at, created_at, updated_at
+		           FROM thrift_contributions WHERE cycle_id=c.id
+		         ) cc),
+		       (SELECT json_agg(pp) FROM (
+		           SELECT id, payout_member_id, amount_kobo, status, completed_at, created_at, updated_at
+		           FROM thrift_payouts WHERE cycle_id=c.id
+		         ) pp)
+		FROM thrift_cycles c WHERE c.group_id=$1 ORDER BY c.cycle_number`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cycles []map[string]any
+	for rows.Next() {
+		var id, payoutMemberID uuid.UUID
+		var cycleNumber int
+		var dueAt time.Time
+		var status string
+		var contributions, payouts []byte
+		if err := rows.Scan(&id, &cycleNumber, &dueAt, &payoutMemberID, &status, &contributions, &payouts); err != nil {
+			return nil, err
+		}
+		var contributionsAny, payoutsAny any
+		if contributions != nil {
+			_ = json.Unmarshal(contributions, &contributionsAny)
+		}
+		if payouts != nil {
+			_ = json.Unmarshal(payouts, &payoutsAny)
+		}
+		cycles = append(cycles, map[string]any{
+			"id": id, "cycle_number": cycleNumber, "due_at": dueAt,
+			"payout_member_id": payoutMemberID, "status": status,
+			"contributions": contributionsAny, "payouts": payoutsAny,
+		})
+	}
+	return cycles, rows.Err()
+}
+
+func auditArchivePayload(ctx context.Context, tx pgx.Tx, id int64) ([]byte, error) {
+	var entry AuditLog
+	var details []byte
+	err := tx.QueryRow(ctx, `
+		SELECT occurred_at, actor_type, COALESCE(actor_id::text,''), COALESCE(actor_email,''),
+		       COALESCE(ip::text,''), action, COALESCE(resource_type,''), COALESCE(resource_id,''),
+		       details, prev_hash, hash
+		FROM audit_logs WHERE id=$1`, id).Scan(
+		&entry.OccurredAt, &entry.ActorType, &entry.ActorID.UUID, &entry.ActorEmail.String,
+		&entry.IP.String, &entry.Action, &entry.ResourceType.String, &entry.ResourceID.String,
+		&details, &entry.PrevHash, &entry.Hash)
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal(details, &entry.Details)
+	entry.ActorID.Valid = entry.ActorID.UUID != uuid.Nil
+	entry.ActorEmail.Valid = entry.ActorEmail.String != ""
+	entry.IP.Valid = entry.IP.String != ""
+	entry.ResourceType.Valid = entry.ResourceType.String != ""
+	entry.ResourceID.Valid = entry.ResourceID.String != ""
+	return json.Marshal(entry)
 }
 
 func truncate(value string, limit int) string {
@@ -4309,9 +5683,13 @@ func (s *Store) MerchantOwnerID(ctx context.Context, merchantID uuid.UUID) (uuid
 // CreateMerchantSession stores a hashed session token and returns the raw token.
 func (s *Store) CreateMerchantSession(ctx context.Context, merchantID, userID uuid.UUID, token, csrf string, expiresAt time.Time) error {
 	hash := sha256.Sum256([]byte(token))
-	_, err := s.pool.Exec(ctx, `
+	sealedCSRF, err := s.sealValue([]byte(csrf))
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO merchant_sessions(token_hash,merchant_id,user_id,csrf_token,expires_at)
-		VALUES($1,$2,$3,$4,$5)`, hash[:], merchantID, userID, csrf, expiresAt)
+		VALUES($1,$2,$3,$4,$5)`, hash[:], merchantID, userID, sealedCSRF, expiresAt)
 	return err
 }
 
@@ -4319,11 +5697,18 @@ func (s *Store) CreateMerchantSession(ctx context.Context, merchantID, userID uu
 func (s *Store) ValidateMerchantSession(ctx context.Context, token string) (uuid.UUID, uuid.UUID, string, error) {
 	hash := sha256.Sum256([]byte(token))
 	var merchantID, userID uuid.UUID
-	var csrf string
+	var sealedCSRF string
 	err := s.pool.QueryRow(ctx, `
 		SELECT merchant_id,user_id,csrf_token FROM merchant_sessions
-		WHERE token_hash=$1 AND expires_at > now()`, hash[:]).Scan(&merchantID, &userID, &csrf)
-	return merchantID, userID, csrf, err
+		WHERE token_hash=$1 AND expires_at > now()`, hash[:]).Scan(&merchantID, &userID, &sealedCSRF)
+	if err != nil {
+		return merchantID, userID, "", err
+	}
+	raw, err := s.openValue(sealedCSRF)
+	if err != nil {
+		return merchantID, userID, "", err
+	}
+	return merchantID, userID, string(raw), nil
 }
 
 // DeleteMerchantSession invalidates one merchant login.
@@ -4331,6 +5716,98 @@ func (s *Store) DeleteMerchantSession(ctx context.Context, token string) error {
 	hash := sha256.Sum256([]byte(token))
 	_, err := s.pool.Exec(ctx, `DELETE FROM merchant_sessions WHERE token_hash=$1`, hash[:])
 	return err
+}
+
+// GetTOTPSecret returns the stored encrypted TOTP secret for a scope/subject.
+// Admin rows use a NULL subject_id; merchant rows carry the merchant UUID.
+func (s *Store) GetTOTPSecret(ctx context.Context, scope string, subjectID *uuid.UUID) ([]byte, error) {
+	var cipher []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT secret_cipher FROM totp_secrets
+		WHERE scope=$1 AND subject_id IS NOT DISTINCT FROM $2`, scope, subjectID).Scan(&cipher)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return cipher, err
+}
+
+// SetTOTPSecret upserts the encrypted TOTP secret for a scope/subject. Admin
+// rows have a NULL subject_id and are deduplicated by the partial unique index
+// totp_secrets_admin_one, which ON CONFLICT must target explicitly because
+// NULLs never conflict on the plain unique constraint.
+func (s *Store) SetTOTPSecret(ctx context.Context, scope string, subjectID *uuid.UUID, cipher []byte) error {
+	if subjectID == nil {
+		_, err := s.pool.Exec(ctx, `
+			INSERT INTO totp_secrets(scope, subject_id, secret_cipher)
+			VALUES($1, NULL, $2)
+			ON CONFLICT (scope) WHERE scope='admin' AND subject_id IS NULL
+			DO UPDATE SET secret_cipher=EXCLUDED.secret_cipher, updated_at=now()`,
+			scope, cipher)
+		return err
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO totp_secrets(scope, subject_id, secret_cipher)
+		VALUES($1, $2, $3)
+		ON CONFLICT (scope, subject_id) DO UPDATE SET secret_cipher=EXCLUDED.secret_cipher, updated_at=now()`,
+		scope, subjectID, cipher)
+	return err
+}
+
+// DeleteTOTPSecret removes the TOTP secret for a scope/subject (MFA reset).
+func (s *Store) DeleteTOTPSecret(ctx context.Context, scope string, subjectID *uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		DELETE FROM totp_secrets WHERE scope=$1 AND subject_id IS NOT DISTINCT FROM $2`, scope, subjectID)
+	return err
+}
+
+// CreateTOTPPendingLogin stores a hashed pending-login token issued after a
+// successful password check. secretCipher is the encrypted enrollment secret,
+// or nil when only code verification is pending.
+func (s *Store) CreateTOTPPendingLogin(ctx context.Context, tokenHash []byte, scope string, subjectID *uuid.UUID, secretCipher []byte, expiresAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO totp_pending_logins(token_hash, scope, subject_id, secret_cipher, expires_at)
+		VALUES($1,$2,$3,$4,$5)`, tokenHash, scope, subjectID, secretCipher, expiresAt)
+	return err
+}
+
+// GetTOTPPendingLogin reads a pending login without consuming it, so a page
+// refresh can still render the QR code. The caller must still consume the
+// pending login before issuing a session.
+func (s *Store) GetTOTPPendingLogin(ctx context.Context, tokenHash []byte) (scope string, subjectID *uuid.UUID, secretCipher []byte, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT scope, subject_id, secret_cipher FROM totp_pending_logins
+		WHERE token_hash=$1 AND expires_at > now()`, tokenHash).Scan(&scope, &subjectID, &secretCipher)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, nil, false, nil
+	}
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+	return scope, subjectID, secretCipher, true, nil
+}
+
+// ConsumeTOTPPendingLogin reads and deletes a pending login in one step.
+// Returns the encrypted enrollment secret (nil when code-only) and whether a
+// pending login existed at all.
+func (s *Store) ConsumeTOTPPendingLogin(ctx context.Context, tokenHash []byte) (scope string, subjectID *uuid.UUID, secretCipher []byte, found bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+	defer tx.Rollback(ctx)
+	err = tx.QueryRow(ctx, `
+		SELECT scope, subject_id, secret_cipher FROM totp_pending_logins
+		WHERE token_hash=$1 AND expires_at > now()`, tokenHash).Scan(&scope, &subjectID, &secretCipher)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, nil, false, tx.Commit(ctx)
+	}
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM totp_pending_logins WHERE token_hash=$1`, tokenHash); err != nil {
+		return "", nil, nil, false, err
+	}
+	return scope, subjectID, secretCipher, true, tx.Commit(ctx)
 }
 
 // CreateMerchantPasswordResetToken stores a hashed one-time token for the merchant to set their password.
@@ -4453,17 +5930,17 @@ type MerchantService struct {
 
 // ServicePurchaseView links a service purchase to a payment with customer info.
 type ServicePurchaseView struct {
-	ID            uuid.UUID
-	ServiceID     uuid.UUID
-	ServiceName   string
-	PaymentID     uuid.UUID
-	UserID        uuid.UUID
-	UserName      string
+	ID             uuid.UUID
+	ServiceID      uuid.UUID
+	ServiceName    string
+	PaymentID      uuid.UUID
+	UserID         uuid.UUID
+	UserName       string
 	WhatsAppNumber string
-	Quantity      int
-	UnitPriceKobo int64
-	TotalKobo     int64
-	CreatedAt     time.Time
+	Quantity       int
+	UnitPriceKobo  int64
+	TotalKobo      int64
+	CreatedAt      time.Time
 }
 
 // ServiceCustomField is a custom data field defined by a merchant for a service.
