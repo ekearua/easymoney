@@ -101,7 +101,71 @@ SMTP_PASSWORD=replace-me
 SMTP_FROM=hello@example.com
 ```
 
-For a local or investor-demo rehearsal before SMTP is ready, set `EMAIL_DEMO_CODE_IN_CHAT=true`. Do not use the chat fallback for production-like testing because it proves the flow, not email ownership.
+For a local or investor-demo rehearsal before SMTP is ready, set `EMAIL_DEMO_CODE_IN_CHAT=true`. Do not use the chat fallback for production-like testing because it proves the flow, not email ownership. The service refuses to start with `EMAIL_DEMO_CODE_IN_CHAT=true` when `APP_ENV=production`.
+
+### Two-factor authentication (admin & merchant login)
+
+Admin and merchant sign-in is two-step when TOTP is enabled: password first, then a 6-digit authenticator code. The first successful login after enabling enrolls the account and shows a QR code; the shared secret is stored AES-256-GCM encrypted (never in plaintext) and can be reset from the admin metrics page or merchant settings page.
+
+```env
+TOTP_ENABLED=true
+TOTP_ENCRYPTION_KEY=replace-with-64-hex-chars-32-bytes
+```
+
+`TOTP_ENABLED` defaults to on in production. `TOTP_ENCRYPTION_KEY` is a 32-byte key as 64 hex characters; generate one with `go run ./cmd/demo random-totp-key`. Production refuses to start with TOTP enabled but no valid key.
+
+### Admin console roles (RBAC)
+
+The admin console uses named accounts with roles instead of a single fixed admin. `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` bootstrap the primary `admin` account on `migrate` (and are re-synced at server start), and additional operators are managed at `/admin/admins`:
+
+- **admin** — full console control (payment terms, thrift payouts, scanning config, webhooks, TOTP reset, operator management)
+- **compliance** — read dashboards + approve merchant registrations
+- **support** — read dashboards + reset merchant passwords
+- **readonly** — view dashboards only
+
+Role checks are enforced by middleware on every admin route; disabled accounts are rejected at session validation.
+
+### Rate limiting
+
+Public and webhook endpoints are rate limited per client IP with fixed one-minute windows:
+
+- **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/paystack`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
+- **Public pages** (`/payments/return`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
+- **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
+
+When `REDIS_URL` is set, counters live in Redis (atomic, shared across replicas, keys expire per window). Without Redis, an in-memory limiter is used per process. If Redis becomes unreachable the limiter fails open and logs the error, so an unavailable cache never blocks payments.
+
+### Audit log
+
+Every privileged action (admin/merchant account changes, merchant approvals and terms, scanning service changes, TOTP enrollment/disable, thrift payouts) is written to `audit_logs` with the actor, IP, action, resource, and details. Rows are **hash-chained** (each row carries the SHA-256 of the previous row) and the database rejects updates and deletes via an append-only trigger, so retroactive edits are detectable. View the trail and its integrity status at `/admin/audit` (admin and compliance roles). If an audit write fails, the action still completes but an error is logged loudly.
+
+### Structured logging & error redaction
+
+Logs are emitted as JSON (`LOG_FORMAT=json`, default) or text (`LOG_FORMAT=text`), at `LOG_LEVEL` (default `info`). Every request gets a correlation ID (`X-Request-ID` header, echoed on responses) and every log record emitted while handling a request carries `request_id`; background workers log without it. Point log rotation at stdout with ~1 year retention.
+
+Provider error strings are sanitized before they are persisted or logged (`internal/redact`): API keys, bearer tokens, long high-entropy strings, card numbers, phone numbers, emails, and credentials embedded in URLs are masked, whitespace collapsed, and text truncated to 500 runes (300 in log records).
+
+### Encryption at rest
+
+Chat payloads (inbound messages and the outbox) and admin/merchant session CSRF tokens are sealed with AES-256-GCM (`internal/crypto`) before they hit the database, so raw message bodies and CSRF secrets never sit on disk in plaintext:
+
+```env
+DATA_ENCRYPTION_KEY=replace-with-64-hex-chars-32-bytes
+```
+
+`DATA_ENCRYPTION_KEY` is a 32-byte key as 64 hex characters; generate one with `go run ./cmd/demo random-data-key`. Production refuses to start without it; in development (without a key) values pass through unchanged so local iteration stays simple. Run `go run ./cmd/demo migrate` once after setting the key — migration 024 converts the chat payload columns to text and `EncryptLegacyAtRest` re-seals any existing plaintext rows in batches (also runs automatically at server start). Stored values carry an `enc:v1:` version prefix so keys can be rotated without a schema change. Session bearer tokens were already stored only as SHA-256 hashes. Searchable PII such as `users.email` intentionally remains plaintext so lookups keep working — protect those columns with PostgreSQL volume-level encryption at the filesystem layer.
+
+### Retention purge & legal holds
+
+The retention worker (`go run ./cmd/demo retain`, or every 24h at server start) enforces `RETENTION_PERIOD` (default 90 days). Deletes run in bounded batches (keyset `LIMIT 500`) so no table is locked in one giant transaction. Before financial records are hard-deleted they are snapshotted into an append-only **archive ledger** (`archive_ledger`, hash-chained and mutation-rejected like the audit log), so MLPA record keeping survives retention:
+
+- **Payments** (+ their `payment_events`) → archived, then deleted
+- **Invoices** (+ items + invoice payments) → archived, then deleted
+- **Completed/cancelled thrift groups** (+ members, cycles, contributions, payouts) → archived, then deleted
+- **Audit entries** older than the cutoff → archived, then purged; the retained chain is re-rooted so `/admin/audit` still verifies
+- Chat/webhook/sms rows, sessions, tokens and registration requests are deleted directly
+
+Legal holds freeze a subject so retention never touches it — for subpoenas, disputes, or investigations. Manage them at `/admin/legal-holds` (admin role). A hold can cover a `user`, `payment`, `invoice`, or `thrift_group`; holds on a user protect all their records. The purge skips anything with an active hold, and `/admin/archive` shows the immutable ledger of archived records. Holds and archive writes are themselves audited.
 
 ### WhatsApp Cloud API
 
@@ -203,10 +267,10 @@ Large VTPass catalogs are shown in chat as paged lists. Customers can select vis
 Optional VTPass callback URL:
 
 ```text
-https://<host>/webhooks/vtpass?secret=<VTPASS_WEBHOOK_SECRET>
+https://<host>/webhooks/vtpass
 ```
 
-If `VTPASS_WEBHOOK_SECRET` is set, Xego also accepts the same value in `X-VTPass-Webhook-Secret`. VTPass callbacks are recorded in `/admin/webhooks` and can mark pending data orders fulfilled or failed by provider reference/request id.
+If `VTPASS_WEBHOOK_SECRET` is set, Xego validates the `X-VTPass-Webhook-Secret` header (never a query parameter) against it. VTPass callbacks are recorded in `/admin/webhooks` and can mark pending data orders fulfilled or failed by provider reference/request id.
 
 ## Manual acceptance script
 
