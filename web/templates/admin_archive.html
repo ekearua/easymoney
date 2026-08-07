@@ -1,0 +1,24 @@
+{{define "admin_archive.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Retention</p><h1>Archive ledger</h1></div></header>
+
+<section class="panel">
+  <h2>Archived records</h2>
+  <p class="muted">Append-only snapshots of payments, invoices, thrift groups and audit entries removed by the retention worker. Rows are hash-chained and immutable — this satisfies MLPA record keeping.</p>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Record</th><th>Subject</th><th>Snapshot</th><th>Hash</th></tr></thead><tbody>
+  {{range .Entries}}<tr>
+    <td style="white-space:nowrap">{{.ArchivedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.RecordType}}</td>
+    <td class="mono">{{.SubjectID}}</td>
+    <td class="mono">{{printf "%v" .Payload}}</td>
+    <td class="mono" style="max-width:14em;overflow:hidden;text-overflow:ellipsis" title="{{.Hash}}">{{.Hash}}</td>
+  </tr>
+  {{else}}<tr><td colspan="5">Nothing archived yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

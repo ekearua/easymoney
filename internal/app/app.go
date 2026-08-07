@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -30,6 +31,7 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
@@ -37,8 +39,10 @@ import (
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/vtpass"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
+	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
+	"whatsapp-payment-demo/internal/totp"
 	"whatsapp-payment-demo/web"
 )
 
@@ -58,14 +62,19 @@ type App struct {
 	conversation *service.ConversationService
 	templates    *template.Template
 	limiter      *loginLimiter
+	rateLimiter  ratelimit.Limiter
+	rateClose    func() error
+	totpKey      []byte
 }
 
 // New creates all application dependencies.
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
+	logger = slog.New(logging.WithRequestID(logger.Handler()))
 	repository, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, err
 	}
+	repository.SetDataKey(cfg.DataEncryptionKey)
 	paystackClient := paystack.New(cfg.PaystackSecretKey, cfg.PaystackBaseURL)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
 	var telegramClient *telegram.Client
@@ -96,23 +105,70 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
+	var totpKey []byte
+	if cfg.TOTPEnabled {
+		totpKey, err = hex.DecodeString(cfg.TOTPEncryptionKey)
+		if err != nil {
+			repository.Close()
+			return nil, fmt.Errorf("decode TOTP_ENCRYPTION_KEY: %w", err)
+		}
+	}
+	var rateLimiter ratelimit.Limiter = ratelimit.NewMemory()
+	var rateClose func() error
+	if cfg.RedisURL != "" {
+		redisLimiter, err := ratelimit.OpenRedis(ctx, cfg.RedisURL, "xego:rl", logger)
+		if err != nil {
+			logger.Warn("redis unavailable; falling back to in-memory rate limiting", "error", err)
+		} else {
+			rateLimiter = redisLimiter
+			rateClose = redisLimiter.Close
+		}
+	}
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender),
-		templates:    templates, limiter: newLoginLimiter(),
+		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
+		rateLimiter: rateLimiter, rateClose: rateClose,
 	}, nil
 }
 
 // Close releases persistent resources.
 func (a *App) Close() {
+	if a.rateClose != nil {
+		_ = a.rateClose()
+	}
 	a.store.Close()
 }
 
-// Migrate applies the embedded PostgreSQL schema.
+// Migrate applies the embedded PostgreSQL schema and ensures the bootstrap
+// admin account exists.
 func (a *App) Migrate(ctx context.Context) error {
-	return a.store.Migrate(ctx)
+	if err := a.store.Migrate(ctx); err != nil {
+		return err
+	}
+	// After migration 024 moves payload columns to text, re-encrypt any rows
+	// that predate DATA_ENCRYPTION_KEY so nothing stays plaintext at rest.
+	if err := a.encryptLegacyAtRest(ctx); err != nil {
+		return err
+	}
+	if a.cfg.AdminPasswordHash != "" {
+		return a.store.EnsureAdminUser(ctx, a.cfg.AdminEmail, a.cfg.AdminPasswordHash)
+	}
+	return nil
+}
+
+// encryptLegacyAtRest seals plaintext chat payload rows and logs the count.
+func (a *App) encryptLegacyAtRest(ctx context.Context) error {
+	encrypted, err := a.store.EncryptLegacyAtRest(ctx)
+	if err != nil {
+		return fmt.Errorf("encrypt legacy rows: %w", err)
+	}
+	if encrypted > 0 {
+		a.logger.InfoContext(ctx, "encrypted legacy rows at rest", "count", encrypted)
+	}
+	return nil
 }
 
 // Seed refreshes the baseline merchant fixtures.
@@ -125,11 +181,21 @@ func (a *App) Reconcile(ctx context.Context) error {
 	return a.payments.Reconcile(ctx)
 }
 
-// PurgeExpiredData enforces the configured demo retention period.
+// PurgeExpiredData enforces the configured retention period.
 func (a *App) PurgeExpiredData(ctx context.Context) error {
-	count, err := a.store.PurgeBefore(ctx, time.Now().Add(-a.cfg.RetentionPeriod))
+	report, err := a.store.PurgeBefore(ctx, time.Now().Add(-a.cfg.RetentionPeriod))
 	if err == nil {
-		a.logger.Info("retention completed", "users_purged", count)
+		a.logger.InfoContext(ctx, "retention completed",
+			"users_purged", report.UsersPurged,
+			"payments_archived", report.PaymentsArchived,
+			"payments_purged", report.PaymentsPurged,
+			"invoices_archived", report.InvoicesArchived,
+			"invoices_purged", report.InvoicesPurged,
+			"thrift_purged", report.ThriftPurged,
+			"operational_purged", report.OperationalPurged,
+			"audit_archived", report.AuditArchived,
+			"audit_purged", report.AuditPurged,
+		)
 	}
 	return err
 }
@@ -152,7 +218,7 @@ func (a *App) SyncVTPassDataPlans(ctx context.Context) error {
 				return fmt.Errorf("upsert %s %s: %w", network, variation.VariationCode, err)
 			}
 		}
-		a.logger.Info("synced VTPass data variations", "network", network, "count", len(variations))
+		a.logger.InfoContext(ctx, "synced VTPass data variations", "network", network, "count", len(variations))
 	}
 	return nil
 }
@@ -164,6 +230,14 @@ func (a *App) Health(ctx context.Context) error {
 
 // RunServer starts HTTP handling and bounded background workers.
 func (a *App) RunServer(ctx context.Context) error {
+	if a.cfg.AdminPasswordHash != "" {
+		if err := a.store.EnsureAdminUser(ctx, a.cfg.AdminEmail, a.cfg.AdminPasswordHash); err != nil {
+			a.logger.WarnContext(ctx, "bootstrap admin sync skipped (run migrate first)", "error", err)
+		}
+	}
+	if err := a.encryptLegacyAtRest(ctx); err != nil {
+		return fmt.Errorf("startup: %w", err)
+	}
 	server := &http.Server{
 		Addr:              a.cfg.HTTPAddr,
 		Handler:           a.routes(),
@@ -179,7 +253,7 @@ func (a *App) RunServer(ctx context.Context) error {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	a.logger.Info("server listening", "addr", a.cfg.HTTPAddr, "base_url", a.cfg.BaseURL)
+	a.logger.InfoContext(ctx, "server listening", "addr", a.cfg.HTTPAddr, "base_url", a.cfg.BaseURL)
 	err := server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -189,7 +263,7 @@ func (a *App) RunServer(ctx context.Context) error {
 
 func (a *App) routes() http.Handler {
 	router := chi.NewRouter()
-	router.Use(middleware.RequestID)
+	router.Use(logging.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
 	router.Use(a.securityHeaders)
@@ -197,23 +271,28 @@ func (a *App) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	router.Get("/health/ready", a.handleReady)
+	webhookLimit := a.rateLimit("webhook", a.cfg.RateLimitWebhooksPerMinute)
+	publicLimit := a.rateLimit("public", a.cfg.RateLimitPublicPerMinute)
+	scanLimit := a.rateLimit("scan", a.cfg.RateLimitScanPerMinute)
 	router.Get("/webhooks/whatsapp", a.verifyWhatsAppWebhook)
-	router.Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
-	router.Post("/webhooks/telegram", a.receiveTelegramWebhook)
-	router.Post("/webhooks/sms", a.receiveSMSWebhook)
-	router.Post("/webhooks/paystack", a.receivePaystackWebhook)
-	router.Post("/webhooks/vtpass", a.receiveVTPassWebhook)
-	router.Get("/payments/return", a.paymentReturn)
-	router.Get("/receipts/{token}", a.receipt)
-	router.Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
-	router.Get("/invoices/{reference}", a.invoice)
-	router.Get("/thrift/{name}", a.thriftGroup)
-	router.Get("/scan/{token}", a.scanLanding)
-	router.Post("/api/readers/scan", a.readerScan)
+	router.With(webhookLimit).Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
+	router.With(webhookLimit).Post("/webhooks/telegram", a.receiveTelegramWebhook)
+	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
+	router.With(webhookLimit).Post("/webhooks/paystack", a.receivePaystackWebhook)
+	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)
+	router.With(publicLimit).Get("/payments/return", a.paymentReturn)
+	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
+	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
+	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
+	router.With(publicLimit).Get("/thrift/{name}", a.thriftGroup)
+	router.With(publicLimit).Get("/scan/{token}", a.scanLanding)
+	router.With(scanLimit).Post("/api/readers/scan", a.readerScan)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
 
 	router.Get("/admin/login", a.loginPage)
 	router.With(a.limitLogin).Post("/admin/login", a.login)
+	router.Get("/admin/login/totp", a.totpPage)
+	router.With(a.limitLogin).Post("/admin/login/totp", a.totpVerify)
 	router.Group(func(admin chi.Router) {
 		admin.Use(a.requireAdmin)
 		admin.Get("/admin", func(w http.ResponseWriter, r *http.Request) {
@@ -222,24 +301,40 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/metrics", a.adminMetrics)
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
-		admin.Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
-		admin.Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
-		admin.Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
 		admin.Get("/admin/payments", a.adminPayments)
 		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/thrift", a.adminThrift)
-		admin.Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
 		admin.Get("/admin/accepted-numbers", a.adminAcceptedNumbers)
-		admin.Post("/admin/accepted-numbers", a.adminUpdateAcceptedNumbers)
-		admin.Get("/admin/scanning", a.adminScanning)
-		admin.Post("/admin/scanning/services", a.adminCreateScanningService)
-		admin.Post("/admin/scanning/readers", a.adminCreateServiceReader)
-		admin.Post("/admin/scanning/services/{id}/whitelist", a.adminSetPhoneWhitelist)
-		admin.Get("/admin/webhooks", a.adminWebhooks)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/accepted-numbers", a.adminUpdateAcceptedNumbers)
+		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/scanning", a.adminScanning)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/scanning/services", a.adminCreateScanningService)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/scanning/readers", a.adminCreateServiceReader)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/scanning/services/{id}/whitelist", a.adminSetPhoneWhitelist)
+		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/webhooks", a.adminWebhooks)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/totp/disable", func(w http.ResponseWriter, r *http.Request) {
+			adminID := adminIDFromContext(r.Context())
+			a.totpDisable(w, r, "admin", &adminID, "/admin/metrics")
+		})
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/audit", a.adminAuditLog)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/archive", a.adminArchive)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/legal-holds", a.adminLegalHolds)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds", a.adminAddLegalHold)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds/remove", a.adminRemoveLegalHold)
+		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins", a.adminCreateAdmin)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/role", a.adminUpdateAdminRole)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/enabled", a.adminToggleAdminEnabled)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/password", a.adminResetAdminPassword)
 		admin.Post("/admin/logout", a.logout)
 	})
 	router.Get("/merchant/login", a.merchantLogin)
 	router.With(a.limitLogin).Post("/merchant/login", a.merchantLoginPost)
+	router.Get("/merchant/login/totp", a.totpPage)
+	router.With(a.limitLogin).Post("/merchant/login/totp", a.totpVerify)
 	router.Get("/merchant/set-password", a.merchantSetPasswordPage)
 	router.Post("/merchant/set-password", a.merchantSetPasswordPost)
 	router.Group(func(m chi.Router) {
@@ -264,6 +359,10 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/services/{id}/toggle", a.merchantServiceToggle)
 		m.Get("/merchant/services/{id}/payments", a.merchantServicePayments)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
+		m.Post("/merchant/totp/disable", func(w http.ResponseWriter, r *http.Request) {
+			merchantID := merchantIDFromContext(r.Context())
+			a.totpDisable(w, r, "merchant", &merchantID, "/merchant/settings")
+		})
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
 	return router
@@ -287,11 +386,11 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.deliverOutbox(ctx)
 		case <-reconcileTicker.C:
 			if err := a.payments.Reconcile(ctx); err != nil {
-				a.logger.Warn("scheduled reconciliation failed", "error", err)
+				a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
 			}
 		case <-retentionTicker.C:
 			if err := a.PurgeExpiredData(ctx); err != nil {
-				a.logger.Warn("scheduled retention failed", "error", err)
+				a.logger.WarnContext(ctx, "scheduled retention failed", "error", err)
 			}
 		}
 	}
@@ -300,12 +399,12 @@ func (a *App) runWorkers(ctx context.Context) {
 func (a *App) processInboundMessages(ctx context.Context) {
 	messages, err := a.store.ClaimInboundMessages(ctx, 20)
 	if err != nil {
-		a.logger.Warn("claim inbound messages", "error", err)
+		a.logger.WarnContext(ctx, "claim inbound messages", "error", err)
 		return
 	}
 	for _, message := range messages {
 		if err := a.conversation.Handle(ctx, message); err != nil {
-			a.logger.Error("process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
+			a.logger.ErrorContext(ctx, "process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
 			_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())
 			continue
 		}
@@ -316,7 +415,7 @@ func (a *App) processInboundMessages(ctx context.Context) {
 func (a *App) processPaystackWebhooks(ctx context.Context) {
 	events, err := a.store.ClaimPaystackWebhooks(ctx, 20)
 	if err != nil {
-		a.logger.Warn("claim Paystack webhooks", "error", err)
+		a.logger.WarnContext(ctx, "claim Paystack webhooks", "error", err)
 		return
 	}
 	for _, event := range events {
@@ -326,7 +425,7 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 		}
 		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, "paystack.webhook")
 		if processErr != nil {
-			a.logger.Error("process Paystack webhook", "reference", event.Reference, "error", processErr)
+			a.logger.ErrorContext(ctx, "process Paystack webhook", "reference", event.Reference, "error", processErr)
 			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
 			continue
 		}
@@ -336,14 +435,14 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 
 func (a *App) processDataFulfilments(ctx context.Context) {
 	if err := a.data.ProcessFulfilments(ctx, 20); err != nil {
-		a.logger.Warn("process data fulfilments", "error", err)
+		a.logger.WarnContext(ctx, "process data fulfilments", "error", err)
 	}
 }
 
 func (a *App) deliverOutbox(ctx context.Context) {
 	messages, err := a.store.ClaimOutbox(ctx, 20)
 	if err != nil {
-		a.logger.Warn("claim outbox", "error", err)
+		a.logger.WarnContext(ctx, "claim outbox", "error", err)
 		return
 	}
 	for _, message := range messages {
@@ -565,7 +664,7 @@ func (a *App) receiveSMSWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	reply, err := a.data.HandleSMS(r.Context(), messageID, sender, text)
 	if err != nil {
-		a.logger.Warn("process SMS webhook", "message_id", messageID, "error", err)
+		a.logger.WarnContext(r.Context(), "process SMS webhook", "message_id", messageID, "error", err)
 		http.Error(w, "sms processing failed", http.StatusInternalServerError)
 		return
 	}
@@ -613,8 +712,7 @@ func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secretValid := a.cfg.VTPassWebhookSecret == "" ||
-		r.Header.Get("X-VTPass-Webhook-Secret") == a.cfg.VTPassWebhookSecret ||
-		r.URL.Query().Get("secret") == a.cfg.VTPassWebhookSecret
+		r.Header.Get("X-VTPass-Webhook-Secret") == a.cfg.VTPassWebhookSecret
 	event, parseErr := vtpass.ParseWebhook(body)
 	eventKey := digest(body)
 	if event.Reference != "" {
@@ -644,7 +742,7 @@ func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, changed, err := a.data.ApplyProviderResult(r.Context(), event.Reference, event.Status, event.Message); err != nil {
-		a.logger.Warn("process VTPass webhook", "reference", event.Reference, "error", err)
+		a.logger.WarnContext(r.Context(), "process VTPass webhook", "reference", event.Reference, "error", err)
 		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 		http.Error(w, "processing failed", http.StatusInternalServerError)
 		return
@@ -664,7 +762,7 @@ func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
 	}
 	payment, _, err := a.payments.VerifyAndApply(r.Context(), reference, "paystack.callback")
 	if err != nil {
-		a.logger.Warn("callback verification failed", "reference", reference, "error", err)
+		a.logger.WarnContext(r.Context(), "callback verification failed", "reference", reference, "error", err)
 		http.Error(w, "Payment is still being verified. Return to WhatsApp or refresh your receipt shortly.", http.StatusAccepted)
 		return
 	}
@@ -823,10 +921,222 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	password := r.FormValue("password")
-	if email != a.cfg.AdminEmail || a.cfg.AdminPasswordHash == "" ||
-		bcrypt.CompareHashAndPassword([]byte(a.cfg.AdminPasswordHash), []byte(password)) != nil {
+	admin, err := a.store.AdminUserByEmail(r.Context(), email)
+	if err != nil || admin == nil || !admin.Enabled ||
+		bcrypt.CompareHashAndPassword([]byte(admin.PasswordHash), []byte(password)) != nil {
 		a.limiter.fail(clientIP(r))
 		a.renderStatus(w, "login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
+		return
+	}
+	if a.cfg.TOTPEnabled {
+		a.beginTOTPLogin(w, r, "admin", &admin.ID, admin.Email, "/admin/login")
+		return
+	}
+	a.completeAdminLogin(w, r, admin.ID)
+}
+
+// beginTOTPLogin starts the second factor of a login. When no TOTP secret is
+// enrolled for the scope/subject it starts enrollment instead. The redirect
+// carries an opaque single-use token; the pending row holds the enrollment
+// secret cipher so the QR page can render after a refresh.
+func (a *App) beginTOTPLogin(w http.ResponseWriter, r *http.Request, scope string, subjectID *uuid.UUID, account, fallbackPath string) {
+	pending, err := a.newTOTPPending(r.Context(), scope, subjectID)
+	if err != nil {
+		a.logger.ErrorContext(r.Context(), "start totp login", "scope", scope, "error", err)
+		http.Error(w, "security setup error", http.StatusInternalServerError)
+		return
+	}
+	next := "/admin/login/totp"
+	if scope == "merchant" {
+		next = "/merchant/login/totp"
+	}
+	q := url.Values{"token": {pending.Token}, "scope": {scope}, "account": {account}}
+	http.Redirect(w, r, next+"?"+q.Encode(), http.StatusSeeOther)
+}
+
+// completeAdminLogin issues the admin session cookie.
+func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID uuid.UUID) {
+	token, err := randomToken(32)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	csrf, err := randomToken(24)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateAdminSession(r.Context(), adminID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	a.limiter.success(clientIP(r))
+	http.SetCookie(w, &http.Cookie{
+		Name: adminCookieName, Value: token, Path: "/admin", HttpOnly: true,
+		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
+	})
+	http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
+}
+
+// newTOTPPending creates a short-lived second-factor step. The secret cipher
+// is stored in the pending row only when enrolling (no secret exists yet);
+// otherwise verification loads the persisted secret by scope/subject.
+func (a *App) newTOTPPending(ctx context.Context, scope string, subjectID *uuid.UUID) (totpPending, error) {
+	existing, err := a.store.GetTOTPSecret(ctx, scope, subjectID)
+	if err != nil {
+		return totpPending{}, err
+	}
+	var secretCipher []byte
+	if existing == nil {
+		key, err := totp.Generate(a.cfg.AppName, "login")
+		if err != nil {
+			return totpPending{}, err
+		}
+		secretCipher, err = totp.EncryptSecret(a.totpKey, key.Secret())
+		if err != nil {
+			return totpPending{}, err
+		}
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		return totpPending{}, err
+	}
+	hash := sha256.Sum256([]byte(token))
+	if err := a.store.CreateTOTPPendingLogin(ctx, hash[:], scope, subjectID, secretCipher, time.Now().Add(10*time.Minute)); err != nil {
+		return totpPending{}, err
+	}
+	return totpPending{Token: token, Scope: scope, SubjectID: subjectID, SecretCipher: secretCipher}, nil
+}
+
+type totpPending struct {
+	Token        string
+	Scope        string
+	SubjectID    *uuid.UUID
+	SecretCipher []byte
+}
+
+// totpPage renders the second-factor page: QR + secret during enrollment,
+// code field only when a secret is already enrolled.
+func (a *App) totpPage(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	account := strings.TrimSpace(r.URL.Query().Get("account"))
+	loginPath := "/admin/login"
+	if token == "" {
+		http.Redirect(w, r, loginPath, http.StatusSeeOther)
+		return
+	}
+	hash := sha256.Sum256([]byte(token))
+	scope, _, secretCipher, found, err := a.store.GetTOTPPendingLogin(r.Context(), hash[:])
+	if err != nil || !found {
+		http.Redirect(w, r, loginPath, http.StatusSeeOther)
+		return
+	}
+	if scope == "merchant" {
+		loginPath = "/merchant/login"
+	}
+	data := map[string]any{
+		"AppName":    a.cfg.AppName,
+		"Title":      "Two-step login",
+		"Token":      token,
+		"Scope":      scope,
+		"Account":    account,
+		"VerifyPath": "/admin/login/totp",
+		"CancelPath": loginPath,
+	}
+	if secretCipher != nil {
+		secret, err := totp.DecryptSecret(a.totpKey, secretCipher)
+		if err != nil {
+			a.logger.ErrorContext(r.Context(), "decrypt totp secret", "error", err)
+			http.Redirect(w, r, loginPath, http.StatusSeeOther)
+			return
+		}
+		keyURI := totp.KeyURI(a.cfg.AppName, account, secret)
+		png, err := qrcode.Encode(keyURI, qrcode.Medium, 220)
+		if err != nil {
+			a.logger.ErrorContext(r.Context(), "encode totp qr", "error", err)
+			http.Redirect(w, r, loginPath, http.StatusSeeOther)
+			return
+		}
+		data["Secret"] = secret
+		data["QR"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	}
+	if scope == "merchant" {
+		data["VerifyPath"] = "/merchant/login/totp"
+		a.render(w, "merchant_totp.html", data)
+		return
+	}
+	a.render(w, "admin_totp.html", data)
+}
+
+// totpVerify consumes the pending login and issues the session after a valid code.
+func (a *App) totpVerify(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	token := strings.TrimSpace(r.FormValue("token"))
+	code := strings.TrimSpace(r.FormValue("code"))
+	if token == "" || code == "" {
+		http.Error(w, "missing token or code", http.StatusBadRequest)
+		return
+	}
+	hash := sha256.Sum256([]byte(token))
+	scope, subjectID, secretCipher, found, err := a.store.ConsumeTOTPPendingLogin(r.Context(), hash[:])
+	loginTemplate := "login.html"
+	if scope == "merchant" {
+		loginTemplate = "merchant_login.html"
+	}
+	if err != nil || !found {
+		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "This login step has expired. Please sign in again."}, http.StatusUnauthorized)
+		return
+	}
+	secret := ""
+	if secretCipher != nil {
+		secret, err = totp.DecryptSecret(a.totpKey, secretCipher)
+	} else {
+		var cipher []byte
+		cipher, err = a.store.GetTOTPSecret(r.Context(), scope, subjectID)
+		if err == nil && cipher == nil {
+			err = errors.New("totp secret missing")
+		}
+		if err == nil {
+			secret, err = totp.DecryptSecret(a.totpKey, cipher)
+		}
+	}
+	if err != nil {
+		a.logger.ErrorContext(r.Context(), "load totp secret", "scope", scope, "error", err)
+		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Security error. Please sign in again."}, http.StatusInternalServerError)
+		return
+	}
+	if !totp.Validate(code, secret) {
+		a.limiter.fail(clientIP(r))
+		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid authentication code."}, http.StatusUnauthorized)
+		return
+	}
+	if secretCipher != nil {
+		if err := a.store.SetTOTPSecret(r.Context(), scope, subjectID, secretCipher); err != nil {
+			a.logger.ErrorContext(r.Context(), "persist totp secret", "scope", scope, "error", err)
+			a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Security error. Please sign in again."}, http.StatusInternalServerError)
+			return
+		}
+		a.auditTOTPEnrollment(r, scope, subjectID)
+	}
+	if scope == "merchant" {
+		a.completeMerchantLoginWithTOTP(w, r, subjectID)
+		return
+	}
+	if subjectID == nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	a.completeAdminLogin(w, r, *subjectID)
+}
+
+// completeMerchantLoginWithTOTP issues the merchant session cookie after the
+// second factor passed for the given merchant subject.
+func (a *App) completeMerchantLoginWithTOTP(w http.ResponseWriter, r *http.Request, merchantID *uuid.UUID) {
+	if merchantID == nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
 	token, err := randomToken(32)
@@ -839,16 +1149,64 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	if err := a.store.CreateAdminSession(r.Context(), token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+	ownerID, err := a.store.MerchantOwnerID(r.Context(), *merchantID)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateMerchantSession(r.Context(), *merchantID, ownerID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
 	a.limiter.success(clientIP(r))
 	http.SetCookie(w, &http.Cookie{
-		Name: adminCookieName, Value: token, Path: "/admin", HttpOnly: true,
+		Name: merchantCookieName, Value: token, Path: "/merchant", HttpOnly: true,
 		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
 	})
-	http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
+	http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
+}
+
+// totpDisable removes the enrolled secret, turning TOTP off for the subject.
+func (a *App) totpDisable(w http.ResponseWriter, r *http.Request, scope string, subjectID *uuid.UUID, redirectTo string) {
+	if scope == "admin" && r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if scope == "merchant" && r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := a.store.DeleteTOTPSecret(r.Context(), scope, subjectID); err != nil {
+		http.Error(w, "security error", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, scope+".totp_disabled", scope, subjectID.String(), nil)
+	http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+}
+
+// auditTOTPEnrollment records a first-time TOTP enrollment. It runs during the
+// login flow, before any session exists, so the subject is taken from the
+// pending login rather than the request context.
+func (a *App) auditTOTPEnrollment(r *http.Request, scope string, subjectID *uuid.UUID) {
+	if subjectID == nil {
+		return
+	}
+	entry := store.AuditLog{
+		ActorType:  scope,
+		ActorID:    uuid.NullUUID{UUID: *subjectID, Valid: true},
+		Action:     scope + ".totp_enrolled",
+		ResourceID: sql.NullString{String: subjectID.String(), Valid: true},
+		IP:         sql.NullString{String: clientIP(r), Valid: true},
+		Details:    map[string]any{},
+	}
+	if scope == "admin" {
+		if admin, err := a.store.AdminUserByID(r.Context(), *subjectID); err == nil && admin != nil {
+			entry.ActorEmail = sql.NullString{String: admin.Email, Valid: true}
+		}
+	}
+	if _, err := a.store.AppendAuditLog(r.Context(), entry); err != nil {
+		a.logger.ErrorContext(r.Context(), "audit log write failed", "action", entry.Action, "error", err)
+	}
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -869,7 +1227,7 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{"Metrics": metrics})
+	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{"Metrics": metrics, "TOTPEnabled": a.cfg.TOTPEnabled})
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {
@@ -895,6 +1253,232 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants, "Registrations": registrations})
 }
 
+func (a *App) adminAdmins(w http.ResponseWriter, r *http.Request) {
+	users, err := a.store.ListAdminUsers(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "admin_users.html", r, "Admin accounts", map[string]any{"Admins": users, "CurrentAdminID": adminIDFromContext(r.Context())})
+}
+
+// adminAuditLog renders the tamper-evident audit trail with chain status.
+func (a *App) adminAuditLog(w http.ResponseWriter, r *http.Request) {
+	entries, err := a.store.ListAuditLogs(r.Context(), 200)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	count, broken, err := a.store.VerifyAuditChain(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "admin_audit.html", r, "Audit log", map[string]any{
+		"Entries":     entries,
+		"ChainCount":  count,
+		"ChainBroken": broken,
+	})
+}
+
+// adminArchive renders the append-only archive of records removed by retention.
+func (a *App) adminArchive(w http.ResponseWriter, r *http.Request) {
+	entries, err := a.store.ListArchiveLedger(r.Context(), 200)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list archive ledger", "error", err)
+		http.Error(w, "archive unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "admin_archive.html", r, "Retention archive", map[string]any{"Entries": entries})
+}
+
+// adminLegalHolds lists retention-exempt subjects (C29).
+func (a *App) adminLegalHolds(w http.ResponseWriter, r *http.Request) {
+	holds, err := a.store.ListLegalHolds(r.Context())
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list legal holds", "error", err)
+		http.Error(w, "legal holds unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "admin_legal_holds.html", r, "Legal holds", map[string]any{"Holds": holds})
+}
+
+// adminAddLegalHold freezes a subject so retention never purges it.
+func (a *App) adminAddLegalHold(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	subjectType := strings.TrimSpace(r.FormValue("subject_type"))
+	subjectID := strings.TrimSpace(r.FormValue("subject_id"))
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	validTypes := map[string]bool{"user": true, "payment": true, "invoice": true, "thrift_group": true}
+	if !validTypes[subjectType] || subjectID == "" || reason == "" {
+		http.Error(w, "subject type, subject id and reason are required", http.StatusBadRequest)
+		return
+	}
+	var expiresAt *time.Time
+	if raw := strings.TrimSpace(r.FormValue("expires_at")); raw != "" {
+		parsed, err := time.Parse("2006-01-02", raw)
+		if err != nil {
+			http.Error(w, "expiry must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		expiresAt = &parsed
+	}
+	adminEmail := adminEmailFromContext(r.Context())
+	if err := a.store.AddLegalHold(r.Context(), subjectType, subjectID, reason, adminEmail, expiresAt); err != nil {
+		a.logger.WarnContext(r.Context(), "add legal hold failed", "error", err)
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.legal_holds.created", subjectType, subjectID, map[string]any{"reason": reason, "expires_at": expiresAt})
+	a.logger.InfoContext(r.Context(), "legal hold added", "subject_type", subjectType, "subject_id", subjectID)
+	http.Redirect(w, r, "/admin/legal-holds", http.StatusSeeOther)
+}
+
+// adminRemoveLegalHold clears a freeze.
+func (a *App) adminRemoveLegalHold(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	subjectType := strings.TrimSpace(r.FormValue("subject_type"))
+	subjectID := strings.TrimSpace(r.FormValue("subject_id"))
+	if subjectType == "" || subjectID == "" {
+		http.Error(w, "subject type and id are required", http.StatusBadRequest)
+		return
+	}
+	if err := a.store.RemoveLegalHold(r.Context(), subjectType, subjectID); err != nil {
+		a.logger.WarnContext(r.Context(), "remove legal hold failed", "error", err)
+		http.Error(w, "remove failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.legal_holds.removed", subjectType, subjectID, map[string]any{})
+	http.Redirect(w, r, "/admin/legal-holds", http.StatusSeeOther)
+}
+
+func (a *App) adminCreateAdmin(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
+	role := strings.TrimSpace(r.FormValue("role"))
+	password := r.FormValue("password")
+	if email == "" || password == "" || !validAdminRole(role) {
+		http.Error(w, "email, password and role are required", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "hash error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateAdminUser(r.Context(), email, string(hash), role); err != nil {
+		a.logger.WarnContext(r.Context(), "create admin user failed", "email", email, "error", err)
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.admins.created", "admin_user", email, map[string]any{"role": role})
+	a.logger.InfoContext(r.Context(), "admin user created", "email", email, "role", role)
+	http.Redirect(w, r, "/admin/admins", http.StatusSeeOther)
+}
+
+func (a *App) adminUpdateAdminRole(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid admin id", http.StatusBadRequest)
+		return
+	}
+	role := strings.TrimSpace(r.FormValue("role"))
+	if !validAdminRole(role) {
+		http.Error(w, "invalid role", http.StatusBadRequest)
+		return
+	}
+	if id == adminIDFromContext(r.Context()) {
+		http.Error(w, "you cannot change your own role", http.StatusForbidden)
+		return
+	}
+	if err := a.store.UpdateAdminUserRole(r.Context(), id, role); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.admins.role_changed", "admin_user", id.String(), map[string]any{"new_role": role})
+	http.Redirect(w, r, "/admin/admins", http.StatusSeeOther)
+}
+
+func (a *App) adminToggleAdminEnabled(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid admin id", http.StatusBadRequest)
+		return
+	}
+	if id == adminIDFromContext(r.Context()) {
+		http.Error(w, "you cannot disable your own account", http.StatusForbidden)
+		return
+	}
+	enabled := r.FormValue("enabled") == "1"
+	if err := a.store.SetAdminUserEnabled(r.Context(), id, enabled); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.admins.enabled_toggled", "admin_user", id.String(), map[string]any{"enabled": enabled})
+	http.Redirect(w, r, "/admin/admins", http.StatusSeeOther)
+}
+
+func (a *App) adminResetAdminPassword(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid admin id", http.StatusBadRequest)
+		return
+	}
+	password := r.FormValue("password")
+	if password == "" {
+		http.Error(w, "password required", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		http.Error(w, "hash error", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.UpdateAdminUserPassword(r.Context(), id, string(hash)); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.admins.password_reset", "admin_user", id.String(), nil)
+	http.Redirect(w, r, "/admin/admins", http.StatusSeeOther)
+}
+
+func validAdminRole(role string) bool {
+	switch role {
+	case store.RoleAdmin, store.RoleCompliance, store.RoleSupport, store.RoleReadOnly:
+		return true
+	}
+	return false
+}
+
 func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
@@ -907,7 +1491,7 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 	}
 	merchant, err := a.store.ApproveMerchantRegistration(r.Context(), id)
 	if err != nil {
-		a.logger.Warn("approve merchant registration failed", "registration_id", id, "error", err)
+		a.logger.WarnContext(r.Context(), "approve merchant registration failed", "registration_id", id, "error", err)
 		http.Error(w, "approval failed", http.StatusInternalServerError)
 		return
 	}
@@ -922,6 +1506,7 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 		}
 		a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
 	}
+	a.audit(r, "admin.merchants.approved", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "registration_id": id.String()})
 	http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
 }
 
@@ -949,6 +1534,7 @@ func (a *App) adminSetMerchantPassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
+	a.audit(r, "admin.merchants.password_reset", "merchant", id.String(), nil)
 	http.Redirect(w, r, "/admin/merchants?password_set=1", http.StatusSeeOther)
 }
 
@@ -976,6 +1562,10 @@ func (a *App) adminSetMerchantPaymentTerms(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
+	a.audit(r, "admin.merchants.payment_terms_updated", "merchant", id.String(), map[string]any{
+		"allow_partial": allowPartial, "min_invoice_kobo": minInvoiceKobo, "upfront_percent": upfrontPct,
+		"min_installment_percent": minInstallPct, "max_installments": maxInstallments, "allow_full_always": allowFullAlways,
+	})
 	http.Redirect(w, r, "/admin/merchants?terms_set=1", http.StatusSeeOther)
 }
 
@@ -994,6 +1584,7 @@ func (a *App) adminSetPhoneWhitelist(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
+	a.audit(r, "admin.scanning.whitelist_updated", "service", id.String(), map[string]any{"whitelist": whitelist})
 	http.Redirect(w, r, "/admin/scanning?whitelist_set=1", http.StatusSeeOther)
 }
 
@@ -1050,10 +1641,11 @@ func (a *App) adminCompleteThriftPayout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := a.store.MarkThriftPayoutCompleted(r.Context(), id); err != nil {
-		a.logger.Warn("complete thrift payout failed", "payout_id", id, "error", err)
+		a.logger.WarnContext(r.Context(), "complete thrift payout failed", "payout_id", id, "error", err)
 		http.Error(w, "payout completion failed", http.StatusInternalServerError)
 		return
 	}
+	a.audit(r, "admin.thrift.payout_completed", "thrift_payout", id.String(), nil)
 	http.Redirect(w, r, "/admin/thrift", http.StatusSeeOther)
 }
 
@@ -1076,6 +1668,7 @@ func (a *App) adminUpdateAcceptedNumbers(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	a.conversation.SetAcceptedInvoiceNumbers(numbers)
+	a.audit(r, "admin.scanning.accepted_numbers_updated", "config", "accepted_invoice_numbers", map[string]any{"count": len(numbers)})
 	http.Redirect(w, r, "/admin/accepted-numbers", http.StatusSeeOther)
 }
 
@@ -1118,6 +1711,7 @@ func (a *App) adminCreateScanningService(w http.ResponseWriter, r *http.Request)
 		a.renderScanningAdmin(w, r, map[string]any{"Error": "Could not save registered service."})
 		return
 	}
+	a.audit(r, "admin.scanning.service_created", "service", r.FormValue("name"), map[string]any{"service_type": r.FormValue("service_type")})
 	http.Redirect(w, r, "/admin/scanning", http.StatusSeeOther)
 }
 
@@ -1140,6 +1734,7 @@ func (a *App) adminCreateServiceReader(w http.ResponseWriter, r *http.Request) {
 		a.renderScanningAdmin(w, r, map[string]any{"Error": "Could not create reader."})
 		return
 	}
+	a.audit(r, "admin.scanning.reader_created", "service_reader", reader.ID.String(), map[string]any{"name": r.FormValue("name")})
 	a.renderScanningAdmin(w, r, map[string]any{"NewReader": reader, "NewReaderKey": key})
 }
 
@@ -1315,7 +1910,7 @@ func (a *App) merchantServiceCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.saveCustomFields(r, svc.ID); err != nil {
-		a.logger.Error("save custom fields", "error", err)
+		a.logger.ErrorContext(r.Context(), "save custom fields", "error", err)
 	}
 	http.Redirect(w, r, "/merchant/services?created=1", http.StatusSeeOther)
 }
@@ -1414,7 +2009,7 @@ func (a *App) merchantServiceUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.saveCustomFields(r, serviceID); err != nil {
-		a.logger.Error("save custom fields", "error", err)
+		a.logger.ErrorContext(r.Context(), "save custom fields", "error", err)
 	}
 	http.Redirect(w, r, "/merchant/services?saved=1", http.StatusSeeOther)
 }
@@ -1501,7 +2096,7 @@ func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
 		qrTTL = 86400
 	}
 	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
-		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600,
+		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600, "TOTPEnabled": a.cfg.TOTPEnabled,
 	})
 }
 
@@ -1625,6 +2220,9 @@ func (a *App) merchantSetPasswordPost(w http.ResponseWriter, r *http.Request) {
 type contextKey string
 
 const csrfContextKey contextKey = "csrf"
+const adminIDContextKey contextKey = "admin_id"
+const adminRoleContextKey contextKey = "admin_role"
+const adminEmailContextKey contextKey = "admin_email"
 const merchantIDContextKey contextKey = "merchant_id"
 const merchantCSRFContextKey contextKey = "merchant_csrf"
 
@@ -1635,13 +2233,77 @@ func (a *App) requireAdmin(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
-		csrf, err := a.store.ValidateAdminSession(r.Context(), cookie.Value)
+		adminID, role, email, csrf, err := a.store.ValidateAdminSession(r.Context(), cookie.Value)
 		if err != nil {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), csrfContextKey, csrf)))
+		ctx := context.WithValue(r.Context(), csrfContextKey, csrf)
+		ctx = context.WithValue(ctx, adminIDContextKey, adminID)
+		ctx = context.WithValue(ctx, adminRoleContextKey, role)
+		ctx = context.WithValue(ctx, adminEmailContextKey, email)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// audit records a privileged action with actor identity and IP into the
+// tamper-evident chain. A failed write is logged loudly but does not abort the
+// action, so a storage hiccup can never freeze payments or admin operations.
+func (a *App) audit(r *http.Request, action, resourceType, resourceID string, details map[string]any) {
+	ctx := r.Context()
+	entry := store.AuditLog{
+		ActorType:  "system",
+		ActorEmail: sql.NullString{},
+		Action:     action,
+	}
+	if id := merchantIDFromContext(ctx); id != uuid.Nil {
+		entry.ActorType = "merchant"
+		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
+	} else if id := adminIDFromContext(ctx); id != uuid.Nil {
+		entry.ActorType = "admin"
+		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
+		entry.ActorEmail = sql.NullString{String: adminEmailFromContext(ctx), Valid: true}
+	}
+	entry.IP = sql.NullString{String: clientIP(r), Valid: true}
+	entry.ResourceType = sql.NullString{String: resourceType, Valid: resourceType != ""}
+	entry.ResourceID = sql.NullString{String: resourceID, Valid: resourceID != ""}
+	entry.Details = details
+	_, err := a.store.AppendAuditLog(ctx, entry)
+	if err != nil {
+		a.logger.Error("audit log write failed", "action", action, "resource_type", resourceType, "resource_id", resourceID, "error", err)
+	}
+}
+
+// requireRole gates a route to admins holding any of the given roles.
+func (a *App) requireRole(roles ...string) func(http.Handler) http.Handler {
+	allowed := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		allowed[role] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !allowed[adminRoleFromContext(r.Context())] {
+				http.Error(w, "you do not have permission to do this", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func adminIDFromContext(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(adminIDContextKey).(uuid.UUID)
+	return id
+}
+
+func adminRoleFromContext(ctx context.Context) string {
+	role, _ := ctx.Value(adminRoleContextKey).(string)
+	return role
+}
+
+func adminEmailFromContext(ctx context.Context) string {
+	email, _ := ctx.Value(adminEmailContextKey).(string)
+	return email
 }
 
 func csrfFromContext(ctx context.Context) string {
@@ -1693,6 +2355,10 @@ func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
 		bcrypt.CompareHashAndPassword([]byte(merchant.PasswordHash), []byte(password)) != nil {
 		a.limiter.fail(clientIP(r))
 		a.renderStatus(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
+		return
+	}
+	if a.cfg.TOTPEnabled {
+		a.beginTOTPLogin(w, r, "merchant", &merchant.ID, email, "/merchant/login")
 		return
 	}
 	token, err := randomToken(32)
@@ -1803,6 +2469,23 @@ func (a *App) limitLogin(next http.Handler) http.Handler {
 	})
 }
 
+// rateLimit enforces a fixed-window cap per client IP. The key names the
+// route class (webhook, public, scan) so limits are isolated per class.
+func (a *App) rateLimit(class string, limit int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := class + ":" + clientIP(r)
+			allowed, retryAfter := a.rateLimiter.Allow(r.Context(), key, limit, time.Minute)
+			if !allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 func (a *App) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -1818,6 +2501,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, name string, r *http.Request, t
 	data["AppName"] = a.cfg.AppName
 	data["Title"] = title
 	data["CSRF"] = csrfFromContext(r.Context())
+	data["AdminRole"] = adminRoleFromContext(r.Context())
 	a.render(w, name, data)
 }
 
