@@ -14,6 +14,8 @@ import (
 
 	"whatsapp-payment-demo/internal/app"
 	"whatsapp-payment-demo/internal/config"
+	"whatsapp-payment-demo/internal/logging"
+	"whatsapp-payment-demo/internal/totp"
 )
 
 func main() {
@@ -37,11 +39,27 @@ func run() error {
 		fmt.Println(string(hash))
 		return nil
 	}
+	if len(os.Args) > 1 && os.Args[1] == "random-totp-key" {
+		key, err := totp.RandomKeyHex()
+		if err != nil {
+			return err
+		}
+		fmt.Println(key)
+		return nil
+	}
+	if len(os.Args) > 1 && os.Args[1] == "random-data-key" {
+		key, err := totp.RandomKeyHex()
+		if err != nil {
+			return err
+		}
+		fmt.Println(key)
+		return nil
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	logger := logging.New(cfg.LogLevel, cfg.LogFormat, os.Stdout)
 	slog.SetDefault(logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -74,6 +92,6 @@ func run() error {
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, sync-vtpass-data-plans, health, or hash-password", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

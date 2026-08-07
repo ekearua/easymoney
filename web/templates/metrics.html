@@ -17,5 +17,10 @@
   <article><span>SMS requests</span><strong>{{.Metrics.SMSRequests}}</strong></article>
 </section>
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
+<section class="panel"><h2>Two-factor authentication</h2>
+  {{if .TOTPEnabled}}<p>Two-factor authentication is <strong>on</strong> for the admin account.</p>
+    {{if eq .AdminRole "admin"}}<form method="post" action="/admin/totp/disable"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Turn off two-factor authentication</button></form>{{end}}
+  {{else}}<p>Two-factor authentication is off. Sign out and sign back in to enroll.</p>{{end}}
+</section>
 </main></body></html>
 {{end}}

@@ -48,5 +48,12 @@
       <button type="submit">Save settings</button>
     </form>
   </section>
+
+  <section class="panel">
+    <h2>Two-factor authentication</h2>
+    {{if .TOTPEnabled}}<p>Two-factor authentication is <strong>on</strong> for your account. Sign out and sign back in to reset it.</p>
+      <form method="post" action="/merchant/totp/disable"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Turn off two-factor authentication</button></form>
+    {{else}}<p>Two-factor authentication is off. Sign out and sign back in to enroll.</p>{{end}}
+  </section>
 </main></body></html>
 {{end}}

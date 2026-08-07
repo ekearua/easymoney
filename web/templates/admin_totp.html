@@ -1,0 +1,32 @@
+{{define "admin_totp.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Two-step login · {{.AppName}}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <p class="eyebrow">Operations</p>
+    <h1>{{.AppName}}</h1>
+    {{if .Secret}}
+      <p class="muted">Scan this QR code with your authenticator app, then enter the 6-digit code to finish setting up two-factor authentication.</p>
+      <p style="text-align:center"><img src="{{.QR}}" width="220" height="220" alt="Authenticator QR code"></p>
+      <p class="muted" style="text-align:center;font-family:monospace;word-break:break-all">{{.Secret}}</p>
+      <p class="muted">Can't scan? Manually enter the secret above in your authenticator app.</p>
+    {{else}}
+      <p class="muted">Enter the 6-digit code from your authenticator app.</p>
+    {{end}}
+    {{if .Error}}<div class="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="{{.VerifyPath}}">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <label>Authentication code<input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" autofocus required></label>
+      <button type="submit">{{if .Secret}}Verify and set up{{else}}Verify{{end}}</button>
+    </form>
+    <p class="muted"><a href="{{.CancelPath}}">Back to sign in</a></p>
+  </main>
+</body>
+</html>
+{{end}}
