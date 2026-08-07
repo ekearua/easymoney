@@ -2,6 +2,8 @@
 package config
 
 import (
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -20,9 +22,18 @@ type Config struct {
 	HTTPAddr    string
 	DatabaseURL string
 	LogLevel    slog.Level
+	LogFormat   string
+
+	// DataEncryptionKey is the AES-256-GCM key for application-level encryption
+	// at rest (chat payloads, session CSRF tokens). Required in production;
+	// empty elsewhere runs in plaintext passthrough.
+	DataEncryptionKey []byte
 
 	AdminEmail        string
 	AdminPasswordHash string
+
+	TOTPEnabled       bool
+	TOTPEncryptionKey string
 
 	EmailConfirmationEnabled bool
 	EmailDemoCodeInChat      bool
@@ -70,58 +81,70 @@ type Config struct {
 	SessionTTL      time.Duration
 	ReceiptTTL      time.Duration
 
+	RedisURL string
+
+	RateLimitWebhooksPerMinute int
+	RateLimitPublicPerMinute   int
+	RateLimitScanPerMinute     int
+
 	InvoiceAcceptedNumbers []string
 }
 
 // Load reads settings from the process environment and applies safe local defaults.
 func Load() (Config, error) {
 	cfg := Config{
-		Environment:              env("APP_ENV", "development"),
-		AppName:                  env("APP_NAME", "Xego"),
-		BaseURL:                  strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
-		HTTPAddr:                 env("HTTP_ADDR", ":8080"),
-		DatabaseURL:              os.Getenv("DATABASE_URL"),
-		AdminEmail:               strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
-		AdminPasswordHash:        os.Getenv("ADMIN_PASSWORD_HASH"),
-		EmailConfirmationEnabled: envBool("EMAIL_CONFIRMATION_ENABLED", true),
-		EmailDemoCodeInChat:      envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
-		EmailVerificationTTL:     envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
-		SMTPHost:                 strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:                 int(envInt64("SMTP_PORT", 587)),
-		SMTPUsername:             os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:             os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:                 strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		PaystackSecretKey:        os.Getenv("PAYSTACK_SECRET_KEY"),
-		PaystackBaseURL:          strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
-		WhatsAppVerifyToken:      os.Getenv("WHATSAPP_VERIFY_TOKEN"),
-		WhatsAppAppSecret:        os.Getenv("WHATSAPP_APP_SECRET"),
-		WhatsAppAccessToken:      os.Getenv("WHATSAPP_ACCESS_TOKEN"),
-		WhatsAppPhoneNumberID:    os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
-		WhatsAppGraphVersion:     strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
-		WhatsAppTemplateName:     env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
-		WhatsAppTemplateLocale:   env("WHATSAPP_TEMPLATE_LOCALE", "en"),
-		TelegramEnabled:          envBool("TELEGRAM_ENABLED", false),
-		TelegramBotToken:         os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramWebhookSecret:    os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
-		TelegramAPIBase:          strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
-		SMSEnabled:               envBool("SMS_ENABLED", false),
-		SMSProvider:              env("SMS_PROVIDER", "webhook"),
-		SMSWebhookSecret:         os.Getenv("SMS_WEBHOOK_SECRET"),
-		SMSSenderID:              env("SMS_SENDER_ID", "Xego"),
-		SMSAPIBase:               strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
-		SMSAPIKey:                os.Getenv("SMS_API_KEY"),
-		DataProvider:             strings.ToLower(env("DATA_PROVIDER", "simulated")),
-		VTPassBaseURL:            strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
-		VTPassAPIKey:             os.Getenv("VTPASS_API_KEY"),
-		VTPassPublicKey:          os.Getenv("VTPASS_PUBLIC_KEY"),
-		VTPassSecretKey:          os.Getenv("VTPASS_SECRET_KEY"),
-		VTPassWebhookSecret:      os.Getenv("VTPASS_WEBHOOK_SECRET"),
-		VTPassTimeout:            envDuration("VTPASS_TIMEOUT", 45*time.Second),
-		PaymentMinKobo:           envInt64("PAYMENT_MIN_KOBO", 10_000),
-		PaymentMaxKobo:           envInt64("PAYMENT_MAX_KOBO", 10_000_000),
-		RetentionPeriod:          envDuration("RETENTION_PERIOD", 90*24*time.Hour),
-		SessionTTL:               envDuration("CONVERSATION_TTL", 30*time.Minute),
-		ReceiptTTL:               envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		Environment:                env("APP_ENV", "development"),
+		AppName:                    env("APP_NAME", "Xego"),
+		BaseURL:                    strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
+		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
+		DatabaseURL:                os.Getenv("DATABASE_URL"),
+		AdminEmail:                 strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
+		AdminPasswordHash:          os.Getenv("ADMIN_PASSWORD_HASH"),
+		TOTPEnabled:                envBool("TOTP_ENABLED", env("APP_ENV", "development") == "production"),
+		TOTPEncryptionKey:          strings.TrimSpace(os.Getenv("TOTP_ENCRYPTION_KEY")),
+		EmailConfirmationEnabled:   envBool("EMAIL_CONFIRMATION_ENABLED", true),
+		EmailDemoCodeInChat:        envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
+		EmailVerificationTTL:       envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
+		SMTPHost:                   strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:                   int(envInt64("SMTP_PORT", 587)),
+		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                   strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		PaystackSecretKey:          os.Getenv("PAYSTACK_SECRET_KEY"),
+		PaystackBaseURL:            strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
+		WhatsAppVerifyToken:        os.Getenv("WHATSAPP_VERIFY_TOKEN"),
+		WhatsAppAppSecret:          os.Getenv("WHATSAPP_APP_SECRET"),
+		WhatsAppAccessToken:        os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		WhatsAppPhoneNumberID:      os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppGraphVersion:       strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
+		WhatsAppTemplateName:       env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
+		WhatsAppTemplateLocale:     env("WHATSAPP_TEMPLATE_LOCALE", "en"),
+		TelegramEnabled:            envBool("TELEGRAM_ENABLED", false),
+		TelegramBotToken:           os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:      os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
+		TelegramAPIBase:            strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
+		SMSEnabled:                 envBool("SMS_ENABLED", false),
+		SMSProvider:                env("SMS_PROVIDER", "webhook"),
+		SMSWebhookSecret:           os.Getenv("SMS_WEBHOOK_SECRET"),
+		SMSSenderID:                env("SMS_SENDER_ID", "Xego"),
+		SMSAPIBase:                 strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
+		SMSAPIKey:                  os.Getenv("SMS_API_KEY"),
+		DataProvider:               strings.ToLower(env("DATA_PROVIDER", "simulated")),
+		VTPassBaseURL:              strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
+		VTPassAPIKey:               os.Getenv("VTPASS_API_KEY"),
+		VTPassPublicKey:            os.Getenv("VTPASS_PUBLIC_KEY"),
+		VTPassSecretKey:            os.Getenv("VTPASS_SECRET_KEY"),
+		VTPassWebhookSecret:        os.Getenv("VTPASS_WEBHOOK_SECRET"),
+		VTPassTimeout:              envDuration("VTPASS_TIMEOUT", 45*time.Second),
+		PaymentMinKobo:             envInt64("PAYMENT_MIN_KOBO", 10_000),
+		PaymentMaxKobo:             envInt64("PAYMENT_MAX_KOBO", 10_000_000),
+		RetentionPeriod:            envDuration("RETENTION_PERIOD", 90*24*time.Hour),
+		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
+		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
+		RateLimitWebhooksPerMinute: int(envInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
+		RateLimitPublicPerMinute:   int(envInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
+		RateLimitScanPerMinute:     int(envInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {
@@ -133,6 +156,17 @@ func Load() (Config, error) {
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
+	}
+	cfg.LogFormat = strings.ToLower(env("LOG_FORMAT", "json"))
+	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {
+		return Config{}, fmt.Errorf("LOG_FORMAT must be \"json\" or \"text\", got %q", cfg.LogFormat)
+	}
+	if raw := strings.TrimSpace(os.Getenv("DATA_ENCRYPTION_KEY")); raw != "" {
+		key, err := hex.DecodeString(raw)
+		if err != nil || len(key) != 32 {
+			return Config{}, errors.New("DATA_ENCRYPTION_KEY must be 64 hex characters (32 bytes)")
+		}
+		cfg.DataEncryptionKey = key
 	}
 	if cfg.PaymentMinKobo <= 0 || cfg.PaymentMaxKobo < cfg.PaymentMinKobo {
 		return Config{}, fmt.Errorf("payment limits are invalid")
@@ -164,6 +198,9 @@ func Load() (Config, error) {
 				return Config{}, fmt.Errorf("%s is required in production", name)
 			}
 		}
+		if len(cfg.DataEncryptionKey) == 0 {
+			return Config{}, errors.New("DATA_ENCRYPTION_KEY is required in production")
+		}
 		if !strings.HasPrefix(cfg.PaystackSecretKey, "sk_test_") {
 			return Config{}, fmt.Errorf("PAYSTACK_SECRET_KEY must be a Paystack test key")
 		}
@@ -175,6 +212,18 @@ func Load() (Config, error) {
 				if value == "" {
 					return Config{}, fmt.Errorf("%s is required when TELEGRAM_ENABLED=true", name)
 				}
+			}
+		}
+		if cfg.EmailDemoCodeInChat {
+			return Config{}, errors.New("EMAIL_DEMO_CODE_IN_CHAT is not allowed in production")
+		}
+		if cfg.TOTPEnabled {
+			if cfg.TOTPEncryptionKey == "" {
+				return Config{}, errors.New("TOTP_ENCRYPTION_KEY is required when TOTP_ENABLED=true")
+			}
+			key, err := hex.DecodeString(cfg.TOTPEncryptionKey)
+			if err != nil || len(key) != 32 {
+				return Config{}, errors.New("TOTP_ENCRYPTION_KEY must be 64 hex characters (32 bytes)")
 			}
 		}
 		if cfg.SMSEnabled && cfg.SMSWebhookSecret == "" {

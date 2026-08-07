@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/mail"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
@@ -411,8 +413,15 @@ func (s *ConversationService) startEmailConfirmation(ctx context.Context, channe
 	if err != nil {
 		return err
 	}
+	codeHash, err := emailCodeHash(email, code)
+	if err != nil {
+		return err
+	}
 	expiresAt := time.Now().Add(s.cfg.EmailVerificationTTL)
-	if err := s.store.CreateEmailVerificationCode(ctx, userID, email, emailCodeHash(email, code), expiresAt); err != nil {
+	if err := s.store.CreateEmailVerificationCode(ctx, userID, email, codeHash, expiresAt); err != nil {
+		if errors.Is(err, store.ErrResendTooSoon) {
+			return s.sendText(ctx, channel, recipient, "A confirmation code was sent recently. Please wait a minute, then type RESEND.")
+		}
 		return err
 	}
 	subject := s.cfg.AppName + " email confirmation code"
@@ -424,7 +433,7 @@ func (s *ConversationService) startEmailConfirmation(ctx context.Context, channe
 		}
 		return s.sendText(ctx, channel, recipient, "We sent a 6-digit confirmation code to "+email+".\n\nEnter the code here to continue. You can also type RESEND or CHANGE EMAIL.")
 	}
-	if s.cfg.EmailDemoCodeInChat {
+	if s.cfg.EmailDemoCodeInChat && s.cfg.Environment != "production" {
 		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Demo email confirmation for %s\n\nCode: %s\n\nEnter this 6-digit code to continue. In production this code should be delivered by email only.", email, code))
 	}
 	return s.sendText(ctx, channel, recipient, "Email confirmation is enabled, but email delivery is not configured yet. Ask the operator to configure SMTP or enable the demo code fallback.")
@@ -631,7 +640,7 @@ func (s *ConversationService) handleMerchantRegistrationEmailCode(ctx context.Co
 	if len(code) != 6 {
 		return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
 	}
-	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
+	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeDigest(email, code))
 	if err != nil {
 		return err
 	}
@@ -764,7 +773,7 @@ func (s *ConversationService) handleIndividualEmailCode(ctx context.Context, cha
 	if len(code) != 6 {
 		return s.sendText(ctx, channel, recipient, "Please enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
 	}
-	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeHash(email, code))
+	ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeDigest(email, code))
 	if err != nil {
 		return err
 	}
@@ -3974,9 +3983,19 @@ func newEmailCode() (string, error) {
 	return fmt.Sprintf("%06d", value.Int64()), nil
 }
 
-func emailCodeHash(email, code string) []byte {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email)) + ":" + normalizeEmailCode(code)))
-	return sum[:]
+// emailCodeDigest returns the keyed digest used to verify a submitted
+// confirmation code against its stored bcrypt hash.
+func emailCodeDigest(email, code string) []byte {
+	digest := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email)) + ":" + normalizeEmailCode(code)))
+	return digest[:]
+}
+
+// emailCodeHash returns a salted, slow hash of the email-bound confirmation
+// code. bcrypt embeds its own per-code salt, so equal codes for different
+// users yield different hashes and offline brute force of a leaked database
+// is not practical.
+func emailCodeHash(email, code string) ([]byte, error) {
+	return bcrypt.GenerateFromPassword(emailCodeDigest(email, code), bcrypt.DefaultCost)
 }
 
 func normalizeEmailCode(value string) string {
