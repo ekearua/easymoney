@@ -1,0 +1,9 @@
+FROM postgres:17-alpine
+
+RUN apk add --no-cache rclone && \
+    mkdir -p /opt/xego-backup
+
+COPY deploy/backup.sh /opt/xego-backup/backup.sh
+RUN chmod +x /opt/xego-backup/backup.sh
+
+ENTRYPOINT ["/opt/xego-backup/backup.sh"]

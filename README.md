@@ -167,6 +167,21 @@ The retention worker (`go run ./cmd/demo retain`, or every 24h at server start) 
 
 Legal holds freeze a subject so retention never touches it — for subpoenas, disputes, or investigations. Manage them at `/admin/legal-holds` (admin role). A hold can cover a `user`, `payment`, `invoice`, or `thrift_group`; holds on a user protect all their records. The purge skips anything with an active hold, and `/admin/archive` shows the immutable ledger of archived records. Holds and archive writes are themselves audited.
 
+### Backups & point-in-time recovery
+
+PostgreSQL WAL is archived to a local directory (`deploy/pg-archive-wal.sh` as `archive_command`), and `deploy/backup.sh` takes a `pg_basebackup` full backup and ships base + WAL to an S3-compatible bucket (OCI Object Storage, AWS S3, MinIO) via rclone. Defaults: 30-day retention (`BACKUP_RETENTION_DAYS`), RPO < 1h (`BACKUP_RPO`). Restore instructions live in `deploy/RESTORE.md`.
+
+```env
+BACKUP_BUCKET=replace-with-bucket-name
+BACKUP_PREFIX=whatsapp-payment
+BACKUP_RETENTION_DAYS=30
+BACKUP_RPO=1h
+BACKUP_DIR=/var/lib/xego-backup
+RCLONE_REMOTE=xegobackup
+```
+
+Configure the rclone remote once (`rclone --config /etc/xego-backup/rclone.conf config`), then run `bash deploy/backup.sh --restore-check` for a first verified backup. Docker Compose ships a one-shot `backup` service (`docker compose run --rm backup`) and enables WAL archiving on the `db` service automatically.
+
 ### WhatsApp Cloud API
 
 - Callback URL: `https://<host>/webhooks/whatsapp`

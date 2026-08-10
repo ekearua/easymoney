@@ -3,19 +3,46 @@ services:
     image: postgres:17
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/usr/local/bin/xego-db-entrypoint.sh"]
-    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/postgresql/ssl/server.crt", "-c", "ssl_key_file=/etc/postgresql/ssl/server.key"]
+    command: ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/etc/postgresql/ssl/server.crt", "-c", "ssl_key_file=/etc/postgresql/ssl/server.key", "-c", "wal_level=replica", "-c", "archive_mode=on", "-c", "archive_command=/usr/local/bin/xego-archive-wal.sh %p %f"]
     environment:
       POSTGRES_DB: whatsapp_payment
       POSTGRES_USER: whatsapp_payment
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_DIR: /var/lib/xego-backup
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./deploy/db-ssl-entrypoint.sh:/usr/local/bin/xego-db-entrypoint.sh:ro
+      - ./deploy/pg-archive-wal.sh:/usr/local/bin/xego-archive-wal.sh:ro
+      - xego_backup:/var/lib/xego-backup
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U whatsapp_payment -d whatsapp_payment"]
       interval: 5s
       timeout: 5s
       retries: 12
+    networks: [private]
+
+  backup:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.backup
+    restart: "no"
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-}
+      BACKUP_PREFIX: ${BACKUP_PREFIX:-whatsapp-payment}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_RPO: ${BACKUP_RPO:-1h}
+      BACKUP_DIR: /var/lib/xego-backup
+      RCLONE_REMOTE: ${RCLONE_REMOTE:-xegobackup}
+    volumes:
+      - xego_backup:/var/lib/xego-backup
+      - ${RCLONE_CONFIG:-./deploy/rclone.conf}:/etc/xego-backup/rclone.conf:ro
+    depends_on:
+      db:
+        condition: service_healthy
     networks: [private]
 
   migrate:
@@ -73,3 +100,4 @@ volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  xego_backup:
