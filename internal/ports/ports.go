@@ -116,3 +116,29 @@ type DataProvider interface {
 	FulfilData(context.Context, DataFulfilmentRequest) (DataFulfilmentResult, error)
 	CheckDataStatus(context.Context, string) (DataFulfilmentResult, error)
 }
+
+// IdentityVerificationRequest contains the customer details sent to an
+// identity verification provider.
+type IdentityVerificationRequest struct {
+	IDType      string
+	IDNumber    string
+	LegalName   string
+	DateOfBirth string
+	PhoneNumber string
+}
+
+// IdentityVerificationResult is the provider-neutral outcome of an identity
+// check.
+type IdentityVerificationResult struct {
+	Status      string
+	ProviderRef string
+	MatchName   bool
+	MatchDOB    bool
+	Message     string
+}
+
+// IdentityVerifier isolates identity verification (NIN/BVN) from a specific
+// vendor (Smile ID, Youverify, Dojah, Prembly, ...).
+type IdentityVerifier interface {
+	VerifyIdentity(context.Context, IdentityVerificationRequest) (IdentityVerificationResult, error)
+}

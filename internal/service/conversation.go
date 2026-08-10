@@ -45,18 +45,19 @@ type ConversationService struct {
 	data       *DataService
 	messengers map[string]ports.Messenger
 	email      ports.EmailSender
+	identity   ports.IdentityVerifier
 
 	acceptedMu      sync.RWMutex
 	acceptedNumbers map[string]bool
 }
 
 // NewConversationService constructs the customer-facing workflow.
-func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender) *ConversationService {
+func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender, identity ports.IdentityVerifier) *ConversationService {
 	accepted := make(map[string]bool, len(cfg.InvoiceAcceptedNumbers))
 	for _, n := range cfg.InvoiceAcceptedNumbers {
 		accepted[n] = true
 	}
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, acceptedNumbers: accepted}
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, acceptedNumbers: accepted}
 }
 
 // AcceptedInvoiceNumbers returns the current list of accepted customer phone numbers.
@@ -215,6 +216,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleIndividualAddress(ctx, message.Channel, recipient, user, session, input)
 	case "individual_occupation":
 		return s.handleIndividualOccupation(ctx, message.Channel, recipient, user, session, input)
+	case "individual_id_number":
+		return s.handleIndividualIDNumber(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_name":
 		return s.handleThriftName(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_amount":
@@ -840,14 +843,78 @@ func (s *ConversationService) handleIndividualOccupation(ctx context.Context, ch
 	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, session.Data["legal_name"], dob, session.Data["address"], occupation); err != nil {
 		return err
 	}
-	session.State, session.Data = "menu", map[string]string{}
+	session.State = "individual_id_number"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	if err := s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved for this demo.\n\nYou can now create thrift contribution groups."); err != nil {
-		return err
+	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at Level 2 (identity on file).\n\nTo finish Level 3 verification, send your 11-digit NIN or BVN. (Demo: a NIN starting 1 or a BVN starting 2 verifies; 8 = record mismatch; 9 = not found.)\n\nSend NIN or BVN, then your 11-digit number.")
+}
+
+// handleIndividualIDNumber verifies a customer-provided NIN or BVN against the
+// identity provider and advances the KYC ladder to Level 3 on success.
+func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	raw := strings.TrimSpace(input)
+	if strings.EqualFold(raw, "skip") {
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		if err := s.sendText(ctx, channel, recipient, "No problem. Your Xego individual profile is Level 2 (identity on file) and approved for this demo.\n\nYou can create thrift contribution groups."); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, channel, recipient)
 	}
-	return s.sendMenu(ctx, channel, recipient)
+	fields := strings.Fields(raw)
+	if len(fields) < 2 {
+		return s.sendText(ctx, channel, recipient, "Send the ID type and number, like: NIN 12345678901")
+	}
+	idType := strings.ToLower(fields[0])
+	number := strings.Join(fields[1:], "")
+	switch idType {
+	case "nin", "bvn":
+	default:
+		return s.sendText(ctx, channel, recipient, "ID type must be NIN or BVN. Send the ID type and number, like: BVN 22222222222")
+	}
+	if len(number) != 11 {
+		return s.sendText(ctx, channel, recipient, "That number is not 11 digits. Send the ID type and 11-digit number, like: NIN 12345678901")
+	}
+	result, err := s.identity.VerifyIdentity(ctx, ports.IdentityVerificationRequest{
+		IDType:      idType,
+		IDNumber:    number,
+		LegalName:   session.Data["legal_name"],
+		DateOfBirth: session.Data["dob"],
+	})
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "We could not reach the verification provider. Please try again in a moment, or type SKIP to stay at Level 2.")
+	}
+	switch result.Status {
+	case "verified":
+		if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
+			UserID:           user.ID,
+			VerificationType: kyc.EvNINBVNVerified,
+			Status:           "completed",
+			Provider:         "simulated",
+			ProviderRef:      result.ProviderRef,
+			Result:           map[string]any{"id_type": idType, "match_name": result.MatchName, "match_dob": result.MatchDOB},
+		}); err != nil {
+			return err
+		}
+		if _, err := s.store.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvNINBVNVerified}, nil); err != nil {
+			return err
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		if err := s.sendText(ctx, channel, recipient, "Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nYou can now create thrift contribution groups."); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, channel, recipient)
+	case "mismatch", "not_found":
+		return s.sendText(ctx, channel, recipient, result.Message+".\n\nDouble-check the number and send it again as NIN <number> or BVN <number>, or type SKIP to stay at Level 2.")
+	default:
+		return s.sendText(ctx, channel, recipient, "Verification is still pending. Send the ID type and number again, or type SKIP to stay at Level 2.")
+	}
 }
 
 func (s *ConversationService) startThriftCreation(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {

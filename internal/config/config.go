@@ -75,6 +75,8 @@ type Config struct {
 	VTPassWebhookSecret string
 	VTPassTimeout       time.Duration
 
+	IdentityProvider string
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -130,6 +132,7 @@ func Load() (Config, error) {
 		SMSAPIBase:                 strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
 		SMSAPIKey:                  os.Getenv("SMS_API_KEY"),
 		DataProvider:               strings.ToLower(env("DATA_PROVIDER", "simulated")),
+		IdentityProvider:           strings.ToLower(env("IDENTITY_PROVIDER", "simulated")),
 		VTPassBaseURL:              strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
 		VTPassAPIKey:               os.Getenv("VTPASS_API_KEY"),
 		VTPassPublicKey:            os.Getenv("VTPASS_PUBLIC_KEY"),

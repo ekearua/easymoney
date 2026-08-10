@@ -181,7 +181,7 @@ Customer verification is modeled as a tiered ladder in `internal/kyc` (migration
 
 The ladder is enforced in the store (`AdvanceKYCTier`/`AdvanceKYCTierTo`/`DowngradeKYCTier`): advances must be adjacent with the matching evidence, downgrades can drop to any lower tier, and a sanctions/PEP screening decision of `strong`/`blocked` halts advancement until cleared (`clear`/`manually_cleared`). Every transition, screening, and manual review is written to the audit log (`kyc.tier_advanced`, `kyc.tier_downgraded`, `kyc.review_approved`, `kyc.review_rejected`).
 
-In the demo flow, an individual profile upgrade confirms the channel and submits an identity, which promotes the user to L2 (the level that unlocks thrift creation). Compliance teams manage the ladder and the manual review queue at `/admin/kyc` (admin/compliance roles): tier distribution, screening outcomes, and approve/reject actions on `pending` cases.
+In the demo flow, an individual profile upgrade confirms the channel and submits an identity, which promotes the user to L2 (the level that unlocks thrift creation). The user can then submit an 11-digit NIN or BVN, verified through the `IdentityVerifier` port (`internal/ports`), which records the verification and advances the profile to **L3** — `IDENTITY_PROVIDER=simulated` ships a deterministic local provider (a NIN starting with `1` or a BVN starting with `2` verifies; `8…` mismatches; `9…` is not found), and a live vendor (Smile ID / Youverify / Dojah / Prembly) plugs in behind the same interface. Compliance teams manage the ladder and the manual review queue at `/admin/kyc` (admin/compliance roles): tier distribution, screening outcomes, and approve/reject actions on `pending` cases.
 
 ### Backups & point-in-time recovery
 

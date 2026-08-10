@@ -35,6 +35,7 @@ import (
 	"whatsapp-payment-demo/internal/ports"
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
+	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/paystack"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -89,6 +90,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
+	var identityVerifier ports.IdentityVerifier = identityprovider.NewSimulator()
 	var emailSender ports.EmailSender
 	if cfg.SMTPHost != "" {
 		emailSender = emailprovider.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
@@ -128,7 +130,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender),
+		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier),
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose,
 	}, nil
