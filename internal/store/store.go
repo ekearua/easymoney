@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 
 	"whatsapp-payment-demo/internal/crypto"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/redact"
 )
 
@@ -2202,8 +2204,9 @@ func (s *Store) ListReceiptScanAttempts(ctx context.Context, limit int) ([]Recei
 	return attempts, rows.Err()
 }
 
-// UpsertIndividualProfile records the demo KYC profile and upgrades the user to
-// the individual account level. The KYC status is simulated for the MVP.
+// UpsertIndividualProfile records the demo KYC profile, upgrades the user to
+// the individual account level, and promotes them through the L0-L4 ladder to
+// L2 (identity on file) with a simulated clear screening and audit trail.
 func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation string) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
@@ -2225,6 +2228,26 @@ func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, l
 	if _, err := s.pool.Exec(ctx, `UPDATE users SET account_level='individual',updated_at=now() WHERE id=$1`, userID); err != nil {
 		return IndividualProfile{}, err
 	}
+	if _, err := s.RecordScreeningResult(ctx, ScreeningResult{
+		UserID:       userID,
+		Provider:     "simulated",
+		Decision:     kyc.ScreenClear,
+		MatchedNames: []string{},
+	}); err != nil {
+		return IndividualProfile{}, err
+	}
+	if _, err := s.RecordCustomerVerification(ctx, CustomerVerification{
+		UserID:           userID,
+		VerificationType: kyc.EvIdentityOnFile,
+		Provider:         "simulated",
+		Result:           map[string]any{"status": "approved_simulated"},
+	}); err != nil {
+		return IndividualProfile{}, err
+	}
+	if _, err := s.AdvanceKYCTierTo(ctx, userID, kyc.TierL2,
+		[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
+		return IndividualProfile{}, err
+	}
 	return profile, nil
 }
 
@@ -2236,6 +2259,506 @@ func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (
 		FROM individual_profiles
 		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
 	return profile, err
+}
+
+// KYCProfile is a user's position on the L0-L4 identity ladder (C9/C10).
+type KYCProfile struct {
+	UserID                uuid.UUID
+	Tier                  string
+	TierUpdatedAt         time.Time
+	Evidence              []string
+	LastScreeningDecision string
+	ReviewStatus          string
+	ReviewerEmail         string
+	ReviewedAt            *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+}
+
+// CustomerVerification is one identity or channel verification performed.
+type CustomerVerification struct {
+	ID               int64
+	UserID           uuid.UUID
+	VerificationType string
+	Status           string
+	Provider         string
+	ProviderRef      string
+	Result           map[string]any
+	VerifiedAt       time.Time
+	ExpiresAt        *time.Time
+}
+
+// ScreeningResult is one sanctions/PEP screening outcome.
+type ScreeningResult struct {
+	ID           int64
+	UserID       uuid.UUID
+	Provider     string
+	Decision     string
+	MatchedNames []string
+	ScreenedAt   time.Time
+	RescreenDue  *time.Time
+}
+
+// RiskEvent is one ML/FT risk observation.
+type RiskEvent struct {
+	ID         int64
+	UserID     uuid.UUID
+	EventType  string
+	Score      float64
+	Details    map[string]any
+	OccurredAt time.Time
+}
+
+// ManualReviewCase is a KYC review-queue item.
+type ManualReviewCase struct {
+	ID            int64
+	UserID        uuid.UUID
+	CaseType      string
+	RequestedTier string
+	Status        string
+	Reason        string
+	ReviewerEmail string
+	DecisionNote  string
+	CreatedAt     time.Time
+	ReviewedAt    *time.Time
+}
+
+// EnsureKYCProfile creates an L0 profile row for the user if none exists and
+// returns the current profile.
+func (s *Store) EnsureKYCProfile(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO kyc_profiles(user_id)
+		VALUES($1)
+		ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+		return KYCProfile{}, fmt.Errorf("ensure kyc profile: %w", err)
+	}
+	return s.KYCProfileByUser(ctx, userID)
+}
+
+// KYCProfileByUser resolves a user's KYC ladder position.
+func (s *Store) KYCProfileByUser(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
+	var p KYCProfile
+	var evidence []byte
+	var reviewedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		       COALESCE(last_screening_decision,''),
+		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		FROM kyc_profiles WHERE user_id=$1`, userID).Scan(
+		&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
+		&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
+		&reviewedAt, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	_ = json.Unmarshal(evidence, &p.Evidence)
+	if p.Evidence == nil {
+		p.Evidence = []string{}
+	}
+	p.ReviewedAt = reviewedAt
+	return p, nil
+}
+
+// ListKYCProfiles returns all ladder positions (for the admin review page).
+func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		       COALESCE(last_screening_decision,''),
+		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		FROM kyc_profiles ORDER BY updated_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var profiles []KYCProfile
+	for rows.Next() {
+		var p KYCProfile
+		var evidence []byte
+		var reviewedAt *time.Time
+		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
+			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
+			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(evidence, &p.Evidence)
+		if p.Evidence == nil {
+			p.Evidence = []string{}
+		}
+		p.ReviewedAt = reviewedAt
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
+}
+
+// KYCProfileByTier lists users currently at a given tier.
+func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		       COALESCE(last_screening_decision,''),
+		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		FROM kyc_profiles WHERE tier=$1 ORDER BY tier_updated_at DESC`, tier)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var profiles []KYCProfile
+	for rows.Next() {
+		var p KYCProfile
+		var evidence []byte
+		var reviewedAt *time.Time
+		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
+			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
+			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(evidence, &p.Evidence)
+		if p.Evidence == nil {
+			p.Evidence = []string{}
+		}
+		p.ReviewedAt = reviewedAt
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
+}
+
+// AdvanceKYCTier moves a user to exactly the next tier after validating the
+// ladder rules and required evidence. The transition is audited. An optional
+// actor identifies the operator; when nil, "system" is recorded.
+func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string, evidence []string, actor *AuditLog) (KYCProfile, error) {
+	profile, err := s.EnsureKYCProfile(ctx, userID)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	if err := kyc.CanAdvance(profile.Tier, to, evidence); err != nil {
+		return KYCProfile{}, err
+	}
+	merged := mergeEvidence(profile.Evidence, evidence)
+	evidenceJSON, _ := json.Marshal(merged)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return KYCProfile{}, fmt.Errorf("begin kyc advance: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	profile.Tier = to
+	profile.Evidence = merged
+	if err := tx.QueryRow(ctx, `
+		UPDATE kyc_profiles
+		SET tier=$2, tier_updated_at=now(), evidence=$3::jsonb, updated_at=now()
+		WHERE user_id=$1
+		RETURNING tier, tier_updated_at, review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at`,
+		userID, to, string(evidenceJSON)).Scan(&profile.Tier, &profile.TierUpdatedAt, &profile.ReviewStatus,
+		&profile.ReviewerEmail, &profile.ReviewedAt, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+		return KYCProfile{}, fmt.Errorf("advance kyc tier: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyc.tier_advanced",
+		ResourceType: sql.NullString{String: "user", Valid: true},
+		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
+		Details: map[string]any{
+			"from_tier": profile.Tier,
+			"to_tier":   to,
+			"evidence":  merged,
+		},
+	}
+	if actor != nil {
+		entry.ActorType = actor.ActorType
+		entry.ActorID = actor.ActorID
+		entry.ActorEmail = actor.ActorEmail
+		entry.IP = actor.IP
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return KYCProfile{}, fmt.Errorf("audit kyc advance: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return KYCProfile{}, fmt.Errorf("commit kyc advance: %w", err)
+	}
+	return profile, nil
+}
+
+// DowngradeKYCTier moves a user to a lower tier (rescreen match, verification
+// expiry, revocation) and audits the change.
+func (s *Store) DowngradeKYCTier(ctx context.Context, userID uuid.UUID, to string, reason string, actor *AuditLog) (KYCProfile, error) {
+	profile, err := s.EnsureKYCProfile(ctx, userID)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	if err := kyc.CanDowngrade(profile.Tier, to); err != nil {
+		return KYCProfile{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return KYCProfile{}, fmt.Errorf("begin kyc downgrade: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	profile.Tier = to
+	if err := tx.QueryRow(ctx, `
+		UPDATE kyc_profiles
+		SET tier=$2, tier_updated_at=now(), review_status='none', reviewer_email=NULL, reviewed_at=NULL, updated_at=now()
+		WHERE user_id=$1
+		RETURNING tier, tier_updated_at, review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at`,
+		userID, to).Scan(&profile.Tier, &profile.TierUpdatedAt, &profile.ReviewStatus,
+		&profile.ReviewerEmail, &profile.ReviewedAt, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+		return KYCProfile{}, fmt.Errorf("downgrade kyc tier: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyc.tier_downgraded",
+		ResourceType: sql.NullString{String: "user", Valid: true},
+		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
+		Details: map[string]any{
+			"from_tier": profile.Tier,
+			"to_tier":   to,
+			"reason":    reason,
+		},
+	}
+	if actor != nil {
+		entry.ActorType = actor.ActorType
+		entry.ActorID = actor.ActorID
+		entry.ActorEmail = actor.ActorEmail
+		entry.IP = actor.IP
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return KYCProfile{}, fmt.Errorf("audit kyc downgrade: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return KYCProfile{}, fmt.Errorf("commit kyc downgrade: %w", err)
+	}
+	return profile, nil
+}
+
+// AdvanceKYCTierTo promotes a user step by step up to a target tier using the
+// supplied evidence, stopping early if the target is already reached. This is
+// the entry point for flows that unlock a fixed tier (e.g. identity on file ->
+// L2) regardless of the user's starting position.
+func (s *Store) AdvanceKYCTierTo(ctx context.Context, userID uuid.UUID, to string, evidence []string, actor *AuditLog) (KYCProfile, error) {
+	profile, err := s.EnsureKYCProfile(ctx, userID)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	for kyc.Order(profile.Tier) < kyc.Order(to) {
+		next := tierAt(kyc.Order(profile.Tier) + 1)
+		updated, err := s.AdvanceKYCTier(ctx, userID, next, evidence, actor)
+		if err != nil {
+			return KYCProfile{}, err
+		}
+		profile = updated
+	}
+	return profile, nil
+}
+
+func tierAt(order int) string {
+	switch order {
+	case 1:
+		return kyc.TierL1
+	case 2:
+		return kyc.TierL2
+	case 3:
+		return kyc.TierL3
+	case 4:
+		return kyc.TierL4
+	}
+	return kyc.TierL0
+}
+
+// RecordCustomerVerification persists a verification outcome.
+func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerification) (CustomerVerification, error) {
+	if v.Status == "" {
+		v.Status = "completed"
+	}
+	if v.VerifiedAt.IsZero() {
+		v.VerifiedAt = time.Now().UTC()
+	}
+	result, _ := json.Marshal(v.Result)
+	if result == nil {
+		result = []byte("{}")
+	}
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO customer_verifications(user_id,verification_type,status,provider,provider_reference,result,verified_at,expires_at)
+		VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
+		RETURNING id, verified_at`,
+		v.UserID, v.VerificationType, v.Status, nullIfEmpty(v.Provider), nullIfEmpty(v.ProviderRef),
+		string(result), v.VerifiedAt, v.ExpiresAt).Scan(&v.ID, &v.VerifiedAt)
+	if err != nil {
+		return CustomerVerification{}, fmt.Errorf("record verification: %w", err)
+	}
+	return v, nil
+}
+
+// RecordScreeningResult persists a sanctions/PEP screening outcome.
+func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult) (ScreeningResult, error) {
+	names, _ := json.Marshal(r.MatchedNames)
+	if names == nil {
+		names = []byte("[]")
+	}
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO screening_results(user_id,provider,decision,matched_names,screened_at,rescreen_due)
+		VALUES($1,$2,$3,$4::jsonb,$5,$6)
+		RETURNING id, screened_at`,
+		r.UserID, r.Provider, r.Decision, string(names), time.Now().UTC(), r.RescreenDue).Scan(&r.ID, &r.ScreenedAt)
+	if err != nil {
+		return ScreeningResult{}, fmt.Errorf("record screening: %w", err)
+	}
+	return r, nil
+}
+
+// RecordRiskEvent persists an ML/FT risk observation.
+func (s *Store) RecordRiskEvent(ctx context.Context, e RiskEvent) (RiskEvent, error) {
+	details, _ := json.Marshal(e.Details)
+	if details == nil {
+		details = []byte("{}")
+	}
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO risk_events(user_id,event_type,score,details,occurred_at)
+		VALUES($1,$2,$3,$4::jsonb,COALESCE($5, now()))
+		RETURNING id, occurred_at`,
+		e.UserID, e.EventType, e.Score, string(details), e.OccurredAt).Scan(&e.ID, &e.OccurredAt)
+	if err != nil {
+		return RiskEvent{}, fmt.Errorf("record risk event: %w", err)
+	}
+	return e, nil
+}
+
+// CreateManualReviewCase opens a KYC review-queue item.
+func (s *Store) CreateManualReviewCase(ctx context.Context, c ManualReviewCase) (ManualReviewCase, error) {
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO manual_review_cases(user_id,case_type,requested_tier,reason)
+		VALUES($1,$2,$3,$4)
+		RETURNING id, created_at`,
+		c.UserID, c.CaseType, nullIfEmpty(c.RequestedTier), c.Reason).Scan(&c.ID, &c.CreatedAt)
+	if err != nil {
+		return ManualReviewCase{}, fmt.Errorf("create review case: %w", err)
+	}
+	return c, nil
+}
+
+// ListManualReviewCases lists review cases newest first, optionally filtered
+// to a status.
+func (s *Store) ListManualReviewCases(ctx context.Context, status string, limit int) ([]ManualReviewCase, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query := `
+		SELECT id, user_id, case_type, COALESCE(requested_tier,''),
+		       status, reason, COALESCE(reviewer_email,''),
+		       COALESCE(decision_note,''), created_at, reviewed_at
+		FROM manual_review_cases`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status=$1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cases []ManualReviewCase
+	for rows.Next() {
+		var c ManualReviewCase
+		var reviewedAt *time.Time
+		if err := rows.Scan(&c.ID, &c.UserID, &c.CaseType, &c.RequestedTier,
+			&c.Status, &c.Reason, &c.ReviewerEmail, &c.DecisionNote,
+			&c.CreatedAt, &reviewedAt); err != nil {
+			return nil, err
+		}
+		c.ReviewedAt = reviewedAt
+		cases = append(cases, c)
+	}
+	return cases, rows.Err()
+}
+
+// ReviewManualReviewCase approves or rejects a review case. Approving a
+// tier_upgrade case advances the user to the requested tier once the ladder
+// rules and screening pass; rejecting records the decision. The action is
+// audited with the operator as actor.
+func (s *Store) ReviewManualReviewCase(ctx context.Context, caseID int64, approve bool, reviewerEmail, note string, actor *AuditLog) (ManualReviewCase, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ManualReviewCase{}, fmt.Errorf("begin review: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var c ManualReviewCase
+	err = tx.QueryRow(ctx, `
+		SELECT id, user_id, case_type, COALESCE(requested_tier,''),
+		       status, reason, COALESCE(reviewer_email,''), COALESCE(decision_note,''), created_at, reviewed_at
+		FROM manual_review_cases WHERE id=$1 FOR UPDATE`, caseID).Scan(
+		&c.ID, &c.UserID, &c.CaseType, &c.RequestedTier, &c.Status, &c.Reason,
+		&c.ReviewerEmail, &c.DecisionNote, &c.CreatedAt, &c.ReviewedAt)
+	if err != nil {
+		return ManualReviewCase{}, fmt.Errorf("load review case: %w", err)
+	}
+	if c.Status != "pending" {
+		return ManualReviewCase{}, fmt.Errorf("review case %d already %s", c.ID, c.Status)
+	}
+	status := "rejected"
+	if approve {
+		status = "approved"
+	}
+	if err := tx.QueryRow(ctx, `
+		UPDATE manual_review_cases
+		SET status=$2, reviewer_email=$3, decision_note=$4, reviewed_at=now()
+		WHERE id=$1
+		RETURNING status, COALESCE(reviewer_email,''), COALESCE(decision_note,''), reviewed_at`,
+		caseID, status, nullIfEmpty(reviewerEmail), note).Scan(
+		&c.Status, &c.ReviewerEmail, &c.DecisionNote, &c.ReviewedAt); err != nil {
+		return ManualReviewCase{}, fmt.Errorf("update review case: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyc.review_" + status,
+		ResourceType: sql.NullString{String: "user", Valid: true},
+		ResourceID:   sql.NullString{String: c.UserID.String(), Valid: true},
+		Details: map[string]any{
+			"case_id":       c.ID,
+			"case_type":     c.CaseType,
+			"requested":     c.RequestedTier,
+			"decision_note": note,
+		},
+	}
+	if actor != nil {
+		entry.ActorType = actor.ActorType
+		entry.ActorID = actor.ActorID
+		entry.ActorEmail = actor.ActorEmail
+		entry.IP = actor.IP
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return ManualReviewCase{}, fmt.Errorf("audit review: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ManualReviewCase{}, fmt.Errorf("commit review: %w", err)
+	}
+	if approve {
+		if _, err := s.AdvanceKYCTier(ctx, c.UserID, c.RequestedTier, nil, actor); err != nil {
+			return ManualReviewCase{}, err
+		}
+	}
+	return c, nil
+}
+
+func mergeEvidence(existing []string, extra []string) []string {
+	seen := make(map[string]bool, len(existing)+len(extra))
+	out := make([]string, 0, len(existing)+len(extra))
+	for _, e := range append(append([]string{}, existing...), extra...) {
+		if e == "" || seen[e] {
+			continue
+		}
+		seen[e] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+func nullIfEmpty(s string) any {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return s
 }
 
 // ThriftSystemMerchant returns the inactive internal merchant used only for
@@ -4562,18 +5085,34 @@ func (s *Store) AppendAuditLog(ctx context.Context, entry AuditLog) (AuditLog, e
 		return entry, fmt.Errorf("begin audit log: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return entry, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return entry, fmt.Errorf("commit audit log: %w", err)
+	}
+	return entry, nil
+}
+
+// appendAuditLogTx inserts one hash-chained entry on the supplied transaction
+// without committing, so callers can co-record an audit entry atomically with
+// the action that produced it.
+func appendAuditLogTx(ctx context.Context, tx pgx.Tx, entry *AuditLog) error {
+	if entry.ActorID.UUID == uuid.Nil {
+		entry.ActorID.Valid = false
+	}
 	var prevHash string
 	if err := tx.QueryRow(ctx, `SELECT hash FROM audit_logs ORDER BY id DESC LIMIT 1 FOR UPDATE`).Scan(&prevHash); err != nil && err != pgx.ErrNoRows {
-		return entry, fmt.Errorf("read audit tail: %w", err)
+		return fmt.Errorf("read audit tail: %w", err)
 	}
 	var ip any
 	if entry.IP.Valid {
 		ip = entry.IP.String
 	}
 	entry.OccurredAt = time.Now().UTC().Truncate(time.Microsecond)
-	entry.Hash = auditHash(prevHash, entry)
+	entry.Hash = auditHash(prevHash, *entry)
 	entry.PrevHash = prevHash
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		INSERT INTO audit_logs(occurred_at, actor_type, actor_id, actor_email, ip, action, resource_type, resource_id, details, prev_hash, hash)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id, occurred_at`,
@@ -4582,12 +5121,9 @@ func (s *Store) AppendAuditLog(ctx context.Context, entry AuditLog) (AuditLog, e
 		entry.Details, prevHash, entry.Hash,
 	).Scan(&entry.ID, &entry.OccurredAt)
 	if err != nil {
-		return entry, fmt.Errorf("insert audit log: %w", err)
+		return fmt.Errorf("insert audit log: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return entry, fmt.Errorf("commit audit log: %w", err)
-	}
-	return entry, nil
+	return nil
 }
 
 // ListAuditLogs returns recent entries, newest first.

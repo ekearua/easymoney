@@ -20,6 +20,7 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
@@ -714,7 +715,7 @@ func (s *ConversationService) startIndividualUpgrade(ctx context.Context, channe
 	if user.AccountLevel == "merchant" {
 		return s.sendText(ctx, channel, recipient, "This account is currently approved as a merchant. For this demo, thrift creation is only available to individual accounts.")
 	}
-	if profile, err := s.store.IndividualProfileByUser(ctx, user.ID); err == nil && profile.KYCStatus == "approved_simulated" {
+	if kycProfile, err := s.store.KYCProfileByUser(ctx, user.ID); err == nil && kyc.Order(kycProfile.Tier) >= kyc.Order(kyc.TierL2) {
 		return s.sendText(ctx, channel, recipient, "Your Xego individual profile is already approved for the demo. Choose Create thrift to start a contribution group.")
 	}
 	if !s.cfg.EmailConfirmationEnabled {
@@ -3679,8 +3680,11 @@ func (s *ConversationService) userIsApprovedIndividual(ctx context.Context, user
 	if user.AccountLevel != "individual" {
 		return false
 	}
-	profile, err := s.store.IndividualProfileByUser(ctx, user.ID)
-	return err == nil && profile.KYCStatus == "approved_simulated"
+	profile, err := s.store.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		return false
+	}
+	return kyc.Order(profile.Tier) >= kyc.Order(kyc.TierL2)
 }
 
 func thriftJoinNameFromInput(input string) (string, bool) {

@@ -167,6 +167,22 @@ The retention worker (`go run ./cmd/demo retain`, or every 24h at server start) 
 
 Legal holds freeze a subject so retention never touches it — for subpoenas, disputes, or investigations. Manage them at `/admin/legal-holds` (admin role). A hold can cover a `user`, `payment`, `invoice`, or `thrift_group`; holds on a user protect all their records. The purge skips anything with an active hold, and `/admin/archive` shows the immutable ledger of archived records. Holds and archive writes are themselves audited.
 
+### Customer identity ladder (KYC)
+
+Customer verification is modeled as a tiered ladder in `internal/kyc` (migration `026_kyc_ladder.sql`). Every user starts at **L0** and advances one adjacent rung at a time, each gated on evidence recorded against the profile:
+
+| Tier | Requirement |
+|------|-------------|
+| L0 | Unverified (default) |
+| L1 | Channel + email confirmed |
+| L2 | Identity on file |
+| L3 | NIN/BVN verified |
+| L4 | Enhanced due diligence (EDD) |
+
+The ladder is enforced in the store (`AdvanceKYCTier`/`AdvanceKYCTierTo`/`DowngradeKYCTier`): advances must be adjacent with the matching evidence, downgrades can drop to any lower tier, and a sanctions/PEP screening decision of `strong`/`blocked` halts advancement until cleared (`clear`/`manually_cleared`). Every transition, screening, and manual review is written to the audit log (`kyc.tier_advanced`, `kyc.tier_downgraded`, `kyc.review_approved`, `kyc.review_rejected`).
+
+In the demo flow, an individual profile upgrade confirms the channel and submits an identity, which promotes the user to L2 (the level that unlocks thrift creation). Compliance teams manage the ladder and the manual review queue at `/admin/kyc` (admin/compliance roles): tier distribution, screening outcomes, and approve/reject actions on `pending` cases.
+
 ### Backups & point-in-time recovery
 
 PostgreSQL WAL is archived to a local directory (`deploy/pg-archive-wal.sh` as `archive_command`), and `deploy/backup.sh` takes a `pg_basebackup` full backup and ships base + WAL to an S3-compatible bucket (OCI Object Storage, AWS S3, MinIO) via rclone. Defaults: 30-day retention (`BACKUP_RETENTION_DAYS`), RPO < 1h (`BACKUP_RPO`). Restore instructions live in `deploy/RESTORE.md`.

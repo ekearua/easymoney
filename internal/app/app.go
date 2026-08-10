@@ -325,6 +325,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/legal-holds", a.adminLegalHolds)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds", a.adminAddLegalHold)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds/remove", a.adminRemoveLegalHold)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins", a.adminCreateAdmin)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/role", a.adminUpdateAdminRole)
@@ -1361,6 +1363,62 @@ func (a *App) adminRemoveLegalHold(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "admin.legal_holds.removed", subjectType, subjectID, map[string]any{})
 	http.Redirect(w, r, "/admin/legal-holds", http.StatusSeeOther)
+}
+
+// adminKYC renders the customer identity ladder and the pending review queue.
+func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
+	profiles, err := a.store.ListKYCProfiles(r.Context(), 200)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list kyc profiles", "error", err)
+		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	cases, err := a.store.ListManualReviewCases(r.Context(), "", 100)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list review cases", "error", err)
+		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	byTier := map[string]int{"L0": 0, "L1": 0, "L2": 0, "L3": 0, "L4": 0}
+	for _, p := range profiles {
+		byTier[p.Tier]++
+	}
+	a.renderAdmin(w, "admin_kyc.html", r, "KYC ladder", map[string]any{
+		"Profiles": profiles,
+		"Cases":    cases,
+		"ByTier":   byTier,
+	})
+}
+
+// adminKYCReview approves or rejects a manual review case.
+func (a *App) adminKYCReview(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	caseID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || caseID <= 0 {
+		http.Error(w, "invalid case id", http.StatusBadRequest)
+		return
+	}
+	approve := strings.TrimSpace(r.FormValue("decision")) == "approve"
+	note := strings.TrimSpace(r.FormValue("note"))
+	adminID := adminIDFromContext(r.Context())
+	adminEmail := adminEmailFromContext(r.Context())
+	actor := &store.AuditLog{
+		ActorType:  "admin",
+		ActorID:    uuid.NullUUID{UUID: adminID, Valid: true},
+		ActorEmail: sql.NullString{String: adminEmail, Valid: true},
+		IP:         sql.NullString{String: clientIP(r), Valid: true},
+	}
+	c, err := a.store.ReviewManualReviewCase(r.Context(), caseID, approve, adminEmail, note, actor)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "review kyc case failed", "case_id", caseID, "error", err)
+		http.Error(w, "review failed", http.StatusInternalServerError)
+		return
+	}
+	a.logger.InfoContext(r.Context(), "kyc case reviewed", "case_id", c.ID, "status", c.Status, "user_id", c.UserID.String())
+	http.Redirect(w, r, "/admin/kyc", http.StatusSeeOther)
 }
 
 func (a *App) adminCreateAdmin(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 )
 
 func TestPostgresPaymentLifecycleAndDeduplication(t *testing.T) {
@@ -636,5 +637,166 @@ func TestPostgresRetentionArchivesFinancials(t *testing.T) {
 	}
 	if heldCount != 0 {
 		t.Fatal("user should be purged after hold removal")
+	}
+}
+
+func TestPostgresKYCTierLadder(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE kyc_profiles,customer_verifications,screening_results,risk_events,
+		         authenticators,trusted_devices,manual_review_cases,audit_logs,
+		         archive_ledger,legal_holds,message_outbox,inbound_messages,webhook_deliveries,
+		         payment_events,payments,data_orders,data_order_events,conversation_sessions,
+		         invoices,invoice_items,invoice_payments,thrift_groups,thrift_members,thrift_cycles,
+		         thrift_contributions,thrift_payouts,thrift_events,merchant_registrations,
+		         users,merchants,data_networks,data_plans,merchant_owners,service_purchases,
+		         receipt_scan_tokens,receipt_scan_attempts,registered_services,service_readers,
+		         user_merchant_recents,admin_sessions,merchant_sessions,email_verification_codes,
+		         totp_pending_logins,merchant_password_reset_tokens CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348070000100")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateUserName(ctx, user.ID, "KYC Test User"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateUserEmail(ctx, user.ID, "kyc@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ConfirmUserNumber(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A brand new user starts at L0.
+	initial, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Tier != kyc.TierL0 {
+		t.Fatalf("expected L0 for new user, got %s", initial.Tier)
+	}
+
+	// Adjacent advances require the right evidence.
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+		t.Fatalf("advance L0->L1 with evidence: %v", err)
+	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvIdentityOnFile}, nil); err != nil {
+		t.Fatalf("advance L1->L2 with evidence: %v", err)
+	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err == nil {
+		t.Fatal("non-adjacent advance L2->L4 should fail")
+	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvChannelConfirmed}, nil); err == nil {
+		t.Fatal("advance with wrong evidence should fail")
+	}
+
+	// AdvanceKYCTierTo walks adjacent steps L2->L4 with all evidence.
+	walked, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL4, []string{kyc.EvNINBVNVerified, kyc.EvEDDCompleted}, nil)
+	if err != nil {
+		t.Fatalf("AdvanceKYCTierTo L2->L4: %v", err)
+	}
+	if walked.Tier != kyc.TierL4 {
+		t.Fatalf("expected L4 after walk, got %s", walked.Tier)
+	}
+	wantEvidence := []string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile, kyc.EvNINBVNVerified, kyc.EvEDDCompleted}
+	if len(walked.Evidence) != len(wantEvidence) {
+		t.Fatalf("evidence accumulation mismatch: got %v", walked.Evidence)
+	}
+
+	// Screening with a block must stop future advancement.
+	if _, err := repository.RecordScreeningResult(ctx, ScreeningResult{
+		UserID: user.ID, Provider: "simulated", Decision: "strong", MatchedNames: []string{"KYC Test User"},
+	}); err != nil {
+		t.Fatalf("record screening: %v", err)
+	}
+	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL3, "possible sanctions match", nil); err != nil {
+		t.Fatalf("downgrade L4->L3: %v", err)
+	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err == nil {
+		t.Fatal("advance while screening decision is 'strong' should fail")
+	}
+
+	// Clearing the block (manually_cleared) re-enables advancement.
+	if _, err := repository.RecordScreeningResult(ctx, ScreeningResult{
+		UserID: user.ID, Provider: "simulated", Decision: "manually_cleared",
+	}); err != nil {
+		t.Fatalf("record cleared screening: %v", err)
+	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err != nil {
+		t.Fatalf("advance after manual clear: %v", err)
+	}
+
+	// A manual review case goes through the queue and approval raises the tier.
+	if _, err := repository.CreateManualReviewCase(ctx, ManualReviewCase{
+		UserID: user.ID, CaseType: "tier_upgrade", RequestedTier: kyc.TierL4,
+		Reason: "review before L4",
+	}); err != nil {
+		t.Fatalf("create review case: %v", err)
+	}
+	cases, err := repository.ListManualReviewCases(ctx, "pending", 10)
+	if err != nil {
+		t.Fatalf("list review cases: %v", err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("expected 1 pending case, got %d", len(cases))
+	}
+	adminActor := &AuditLog{
+		ActorType:  "admin",
+		ActorID:    uuid.NullUUID{UUID: uuid.New(), Valid: true},
+		ActorEmail: sql.NullString{String: "compliance@xego.test", Valid: true},
+		IP:         sql.NullString{String: "127.0.0.1", Valid: true},
+	}
+	if _, err := repository.ReviewManualReviewCase(ctx, cases[0].ID, true, "compliance@xego.test", "documents verified", adminActor); err != nil {
+		t.Fatalf("approve review case: %v", err)
+	}
+	afterReview, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterReview.Tier != kyc.TierL4 {
+		t.Fatalf("expected L4 after review approval, got %s", afterReview.Tier)
+	}
+
+	// Every transition is audited and attributed to the operator where given.
+	var tierAdvances int
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='kyc.tier_advanced'`).Scan(&tierAdvances); err != nil {
+		t.Fatal(err)
+	}
+	if tierAdvances < 1 {
+		t.Fatalf("expected tier_advanced audit rows, got %d", tierAdvances)
+	}
+	var adminReviewActor string
+	if err := repository.pool.QueryRow(ctx, `SELECT actor_email FROM audit_logs WHERE action='kyc.review_approved' LIMIT 1`).Scan(&adminReviewActor); err != nil {
+		t.Fatal(err)
+	}
+	if adminReviewActor != "compliance@xego.test" {
+		t.Fatalf("expected admin reviewer in audit, got %q", adminReviewActor)
+	}
+
+	// ListKYCProfiles surfaces the ladder for the admin page.
+	profiles, err := repository.ListKYCProfiles(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 1 || profiles[0].UserID != user.ID {
+		t.Fatalf("expected exactly 1 profile row, got %d", len(profiles))
 	}
 }
