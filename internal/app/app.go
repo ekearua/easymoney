@@ -243,8 +243,9 @@ func (a *App) RunServer(ctx context.Context) error {
 		Handler:           a.routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      45 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 	go a.runWorkers(ctx)
 	go func() {
