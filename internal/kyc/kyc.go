@@ -54,6 +54,93 @@ const (
 	CaseRejected = "rejected"
 )
 
+// ML/FT customer risk bands (C13). low/medium/high drive CDD vs EDD: low
+// customers pass standard CDD, high customers require enhanced due diligence
+// (L4) before higher-value activity.
+const (
+	RiskLow    = "low"
+	RiskMedium = "medium"
+	RiskHigh   = "high"
+)
+
+// RiskBandThresholds map an aggregate score onto the CBN risk-based bands.
+const (
+	RiskBandMediumThreshold = 40.0
+	RiskBandHighThreshold   = 70.0
+)
+
+// RiskEventInput is one scored ML/FT observation contributing to the customer
+// risk score.
+type RiskEventInput struct {
+	EventType string
+	Score     float64
+}
+
+// RiskResult is the outcome of scoring a customer.
+type RiskResult struct {
+	Score   float64
+	Band    string
+	Factors []string
+}
+
+// BandForScore maps an aggregate 0-100 risk score to a band.
+func BandForScore(score float64) string {
+	switch {
+	case score >= RiskBandHighThreshold:
+		return RiskHigh
+	case score >= RiskBandMediumThreshold:
+		return RiskMedium
+	}
+	return RiskLow
+}
+
+// ScoreRisk aggregates observed ML/FT risk events with profile context (tier,
+// last sanctions/PEP decision) into a 0-100 score and low/medium/high band.
+// Each event contributes its own 0-100 weight (capped at 100 per event);
+// screening and tier adjustments are additive and the total is clamped to
+// [0,100].
+func ScoreRisk(events []RiskEventInput, tier, screening string) RiskResult {
+	var score float64
+	var factors []string
+	for _, e := range events {
+		contribution := e.Score
+		if contribution > 100 {
+			contribution = 100
+		}
+		if contribution < 0 {
+			contribution = 0
+		}
+		if contribution == 0 {
+			continue
+		}
+		score += contribution
+		factors = append(factors, e.EventType)
+	}
+	switch screening {
+	case ScreenPossible:
+		score += 15
+		factors = append(factors, "possible sanctions/PEP match")
+	case ScreenStrong, ScreenBlocked:
+		score += 40
+		factors = append(factors, "strong sanctions/PEP match")
+	}
+	switch tier {
+	case TierL0, TierL1:
+		score += 10
+		factors = append(factors, "identity not yet verified")
+	case TierL4:
+		score -= 20
+		factors = append(factors, "enhanced due diligence completed")
+	}
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	return RiskResult{Score: score, Band: BandForScore(score), Factors: factors}
+}
+
 // ValidTier reports whether t is one of the L0-L4 tiers.
 func ValidTier(t string) bool {
 	switch t {

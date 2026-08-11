@@ -71,3 +71,104 @@ func TestBlockedByScreening(t *testing.T) {
 		}
 	}
 }
+
+func TestBandForScore(t *testing.T) {
+	cases := map[float64]string{
+		0:   RiskLow,
+		39:  RiskLow,
+		40:  RiskMedium,
+		69:  RiskMedium,
+		70:  RiskHigh,
+		100: RiskHigh,
+	}
+	for score, want := range cases {
+		if got := BandForScore(score); got != want {
+			t.Errorf("BandForScore(%v) = %q, want %q", score, got, want)
+		}
+	}
+}
+
+func TestScoreRisk(t *testing.T) {
+	tests := []struct {
+		name      string
+		events    []RiskEventInput
+		tier      string
+		screening string
+		wantScore float64
+		wantBand  string
+	}{
+		{
+			name:      "clean low-risk profile",
+			events:    nil,
+			tier:      TierL3,
+			screening: ScreenClear,
+			wantScore: 0,
+			wantBand:  RiskLow,
+		},
+		{
+			name:      "unverified adds risk",
+			events:    nil,
+			tier:      TierL0,
+			screening: "",
+			wantScore: 10,
+			wantBand:  RiskLow,
+		},
+		{
+			name: "structuring events drive medium",
+			events: []RiskEventInput{
+				{EventType: "structuring", Score: 30},
+				{EventType: "velocity", Score: 15},
+			},
+			tier:      TierL3,
+			screening: ScreenClear,
+			wantScore: 45,
+			wantBand:  RiskMedium,
+		},
+		{
+			name:      "strong screening pushes high",
+			events:    []RiskEventInput{{EventType: "round_amounts", Score: 35}},
+			tier:      TierL2,
+			screening: ScreenStrong,
+			wantScore: 75,
+			wantBand:  RiskHigh,
+		},
+		{
+			name:      "event score clamped to 100",
+			events:    []RiskEventInput{{EventType: "sanction", Score: 500}},
+			tier:      TierL3,
+			screening: ScreenClear,
+			wantScore: 100,
+			wantBand:  RiskHigh,
+		},
+		{
+			name:      "EDD completes offsets earlier risk",
+			events:    []RiskEventInput{{EventType: "velocity", Score: 25}},
+			tier:      TierL4,
+			screening: ScreenPossible,
+			wantScore: 20,
+			wantBand:  RiskLow,
+		},
+		{
+			name: "total clamped at 100",
+			events: []RiskEventInput{
+				{EventType: "a", Score: 80},
+				{EventType: "b", Score: 80},
+			},
+			tier:      TierL3,
+			screening: ScreenStrong,
+			wantScore: 100,
+			wantBand:  RiskHigh,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ScoreRisk(tc.events, tc.tier, tc.screening)
+			if got.Score != tc.wantScore {
+				t.Errorf("score = %v, want %v", got.Score, tc.wantScore)
+			}
+			if got.Band != tc.wantBand {
+				t.Errorf("band = %q, want %q", got.Band, tc.wantBand)
+			}
+		})
+	}
+}

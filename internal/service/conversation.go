@@ -864,6 +864,9 @@ func (s *ConversationService) handleIndividualOccupation(ctx context.Context, ch
 		[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
 		return err
 	}
+	if _, err := s.store.RecomputeRiskScore(ctx, user.ID); err != nil {
+		return err
+	}
 	session.State = "individual_id_number"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
@@ -946,11 +949,15 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 		if _, err := s.store.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvNINBVNVerified}, nil); err != nil {
 			return err
 		}
+		riskProfile, err := s.store.RecomputeRiskScore(ctx, user.ID)
+		if err != nil {
+			return err
+		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nYou can now create thrift contribution groups."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nRisk profile: %s.\n\nYou can now create thrift contribution groups.", strings.ToUpper(riskProfile.RiskBand))); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, channel, recipient)

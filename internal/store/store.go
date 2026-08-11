@@ -2261,6 +2261,9 @@ type KYCProfile struct {
 	ReviewStatus          string
 	ReviewerEmail         string
 	ReviewedAt            *time.Time
+	RiskScore             float64
+	RiskBand              string
+	RiskUpdatedAt         *time.Time
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 }
@@ -2333,11 +2336,14 @@ func (s *Store) KYCProfileByUser(ctx context.Context, userID uuid.UUID) (KYCProf
 	err := s.pool.QueryRow(ctx, `
 		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
-		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		       review_status, COALESCE(reviewer_email,''), reviewed_at,
+		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
+		       created_at, updated_at
 		FROM kyc_profiles WHERE user_id=$1`, userID).Scan(
 		&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 		&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
-		&reviewedAt, &p.CreatedAt, &p.UpdatedAt)
+		&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
+		&p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return KYCProfile{}, err
 	}
@@ -2357,7 +2363,9 @@ func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, e
 	rows, err := s.pool.Query(ctx, `
 		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
-		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		       review_status, COALESCE(reviewer_email,''), reviewed_at,
+		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
+		       created_at, updated_at
 		FROM kyc_profiles ORDER BY updated_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -2370,7 +2378,8 @@ func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, e
 		var reviewedAt *time.Time
 		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
-			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)
@@ -2388,7 +2397,9 @@ func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile
 	rows, err := s.pool.Query(ctx, `
 		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
-		       review_status, COALESCE(reviewer_email,''), reviewed_at, created_at, updated_at
+		       review_status, COALESCE(reviewer_email,''), reviewed_at,
+		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
+		       created_at, updated_at
 		FROM kyc_profiles WHERE tier=$1 ORDER BY tier_updated_at DESC`, tier)
 	if err != nil {
 		return nil, err
@@ -2401,7 +2412,8 @@ func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile
 		var reviewedAt *time.Time
 		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
-			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)
@@ -2569,7 +2581,9 @@ func (s *Store) KYCProfilesDueForRescreen(ctx context.Context, cutoff time.Time,
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.user_id, p.tier, p.tier_updated_at, COALESCE(p.evidence::text,'[]'),
 		       COALESCE(p.last_screening_decision,''),
-		       p.review_status, COALESCE(p.reviewer_email,''), p.reviewed_at, p.created_at, p.updated_at
+		       p.review_status, COALESCE(p.reviewer_email,''), p.reviewed_at,
+		       COALESCE(p.risk_score,0), COALESCE(p.risk_band,'low'), p.risk_updated_at,
+		       p.created_at, p.updated_at
 		FROM kyc_profiles p
 		LEFT JOIN LATERAL (
 			SELECT user_id, screened_at FROM screening_results
@@ -2590,7 +2604,8 @@ func (s *Store) KYCProfilesDueForRescreen(ctx context.Context, cutoff time.Time,
 		var reviewedAt *time.Time
 		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
-			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)
@@ -2685,7 +2700,8 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 	return r, nil
 }
 
-// RecordRiskEvent persists an ML/FT risk observation.
+// RecordRiskEvent persists an ML/FT risk observation and recomputes the
+// customer's aggregate risk band.
 func (s *Store) RecordRiskEvent(ctx context.Context, e RiskEvent) (RiskEvent, error) {
 	details, _ := json.Marshal(e.Details)
 	if details == nil {
@@ -2699,7 +2715,75 @@ func (s *Store) RecordRiskEvent(ctx context.Context, e RiskEvent) (RiskEvent, er
 	if err != nil {
 		return RiskEvent{}, fmt.Errorf("record risk event: %w", err)
 	}
+	if _, err := s.RecomputeRiskScore(ctx, e.UserID); err != nil {
+		return RiskEvent{}, fmt.Errorf("recompute risk after event: %w", err)
+	}
 	return e, nil
+}
+
+// RecomputeRiskScore aggregates a user's ML/FT risk events with their KYC tier
+// and last screening decision into a 0-100 score and low/medium/high band,
+// persists it on the KYC profile, and audits the recalculation.
+func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
+	events := []kyc.RiskEventInput{}
+	rows, err := s.pool.Query(ctx, `
+		SELECT event_type, COALESCE(score,0) FROM risk_events
+		WHERE user_id=$1 ORDER BY occurred_at ASC`, userID)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e kyc.RiskEventInput
+		if err := rows.Scan(&e.EventType, &e.Score); err != nil {
+			return KYCProfile{}, err
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return KYCProfile{}, err
+	}
+	profile, err := s.EnsureKYCProfile(ctx, userID)
+	if err != nil {
+		return KYCProfile{}, err
+	}
+	result := kyc.ScoreRisk(events, profile.Tier, profile.LastScreeningDecision)
+	now := time.Now().UTC()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return KYCProfile{}, fmt.Errorf("begin risk recompute: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	profile.RiskScore = result.Score
+	profile.RiskBand = result.Band
+	profile.RiskUpdatedAt = &now
+	if err := tx.QueryRow(ctx, `
+		UPDATE kyc_profiles
+		SET risk_score=$2, risk_band=$3, risk_updated_at=$4, updated_at=now()
+		WHERE user_id=$1
+		RETURNING risk_score, risk_band, risk_updated_at`,
+		userID, result.Score, result.Band, now).Scan(&profile.RiskScore, &profile.RiskBand, &profile.RiskUpdatedAt); err != nil {
+		return KYCProfile{}, fmt.Errorf("persist risk score: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyc.risk_scored",
+		ResourceType: sql.NullString{String: "user", Valid: true},
+		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
+		Details: map[string]any{
+			"score":   result.Score,
+			"band":    result.Band,
+			"factors": result.Factors,
+			"events":  len(events),
+		},
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return KYCProfile{}, fmt.Errorf("audit risk recompute: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return KYCProfile{}, fmt.Errorf("commit risk recompute: %w", err)
+	}
+	return profile, nil
 }
 
 // CreateManualReviewCase opens a KYC review-queue item.

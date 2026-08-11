@@ -9,7 +9,7 @@
 <section class="panel">
   <h2>Tier distribution</h2>
   <p>L0 {{index .ByTier "L0"}} · L1 {{index .ByTier "L1"}} · L2 {{index .ByTier "L2"}} · L3 {{index .ByTier "L3"}} · L4 {{index .ByTier "L4"}}</p>
-  <p class="muted">Ladder rules are enforced by <span class="mono">internal/kyc</span>: advancement is adjacent and evidence-gated; downgrades are audited.</p>
+  <p class="muted">Ladder rules are enforced by <span class="mono">internal/kyc</span>: advancement is adjacent and evidence-gated; downgrades are audited. Risk bands drive CDD vs EDD.</p>
 </section>
 
 <section class="panel">
@@ -44,15 +44,16 @@
 
 <section class="panel">
   <h2>Profiles</h2>
-  <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Risk</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
   {{range .Profiles}}<tr>
     <td class="mono">{{.UserID}}</td>
     <td><strong>{{.Tier}}</strong></td>
+    <td><span class="status {{if or (eq .RiskBand "medium") (eq .RiskBand "high")}}warn{{else}}ok{{end}}">{{.RiskBand}}</span> {{.RiskScore | printf "%.0f"}}</td>
     <td>{{if .LastScreeningDecision}}{{.LastScreeningDecision}}{{else}}—{{end}}</td>
     <td class="mono">{{printf "%v" .Evidence}}</td>
     <td style="white-space:nowrap">{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td>
   </tr>
-  {{else}}<tr><td colspan="5">No KYC profiles yet.</td></tr>{{end}}
+  {{else}}<tr><td colspan="6">No KYC profiles yet.</td></tr>{{end}}
   </tbody></table></div>
 </section>
 </main></body></html>

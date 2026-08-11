@@ -812,4 +812,35 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if len(profiles) != 1 || profiles[0].UserID != user.ID {
 		t.Fatalf("expected exactly 1 profile row, got %d", len(profiles))
 	}
+
+	// C13: risk events drive a low/medium/high band that persists on the profile.
+	startRisk, err := repository.RecomputeRiskScore(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startRisk.RiskBand != kyc.RiskLow {
+		t.Fatalf("expected low risk at L4 with no events, got %q", startRisk.RiskBand)
+	}
+	if _, err := repository.RecordRiskEvent(ctx, RiskEvent{
+		UserID: user.ID, EventType: "structuring", Score: 70, Details: map[string]any{"window": "24h"},
+	}); err != nil {
+		t.Fatalf("record risk event: %v", err)
+	}
+	riskProfile, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if riskProfile.RiskBand != kyc.RiskMedium {
+		t.Fatalf("expected medium risk after structuring event, got %q", riskProfile.RiskBand)
+	}
+	if riskProfile.RiskScore != 50 {
+		t.Fatalf("expected risk score 50 (70 - 20 EDD), got %v", riskProfile.RiskScore)
+	}
+	var riskAudits int
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM audit_logs WHERE action='kyc.risk_scored'`).Scan(&riskAudits); err != nil {
+		t.Fatal(err)
+	}
+	if riskAudits < 2 {
+		t.Fatalf("expected risk_scored audit rows, got %d", riskAudits)
+	}
 }

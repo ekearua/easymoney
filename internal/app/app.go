@@ -243,6 +243,9 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			a.logger.WarnContext(ctx, "rescreen record failed", "user_id", profile.UserID.String(), "error", err)
 			continue
 		}
+		if _, err := a.store.RecomputeRiskScore(ctx, profile.UserID); err != nil {
+			a.logger.WarnContext(ctx, "rescreen risk recompute failed", "user_id", profile.UserID.String(), "error", err)
+		}
 		screened++
 		if kyc.BlockedByScreening(decision.Decision) {
 			blocked++
@@ -257,6 +260,29 @@ func (a *App) RescreenDue(ctx context.Context) error {
 		}
 	}
 	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked)
+	return nil
+}
+
+// RecomputeAllRisk refreshes the ML/FT risk band for every KYC profile. Used
+// by the demo CLI when risk events are backfilled or thresholds change.
+func (a *App) RecomputeAllRisk(ctx context.Context) error {
+	profiles, err := a.store.ListKYCProfiles(ctx, 500)
+	if err != nil {
+		return err
+	}
+	if len(profiles) == 0 {
+		a.logger.InfoContext(ctx, "no KYC profiles to score")
+		return nil
+	}
+	recomputed := 0
+	for _, profile := range profiles {
+		if _, err := a.store.RecomputeRiskScore(ctx, profile.UserID); err != nil {
+			a.logger.WarnContext(ctx, "risk recompute failed", "user_id", profile.UserID.String(), "error", err)
+			continue
+		}
+		recomputed++
+	}
+	a.logger.InfoContext(ctx, "risk recompute completed", "profiles", len(profiles), "recomputed", recomputed)
 	return nil
 }
 
