@@ -1,0 +1,60 @@
+{{define "admin_ledger.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Finance</p><h1>Double-entry ledger</h1></div></header>
+
+{{if .ReversalResult}}<div class="notice ok">Reversal posted.</div>{{end}}
+{{if .ReversalError}}<div class="notice error">Reversal failed: {{.ReversalError}}</div>{{end}}
+
+<section class="panel">
+  <h2>Chain integrity</h2>
+  {{if .ChainSound}}
+  <p class="muted">{{.ChainCount}} entries verified — hash chain is sound.</p>
+  {{else}}
+  <p class="muted" style="color:#c0392b">{{.ChainCount}} entries — chain BROKEN at entry #{{.ChainBroken}}.</p>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Account balances</h2>
+  <div class="table-wrap"><table><thead><tr><th>Account</th><th>Debit</th><th>Credit</th><th>Net</th></tr></thead><tbody>
+  {{range .Balances}}<tr>
+    <td>{{index $.AccountNames .Account}} <span class="mono muted">{{.Account}}</span></td>
+    <td>{{money .DebitKobo}}</td>
+    <td>{{money .CreditKobo}}</td>
+    <td><strong>{{money .NetKobo}}</strong></td>
+  </tr>{{else}}<tr><td colspan="4">No postings yet.</td></tr>{{end}}
+  </tbody><tfoot><tr><td>Net total (must be 0)</td><td></td><td></td><td><strong>{{money .NetTotalKobo}}</strong></td></tr></tfoot></table></div>
+</section>
+
+<section class="panel">
+  <h2>Reversal</h2>
+  <p class="muted">Post offsetting entries for a journal reference (a payment, data order or thrift payout id). Original rows are never mutated.</p>
+  <form method="post" action="/admin/ledger/reverse">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Journal reference <input type="text" name="journal_ref" required style="width:24em"></label>
+    <label>Reason <input type="text" name="reason" required style="width:24em"></label>
+    <button type="submit">Post reversal</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Recent postings</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Ref</th><th>Source</th><th>Type</th><th>Account</th><th>Amount</th><th>Description</th><th>Hash</th></tr></thead><tbody>
+  {{range .Entries}}<tr{{if ne .ReversalOf 0}} class="muted"{{end}}>
+    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="mono">{{.JournalRef}}</td>
+    <td class="mono">{{.SourceType}}:{{.SourceID}}</td>
+    <td><span class="status {{if eq .EntryType "debit"}}ok{{else}}warn{{end}}">{{.EntryType}}</span></td>
+    <td>{{index $.AccountNames .Account}} <span class="mono muted">{{.Account}}</span></td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Description}}{{if ne .ReversalOf 0}} (reverses #{{.ReversalOf}}){{end}}</td>
+    <td class="mono" style="max-width:10em;overflow:hidden;text-overflow:ellipsis" title="{{.Hash}}">{{.Hash}}</td>
+  </tr>{{else}}<tr><td colspan="8">Nothing posted yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

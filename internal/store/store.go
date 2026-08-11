@@ -1550,11 +1550,14 @@ func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.U
 	}
 	defer tx.Rollback(ctx)
 	var invoiceID uuid.UUID
+	var paidKobo int64
+	var currency string
 	err = tx.QueryRow(ctx, `
-		SELECT invoice_id
-		FROM invoice_payments
-		WHERE payment_id=$1
-		FOR UPDATE`, paymentID).Scan(&invoiceID)
+		SELECT ip.invoice_id, ip.amount_kobo, COALESCE(p.currency,'NGN')
+		FROM invoice_payments ip
+		JOIN payments p ON p.id=ip.payment_id
+		WHERE ip.payment_id=$1
+		FOR UPDATE OF ip`, paymentID).Scan(&invoiceID, &paidKobo, &currency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return InvoiceView{}, false, tx.Commit(ctx)
 	}
@@ -1565,6 +1568,13 @@ func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.U
 		UPDATE invoice_payments
 		SET status='succeeded',updated_at=now()
 		WHERE payment_id=$1 AND status <> 'succeeded'`, paymentID); err != nil {
+		return InvoiceView{}, false, err
+	}
+	// C16: allocate the customer float to the merchant payable once a payment
+	// is confirmed against an invoice. Reversing the payment journal reference
+	// unwinds both the money-in and this allocation.
+	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "invoice_payment", paymentID.String(),
+		LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Invoice payment allocation", "system", paidKobo); err != nil {
 		return InvoiceView{}, false, err
 	}
 	var total, paid int64
@@ -3394,12 +3404,13 @@ func (s *Store) ApplyThriftContributionPaymentSuccess(ctx context.Context, payme
 	}
 	defer tx.Rollback(ctx)
 	var contributionID, cycleID, groupID uuid.UUID
+	var contributionKobo int64
 	err = tx.QueryRow(ctx, `
-		SELECT tc.id,tc.cycle_id,tcy.group_id
+		SELECT tc.id,tc.cycle_id,tcy.group_id,tc.amount_kobo
 		FROM thrift_contributions tc
 		JOIN thrift_cycles tcy ON tcy.id=tc.cycle_id
 		WHERE tc.payment_id=$1
-		FOR UPDATE`, paymentID).Scan(&contributionID, &cycleID, &groupID)
+		FOR UPDATE OF tc`, paymentID).Scan(&contributionID, &cycleID, &groupID, &contributionKobo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ThriftContributionView{}, false, tx.Commit(ctx)
 	}
@@ -3414,6 +3425,13 @@ func (s *Store) ApplyThriftContributionPaymentSuccess(ctx context.Context, payme
 		return ThriftContributionView{}, false, err
 	}
 	changed := tag.RowsAffected() == 1
+	if changed {
+		// C16: contribution moves from the customer float into the thrift pool.
+		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "thrift_contribution", contributionID.String(),
+			LedgerAccountCustomerFloat, LedgerAccountThriftPool, "NGN", "Thrift contribution", "system", contributionKobo); err != nil {
+			return ThriftContributionView{}, false, err
+		}
+	}
 	var unpaid int
 	if err := tx.QueryRow(ctx, `
 		SELECT COUNT(*)
@@ -3498,13 +3516,14 @@ func (s *Store) MarkThriftPayoutCompleted(ctx context.Context, payoutID uuid.UUI
 	var cycleNumber, target int
 	var frequency string
 	var status string
+	var payoutKobo int64
 	if err := tx.QueryRow(ctx, `
-		SELECT tp.cycle_id,tcy.group_id,tcy.cycle_number,tg.target_member_count,tg.frequency,tp.status
+		SELECT tp.cycle_id,tcy.group_id,tcy.cycle_number,tg.target_member_count,tg.frequency,tp.status,tp.amount_kobo
 		FROM thrift_payouts tp
 		JOIN thrift_cycles tcy ON tcy.id=tp.cycle_id
 		JOIN thrift_groups tg ON tg.id=tcy.group_id
 		WHERE tp.id=$1
-		FOR UPDATE`, payoutID).Scan(&cycleID, &groupID, &cycleNumber, &target, &frequency, &status); err != nil {
+		FOR UPDATE OF tp`, payoutID).Scan(&cycleID, &groupID, &cycleNumber, &target, &frequency, &status, &payoutKobo); err != nil {
 		return err
 	}
 	if status == "completed_simulated" {
@@ -3516,6 +3535,11 @@ func (s *Store) MarkThriftPayoutCompleted(ctx context.Context, payoutID uuid.UUI
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE thrift_cycles SET status='payout_completed',updated_at=now() WHERE id=$1`, cycleID); err != nil {
+		return err
+	}
+	// C16: the pool disburses to the winning member via the operating bank.
+	if err := s.postLedgerPair(ctx, tx, payoutID.String(), "thrift_payout", payoutID.String(),
+		LedgerAccountThriftPool, LedgerAccountOperatingBank, "NGN", "Thrift payout disbursement", "system", payoutKobo); err != nil {
 		return err
 	}
 	if err := insertThriftEvent(ctx, tx, groupID, cycleID, uuid.Nil, "payout_completed_simulated", map[string]any{}); err != nil {
@@ -4401,7 +4425,8 @@ func (s *Store) transitionDataOrderWithOutbox(ctx context.Context, orderID uuid.
 
 func (s *Store) transitionDataOrderTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, to domain.DataOrderStatus, source string, detail map[string]any, extra func(pgx.Tx) error) (bool, error) {
 	var from domain.DataOrderStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM data_orders WHERE id=$1 FOR UPDATE`, orderID).Scan(&from); err != nil {
+	var amountKobo int64
+	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo FROM data_orders WHERE id=$1 FOR UPDATE`, orderID).Scan(&from, &amountKobo); err != nil {
 		return false, err
 	}
 	if from == to {
@@ -4419,6 +4444,14 @@ func (s *Store) transitionDataOrderTx(ctx context.Context, tx pgx.Tx, orderID uu
 	}
 	if extra != nil {
 		if err := extra(tx); err != nil {
+			return false, err
+		}
+	}
+	if to == domain.DataOrderFulfilled {
+		// C16: revenue recognition on fulfilment; the customer float (already
+		// credited at payment success) is cleared against sales revenue.
+		if err := s.postLedgerPair(ctx, tx, orderID.String(), "data_order", orderID.String(),
+			LedgerAccountCustomerFloat, LedgerAccountSalesRevenue, "NGN", "Data order revenue recognition", "system", amountKobo); err != nil {
 			return false, err
 		}
 	}
@@ -4715,7 +4748,9 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	}
 	defer tx.Rollback(ctx)
 	var from domain.PaymentStatus
-	if err := tx.QueryRow(ctx, `SELECT status FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from); err != nil {
+	var amountKobo int64
+	var currency string
+	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo, currency FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &amountKobo, &currency); err != nil {
 		return false, err
 	}
 	if from == to {
@@ -4734,6 +4769,15 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	}
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, updated_at=now()`+paidClause+` WHERE id=$1`, paymentID, to); err != nil {
 		return false, err
+	}
+	if to == domain.StatusSucceeded {
+		// C16: money-in posting. Customer funds arrive into the operating bank
+		// account as a customer float liability; purpose-specific allocations
+		// (invoice, thrift pool, sales revenue) follow in their own hooks.
+		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+			LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received", "system", amountKobo); err != nil {
+			return false, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
@@ -4881,7 +4925,9 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 
 	var from domain.PaymentStatus
 	var provider string
-	if err := tx.QueryRow(ctx, `SELECT status, provider FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider); err != nil {
+	var amountKobo int64
+	var currency string
+	if err := tx.QueryRow(ctx, `SELECT status, provider, amount_kobo, currency FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider, &amountKobo, &currency); err != nil {
 		return false, err
 	}
 	if provider != "bank_transfer" {
@@ -4904,6 +4950,11 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, paid_at=COALESCE(paid_at, now()), updated_at=now() WHERE id=$1`, paymentID, domain.StatusSucceeded); err != nil {
+		return false, err
+	}
+	// C16: money-in posting, mirroring the Paystack success path.
+	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+		LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received (bank transfer)", "system", amountKobo); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec(ctx, `

@@ -533,7 +533,7 @@ func TestPostgresRetentionArchivesFinancials(t *testing.T) {
 		         users,merchants,data_networks,data_plans,merchant_owners,service_purchases,
 		         receipt_scan_tokens,receipt_scan_attempts,registered_services,service_readers,
 		         user_merchant_recents,admin_sessions,merchant_sessions,email_verification_codes,
-		         totp_pending_logins,merchant_password_reset_tokens CASCADE`); err != nil {
+		         totp_pending_logins,merchant_password_reset_tokens,ledger_entries CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.Seed(ctx); err != nil {
@@ -665,7 +665,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		         users,merchants,data_networks,data_plans,merchant_owners,service_purchases,
 		         receipt_scan_tokens,receipt_scan_attempts,registered_services,service_readers,
 		         user_merchant_recents,admin_sessions,merchant_sessions,email_verification_codes,
-		         totp_pending_logins,merchant_password_reset_tokens CASCADE`); err != nil {
+		         totp_pending_logins,merchant_password_reset_tokens,ledger_entries CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.Seed(ctx); err != nil {
@@ -1034,5 +1034,161 @@ func TestDataSubjectRights(t *testing.T) {
 		if h.SubjectType == "user" && h.SubjectID == user.ID.String() {
 			t.Fatal("erasure hold should have been released")
 		}
+	}
+}
+
+// TestLedgerDoubleEntry verifies C16: money-in postings land as balanced
+// debit/credit pairs, the SHA-256 chain verifies, the book sums to zero, the
+// table is append-only, and a reversal posts offsetting entries.
+func TestLedgerDoubleEntry(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE ledger_entries,payment_events,payments,users,merchants,data_orders,
+		         data_order_events,invoice_payments,invoices,invoice_items,
+		         thrift_contributions,thrift_payouts,thrift_cycles,thrift_events,
+		         thrift_groups,thrift_members,message_outbox,audit_logs,
+		         service_purchases,registered_services,merchant_owners,merchant_registrations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348070000200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := domain.NewReceiptToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 55_000,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		ProviderReference: domain.NewProviderReference(), ReceiptToken: token,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Money-in posting only on success.
+	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := repository.ListLedgerEntries(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 ledger rows for money-in, got %d", len(entries))
+	}
+	debits, credits := 0, 0
+	var debitKobo, creditKobo int64
+	for _, e := range entries {
+		switch e.EntryType {
+		case "debit":
+			debits++
+			debitKobo += e.AmountKobo
+		case "credit":
+			credits++
+			creditKobo += e.AmountKobo
+		}
+	}
+	if debits != 1 || credits != 1 {
+		t.Fatalf("expected balanced pair (1 debit, 1 credit), got %d/%d", debits, credits)
+	}
+	if debitKobo != 55_000 || creditKobo != 55_000 {
+		t.Fatalf("expected balanced 55000 pair, got %d/%d", debitKobo, creditKobo)
+	}
+	if entries[0].Account != LedgerAccountOperatingBank || entries[1].Account != LedgerAccountCustomerFloat {
+		t.Fatalf("unexpected money-in accounts: %s/%s", entries[0].Account, entries[1].Account)
+	}
+
+	// Chain verifies; book sums to zero.
+	count, broken, err := repository.VerifyLedgerChain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || broken != -1 {
+		t.Fatalf("expected sound chain of 2, got count=%d broken=%d", count, broken)
+	}
+	balances, err := repository.LedgerBalanceSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var net int64
+	for _, b := range balances {
+		net += b.NetKobo
+	}
+	if net != 0 {
+		t.Fatalf("expected zero net book, got %d", net)
+	}
+
+	// Append-only: update/delete must be rejected.
+	if _, err := repository.pool.Exec(ctx, `UPDATE ledger_entries SET amount_kobo=1 WHERE id=$1`, entries[0].ID); err == nil {
+		t.Fatal("expected append-only trigger to reject UPDATE on ledger_entries")
+	}
+	if _, err := repository.pool.Exec(ctx, `DELETE FROM ledger_entries WHERE id=$1`, entries[0].ID); err == nil {
+		t.Fatal("expected append-only trigger to reject DELETE on ledger_entries")
+	}
+
+	// Reversal posts two offsetting entries and returns the book to zero.
+	reversed, err := repository.PostLedgerReversal(ctx, payment.ID.String(), "test correction", "admin@xego.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reversed != 2 {
+		t.Fatalf("expected 2 reversal rows, got %d", reversed)
+	}
+	entries, err = repository.ListLedgerEntries(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 ledger rows after reversal, got %d", len(entries))
+	}
+	count, broken, err = repository.VerifyLedgerChain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 4 || broken != -1 {
+		t.Fatalf("expected sound chain of 4 after reversal, got count=%d broken=%d", count, broken)
+	}
+	balances, err = repository.LedgerBalanceSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	net = 0
+	for _, b := range balances {
+		net += b.NetKobo
+	}
+	if net != 0 {
+		t.Fatalf("expected zero net book after reversal, got %d", net)
+	}
+
+	// Reversing twice must be rejected (already reversed).
+	if _, err := repository.PostLedgerReversal(ctx, payment.ID.String(), "again", "admin@xego.test"); err == nil {
+		t.Fatal("expected second reversal of the same journal reference to be rejected")
+	}
+
+	// Reversing an unknown reference must be rejected.
+	if _, err := repository.PostLedgerReversal(ctx, uuid.NewString(), "nope", "admin@xego.test"); err == nil {
+		t.Fatal("expected reversal of unknown journal reference to be rejected")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"whatsapp-payment-demo/internal/store"
 	"whatsapp-payment-demo/web"
 )
 
@@ -26,7 +27,7 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatalf("parse templates: %v", err)
 	}
 
-	for _, name := range []string{"admin_reports.html", "admin_dsr.html"} {
+	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html"} {
 		if tmpl.Lookup(name) == nil {
 			t.Fatalf("%s not found in parsed templates", name)
 		}
@@ -64,5 +65,25 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_dsr.html", execDSR); err != nil {
 		t.Fatalf("execute admin_dsr.html: %v", err)
+	}
+
+	buf.Reset()
+	execLedger := map[string]any{
+		"AppName":        "Xego",
+		"Title":          "Ledger",
+		"CSRF":           "x",
+		"AdminRole":      "admin",
+		"Entries": []store.LedgerEntry{{JournalRef: "r1", EntryType: "debit", Account: "1100_operating_bank", AmountKobo: 100, Description: "d", Hash: "h"}},
+		"Balances":       []store.LedgerAccountBalance{{Account: "1100_operating_bank", DebitKobo: 100, CreditKobo: 0, NetKobo: 100}},
+		"ChainCount":     2,
+		"ChainBroken":    -1,
+		"ChainSound":     true,
+		"NetTotalKobo":   int64(0),
+		"AccountNames":   map[string]string{"1100_operating_bank": "Operating bank"},
+		"ReversalResult": "",
+		"ReversalError":  "",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_ledger.html", execLedger); err != nil {
+		t.Fatalf("execute admin_ledger.html: %v", err)
 	}
 }
