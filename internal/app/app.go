@@ -112,6 +112,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
 		"sub":         func(a, b int64) int64 { return a - b },
 		"inc":         func(i int) int { return i + 1 },
+		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		repository.Close()
@@ -428,6 +429,12 @@ func (a *App) routes() http.Handler {
 			a.totpDisable(w, r, "admin", &adminID, "/admin/metrics")
 		})
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/audit", a.adminAuditLog)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports", a.adminReports)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports/{kind}/download", a.adminReportDownload)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/data-subjects", a.adminDataSubjects)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/data-subjects/export", a.adminDataSubjectExport)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/data-subjects/requests", a.adminDataSubjectRequest)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/data-subjects/requests/{id}/resolve", a.adminDataSubjectResolve)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/archive", a.adminArchive)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/legal-holds", a.adminLegalHolds)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds", a.adminAddLegalHold)

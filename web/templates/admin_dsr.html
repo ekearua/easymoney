@@ -1,0 +1,77 @@
+{{define "admin_dsr.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Data subject rights</h1>
+<p>NDPR access / erasure requests, consent records and data inventory. Erasure runs a 30-day cooling-off legal hold before the account is archived and deleted.</p></div></header>
+
+<section class="panel">
+  <h2>Customer lookup</h2>
+  <form method="get" action="/admin/data-subjects" class="inline-form">
+    <input type="text" name="lookup" value="{{.Lookup}}" placeholder="WhatsApp number, e.g. +2348000000000" required>
+    <button type="submit">Look up</button>
+  </form>
+
+  {{if .Found}}
+  <h3>Customer: {{.Found.DisplayName}} <span class="muted">{{.Found.WhatsAppNumber}}</span></h3>
+  <p><a href="/admin/data-subjects/export?user_id={{.Found.ID}}">Download full data export (JSON)</a></p>
+
+  <h3>Data inventory</h3>
+  <div class="table-wrap"><table><thead><tr><th>Category</th><th>Rows</th></tr></thead><tbody>
+    <tr><td>Payments</td><td>{{index .Counts "Payments"}}</td></tr>
+    <tr><td>Data orders</td><td>{{index .Counts "DataOrders"}}</td></tr>
+    <tr><td>Invoices created</td><td>{{index .Counts "Invoices"}}</td></tr>
+    <tr><td>Thrift groups created</td><td>{{index .Counts "ThriftGroups"}}</td></tr>
+    <tr><td>Screening results</td><td>{{index .Counts "Screening"}}</td></tr>
+    <tr><td>Transaction alerts</td><td>{{index .Counts "Alerts"}}</td></tr>
+  </tbody></table></div>
+
+  <h3>Consent records</h3>
+  <div class="table-wrap"><table><thead><tr><th>Purpose</th><th>Status</th><th>Source</th><th>Granted</th><th>Revoked</th></tr></thead><tbody>
+  {{range .Consents}}<tr>
+    <td>{{.Purpose}}</td><td>{{.Status}}</td><td>{{.Source}}</td>
+    <td style="white-space:nowrap">{{.GrantedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td style="white-space:nowrap">{{if .RevokedAt}}{{.RevokedAt.Format "02 Jan 2006 15:04:05"}}{{else}}—{{end}}</td>
+  </tr>
+  {{else}}<tr><td colspan="5">No consent records.</td></tr>{{end}}
+  </tbody></table></div>
+
+  <h3>Create a request</h3>
+  <form method="post" action="/admin/data-subjects/requests" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <input type="hidden" name="user_id" value="{{.Found.ID}}">
+    <select name="request_type"><option value="access">Access (export)</option><option value="erasure">Erasure (delete)</option></select>
+    <input type="text" name="reason" placeholder="Reason / reference">
+    <button type="submit">Create request</button>
+  </form>
+  {{else if .Lookup}}
+  <p class="error">No customer found for "{{.Lookup}}".</p>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Request queue</h2>
+  <div class="table-wrap"><table><thead><tr><th>Requested</th><th>Type</th><th>Status</th><th>Reason</th><th>Requested by</th><th>Reviewed by</th><th>Action</th></tr></thead><tbody>
+  {{range .Requests}}<tr>
+    <td style="white-space:nowrap">{{.RequestedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.RequestType}}{{if eq .RequestType "erasure"}} <span class="status">30-day hold</span>{{end}}</td>
+    <td>{{.Status}}</td>
+    <td>{{.Reason}}</td>
+    <td>{{.RequestedBy}}</td>
+    <td>{{if .ReviewerEmail}}{{.ReviewerEmail}}{{else}}—{{end}}</td>
+    <td>{{if or (eq .Status "pending") (eq .Status "in_review")}}
+      <form method="post" action="/admin/data-subjects/requests/{{.ID}}/resolve" class="inline-form">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="text" name="note" placeholder="decision note">
+        <button type="submit" name="decision" value="complete">{{if eq .RequestType "erasure"}}Complete erasure{{else}}Complete{{end}}</button>
+        <button type="submit" name="decision" value="reject">Reject</button>
+      </form>
+    {{else}}—{{end}}</td>
+  </tr>
+  {{else}}<tr><td colspan="7">No data subject requests yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

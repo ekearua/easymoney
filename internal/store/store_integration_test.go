@@ -908,3 +908,131 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		t.Fatalf("risk score should rise after monitor alerts: before=%v after=%v", riskProfile.RiskScore, afterMonitor.RiskScore)
 	}
 }
+
+// TestDataSubjectRights covers C20: consent records, data export, and the
+// erasure flow (30-day legal hold, archive, cascade delete).
+func TestDataSubjectRights(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE message_outbox,inbound_messages,webhook_deliveries,payment_events,payments,
+		         conversation_sessions,users,merchants RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348012398765")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateUserName(ctx, user.ID, "DSR Test User"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Consent lifecycle: grant backfilled on migrate; withdraw then re-grant.
+	consent, err := repository.RecordConsent(ctx, user.ID, ConsentMarketing, "admin")
+	if err != nil {
+		t.Fatalf("record consent: %v", err)
+	}
+	if consent.Status != "granted" {
+		t.Fatalf("expected granted consent, got %q", consent.Status)
+	}
+	withdrawn, err := repository.WithdrawConsent(ctx, user.ID, ConsentMarketing)
+	if err != nil {
+		t.Fatalf("withdraw consent: %v", err)
+	}
+	if withdrawn.Status != "revoked" || withdrawn.RevokedAt == nil {
+		t.Fatalf("expected revoked consent with timestamp, got %+v", withdrawn)
+	}
+	consents, err := repository.ListConsents(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(consents) < 2 {
+		t.Fatalf("expected consent records for processing + marketing, got %d", len(consents))
+	}
+
+	// Access request + export must include the user and their consents.
+	access, err := repository.CreateDataSubjectRequest(ctx, user.ID, "access", "customer asked", "compliance@xego.test")
+	if err != nil {
+		t.Fatalf("create access request: %v", err)
+	}
+	export, err := repository.ExportUserData(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("export user data: %v", err)
+	}
+	if len(export.Consents) == 0 || len(export.KYCProfile) == 0 {
+		t.Fatal("export missing expected sections")
+	}
+	if _, err := repository.CompleteDataSubjectRequest(ctx, access.ID, "compliance@xego.test", "served via export"); err != nil {
+		t.Fatalf("complete access request: %v", err)
+	}
+
+	// Erasure: creates a legal hold, then completes by archiving + deleting.
+	erasure, err := repository.CreateDataSubjectRequest(ctx, user.ID, "erasure", "right to be forgotten", "compliance@xego.test")
+	if err != nil {
+		t.Fatalf("create erasure request: %v", err)
+	}
+	holds, err := repository.ListLegalHolds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundHold := false
+	for _, h := range holds {
+		if h.SubjectType == "user" && h.SubjectID == user.ID.String() {
+			foundHold = true
+			if h.ExpiresAt == nil || h.ExpiresAt.Before(time.Now().Add(29*24*time.Hour)) {
+				t.Fatalf("erasure hold should last ~30 days, got %v", h.ExpiresAt)
+			}
+		}
+	}
+	if !foundHold {
+		t.Fatal("expected a legal hold for the erasure request")
+	}
+
+	completed, err := repository.CompleteDataSubjectRequest(ctx, erasure.ID, "compliance@xego.test", "request granted")
+	if err != nil {
+		t.Fatalf("complete erasure request: %v", err)
+	}
+	if completed.Status != "completed" {
+		t.Fatalf("expected completed erasure, got %q", completed.Status)
+	}
+	var archived int
+	if err := repository.pool.QueryRow(ctx,
+		`SELECT count(*) FROM archive_ledger WHERE record_type='user_erasure' AND subject_id=$1`,
+		user.ID.String()).Scan(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if archived != 1 {
+		t.Fatalf("expected 1 erasure archive entry, got %d", archived)
+	}
+	var userRows int
+	if err := repository.pool.QueryRow(ctx, `SELECT count(*) FROM users WHERE id=$1`, user.ID).Scan(&userRows); err != nil {
+		t.Fatal(err)
+	}
+	if userRows != 0 {
+		t.Fatal("erasure should have deleted the user")
+	}
+	afterHolds, err := repository.ListLegalHolds(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range afterHolds {
+		if h.SubjectType == "user" && h.SubjectID == user.ID.String() {
+			t.Fatal("erasure hold should have been released")
+		}
+	}
+}
