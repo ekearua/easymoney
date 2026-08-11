@@ -43,6 +43,42 @@
 </section>
 
 <section class="panel">
+  <h2>Transaction alerts</h2>
+  <p class="muted">Raised by the C14 monitoring engine: velocity, structuring, round amounts, and high-risk counterparties.</p>
+  <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Severity</th><th>User</th><th>Status</th><th>Details</th><th>Raised</th><th>Action</th></tr></thead><tbody>
+  {{range .Alerts}}<tr>
+    <td class="mono">{{.Rule}}</td>
+    <td><span class="status {{if eq .Severity "high"}}failed{{else if eq .Severity "medium"}}warn{{else}}ok{{end}}">{{.Severity}}</span></td>
+    <td class="mono">{{.UserID}}</td>
+    <td><span class="status {{if eq .Status "open"}}pending{{else}}succeeded{{end}}">{{.Status}}</span>{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</td>
+    <td class="mono">{{printf "%v" .Details}}</td>
+    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td>
+      {{if eq .Status "open"}}
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="status" value="acknowledged">
+        <button class="btn btn-small" type="submit">Ack</button>
+      </form>
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="status" value="escalated">
+        <button class="btn btn-small btn-danger" type="submit">Escalate</button>
+      </form>
+      {{else}}
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="status" value="resolved">
+        <button class="btn btn-small" type="submit">Resolve</button>
+      </form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="7">No transaction alerts.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
   <h2>Profiles</h2>
   <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Risk</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
   {{range .Profiles}}<tr>

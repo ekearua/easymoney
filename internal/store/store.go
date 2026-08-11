@@ -2316,6 +2316,21 @@ type ManualReviewCase struct {
 	ReviewedAt    *time.Time
 }
 
+// TransactionAlert is one suspicious activity detection raised by the
+// transaction monitor (C14).
+type TransactionAlert struct {
+	ID            int64
+	UserID        uuid.UUID
+	PaymentID     *uuid.UUID
+	Rule          string
+	Severity      string
+	Details       map[string]any
+	Status        string
+	ReviewerEmail string
+	ReviewedAt    *time.Time
+	CreatedAt     time.Time
+}
+
 // EnsureKYCProfile creates an L0 profile row for the user if none exists and
 // returns the current profile.
 func (s *Store) EnsureKYCProfile(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
@@ -2784,6 +2799,159 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 		return KYCProfile{}, fmt.Errorf("commit risk recompute: %w", err)
 	}
 	return profile, nil
+}
+
+// ListTransactionAlerts returns transaction-monitoring alerts newest first,
+// optionally filtered to a status.
+func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit int) ([]TransactionAlert, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query := `
+		SELECT id, user_id, payment_id, rule, severity, COALESCE(details::text,'{}'),
+		       status, COALESCE(reviewer_email,''), reviewed_at, created_at
+		FROM transaction_alerts`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status=$1`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var alerts []TransactionAlert
+	for rows.Next() {
+		var a TransactionAlert
+		var paymentID *uuid.UUID
+		var details []byte
+		var reviewedAt *time.Time
+		if err := rows.Scan(&a.ID, &a.UserID, &paymentID, &a.Rule, &a.Severity, &details,
+			&a.Status, &a.ReviewerEmail, &reviewedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.PaymentID = paymentID
+		a.ReviewedAt = reviewedAt
+		_ = json.Unmarshal(details, &a.Details)
+		if a.Details == nil {
+			a.Details = map[string]any{}
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts, rows.Err()
+}
+
+// RunTransactionMonitor evaluates settled payments inside the lookback window
+// against the monitoring rules and records any alerts as risk events. A high
+// or medium alert also escalates into a manual review case (case_type
+// 'monitoring'). Returns the number of alerts raised.
+func (s *Store) RunTransactionMonitor(ctx context.Context, since time.Time, cfg kyc.MonitorConfig) (int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
+		FROM payments p
+		JOIN merchants m ON m.id = p.merchant_id
+		WHERE p.status='succeeded' AND p.paid_at IS NOT NULL AND p.paid_at >= $1
+		ORDER BY p.user_id, p.paid_at`, since)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	byUser := map[uuid.UUID][]kyc.TransactionInput{}
+	var order []uuid.UUID
+	for rows.Next() {
+		var t kyc.TransactionInput
+		if err := rows.Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName,
+			&t.MerchantCategory, &t.AmountKobo, &t.PaidAt); err != nil {
+			return 0, err
+		}
+		if _, seen := byUser[t.UserID]; !seen {
+			order = append(order, t.UserID)
+		}
+		byUser[t.UserID] = append(byUser[t.UserID], t)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	raised := 0
+	for _, userID := range order {
+		for _, alert := range kyc.RunTransactionMonitor(byUser[userID], cfg) {
+			if err := s.insertTransactionAlert(ctx, userID, alert); err != nil {
+				return raised, err
+			}
+			raised++
+		}
+	}
+	return raised, nil
+}
+
+func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, alert kyc.MonitorAlert) error {
+	details, _ := json.Marshal(alert.Details)
+	if details == nil {
+		details = []byte("{}")
+	}
+	var paymentID *uuid.UUID
+	if len(alert.PaymentIDs) > 0 {
+		paymentID = &alert.PaymentIDs[0]
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO transaction_alerts(user_id,payment_id,rule,severity,details)
+		VALUES($1,$2,$3,$4,$5::jsonb)`,
+		userID, paymentID, alert.Rule, alert.Severity, string(details)); err != nil {
+		return fmt.Errorf("insert transaction alert: %w", err)
+	}
+	if _, err := s.RecordRiskEvent(ctx, RiskEvent{
+		UserID:    userID,
+		EventType: "monitor_" + alert.Rule,
+		Score:     kyc.AlertScore(alert.Severity),
+		Details:   alert.Details,
+	}); err != nil {
+		return fmt.Errorf("risk event for alert: %w", err)
+	}
+	if alert.Severity != kyc.AlertLow {
+		if _, err := s.CreateManualReviewCase(ctx, ManualReviewCase{
+			UserID:   userID,
+			CaseType: "monitoring",
+			Reason:   "transaction alert " + alert.Rule + " (" + alert.Severity + ")",
+		}); err != nil {
+			return fmt.Errorf("review case for alert: %w", err)
+		}
+	}
+	return nil
+}
+
+// ResolveTransactionAlert moves an alert to a terminal status and records who
+// resolved it and when.
+func (s *Store) ResolveTransactionAlert(ctx context.Context, alertID int64, status, reviewerEmail string) (TransactionAlert, error) {
+	valid := map[string]bool{"acknowledged": true, "escalated": true, "resolved": true}
+	if !valid[status] {
+		return TransactionAlert{}, fmt.Errorf("invalid alert status %q", status)
+	}
+	now := time.Now().UTC()
+	var a TransactionAlert
+	var paymentID *uuid.UUID
+	var details []byte
+	var reviewedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		UPDATE transaction_alerts
+		SET status=$2, reviewer_email=$3, reviewed_at=COALESCE(reviewed_at, $4)
+		WHERE id=$1
+		RETURNING id, user_id, payment_id, rule, severity, COALESCE(details::text,'{}'),
+		          status, COALESCE(reviewer_email,''), reviewed_at, created_at`,
+		alertID, status, reviewerEmail, now).Scan(&a.ID, &a.UserID, &paymentID, &a.Rule,
+		&a.Severity, &details, &a.Status, &a.ReviewerEmail, &reviewedAt, &a.CreatedAt)
+	if err != nil {
+		return TransactionAlert{}, fmt.Errorf("resolve transaction alert: %w", err)
+	}
+	a.PaymentID = paymentID
+	a.ReviewedAt = reviewedAt
+	_ = json.Unmarshal(details, &a.Details)
+	if a.Details == nil {
+		a.Details = map[string]any{}
+	}
+	return a, nil
 }
 
 // CreateManualReviewCase opens a KYC review-queue item.

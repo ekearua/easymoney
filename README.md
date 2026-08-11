@@ -187,6 +187,8 @@ In the demo flow, an individual profile upgrade confirms the channel and submits
 
 ML/FT risk scoring (`internal/kyc.ScoreRisk`) aggregates scored risk observations (the `risk_events` table) with the tier and last screening decision into a 0-100 score and a `low`/`medium`/`high` band (CBN risk-based approach): unverified identities and strong/possible sanctions matches add weight, completed EDD subtracts it, and the band persists on the KYC profile (`risk_band`/`risk_score`). Any `RecordRiskEvent` call recomputes the band transactionally and audits `kyc.risk_scored`; the rescreen worker and `go run ./cmd/demo recompute-risk` refresh it too. The band is shown on the `/admin/kyc` profiles table.
 
+Transaction monitoring (`internal/kyc.RunTransactionMonitor`) evaluates settled payments every 15 minutes against behaviour rules — velocity (more than `MONITOR_VELOCITY_LIMIT` payments per `MONITOR_VELOCITY_WINDOW`), structuring (several payments just under a threshold), round amounts, and high-risk counterparty categories (`MONITOR_HIGH_RISK_CATEGORIES`) — and records each finding in `transaction_alerts`. Medium/high alerts open a `monitoring` manual review case and feed the ML/FT risk score; the compliance queue at `/admin/kyc` shows every alert with Ack/Escalate/Resolve actions. `go run ./cmd/demo monitor` runs a manual pass.
+
 ### Backups & point-in-time recovery
 
 PostgreSQL WAL is archived to a local directory (`deploy/pg-archive-wal.sh` as `archive_command`), and `deploy/backup.sh` takes a `pg_basebackup` full backup and ships base + WAL to an S3-compatible bucket (OCI Object Storage, AWS S3, MinIO) via rclone. Defaults: 30-day retention (`BACKUP_RETENTION_DAYS`), RPO < 1h (`BACKUP_RPO`). Restore instructions live in `deploy/RESTORE.md`.

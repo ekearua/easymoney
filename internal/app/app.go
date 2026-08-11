@@ -286,6 +286,27 @@ func (a *App) RecomputeAllRisk(ctx context.Context) error {
 	return nil
 }
 
+// MonitorTransactions runs the C14 transaction-monitoring rules over the
+// configured lookback window and returns how many alerts were raised.
+func (a *App) MonitorTransactions(ctx context.Context) error {
+	raised, err := a.store.RunTransactionMonitor(ctx, time.Now().Add(-a.cfg.MonitorVelocityWindow), kyc.MonitorConfig{
+		VelocityWindow:     a.cfg.MonitorVelocityWindow,
+		VelocityLimit:      a.cfg.MonitorVelocityLimit,
+		StructuringWindow:  a.cfg.MonitorStructuringWindow,
+		StructuringCount:   a.cfg.MonitorStructuringCount,
+		StructuringFloor:   a.cfg.MonitorStructuringFloor,
+		StructuringCeil:    a.cfg.MonitorStructuringCeil,
+		RoundAmountStep:    a.cfg.MonitorRoundAmountStep,
+		RoundAmountMin:     a.cfg.MonitorRoundAmountMin,
+		HighRiskCategories: a.cfg.MonitorHighRiskCategories,
+	})
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "transaction monitor completed", "alerts", raised, "window", a.cfg.MonitorVelocityWindow.String())
+	return nil
+}
+
 // SyncVTPassDataPlans imports every current VTPass data variation into Xego's catalog.
 func (a *App) SyncVTPassDataPlans(ctx context.Context) error {
 	client := vtpass.NewWithTimeout(a.cfg.VTPassBaseURL, a.cfg.VTPassAPIKey, a.cfg.VTPassPublicKey, a.cfg.VTPassSecretKey, a.cfg.VTPassTimeout)
@@ -413,6 +434,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds/remove", a.adminRemoveLegalHold)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins", a.adminCreateAdmin)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/role", a.adminUpdateAdminRole)
@@ -462,10 +484,12 @@ func (a *App) runWorkers(ctx context.Context) {
 	reconcileTicker := time.NewTicker(1 * time.Minute)
 	retentionTicker := time.NewTicker(24 * time.Hour)
 	rescreenTicker := time.NewTicker(24 * time.Hour)
+	monitorTicker := time.NewTicker(15 * time.Minute)
 	defer outboxTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer retentionTicker.Stop()
 	defer rescreenTicker.Stop()
+	defer monitorTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -486,6 +510,10 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-rescreenTicker.C:
 			if err := a.RescreenDue(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
+			}
+		case <-monitorTicker.C:
+			if err := a.MonitorTransactions(ctx); err != nil {
+				a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
 			}
 		}
 	}
@@ -1471,6 +1499,12 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
+	alerts, err := a.store.ListTransactionAlerts(r.Context(), "", 100)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list transaction alerts", "error", err)
+		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
 	byTier := map[string]int{"L0": 0, "L1": 0, "L2": 0, "L3": 0, "L4": 0}
 	for _, p := range profiles {
 		byTier[p.Tier]++
@@ -1478,8 +1512,33 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 	a.renderAdmin(w, "admin_kyc.html", r, "KYC ladder", map[string]any{
 		"Profiles": profiles,
 		"Cases":    cases,
+		"Alerts":   alerts,
 		"ByTier":   byTier,
 	})
+}
+
+// adminResolveTransactionAlert moves a monitoring alert to a terminal status
+// (acknowledged / escalated / resolved) and records the reviewer.
+func (a *App) adminResolveTransactionAlert(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	alertID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || alertID <= 0 {
+		http.Error(w, "invalid alert id", http.StatusBadRequest)
+		return
+	}
+	status := strings.TrimSpace(r.FormValue("status"))
+	adminEmail := adminEmailFromContext(r.Context())
+	alert, err := a.store.ResolveTransactionAlert(r.Context(), alertID, status, adminEmail)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "resolve transaction alert failed", "alert_id", alertID, "error", err)
+		http.Error(w, "resolve failed", http.StatusInternalServerError)
+		return
+	}
+	a.logger.InfoContext(r.Context(), "transaction alert resolved", "alert_id", alert.ID, "status", alert.Status)
+	http.Redirect(w, r, "/admin/kyc", http.StatusSeeOther)
 }
 
 // adminKYCReview approves or rejects a manual review case.

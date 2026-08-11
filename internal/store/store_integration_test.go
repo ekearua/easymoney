@@ -657,6 +657,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if _, err := repository.pool.Exec(ctx, `
 		TRUNCATE kyc_profiles,customer_verifications,screening_results,risk_events,
 		         authenticators,trusted_devices,manual_review_cases,audit_logs,
+		         transaction_alerts,
 		         archive_ledger,legal_holds,message_outbox,inbound_messages,webhook_deliveries,
 		         payment_events,payments,data_orders,data_order_events,conversation_sessions,
 		         invoices,invoice_items,invoice_payments,thrift_groups,thrift_members,thrift_cycles,
@@ -842,5 +843,68 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}
 	if riskAudits < 2 {
 		t.Fatalf("expected risk_scored audit rows, got %d", riskAudits)
+	}
+
+	// C14: the transaction monitor raises alerts from settled payments.
+	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		token, err := domain.NewReceiptToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pmt, err := repository.CreatePayment(ctx, domain.Payment{
+			ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 500_000,
+			Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+			ProviderReference: domain.NewProviderReference(), ReceiptToken: token,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := repository.TransitionPayment(ctx, pmt.ID, domain.StatusSucceeded, "test", nil); err != nil || !changed {
+			t.Fatalf("settle payment: changed=%v err=%v", changed, err)
+		}
+	}
+	raised, err := repository.RunTransactionMonitor(ctx, time.Now().Add(-24*time.Hour), kyc.MonitorConfig{
+		VelocityWindow:    24 * time.Hour,
+		VelocityLimit:     10,
+		StructuringWindow: 24 * time.Hour,
+		StructuringCount:  3,
+		StructuringFloor:  400_000,
+		StructuringCeil:   10_000_000,
+		RoundAmountStep:   1_000_000,
+		RoundAmountMin:    1_000_000,
+	})
+	if err != nil {
+		t.Fatalf("run transaction monitor: %v", err)
+	}
+	if raised < 1 {
+		t.Fatal("expected at least one transaction alert")
+	}
+	alerts, err := repository.ListTransactionAlerts(ctx, "open", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundStructuring := false
+	for _, alert := range alerts {
+		if alert.Rule == kyc.RuleStructuring {
+			foundStructuring = true
+		}
+	}
+	if !foundStructuring {
+		t.Fatalf("expected a structuring alert, got %+v", alerts)
+	}
+	// Medium/high alerts also open a manual review case and feed the risk score.
+	if _, err := repository.ResolveTransactionAlert(ctx, alerts[0].ID, "resolved", "compliance@xego.test"); err != nil {
+		t.Fatalf("resolve transaction alert: %v", err)
+	}
+	afterMonitor, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterMonitor.RiskScore <= riskProfile.RiskScore {
+		t.Fatalf("risk score should rise after monitor alerts: before=%v after=%v", riskProfile.RiskScore, afterMonitor.RiskScore)
 	}
 }

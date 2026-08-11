@@ -79,6 +79,16 @@ type Config struct {
 	ScreeningProvider string
 	KYCRescreenPeriod time.Duration
 
+	MonitorVelocityWindow     time.Duration
+	MonitorVelocityLimit      int
+	MonitorStructuringWindow  time.Duration
+	MonitorStructuringCount   int
+	MonitorStructuringFloor   int64
+	MonitorStructuringCeil    int64
+	MonitorRoundAmountStep    int64
+	MonitorRoundAmountMin     int64
+	MonitorHighRiskCategories []string
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -146,6 +156,14 @@ func Load() (Config, error) {
 		PaymentMaxKobo:             envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:            envDuration("RETENTION_PERIOD", 90*24*time.Hour),
 		KYCRescreenPeriod:          envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
+		MonitorVelocityWindow:      envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
+		MonitorVelocityLimit:       int(envInt64("MONITOR_VELOCITY_LIMIT", 10)),
+		MonitorStructuringWindow:   envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
+		MonitorStructuringCount:    int(envInt64("MONITOR_STRUCTURING_COUNT", 3)),
+		MonitorStructuringFloor:    envInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
+		MonitorStructuringCeil:     envInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
+		MonitorRoundAmountStep:     envInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
+		MonitorRoundAmountMin:      envInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
@@ -158,6 +176,14 @@ func Load() (Config, error) {
 			s = strings.TrimSpace(s)
 			if s != "" {
 				cfg.InvoiceAcceptedNumbers = append(cfg.InvoiceAcceptedNumbers, s)
+			}
+		}
+	}
+	if raw := os.Getenv("MONITOR_HIGH_RISK_CATEGORIES"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				cfg.MonitorHighRiskCategories = append(cfg.MonitorHighRiskCategories, s)
 			}
 		}
 	}
