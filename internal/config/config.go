@@ -89,6 +89,11 @@ type Config struct {
 	MonitorRoundAmountMin     int64
 	MonitorHighRiskCategories []string
 
+	// ReportCTRThresholdKobo is the amount above which a succeeded payment is
+	// included in the currency transaction report (C15). Defaults to the
+	// ₦10,000,000 CBN cash-reporting threshold.
+	ReportCTRThresholdKobo int64
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -164,6 +169,7 @@ func Load() (Config, error) {
 		MonitorStructuringCeil:     envInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
 		MonitorRoundAmountStep:     envInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
 		MonitorRoundAmountMin:      envInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
+		ReportCTRThresholdKobo:     envInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),

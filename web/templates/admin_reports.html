@@ -1,0 +1,86 @@
+{{define "admin_reports.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Regulator reports</h1>
+<p>NFIU/CBN filings generated from audited payment and screening data (MLPA 2004). Window: {{.Since.Format "02 Jan 2006 15:04:05"}} → now.</p></div></header>
+
+<section class="panel">
+  <div class="table-wrap"><table><thead><tr><th>Report</th><th>Count</th><th>Basis</th><th>Download</th></tr></thead><tbody>
+    <tr>
+      <td><strong>STR</strong> — suspicious transaction report</td>
+      <td>{{len .Bundle.STR}}</td>
+      <td>Transaction-monitoring alerts (rule, severity, case status) joined to audited payments.</td>
+      <td><a href="/admin/reports/str/download">CSV</a></td>
+    </tr>
+    <tr>
+      <td><strong>CTR</strong> — currency transaction report</td>
+      <td>{{len .Bundle.CTR}}</td>
+      <td>Succeeded payments at or above the ₦10,000,000 reporting threshold.</td>
+      <td><a href="/admin/reports/ctr/download">CSV</a></td>
+    </tr>
+    <tr>
+      <td><strong>PEP</strong> — politically exposed persons</td>
+      <td>{{len .Bundle.PEP}}</td>
+      <td>Customers whose latest screening decision is possible / strong / blocked, with matched names.</td>
+      <td><a href="/admin/reports/pep/download">CSV</a></td>
+    </tr>
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>STR — suspicious transaction report</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Customer</th><th>Amount</th><th>Merchant</th><th>Rule</th><th>Severity</th><th>Status</th></tr></thead><tbody>
+  {{range .Bundle.STR}}<tr>
+    <td style="white-space:nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.MerchantName}}</td>
+    <td class="mono">{{.AlertRule}}</td>
+    <td>{{.AlertSeverity}}</td>
+    <td>{{.AlertStatus}}</td>
+  </tr>
+  {{else}}<tr><td colspan="7">No suspicious transactions in the window.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>CTR — currency transaction report</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Customer</th><th>Amount</th><th>Currency</th><th>Merchant</th><th>Provider ref</th></tr></thead><tbody>
+  {{range .Bundle.CTR}}<tr>
+    <td style="white-space:nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Currency}}</td>
+    <td>{{.MerchantName}}</td>
+    <td class="mono">{{.ProviderReference}}</td>
+  </tr>
+  {{else}}<tr><td colspan="6">No payments above the threshold in the window.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>PEP — politically exposed persons</h2>
+  <div class="table-wrap"><table><thead><tr><th>Screened</th><th>Customer</th><th>Decision</th><th>Matched names</th><th>Tier</th><th>Risk</th></tr></thead><tbody>
+  {{range .Bundle.PEP}}<tr>
+    <td style="white-space:nowrap">{{.ScreenedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
+    <td>{{.Decision}}</td>
+    <td class="mono">{{join .MatchedNames ", "}}</td>
+    <td>{{.KYCTier}}</td>
+    <td>{{.RiskBand}}</td>
+  </tr>
+  {{else}}<tr><td colspan="6">No PEP matches recorded.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Raw CSV preview</h2>
+  <details><summary>STR.csv</summary><pre class="mono">{{.STRCSV}}</pre></details>
+  <details><summary>CTR.csv</summary><pre class="mono">{{.CTRCSV}}</pre></details>
+  <details><summary>PEP.csv</summary><pre class="mono">{{.PEPCSV}}</pre></details>
+</section>
+</main></body></html>
+{{end}}

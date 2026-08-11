@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -93,11 +94,25 @@ func run() error {
 		return application.RecomputeAllRisk(ctx)
 	case "monitor":
 		return application.MonitorTransactions(ctx)
+	case "reports":
+		dir := "reports/exports"
+		if len(os.Args) > 2 {
+			dir = os.Args[2]
+		}
+		paths, err := application.ExportReportsCSV(ctx, dir, 24*30*time.Hour)
+		if err != nil {
+			return err
+		}
+		fmt.Println("wrote", len(paths), "report(s):")
+		for _, p := range paths {
+			fmt.Println("  " + p)
+		}
+		return nil
 	case "sync-vtpass-data-plans":
 		return application.SyncVTPassDataPlans(ctx)
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, rescreen, recompute-risk, monitor, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }
