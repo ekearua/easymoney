@@ -46,18 +46,19 @@ type ConversationService struct {
 	messengers map[string]ports.Messenger
 	email      ports.EmailSender
 	identity   ports.IdentityVerifier
+	screener   ports.SanctionsScreener
 
 	acceptedMu      sync.RWMutex
 	acceptedNumbers map[string]bool
 }
 
 // NewConversationService constructs the customer-facing workflow.
-func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender, identity ports.IdentityVerifier) *ConversationService {
+func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender, identity ports.IdentityVerifier, screener ports.SanctionsScreener) *ConversationService {
 	accepted := make(map[string]bool, len(cfg.InvoiceAcceptedNumbers))
 	for _, n := range cfg.InvoiceAcceptedNumbers {
 		accepted[n] = true
 	}
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, acceptedNumbers: accepted}
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, acceptedNumbers: accepted}
 }
 
 // AcceptedInvoiceNumbers returns the current list of accepted customer phone numbers.
@@ -843,11 +844,54 @@ func (s *ConversationService) handleIndividualOccupation(ctx context.Context, ch
 	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, session.Data["legal_name"], dob, session.Data["address"], occupation); err != nil {
 		return err
 	}
+	decision, err := s.screenIndividual(ctx, user, session)
+	if err != nil {
+		return err
+	}
+	if kyc.BlockedByScreening(decision) {
+		if _, err := s.store.CreateManualReviewCase(ctx, store.ManualReviewCase{
+			UserID: user.ID, CaseType: "screening", Reason: "screening decision " + decision,
+		}); err != nil {
+			return err
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Your Xego individual profile is under review.\n\nOur compliance team is reviewing your screening result and will follow up. You can still browse the menu.")
+	}
+	if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL2,
+		[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
+		return err
+	}
 	session.State = "individual_id_number"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at Level 2 (identity on file).\n\nTo finish Level 3 verification, send your 11-digit NIN or BVN. (Demo: a NIN starting 1 or a BVN starting 2 verifies; 8 = record mismatch; 9 = not found.)\n\nSend NIN or BVN, then your 11-digit number.")
+}
+
+// screenIndividual runs the sanctions/PEP provider against the submitted
+// profile and records the outcome on the KYC profile.
+func (s *ConversationService) screenIndividual(ctx context.Context, user store.User, session store.Session) (string, error) {
+	name := strings.TrimSpace(session.Data["legal_name"])
+	result, err := s.screener.Screen(ctx, ports.ScreeningRequest{
+		LegalName:   name,
+		DateOfBirth: session.Data["dob"],
+		PhoneNumber: user.WhatsAppNumber,
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
+		UserID:       user.ID,
+		Provider:     "simulated",
+		Decision:     result.Decision,
+		MatchedNames: result.MatchedNames,
+	}, s.cfg.KYCRescreenPeriod); err != nil {
+		return "", err
+	}
+	return result.Decision, nil
 }
 
 // handleIndividualIDNumber verifies a customer-provided NIN or BVN against the

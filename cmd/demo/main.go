@@ -87,11 +87,13 @@ func run() error {
 		return application.Reconcile(ctx)
 	case "retain":
 		return application.PurgeExpiredData(ctx)
+	case "rescreen":
+		return application.RescreenDue(ctx)
 	case "sync-vtpass-data-plans":
 		return application.SyncVTPassDataPlans(ctx)
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, rescreen, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

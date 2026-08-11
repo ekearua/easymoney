@@ -75,7 +75,9 @@ type Config struct {
 	VTPassWebhookSecret string
 	VTPassTimeout       time.Duration
 
-	IdentityProvider string
+	IdentityProvider  string
+	ScreeningProvider string
+	KYCRescreenPeriod time.Duration
 
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
@@ -133,6 +135,7 @@ func Load() (Config, error) {
 		SMSAPIKey:                  os.Getenv("SMS_API_KEY"),
 		DataProvider:               strings.ToLower(env("DATA_PROVIDER", "simulated")),
 		IdentityProvider:           strings.ToLower(env("IDENTITY_PROVIDER", "simulated")),
+		ScreeningProvider:          strings.ToLower(env("SCREENING_PROVIDER", "simulated")),
 		VTPassBaseURL:              strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
 		VTPassAPIKey:               os.Getenv("VTPASS_API_KEY"),
 		VTPassPublicKey:            os.Getenv("VTPASS_PUBLIC_KEY"),
@@ -142,6 +145,7 @@ func Load() (Config, error) {
 		PaymentMinKobo:             envInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:             envInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:            envDuration("RETENTION_PERIOD", 90*24*time.Hour),
+		KYCRescreenPeriod:          envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),

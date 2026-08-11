@@ -31,12 +31,14 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/paystack"
+	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/vtpass"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
@@ -52,20 +54,21 @@ const merchantCookieName = "wpd_merchant"
 
 // App is the fully assembled payment demo.
 type App struct {
-	cfg          config.Config
-	logger       *slog.Logger
-	store        *store.Store
-	paystack     *paystack.Client
-	telegram     *telegram.Client
-	whatsapp     *whatsapp.Client
-	payments     *service.PaymentService
-	data         *service.DataService
-	conversation *service.ConversationService
-	templates    *template.Template
-	limiter      *loginLimiter
-	rateLimiter  ratelimit.Limiter
-	rateClose    func() error
-	totpKey      []byte
+	cfg               config.Config
+	logger            *slog.Logger
+	store             *store.Store
+	paystack          *paystack.Client
+	telegram          *telegram.Client
+	whatsapp          *whatsapp.Client
+	payments          *service.PaymentService
+	data              *service.DataService
+	conversation      *service.ConversationService
+	templates         *template.Template
+	limiter           *loginLimiter
+	rateLimiter       ratelimit.Limiter
+	rateClose         func() error
+	totpKey           []byte
+	sanctionsScreener ports.SanctionsScreener
 }
 
 // New creates all application dependencies.
@@ -91,6 +94,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
 	var identityVerifier ports.IdentityVerifier = identityprovider.NewSimulator()
+	var sanctionsScreener ports.SanctionsScreener = screeningprovider.NewSimulator()
+	switch strings.ToLower(cfg.ScreeningProvider) {
+	case "simulated", "":
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported SCREENING_PROVIDER %q", cfg.ScreeningProvider)
+	}
 	var emailSender ports.EmailSender
 	if cfg.SMTPHost != "" {
 		emailSender = emailprovider.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
@@ -130,9 +140,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier),
+		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener),
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
-		rateLimiter: rateLimiter, rateClose: rateClose,
+		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 	}, nil
 }
 
@@ -200,6 +210,54 @@ func (a *App) PurgeExpiredData(ctx context.Context) error {
 		)
 	}
 	return err
+}
+
+// RescreenDue re-runs sanctions/PEP screening for profiles whose last result
+// is older than the configured period. A strong/blocked rescreen downgrades
+// the profile below L2 and opens a manual review case.
+func (a *App) RescreenDue(ctx context.Context) error {
+	due, err := a.store.KYCProfilesDueForRescreen(ctx, time.Now().Add(-a.cfg.KYCRescreenPeriod), 50)
+	if err != nil {
+		return err
+	}
+	if len(due) == 0 {
+		a.logger.InfoContext(ctx, "no KYC profiles due for rescreen")
+		return nil
+	}
+	screened, blocked := 0, 0
+	for _, profile := range due {
+		individual, err := a.store.IndividualProfileByUser(ctx, profile.UserID)
+		if err != nil {
+			a.logger.WarnContext(ctx, "rescreen skipped (no individual profile)", "user_id", profile.UserID.String())
+			continue
+		}
+		decision, err := a.sanctionsScreener.Screen(ctx, ports.ScreeningRequest{LegalName: individual.LegalName})
+		if err != nil {
+			a.logger.WarnContext(ctx, "rescreen provider error", "user_id", profile.UserID.String(), "error", err)
+			continue
+		}
+		if _, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
+			UserID: profile.UserID, Provider: "simulated", Decision: decision.Decision,
+			MatchedNames: decision.MatchedNames,
+		}, a.cfg.KYCRescreenPeriod); err != nil {
+			a.logger.WarnContext(ctx, "rescreen record failed", "user_id", profile.UserID.String(), "error", err)
+			continue
+		}
+		screened++
+		if kyc.BlockedByScreening(decision.Decision) {
+			blocked++
+			if _, err := a.store.DowngradeKYCTier(ctx, profile.UserID, kyc.TierL1, "rescreen "+decision.Decision, nil); err != nil {
+				a.logger.WarnContext(ctx, "rescreen downgrade failed", "user_id", profile.UserID.String(), "error", err)
+			}
+			if _, err := a.store.CreateManualReviewCase(ctx, store.ManualReviewCase{
+				UserID: profile.UserID, CaseType: "screening", Reason: "rescreen decision " + decision.Decision,
+			}); err != nil {
+				a.logger.WarnContext(ctx, "rescreen review case failed", "user_id", profile.UserID.String(), "error", err)
+			}
+		}
+	}
+	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked)
+	return nil
 }
 
 // SyncVTPassDataPlans imports every current VTPass data variation into Xego's catalog.
@@ -377,9 +435,11 @@ func (a *App) runWorkers(ctx context.Context) {
 	outboxTicker := time.NewTicker(2 * time.Second)
 	reconcileTicker := time.NewTicker(1 * time.Minute)
 	retentionTicker := time.NewTicker(24 * time.Hour)
+	rescreenTicker := time.NewTicker(24 * time.Hour)
 	defer outboxTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer retentionTicker.Stop()
+	defer rescreenTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -396,6 +456,10 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-retentionTicker.C:
 			if err := a.PurgeExpiredData(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled retention failed", "error", err)
+			}
+		case <-rescreenTicker.C:
+			if err := a.RescreenDue(ctx); err != nil {
+				a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
 			}
 		}
 	}

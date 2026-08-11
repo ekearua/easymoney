@@ -2205,8 +2205,10 @@ func (s *Store) ListReceiptScanAttempts(ctx context.Context, limit int) ([]Recei
 }
 
 // UpsertIndividualProfile records the demo KYC profile, upgrades the user to
-// the individual account level, and promotes them through the L0-L4 ladder to
-// L2 (identity on file) with a simulated clear screening and audit trail.
+// the individual account level, and records the identity-on-file verification.
+// Sanctions/PEP screening and L0-L4 ladder promotion are handled by the caller
+// (RecordScreeningResult then AdvanceKYCTier/AdvanceKYCTierTo), so a blocking
+// screening decision keeps the user below L2.
 func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation string) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
@@ -2228,24 +2230,12 @@ func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, l
 	if _, err := s.pool.Exec(ctx, `UPDATE users SET account_level='individual',updated_at=now() WHERE id=$1`, userID); err != nil {
 		return IndividualProfile{}, err
 	}
-	if _, err := s.RecordScreeningResult(ctx, ScreeningResult{
-		UserID:       userID,
-		Provider:     "simulated",
-		Decision:     kyc.ScreenClear,
-		MatchedNames: []string{},
-	}); err != nil {
-		return IndividualProfile{}, err
-	}
 	if _, err := s.RecordCustomerVerification(ctx, CustomerVerification{
 		UserID:           userID,
 		VerificationType: kyc.EvIdentityOnFile,
 		Provider:         "simulated",
 		Result:           map[string]any{"status": "approved_simulated"},
 	}); err != nil {
-		return IndividualProfile{}, err
-	}
-	if _, err := s.AdvanceKYCTierTo(ctx, userID, kyc.TierL2,
-		[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
 		return IndividualProfile{}, err
 	}
 	return profile, nil
@@ -2426,7 +2416,9 @@ func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile
 
 // AdvanceKYCTier moves a user to exactly the next tier after validating the
 // ladder rules and required evidence. The transition is audited. An optional
-// actor identifies the operator; when nil, "system" is recorded.
+// actor identifies the operator; when nil, "system" is recorded. Advancing to
+// L2 or higher requires a non-blocked sanctions/PEP screening decision on the
+// profile.
 func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string, evidence []string, actor *AuditLog) (KYCProfile, error) {
 	profile, err := s.EnsureKYCProfile(ctx, userID)
 	if err != nil {
@@ -2434,6 +2426,9 @@ func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string,
 	}
 	if err := kyc.CanAdvance(profile.Tier, to, evidence); err != nil {
 		return KYCProfile{}, err
+	}
+	if kyc.Order(to) >= kyc.Order(kyc.TierL2) && kyc.BlockedByScreening(profile.LastScreeningDecision) {
+		return KYCProfile{}, fmt.Errorf("advance to %s blocked by screening decision %q", to, profile.LastScreeningDecision)
 	}
 	merged := mergeEvidence(profile.Evidence, evidence)
 	evidenceJSON, _ := json.Marshal(merged)
@@ -2564,6 +2559,50 @@ func tierAt(order int) string {
 	return kyc.TierL0
 }
 
+// KYCProfilesDueForRescreen lists profiles whose most recent screening result
+// is older than the cutoff or entirely absent, newest first. Used by the
+// periodic sanctions/PEP rescreen worker.
+func (s *Store) KYCProfilesDueForRescreen(ctx context.Context, cutoff time.Time, limit int) ([]KYCProfile, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.user_id, p.tier, p.tier_updated_at, COALESCE(p.evidence::text,'[]'),
+		       COALESCE(p.last_screening_decision,''),
+		       p.review_status, COALESCE(p.reviewer_email,''), p.reviewed_at, p.created_at, p.updated_at
+		FROM kyc_profiles p
+		LEFT JOIN LATERAL (
+			SELECT user_id, screened_at FROM screening_results
+			WHERE user_id = p.user_id
+			ORDER BY screened_at DESC LIMIT 1
+		) latest ON latest.user_id = p.user_id
+		WHERE latest.screened_at IS NULL OR latest.screened_at < $1
+		ORDER BY p.updated_at ASC
+		LIMIT $2`, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var profiles []KYCProfile
+	for rows.Next() {
+		var p KYCProfile
+		var evidence []byte
+		var reviewedAt *time.Time
+		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
+			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
+			&reviewedAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(evidence, &p.Evidence)
+		if p.Evidence == nil {
+			p.Evidence = []string{}
+		}
+		p.ReviewedAt = reviewedAt
+		profiles = append(profiles, p)
+	}
+	return profiles, rows.Err()
+}
+
 // RecordCustomerVerification persists a verification outcome.
 func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerification) (CustomerVerification, error) {
 	if v.Status == "" {
@@ -2588,19 +2627,60 @@ func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerifi
 	return v, nil
 }
 
-// RecordScreeningResult persists a sanctions/PEP screening outcome.
-func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult) (ScreeningResult, error) {
+// RecordScreeningResult persists a sanctions/PEP screening outcome and writes
+// the decision through to the KYC profile so the ladder can enforce it. The
+// rescreen due date is advanced by rescreenPeriod (0 keeps the caller value).
+func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, rescreenPeriod time.Duration) (ScreeningResult, error) {
+	if r.ScreenedAt.IsZero() {
+		r.ScreenedAt = time.Now().UTC()
+	}
+	if r.RescreenDue == nil && rescreenPeriod > 0 {
+		due := r.ScreenedAt.Add(rescreenPeriod)
+		r.RescreenDue = &due
+	}
 	names, _ := json.Marshal(r.MatchedNames)
 	if names == nil {
 		names = []byte("[]")
 	}
-	err := s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ScreeningResult{}, fmt.Errorf("begin screening: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	err = tx.QueryRow(ctx, `
 		INSERT INTO screening_results(user_id,provider,decision,matched_names,screened_at,rescreen_due)
 		VALUES($1,$2,$3,$4::jsonb,$5,$6)
-		RETURNING id, screened_at`,
-		r.UserID, r.Provider, r.Decision, string(names), time.Now().UTC(), r.RescreenDue).Scan(&r.ID, &r.ScreenedAt)
+		RETURNING id, screened_at, rescreen_due`,
+		r.UserID, r.Provider, r.Decision, string(names), r.ScreenedAt, r.RescreenDue).Scan(&r.ID, &r.ScreenedAt, &r.RescreenDue)
 	if err != nil {
 		return ScreeningResult{}, fmt.Errorf("record screening: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO kyc_profiles(user_id) VALUES($1) ON CONFLICT (user_id) DO NOTHING`, r.UserID); err != nil {
+		return ScreeningResult{}, fmt.Errorf("ensure kyc profile for screening: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE kyc_profiles SET last_screening_decision=$2, updated_at=now() WHERE user_id=$1`,
+		r.UserID, r.Decision); err != nil {
+		return ScreeningResult{}, fmt.Errorf("update kyc profile screening: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyc.screening_recorded",
+		ResourceType: sql.NullString{String: "user", Valid: true},
+		ResourceID:   sql.NullString{String: r.UserID.String(), Valid: true},
+		Details: map[string]any{
+			"provider":     r.Provider,
+			"decision":     r.Decision,
+			"matched":      r.MatchedNames,
+			"rescreen_due": r.RescreenDue,
+		},
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return ScreeningResult{}, fmt.Errorf("audit screening: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ScreeningResult{}, fmt.Errorf("commit screening: %w", err)
 	}
 	return r, nil
 }

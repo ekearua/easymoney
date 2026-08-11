@@ -698,6 +698,19 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
 		t.Fatalf("advance L0->L1 with evidence: %v", err)
 	}
+	// Advancing to L2 or higher requires a non-blocked screening decision.
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvIdentityOnFile}, nil); err == nil {
+		t.Fatal("advance L1->L2 without screening should fail")
+	}
+	clearResult, err := repository.RecordScreeningResult(ctx, ScreeningResult{
+		UserID: user.ID, Provider: "simulated", Decision: kyc.ScreenClear, MatchedNames: []string{},
+	}, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("record clear screening: %v", err)
+	}
+	if clearResult.RescreenDue == nil || !clearResult.RescreenDue.After(time.Now()) {
+		t.Fatalf("expected rescreen_due set in the future, got %v", clearResult.RescreenDue)
+	}
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvIdentityOnFile}, nil); err != nil {
 		t.Fatalf("advance L1->L2 with evidence: %v", err)
 	}
@@ -724,7 +737,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	// Screening with a block must stop future advancement.
 	if _, err := repository.RecordScreeningResult(ctx, ScreeningResult{
 		UserID: user.ID, Provider: "simulated", Decision: "strong", MatchedNames: []string{"KYC Test User"},
-	}); err != nil {
+	}, 30*24*time.Hour); err != nil {
 		t.Fatalf("record screening: %v", err)
 	}
 	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL3, "possible sanctions match", nil); err != nil {
@@ -737,7 +750,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	// Clearing the block (manually_cleared) re-enables advancement.
 	if _, err := repository.RecordScreeningResult(ctx, ScreeningResult{
 		UserID: user.ID, Provider: "simulated", Decision: "manually_cleared",
-	}); err != nil {
+	}, 30*24*time.Hour); err != nil {
 		t.Fatalf("record cleared screening: %v", err)
 	}
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err != nil {

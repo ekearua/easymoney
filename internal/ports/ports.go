@@ -142,3 +142,26 @@ type IdentityVerificationResult struct {
 type IdentityVerifier interface {
 	VerifyIdentity(context.Context, IdentityVerificationRequest) (IdentityVerificationResult, error)
 }
+
+// ScreeningRequest contains the identity details a sanctions/PEP check uses.
+type ScreeningRequest struct {
+	LegalName   string
+	DateOfBirth string
+	PhoneNumber string
+	Address     string
+	CountryCode string
+}
+
+// ScreeningDecision is the provider-neutral outcome of a sanctions/PEP check.
+type ScreeningDecision struct {
+	Decision     string
+	MatchedNames []string
+	ProviderRef  string
+	Message      string
+}
+
+// SanctionsScreener isolates name screening from a specific vendor (Smile ID,
+// Youverify, Dojah, Prembly, OFAC list, ...).
+type SanctionsScreener interface {
+	Screen(context.Context, ScreeningRequest) (ScreeningDecision, error)
+}
