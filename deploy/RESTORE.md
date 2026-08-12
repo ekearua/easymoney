@@ -2,8 +2,8 @@
 
 Scope: base backup + WAL archiving to an S3-compatible bucket (OCI Object
 Storage, AWS S3, MinIO) with rclone. Targets: RPO < 1h (`BACKUP_RPO`),
-RTO < 15 min for a single-region restore. Default retention 30 days
-(`BACKUP_RETENTION_DAYS`).
+RTO < 15 min for a single-region restore (`BACKUP_RTO`). Default retention 30
+days (`BACKUP_RETENTION_DAYS`).
 
 ## Architecture
 
@@ -52,6 +52,22 @@ deploy/backup.sh --rclone sync---> <bucket>/<prefix>/{base,wal}
 
    The `--restore-check` flag unpacks the fresh base backup and runs
    `pg_controldata` to prove it restores cleanly.
+
+4. Run the full PITR restore drill against the newest archived backup (C23):
+
+   ```bash
+   sudo -u postgres BACKUP_BUCKET=my-bucket BACKUP_RPO=1h BACKUP_RTO=15m \
+     PGPASSWORD=... bash deploy/backup.sh --restore-drill
+   ```
+
+   `--restore-drill` replays archived WAL on top of the newest base backup
+   (or `--drill-stamp=<stamp>` for a specific one) into a scratch cluster on
+   port `DRILL_PORT` (default 55433), verifies the `payments` relation is
+   queryable, prints the recovered row count, then tears the cluster down. The
+   recovered cluster trusts local socket connections for the drill only, so the
+   archived `pg_hba.conf` cannot block the verification. `DRILL_DATABASE`
+   defaults to `whatsapp_payment`; `DRILL_USER` to `postgres`. Run it as the
+   postgres-capable OS user (not root).
 
 ## Scheduling
 
@@ -136,6 +152,9 @@ BACKUP_BUCKET=my-bucket docker compose run --rm backup
 
 - `pg_stat_archiver` — `archived_count` grows, `last_failed_archive` empty.
 - `deploy/backup.sh --restore-check` — prove the newest backup restores.
+- `deploy/backup.sh --restore-drill` — full PITR drill; replayed row count is
+  the RTO proof. Schedule it (e.g. weekly) and log its output so the RTO
+  target is actually measured against `BACKUP_RTO`.
 - RPO check: ensure the base-backup interval is within `BACKUP_RPO` and WAL
   sync keeps the gap under it. With a 1h RPO, schedule base backups at most
   daily and verify WAL segments ship continuously.

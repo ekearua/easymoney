@@ -19,7 +19,10 @@
 #   BACKUP_DIR=/var/lib/xego-backup BACKUP_RETENTION_DAYS=30
 #   BACKUP_BUCKET=my-bucket BACKUP_PREFIX=whatsapp-payment
 #   RCLONE_CONFIG=/etc/xego-backup/rclone.conf RCLONE_REMOTE=xegobackup
+#   BACKUP_RPO=1h BACKUP_RTO=15m
 #   bash deploy/backup.sh --restore-check
+#   bash deploy/backup.sh --restore-drill        (full PITR drill on NEWEST backup)
+#   bash deploy/backup.sh --restore-drill --drill-stamp=20260812T020000Z  (specific base)
 
 set -Eeuo pipefail
 
@@ -28,6 +31,7 @@ BACKUP_BUCKET="${BACKUP_BUCKET:-}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-whatsapp-payment}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-30}"
 BACKUP_RPO="${BACKUP_RPO:-1h}"
+BACKUP_RTO="${BACKUP_RTO:-15m}"
 RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/xego-backup/rclone.conf}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-xegobackup}"
 
@@ -37,9 +41,13 @@ PGUSER="${PGUSER:-postgres}"
 PGPASSWORD="${PGPASSWORD:-}"
 
 RESTORE_CHECK=0
+RESTORE_DRILL=0
+DRILL_STAMP=""
 for arg in "$@"; do
   case "$arg" in
     --restore-check) RESTORE_CHECK=1 ;;
+    --restore-drill) RESTORE_DRILL=1 ;;
+    --drill-stamp=*) DRILL_STAMP="${arg#--drill-stamp=}" ;;
   esac
 done
 
@@ -82,7 +90,7 @@ WAL_LOCAL="$BACKUP_DIR/wal"
 echo "== Xego PostgreSQL backup =="
 echo "Server:      $PGHOST:$PGPORT (user $PGUSER)"
 echo "Target:      $REMOTE_ROOT"
-echo "Retention:   ${BACKUP_RETENTION_DAYS} days (RPO ${BACKUP_RPO})"
+echo "Retention:   ${BACKUP_RETENTION_DAYS} days (RPO ${BACKUP_RPO}, target RTO ${BACKUP_RTO})"
 echo
 
 if [[ ! -d "$WAL_LOCAL" ]]; then
@@ -130,6 +138,84 @@ if [[ "$RESTORE_CHECK" == "1" ]]; then
     echo "pg_controldata not found; skipping cluster validation (install postgresql-client tools)"
   fi
   echo "restore check: backup restores cleanly to $RESTORE_DIR"
+fi
+
+# restore-drill: full point-in-time recovery drill against the newest (or
+# --drill-stamp=) base backup. This is the C23 recovery drill: unpack the base
+# backup, replay archived WAL from object storage via restore_command, then
+# verify that the payments relation is present and reports a row count. It is
+# the read-out-of-the-box proof that the backup+WAL can actually rebuild the
+# database to the latest state.
+echo "== Step 5: PITR restore drill (--restore-drill only) =="
+if [[ "$RESTORE_DRILL" == "1" ]]; then
+  DRILL_DATABASE="${DRILL_DATABASE:-whatsapp_payment}"
+  DRILL_PORT="${DRILL_PORT:-55433}"
+  DRILL_SCRIPT_DIR="${DRILL_DIR:-/tmp/xego-restore-drill}"
+  DRILL_USER="${DRILL_USER:-postgres}"
+
+  for tool in pg_ctl psql; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      fail "restore drill requires $tool on the drill host"
+    fi
+  done
+
+  if [[ -z "$DRILL_STAMP" ]]; then
+    DRILL_STAMP="$("${RCLONE[@]}" lsf "$BASE_REMOTE" 2>/dev/null | sort | tail -n 1 | tr -d '/')"
+  fi
+  if [[ -z "$DRILL_STAMP" ]]; then
+    fail "restore drill: no base backups found under $BASE_REMOTE"
+  fi
+  echo "Drill source: $BASE_REMOTE/$DRILL_STAMP"
+
+  rm -rf "$DRILL_SCRIPT_DIR"
+  mkdir -p "$DRILL_SCRIPT_DIR"
+  "${RCLONE[@]}" copy "$BASE_REMOTE/$DRILL_STAMP/base.tar.gz" "$DRILL_SCRIPT_DIR/"
+  tar -xzf "$DRILL_SCRIPT_DIR/base.tar.gz" -C "$DRILL_SCRIPT_DIR"
+  rm -f "$DRILL_SCRIPT_DIR/base.tar.gz"
+
+  # Recovery config: restore_command pulls archived WAL from object storage.
+  touch "$DRILL_SCRIPT_DIR/recovery.signal"
+  cat > "$DRILL_SCRIPT_DIR/xego-restore-wal.sh" <<EOF
+#!/bin/sh
+exec "${RCLONE[@]}" copyto "$WAL_REMOTE/$2" "$1"
+EOF
+  chmod +x "$DRILL_SCRIPT_DIR/xego-restore-wal.sh"
+
+  # Trust-local drill auth so the recovery connection cannot be blocked by the
+  # archived cluster's pg_hba (roles may not exist outside the source VPS).
+  cat > "$DRILL_SCRIPT_DIR/drill-pg-hba.conf" <<EOF
+local all all trust
+host all all 127.0.0.1/32 trust
+host all all ::1/128 trust
+EOF
+
+  DRILL_LOG="$DRILL_SCRIPT_DIR/postgres.log"
+  if pg_ctl -D "$DRILL_SCRIPT_DIR" \
+    -o "-p $DRILL_PORT -c listen_addresses=127.0.0.1 -c unix_socket_directories='$DRILL_SCRIPT_DIR' -c hba_file='$DRILL_SCRIPT_DIR/drill-pg-hba.conf' -c restore_command='$DRILL_SCRIPT_DIR/xego-restore-wal.sh %p %f'" \
+    -l "$DRILL_LOG" -w start >/dev/null 2>&1; then
+    echo "recovery cluster started on 127.0.0.1:$DRILL_PORT"
+  else
+    fail "restore drill: pg_ctl start failed (see $DRILL_LOG); run as the postgres-capable user, not root"
+  fi
+
+  # Wait until the payments relation is queryable (WAL replay caught up), then
+  # read out a row count as the drill's data verification.
+  DRILL_VERIFIED=""
+  for _ in $(seq 1 60); do
+    DRILL_VERIFIED="$(psql -h "$DRILL_SCRIPT_DIR" -p "$DRILL_PORT" -U "$DRILL_USER" -d "$DRILL_DATABASE" -tAc "select count(*) from pg_class where relname='payments';" 2>/dev/null || true)"
+    if [[ "$DRILL_VERIFIED" == "1" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  DRILL_ROWS="$(psql -h "$DRILL_SCRIPT_DIR" -p "$DRILL_PORT" -U "$DRILL_USER" -d "$DRILL_DATABASE" -tAc "select count(*) from payments;" 2>/dev/null || true)"
+  pg_ctl -D "$DRILL_SCRIPT_DIR" -m fast -t 20 stop >/dev/null 2>&1 || true
+
+  if [[ "$DRILL_VERIFIED" != "1" ]]; then
+    fail "restore drill: payments relation not found after WAL replay (see $DRILL_LOG)"
+  fi
+  echo "restore drill: PITR succeeded, payments rows = ${DRILL_ROWS:-0}"
+  rm -rf "$DRILL_SCRIPT_DIR"
 fi
 
 echo

@@ -35,6 +35,7 @@ services:
       BACKUP_PREFIX: ${BACKUP_PREFIX:-whatsapp-payment}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
       BACKUP_RPO: ${BACKUP_RPO:-1h}
+      BACKUP_RTO: ${BACKUP_RTO:-15m}
       BACKUP_DIR: /var/lib/xego-backup
       RCLONE_REMOTE: ${RCLONE_REMOTE:-xegobackup}
     volumes:
