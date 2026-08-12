@@ -1055,7 +1055,7 @@ func TestLedgerDoubleEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.pool.Exec(ctx, `
-		TRUNCATE ledger_entries,payment_events,payments,users,merchants,data_orders,
+		TRUNCATE reconciliations,bank_transfer_simulations,ledger_entries,payment_events,payments,users,merchants,data_orders,
 		         data_order_events,invoice_payments,invoices,invoice_items,
 		         thrift_contributions,thrift_payouts,thrift_cycles,thrift_events,
 		         thrift_groups,thrift_members,message_outbox,audit_logs,
@@ -1190,5 +1190,150 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	// Reversing an unknown reference must be rejected.
 	if _, err := repository.PostLedgerReversal(ctx, uuid.NewString(), "nope", "admin@xego.test"); err == nil {
 		t.Fatal("expected reversal of unknown journal reference to be rejected")
+	}
+}
+
+// TestReconciliationThreeWay exercises the C17 three-way reconciliation: the
+// internal payments state, the C16 ledger money-in postings, and the simulated
+// bank rail must all agree. Clean runs are expected when every succeeded
+// payment has a money-in posting; a confirmed bank transfer for a payment that
+// was never succeeded must surface as a discrepancy.
+func TestReconciliationThreeWay(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE reconciliations,reconciliation_items,bank_transfer_simulations,
+		         ledger_entries,payment_events,payments,users,merchants RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348100000300")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A succeeded bank-transfer payment with a confirmed simulation: the bank
+	// leg matches internal and ledger, so the run should be clean.
+	btPayment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 20_000,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "bank_transfer",
+		ProviderReference: domain.NewProviderReference(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := repository.TransitionPayment(ctx, btPayment.ID, domain.StatusAwaitingConfirmation, "recon-test", nil); err != nil || !changed {
+		t.Fatalf("transition to awaiting confirmation: changed=%v err=%v", changed, err)
+	}
+	accounts, err := repository.ListActiveBankTransferAccounts(ctx)
+	if err != nil || len(accounts) == 0 {
+		t.Fatalf("no seeded bank accounts: %v", err)
+	}
+	if _, err := repository.InitializeBankTransferSimulation(ctx, btPayment.ID, accounts[0].ID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ConfirmBankTransferSimulation(ctx, btPayment.ID, OutboxSpec{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second, pending bank-transfer payment whose simulation is force-confirmed
+	// without a success transition: the bank leg has money the internal state
+	// does not, so the run must report a bank_without_internal discrepancy.
+	pendingPayment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 7_500,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "bank_transfer",
+		ProviderReference: domain.NewProviderReference(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := repository.TransitionPayment(ctx, pendingPayment.ID, domain.StatusAwaitingConfirmation, "recon-test", nil); err != nil || !changed {
+		t.Fatalf("transition to awaiting confirmation: changed=%v err=%v", changed, err)
+	}
+	if _, err := repository.InitializeBankTransferSimulation(ctx, pendingPayment.ID, accounts[0].ID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		UPDATE bank_transfer_simulations
+		SET status='user_confirmed', confirmed_at=now(), updated_at=now()
+		WHERE payment_id=$1`, pendingPayment.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A succeeded Paystack payment (no bank leg by design).
+	psPayment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 15_000,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		ProviderReference: domain.NewProviderReference(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.TransitionPayment(ctx, psPayment.ID, domain.StatusSucceeded, "recon-test", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	run, items, err := repository.RunReconciliation(ctx, "manual", "admin@xego.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.InternalCount != 2 {
+		t.Fatalf("expected 2 succeeded payments, got %d", run.InternalCount)
+	}
+	if run.LedgerCount != 2 {
+		t.Fatalf("expected 2 ledger money-in postings, got %d", run.LedgerCount)
+	}
+	if run.BankCount != 2 {
+		t.Fatalf("expected 2 confirmed bank transfers, got %d", run.BankCount)
+	}
+	if run.DiscrepancyCount != 1 {
+		t.Fatalf("expected 1 discrepancy, got %d (items=%+v)", run.DiscrepancyCount, items)
+	}
+	if run.Status != "discrepancies" {
+		t.Fatalf("expected discrepancy status, got %s", run.Status)
+	}
+	found := false
+	for _, it := range items {
+		if it.Category == "bank_without_internal" && it.Reference == pendingPayment.ID.String() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected bank_without_internal for %s, got %+v", pendingPayment.ID, items)
+	}
+	if run.ID == 0 {
+		t.Fatal("expected persisted reconciliation run id")
+	}
+	listed, err := repository.ListReconciliationRuns(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) < 1 || listed[0].ID != run.ID {
+		t.Fatalf("expected run listed first, got %+v", listed)
+	}
+	stored, err := repository.ReconciliationItemsByRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored item, got %d", len(stored))
 	}
 }

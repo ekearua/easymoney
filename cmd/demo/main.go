@@ -86,6 +86,8 @@ func run() error {
 		return application.Seed(ctx)
 	case "reconcile":
 		return application.Reconcile(ctx)
+	case "reconcile3":
+		return application.ReconcileThreeWay(ctx)
 	case "retain":
 		return application.PurgeExpiredData(ctx)
 	case "rescreen":
@@ -113,6 +115,6 @@ func run() error {
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

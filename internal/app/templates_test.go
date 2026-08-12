@@ -27,7 +27,7 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatalf("parse templates: %v", err)
 	}
 
-	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html"} {
+	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html"} {
 		if tmpl.Lookup(name) == nil {
 			t.Fatalf("%s not found in parsed templates", name)
 		}
@@ -85,5 +85,20 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_ledger.html", execLedger); err != nil {
 		t.Fatalf("execute admin_ledger.html: %v", err)
+	}
+
+	buf.Reset()
+	execRecon := map[string]any{
+		"AppName": "Xego",
+		"Title":   "Reconciliation",
+		"CSRF":    "x",
+		"AdminRole": "compliance",
+		"Runs": []store.ReconciliationRun{{ID: 1, RunType: "auto", CreatedBy: "system", InternalCount: 3, LedgerCount: 3, BankCount: 3, DiscrepancyCount: 1, Status: "discrepancies", CreatedAt: time.Now()}},
+		"Items":   []store.ReconciliationItem{{Category: "internal_without_ledger", Reference: "r1", ExpectedKobo: 100, ActualKobo: 0, Detail: "succeeded payment has no ledger money-in posting"}},
+		"Result":  "",
+		"Error":   "",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_reconciliation.html", execRecon); err != nil {
+		t.Fatalf("execute admin_reconciliation.html: %v", err)
 	}
 }

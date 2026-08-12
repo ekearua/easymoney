@@ -194,6 +194,22 @@ func (a *App) Reconcile(ctx context.Context) error {
 	return a.payments.Reconcile(ctx)
 }
 
+// ReconcileThreeWay runs the C17 three-way reconciliation (internal vs ledger
+// vs bank) and returns a short summary suitable for the CLI.
+func (a *App) ReconcileThreeWay(ctx context.Context) error {
+	run, items, err := a.store.RunReconciliation(ctx, "auto", "cli")
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "three-way reconciliation complete", "run_id", run.ID, "status", run.Status, "discrepancies", len(items))
+	for _, it := range items {
+		a.logger.WarnContext(ctx, "reconciliation discrepancy",
+			"category", it.Category, "reference", it.Reference,
+			"expected_kobo", it.ExpectedKobo, "actual_kobo", it.ActualKobo, "detail", it.Detail)
+	}
+	return nil
+}
+
 // PurgeExpiredData enforces the configured retention period.
 func (a *App) PurgeExpiredData(ctx context.Context) error {
 	report, err := a.store.PurgeBefore(ctx, time.Now().Add(-a.cfg.RetentionPeriod))
@@ -441,6 +457,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/legal-holds/remove", a.adminRemoveLegalHold)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/ledger", a.adminLedger)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/ledger/reverse", a.adminLedgerReverse)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reconciliation", a.adminReconciliation)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/reconciliation/run", a.adminReconciliationRun)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)
@@ -491,11 +509,13 @@ func (a *App) routes() http.Handler {
 func (a *App) runWorkers(ctx context.Context) {
 	outboxTicker := time.NewTicker(2 * time.Second)
 	reconcileTicker := time.NewTicker(1 * time.Minute)
+	recon3Ticker := time.NewTicker(24 * time.Hour)
 	retentionTicker := time.NewTicker(24 * time.Hour)
 	rescreenTicker := time.NewTicker(24 * time.Hour)
 	monitorTicker := time.NewTicker(15 * time.Minute)
 	defer outboxTicker.Stop()
 	defer reconcileTicker.Stop()
+	defer recon3Ticker.Stop()
 	defer retentionTicker.Stop()
 	defer rescreenTicker.Stop()
 	defer monitorTicker.Stop()
@@ -511,6 +531,10 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-reconcileTicker.C:
 			if err := a.payments.Reconcile(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
+			}
+		case <-recon3Ticker.C:
+			if _, err := a.runReconciliationAuto(ctx); err != nil {
+				a.logger.WarnContext(ctx, "scheduled three-way reconciliation failed", "error", err)
 			}
 		case <-retentionTicker.C:
 			if err := a.PurgeExpiredData(ctx); err != nil {
