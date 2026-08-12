@@ -27,7 +27,7 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatalf("parse templates: %v", err)
 	}
 
-	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html"} {
+	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html", "admin_chat_guard.html"} {
 		if tmpl.Lookup(name) == nil {
 			t.Fatalf("%s not found in parsed templates", name)
 		}
@@ -100,5 +100,17 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_reconciliation.html", execRecon); err != nil {
 		t.Fatalf("execute admin_reconciliation.html: %v", err)
+	}
+
+	buf.Reset()
+	execGuard := map[string]any{
+		"AppName": "Xego",
+		"Title":   "Chat guard",
+		"AdminRole": "compliance",
+		"Events": []store.ChatGuardEvent{{Channel: "whatsapp", Sender: "+2348012345678", Category: "card", RedactedText: "my card [REDACTED:card] thanks", CreatedAt: time.Now()}},
+		"Total":   int64(1),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_chat_guard.html", execGuard); err != nil {
+		t.Fatalf("execute admin_chat_guard.html: %v", err)
 	}
 }

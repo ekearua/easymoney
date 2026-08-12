@@ -1059,6 +1059,7 @@ func TestLedgerDoubleEntry(t *testing.T) {
 		         data_order_events,invoice_payments,invoices,invoice_items,
 		         thrift_contributions,thrift_payouts,thrift_cycles,thrift_events,
 		         thrift_groups,thrift_members,message_outbox,audit_logs,
+		         chat_guard_events,
 		         service_purchases,registered_services,merchant_owners,merchant_registrations CASCADE`); err != nil {
 		t.Fatal(err)
 	}
@@ -1335,5 +1336,63 @@ func TestReconciliationThreeWay(t *testing.T) {
 	}
 	if len(stored) != 1 {
 		t.Fatalf("expected 1 stored item, got %d", len(stored))
+	}
+}
+
+// TestChatGuardEventPersistence verifies the C18 blocked-attempt log stores the
+// redacted message (never the raw credential) and lists newest-first.
+func TestChatGuardEventPersistence(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `TRUNCATE chat_guard_events RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	first := ChatGuardEvent{
+		MessageID: "wamid.guard.1", Channel: "whatsapp", Sender: "+2348100000310",
+		Recipient: "+2348100000310", Category: "card", RedactedText: "my card [REDACTED:card]",
+	}
+	if err := repository.RecordChatGuardEvent(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := ChatGuardEvent{
+		MessageID: "wamid.guard.2", Channel: "telegram", Sender: "tele1",
+		Recipient: "tg_recipient", Category: "otp", RedactedText: "the code [REDACTED:otp]",
+	}
+	if err := repository.RecordChatGuardEvent(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := repository.ListChatGuardEvents(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Category != "otp" || events[1].Category != "card" {
+		t.Fatalf("expected newest-first ordering, got %s then %s", events[0].Category, events[1].Category)
+	}
+	if events[1].RedactedText != first.RedactedText {
+		t.Fatalf("redacted text not persisted verbatim: %q", events[1].RedactedText)
+	}
+
+	total, err := repository.ChatGuardAttemptCount(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("expected attempt count 2, got %d", total)
 	}
 }

@@ -459,6 +459,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/ledger/reverse", a.adminLedgerReverse)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reconciliation", a.adminReconciliation)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/reconciliation/run", a.adminReconciliationRun)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/chat-guard", a.adminChatGuard)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)

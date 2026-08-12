@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"whatsapp-payment-demo/internal/chatguard"
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
@@ -106,6 +107,15 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	if message.Interactive != "" {
 		input = message.Interactive
 	}
+
+	// C18 chat content guard: Xego never asks for card numbers, PINs, CVVs, or
+	// OTPs, so any inbound message carrying them is refused, the customer is
+	// told why, and the attempt is logged with the credential redacted.
+	if result := chatguard.Inspect(input); result.Blocked {
+		s.blockPaymentCredentialMessage(ctx, message, recipient, result)
+		return nil
+	}
+
 	if strings.EqualFold(input, "/start") || strings.EqualFold(input, "start") {
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
@@ -316,6 +326,26 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 		return user.TelegramConfirmedAt.Valid
 	}
 	return user.NumberConfirmedAt.Valid
+}
+
+// blockPaymentCredentialMessage refuses an inbound chat message carrying card,
+// PIN, CVV, or OTP material: the customer is told Xego never collects it, the
+// attempt is recorded with the credential redacted, and the session is left
+// untouched so the customer can continue their normal flow.
+func (s *ConversationService) blockPaymentCredentialMessage(ctx context.Context, message store.InboundMessage, recipient string, result chatguard.Result) {
+	if err := s.store.RecordChatGuardEvent(ctx, store.ChatGuardEvent{
+		MessageID:    message.ID,
+		Channel:      message.Channel,
+		Sender:       message.Sender,
+		Recipient:    recipient,
+		Category:     string(result.Category),
+		RedactedText: result.Redacted,
+	}); err != nil {
+		// Never block the customer because the audit write failed; still refuse.
+		_ = err
+	}
+	_ = s.sendText(ctx, message.Channel, recipient,
+		"We can't accept that. Xego never asks for card numbers, PINs, CVVs, or OTPs in chat, and we've logged this for security. Your pending request hasn't changed - send MENU or continue with what you were doing.")
 }
 
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {

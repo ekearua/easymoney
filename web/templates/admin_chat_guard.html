@@ -1,0 +1,23 @@
+{{define "admin_chat_guard.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Chat content guard</h1>
+<p class="muted">Inbound chat messages are scanned for card numbers, PINs, CVVs, and OTPs. Xego never requests these in chat, so any match is refused and logged with the credential redacted ({{.Total}} total blocked attempts).</p></div></header>
+
+<section class="panel">
+  <h2>Blocked attempts</h2>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Channel</th><th>Sender</th><th>Category</th><th>Redacted message</th></tr></thead><tbody>
+  {{range .Events}}<tr>
+    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.Channel}}</td>
+    <td class="mono">{{.Sender}}{{if .Recipient}} → {{.Recipient}}{{end}}</td>
+    <td><span class="status warn">{{.Category}}</span></td>
+    <td style="max-width:32em;overflow:hidden;text-overflow:ellipsis" title="{{.RedactedText}}">{{.RedactedText}}</td>
+  </tr>{{else}}<tr><td colspan="5">No blocked attempts yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}
