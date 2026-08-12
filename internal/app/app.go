@@ -870,14 +870,23 @@ func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// vtpassWebhookSecretValid reports whether the VTPass callback is authorized.
+// C28: the shared secret is carried in the X-VTPass-Webhook-Secret header and
+// never in the URL. A query-parameter secret is deliberately ignored, so a
+// poisoned webhook URL cannot authenticate and URLs are never logged with the
+// secret in them. An empty configured secret disables the check (backlog
+// default; VTPASS_WEBHOOK_SECRET should be set in production).
+func vtpassWebhookSecretValid(configured, receivedHeader string) bool {
+	return configured == "" || receivedHeader == configured
+}
+
 func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(r, 1<<20)
 	if err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	secretValid := a.cfg.VTPassWebhookSecret == "" ||
-		r.Header.Get("X-VTPass-Webhook-Secret") == a.cfg.VTPassWebhookSecret
+	secretValid := vtpassWebhookSecretValid(a.cfg.VTPassWebhookSecret, r.Header.Get("X-VTPass-Webhook-Secret"))
 	event, parseErr := vtpass.ParseWebhook(body)
 	eventKey := digest(body)
 	if event.Reference != "" {

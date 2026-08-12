@@ -42,3 +42,24 @@ func TestServerHardening(t *testing.T) {
 		t.Fatal("Handler must be wired")
 	}
 }
+
+// TestVTPassWebhookSecretUsesHeaderOnly locks the C28 posture: the VTPass
+// webhook secret is validated from the X-VTPass-Webhook-Secret header and never
+// from a query parameter, so callback URLs stay secret-free and URLs are safe
+// to log.
+func TestVTPassWebhookSecretUsesHeaderOnly(t *testing.T) {
+	const configured = "s3cr3t"
+
+	if !vtpassWebhookSecretValid(configured, configured) {
+		t.Fatal("matching header secret must be accepted")
+	}
+	if vtpassWebhookSecretValid(configured, "wrong") {
+		t.Fatal("wrong header secret must be rejected")
+	}
+	if !vtpassWebhookSecretValid("", "anything") {
+		t.Fatal("empty configured secret must fall back to permissive (dev default)")
+	}
+	if vtpassWebhookSecretValid(configured, "") {
+		t.Fatal("missing header must be rejected when a secret is configured")
+	}
+}
