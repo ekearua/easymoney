@@ -362,15 +362,7 @@ func (a *App) RunServer(ctx context.Context) error {
 	if err := a.encryptLegacyAtRest(ctx); err != nil {
 		return fmt.Errorf("startup: %w", err)
 	}
-	server := &http.Server{
-		Addr:              a.cfg.HTTPAddr,
-		Handler:           a.routes(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      45 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
+	server := a.newHTTPServer(a.routes())
 	go a.runWorkers(ctx)
 	go func() {
 		<-ctx.Done()
@@ -384,6 +376,22 @@ func (a *App) RunServer(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+// newHTTPServer builds the hardened HTTP server (C19). The timeout and size
+// bounds are locked by TestServerHardening so the ISO 8.6 posture cannot
+// silently regress: header read 5s, full read 15s, write 45s, idle 60s, 1MB
+// max headers, and a bounded connection shutdown.
+func (a *App) newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              a.cfg.HTTPAddr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      45 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 }
 
 func (a *App) routes() http.Handler {
