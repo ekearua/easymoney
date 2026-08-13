@@ -1920,7 +1920,7 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
 		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.uses_total,rst.uses_remaining,rst.created_at,
 		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
-		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
+		       p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
 		       rs.active,rs.phone_whitelist
 		FROM receipt_scan_tokens rst
@@ -1935,7 +1935,7 @@ func (s *Store) ValidateAndConsumeReceiptScan(ctx context.Context, apiKey, token
 		&token.UsesTotal, &token.UsesRemaining, &token.CreatedAt,
 		&payment.ID, &payment.UserID, &payment.MerchantID, &payment.AmountKobo, &payment.Currency,
 		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
-		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
+		&payment.CheckoutURL, &payment.CheckoutToken, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
 		&payment.UpdatedAt, &payment.PaidAt, &payment.UserName, &payment.UserEmail, &payment.WhatsAppNumber,
 		&payment.MerchantName, &payment.MerchantSlug, &payment.LastInboundAt, &serviceActive, &phoneWhitelist,
 	)
@@ -2014,7 +2014,7 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		SELECT rst.id,rst.payment_id,rst.service_id,rs.name,rst.token,rst.manual_code,rst.receipt_type,
 		       rst.expires_at,rst.consumed_at,rst.revoked_at,rst.uses_total,rst.uses_remaining,rst.created_at,
 		       p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,p.provider_reference,
-		       p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
+		       p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,p.failure_reason,p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at,
 		       rs.active,rs.phone_whitelist
 		FROM receipt_scan_tokens rst
@@ -2029,7 +2029,7 @@ func (s *Store) MerchantValidateScanToken(ctx context.Context, merchantID uuid.U
 		&token.UsesTotal, &token.UsesRemaining, &token.CreatedAt,
 		&payment.ID, &payment.UserID, &payment.MerchantID, &payment.AmountKobo, &payment.Currency,
 		&payment.Status, &payment.Provider, &payment.ProviderReference, &payment.Channel, &payment.Recipient,
-		&payment.CheckoutURL, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
+		&payment.CheckoutURL, &payment.CheckoutToken, &payment.ReceiptToken, &payment.FailureReason, &payment.CreatedAt,
 		&payment.UpdatedAt, &payment.PaidAt, &payment.UserName, &payment.UserEmail, &payment.WhatsAppNumber,
 		&payment.MerchantName, &payment.MerchantSlug, &payment.LastInboundAt, &serviceActive, &phoneWhitelist,
 	)
@@ -4810,12 +4810,13 @@ func (s *Store) CreatePayment(ctx context.Context, payment domain.Payment) (doma
 	defer tx.Rollback(ctx)
 	const insert = `
 		INSERT INTO payments
-			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,channel,recipient,receipt_token)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,channel,recipient,receipt_token,checkout_token)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING created_at, updated_at`
 	err = tx.QueryRow(ctx, insert,
 		payment.ID, payment.UserID, payment.MerchantID, payment.AmountKobo, payment.Currency,
-		payment.Status, payment.Provider, payment.ProviderReference, payment.Channel, payment.Recipient, payment.ReceiptToken,
+		payment.Status, payment.Provider, payment.ProviderReference, payment.Channel, payment.Recipient,
+		payment.ReceiptToken, payment.CheckoutToken,
 	).Scan(&payment.CreatedAt, &payment.UpdatedAt)
 	if err != nil {
 		return domain.Payment{}, err
@@ -5100,10 +5101,15 @@ func (s *Store) PaymentByReceiptToken(ctx context.Context, token string) (Paymen
 	return s.paymentBy(ctx, "p.receipt_token=$1", token)
 }
 
+// PaymentByCheckoutToken resolves a payment from its hosted-checkout capability.
+func (s *Store) PaymentByCheckoutToken(ctx context.Context, token string) (PaymentView, error) {
+	return s.paymentBy(ctx, "p.checkout_token=$1", token)
+}
+
 func (s *Store) paymentBy(ctx context.Context, predicate string, value any) (PaymentView, error) {
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
-		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -5114,7 +5120,7 @@ func (s *Store) paymentBy(ctx context.Context, predicate string, value any) (Pay
 	err := s.pool.QueryRow(ctx, query, value).Scan(
 		&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 		&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-		&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
+		&view.CheckoutToken, &view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 		&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 	)
 	return view, err
@@ -5133,7 +5139,7 @@ func (s *Store) ListPayments(ctx context.Context, limit int) ([]PaymentView, err
 func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([]PaymentView, error) {
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
-		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -5150,7 +5156,7 @@ func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([
 		if err := rows.Scan(
 			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-			&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
+			&view.CheckoutToken, &view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 		); err != nil {
 			return nil, err
@@ -6331,11 +6337,11 @@ func paymentArchivePayload(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]byte
 	var paidAt *time.Time
 	err := tx.QueryRow(ctx, `
 		SELECT id, user_id, merchant_id, amount_kobo, currency, status, provider,
-		       provider_reference, channel, recipient, checkout_url, receipt_token,
+		       provider_reference, channel, recipient, checkout_url, checkout_token, receipt_token,
 		       failure_reason, created_at, updated_at, paid_at
 		FROM payments WHERE id=$1`, id).Scan(
 		&p.ID, &p.UserID, &p.MerchantID, &p.AmountKobo, &p.Currency, &p.Status, &p.Provider,
-		&p.ProviderReference, &p.Channel, &p.Recipient, &p.CheckoutURL, &p.ReceiptToken,
+		&p.ProviderReference, &p.Channel, &p.Recipient, &p.CheckoutURL, &p.CheckoutToken, &p.ReceiptToken,
 		&p.FailureReason, &p.CreatedAt, &p.UpdatedAt, &paidAt)
 	if err != nil {
 		return nil, err
@@ -7294,7 +7300,7 @@ func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 	offset, limit = normalizePageBounds(offset, limit)
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
-		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.receipt_token,p.failure_reason,
+		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -7313,7 +7319,7 @@ func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 		if err := rows.Scan(
 			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-			&view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
+			&view.CheckoutToken, &view.ReceiptToken, &view.FailureReason, &view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 		); err != nil {
 			return nil, err

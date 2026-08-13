@@ -292,12 +292,8 @@ func (s *DataService) handleParsedSMS(ctx context.Context, sender string, comman
 		if err != nil {
 			return "", order.RequestCode, err
 		}
-		payment, err = s.payments.InitializeCheckout(ctx, payment)
-		if err != nil {
-			return "", order.RequestCode, err
-		}
 		return fmt.Sprintf("Xego request %s created: %s %s for %s. Pay %s here: %s. Check status with STATUS %s.",
-			order.RequestCode, order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), payment.CheckoutURL, order.RequestCode), order.RequestCode, nil
+			order.RequestCode, order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), s.payments.HostedCheckoutURL(payment), order.RequestCode), order.RequestCode, nil
 	default:
 		return smsHelp(), "", nil
 	}

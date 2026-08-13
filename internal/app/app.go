@@ -442,6 +442,8 @@ func (a *App) routes() http.Handler {
 	router.With(webhookLimit).Post("/webhooks/paystack", a.receivePaystackWebhook)
 	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.With(publicLimit).Get("/payments/return", a.paymentReturn)
+	router.With(publicLimit).Get("/checkout/{token}", a.hostedCheckout)
+	router.With(publicLimit).Post("/checkout/{token}/pay", a.hostedCheckoutPay)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
@@ -995,6 +997,82 @@ func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
 }
 
+// hostedCheckout renders the branded confirmation page for a payment capability.
+func (a *App) hostedCheckout(w http.ResponseWriter, r *http.Request) {
+	payment, ok := a.paymentByCheckoutToken(w, r)
+	if !ok {
+		return
+	}
+	if payment.Status == domain.StatusSucceeded {
+		http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+		return
+	}
+	a.renderHostedCheckout(w, r, payment, http.StatusOK)
+}
+
+// hostedCheckoutPay initializes the secure gateway only after the customer
+// confirms on the hosted page.
+func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
+	payment, ok := a.paymentByCheckoutToken(w, r)
+	if !ok {
+		return
+	}
+	switch payment.Status {
+	case domain.StatusSucceeded:
+		http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+		return
+	case domain.StatusInitialized, domain.StatusPending:
+		if payment.CheckoutURL != "" {
+			http.Redirect(w, r, payment.CheckoutURL, http.StatusSeeOther)
+			return
+		}
+	}
+	if payment.Provider != service.ProviderPaystack {
+		a.renderHostedCheckout(w, r, payment, http.StatusOK)
+		return
+	}
+	updated, err := a.payments.InitializeCheckout(r.Context(), payment)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "hosted checkout initialize failed", "payment_id", payment.ID, "error", err)
+		a.renderHostedCheckout(w, r, payment, http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(w, r, updated.CheckoutURL, http.StatusSeeOther)
+}
+
+func (a *App) paymentByCheckoutToken(w http.ResponseWriter, r *http.Request) (store.PaymentView, bool) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return store.PaymentView{}, false
+	}
+	payment, err := a.store.PaymentByCheckoutToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return store.PaymentView{}, false
+	}
+	return payment, true
+}
+
+func (a *App) renderHostedCheckout(w http.ResponseWriter, r *http.Request, payment store.PaymentView, status int) {
+	var invoice *store.InvoiceView
+	if view, err := a.store.InvoiceByPaymentID(r.Context(), payment.ID); err == nil {
+		invoice = &view
+	}
+	var dataOrder *store.DataOrderView
+	if order, err := a.store.DataOrderByPaymentID(r.Context(), payment.ID); err == nil {
+		dataOrder = &order
+	}
+	var thrift *store.ThriftContributionView
+	if view, err := a.store.ThriftContributionByPaymentID(r.Context(), payment.ID); err == nil {
+		thrift = &view
+	}
+	a.renderStatus(w, "checkout.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "Invoice": invoice,
+		"DataOrder": dataOrder, "Thrift": thrift, "BaseURL": a.cfg.BaseURL,
+	}, status)
+}
+
 func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	if len(token) < 32 {
@@ -1112,7 +1190,11 @@ func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL})
+	whatsappPayLink := ""
+	if a.cfg.WhatsAppPhoneNumber != "" {
+		whatsappPayLink = "https://wa.me/" + a.cfg.WhatsAppPhoneNumber + "?text=" + url.QueryEscape("PAY "+invoice.Reference)
+	}
+	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL, "WhatsAppPayLink": whatsappPayLink})
 }
 
 func (a *App) thriftGroup(w http.ResponseWriter, r *http.Request) {

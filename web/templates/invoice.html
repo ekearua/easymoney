@@ -20,8 +20,11 @@
     {{range .Invoice.Items}}<div><dt>{{.Description}} × {{.Quantity}}</dt><dd>{{money .LineTotalKobo}}</dd></div>{{end}}
     <div><dt>Delivery fee</dt><dd>{{money .Invoice.DeliveryFeeKobo}}</dd></div>
   </dl>
-  <p>To pay, send this exact message to Xego on WhatsApp:</p>
-  <p class="mono">PAY {{.Invoice.Reference}}</p>
+  {{if .WhatsAppPayLink}}<p>To pay, open Xego on WhatsApp with the message pre-filled:</p>
+  <p><a class="mono" href="{{.WhatsAppPayLink}}" target="_blank" rel="noopener">PAY {{.Invoice.Reference}}</a></p>
+  <p class="muted">If the link does not open WhatsApp, send the message above to Xego manually.</p>
+  {{else}}<p>To pay, send this exact message to Xego on WhatsApp:</p>
+  <p class="mono">PAY {{.Invoice.Reference}}</p>{{end}}
   <p class="muted">The payer can choose card checkout or bank transfer, and may pay the full balance or a partial amount. Xego marks the invoice paid only when total collected equals the invoice total.</p>
 </main></body></html>
 {{end}}

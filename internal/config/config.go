@@ -51,6 +51,7 @@ type Config struct {
 	WhatsAppAppSecret      string
 	WhatsAppAccessToken    string
 	WhatsAppPhoneNumberID  string
+	WhatsAppPhoneNumber    string
 	WhatsAppGraphVersion   string
 	WhatsAppTemplateName   string
 	WhatsAppTemplateLocale string
@@ -142,6 +143,7 @@ func Load() (Config, error) {
 		WhatsAppAppSecret:          os.Getenv("WHATSAPP_APP_SECRET"),
 		WhatsAppAccessToken:        os.Getenv("WHATSAPP_ACCESS_TOKEN"),
 		WhatsAppPhoneNumberID:      os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppPhoneNumber:        normalizeE164(os.Getenv("WHATSAPP_PHONE_NUMBER")),
 		WhatsAppGraphVersion:       strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
 		WhatsAppTemplateName:       env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
 		WhatsAppTemplateLocale:     env("WHATSAPP_TEMPLATE_LOCALE", "en"),
@@ -347,4 +349,16 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+// normalizeE164 strips formatting and a leading "+" so WhatsApp deep links can
+// be built as https://wa.me/<digits>.
+func normalizeE164(raw string) string {
+	var digits strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	return digits.String()
 }

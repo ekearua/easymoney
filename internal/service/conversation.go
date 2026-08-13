@@ -1549,10 +1549,6 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 		if err := s.store.LinkThriftContributionPayment(ctx, contribution.ID, payment.ID); err != nil {
 			return err
 		}
-		payment, err = s.payments.InitializeCheckout(ctx, payment)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
-		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -1560,7 +1556,7 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 		return s.sendCheckout(ctx, channel, recipient,
 			fmt.Sprintf("Your thrift checkout is ready.\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nXego credits the contribution only after payment is verified.",
 				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
-			payment.CheckoutURL)
+			s.payments.HostedCheckoutURL(payment))
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, contribution.AmountKobo, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -2664,10 +2660,6 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 			return err
 		}
 		session.Data["payment_id"] = payment.ID.String()
-		payment, err = s.payments.InitializeCheckout(ctx, payment)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
-		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -2675,7 +2667,7 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 		return s.sendCheckout(ctx, channel, recipient,
 			fmt.Sprintf("Your secure checkout is ready.\n\nInvoice: %s\nMerchant: %s\nAmount: %s\n\nXego will update the invoice only after payment is verified.",
 				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
-			payment.CheckoutURL)
+			s.payments.HostedCheckoutURL(payment))
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -2885,10 +2877,6 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 			return err
 		}
 		session.Data["payment_id"] = payment.ID.String()
-		payment, err = s.payments.InitializeCheckout(ctx, payment)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
-		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -2896,7 +2884,7 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 		return s.sendCheckout(ctx, channel, recipient,
 			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
 				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
-			payment.CheckoutURL)
+			s.payments.HostedCheckoutURL(payment))
 	default:
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -2924,10 +2912,6 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 			return err
 		}
 		session.Data["payment_id"] = payment.ID.String()
-		payment, err = s.payments.InitializeCheckout(ctx, payment)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn't start secure card checkout right now. Please try again in a moment.")
-		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -2935,7 +2919,7 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 		return s.sendCheckout(ctx, channel, recipient,
 			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
 				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
-			payment.CheckoutURL)
+			s.payments.HostedCheckoutURL(payment))
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -3178,17 +3162,13 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
 	}
-	payment, err = s.payments.InitializeCheckout(ctx, payment)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "Xego couldn’t start secure card checkout right now. Please try again in a moment.")
-	}
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendCheckout(ctx, channel, recipient,
 		fmt.Sprintf("Your secure card checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
-		payment.CheckoutURL)
+		s.payments.HostedCheckoutURL(payment))
 }
 
 func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string) error {

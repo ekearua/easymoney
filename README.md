@@ -130,7 +130,7 @@ Role checks are enforced by middleware on every admin route; disabled accounts a
 Public and webhook endpoints are rate limited per client IP with fixed one-minute windows:
 
 - **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/paystack`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
-- **Public pages** (`/payments/return`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
+- **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
 - **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
 
 When `REDIS_URL` is set, counters live in Redis (atomic, shared across replicas, keys expire per window). Without Redis, an in-memory limiter is used per process. If Redis becomes unreachable the limiter fails open and logs the error, so an unavailable cache never blocks payments.

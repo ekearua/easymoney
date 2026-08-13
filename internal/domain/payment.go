@@ -95,9 +95,28 @@ func NewProviderReference() string {
 
 // NewReceiptToken returns a cryptographically random URL-safe receipt capability.
 func NewReceiptToken() (string, error) {
+	token, err := randomCapabilityToken()
+	if err != nil {
+		return "", fmt.Errorf("generate receipt token: %w", err)
+	}
+	return token, nil
+}
+
+// NewCheckoutToken returns a cryptographically random URL-safe capability for
+// the hosted checkout page. It is bearer-shaped, so it must never be logged or
+// indexed by anything but its exact lookup.
+func NewCheckoutToken() (string, error) {
+	token, err := randomCapabilityToken()
+	if err != nil {
+		return "", fmt.Errorf("generate checkout token: %w", err)
+	}
+	return token, nil
+}
+
+func randomCapabilityToken() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return "", fmt.Errorf("generate receipt token: %w", err)
+		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
@@ -115,6 +134,7 @@ type Payment struct {
 	Channel           string
 	Recipient         string
 	CheckoutURL       string
+	CheckoutToken     string
 	ReceiptToken      string
 	FailureReason     string
 	CreatedAt         time.Time

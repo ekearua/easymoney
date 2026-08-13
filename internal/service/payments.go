@@ -61,6 +61,10 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 	if err != nil {
 		return store.PaymentView{}, err
 	}
+	checkoutToken, err := domain.NewCheckoutToken()
+	if err != nil {
+		return store.PaymentView{}, err
+	}
 	payment := domain.Payment{
 		ID:                uuid.New(),
 		UserID:            user.ID,
@@ -73,6 +77,7 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 		Channel:           channel,
 		Recipient:         recipient,
 		ReceiptToken:      token,
+		CheckoutToken:     checkoutToken,
 	}
 	if _, err := s.store.CreatePayment(ctx, payment); err != nil {
 		return store.PaymentView{}, err
@@ -81,6 +86,12 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 		return store.PaymentView{}, err
 	}
 	return s.store.PaymentByID(ctx, payment.ID)
+}
+
+// HostedCheckoutURL returns the branded page where the customer reviews and
+// confirms the payment before the secure gateway is initialized.
+func (s *PaymentService) HostedCheckoutURL(payment store.PaymentView) string {
+	return s.cfg.BaseURL + "/checkout/" + payment.CheckoutToken
 }
 
 // InitializeCheckout calls Paystack only after explicit customer confirmation.

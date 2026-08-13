@@ -1,0 +1,45 @@
+{{define "checkout.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Checkout - {{.Payment.MerchantName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">{{if .Thrift}}Thrift contribution{{else if .Invoice}}Invoice payment{{else if .DataOrder}}Data order{{else}}Payment{{end}}</p>
+  <h1>{{.Payment.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  <dl>
+    {{if .Thrift}}
+    <div><dt>Thrift group</dt><dd>{{.Thrift.GroupName}}</dd></div>
+    <div><dt>Cycle</dt><dd>{{.Thrift.CycleNumber}}</dd></div>
+    {{end}}
+    {{if .Invoice}}
+    <div><dt>Invoice</dt><dd class="mono">{{.Invoice.Reference}}</dd></div>
+    <div><dt>Invoice balance</dt><dd>{{money (sub .Invoice.TotalKobo .Invoice.AmountPaidKobo)}}</dd></div>
+    {{end}}
+    {{if .DataOrder}}
+    <div><dt>Network</dt><dd>{{.DataOrder.NetworkName}}</dd></div>
+    <div><dt>Plan</dt><dd>{{.DataOrder.PlanName}}</dd></div>
+    <div><dt>Phone</dt><dd>{{.DataOrder.BeneficiaryPhone}}</dd></div>
+    <div><dt>Request code</dt><dd class="mono">{{.DataOrder.RequestCode}}</dd></div>
+    {{end}}
+    <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
+  </dl>
+  {{if eq .Payment.Status "awaiting_confirmation"}}
+    {{if eq .Payment.Provider "paystack"}}
+    <form method="post" action="/checkout/{{.Payment.CheckoutToken}}/pay">
+      <p class="muted">You will be taken to a secure payment page to complete this {{if .Invoice}}invoice payment{{else if .Thrift}}contribution{{else}}payment{{end}}.</p>
+      <button type="submit">Pay securely</button>
+    </form>
+    {{else}}
+    <p class="muted">This payment is set up for bank transfer. Complete it by replying to Xego on WhatsApp, where the transfer instructions were sent.</p>
+    {{end}}
+  {{else if eq .Payment.Status "initialized"}}
+    {{if .Payment.CheckoutURL}}<p><a href="{{.Payment.CheckoutURL}}">Resume this payment</a></p>{{else}}<p class="muted">This payment is still being prepared. Refresh the page in a moment.</p>{{end}}
+  {{else if eq .Payment.Status "pending"}}
+    <p class="muted">This payment is being confirmed. Refresh the page in a moment.</p>
+  {{else}}
+    <p class="muted">This payment is {{.Payment.Status}}. If it never completed, start a fresh payment on WhatsApp.</p>
+  {{end}}
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+</main></body></html>
+{{end}}
