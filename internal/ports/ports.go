@@ -4,6 +4,7 @@ package ports
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -164,4 +165,31 @@ type ScreeningDecision struct {
 // Youverify, Dojah, Prembly, OFAC list, ...).
 type SanctionsScreener interface {
 	Screen(context.Context, ScreeningRequest) (ScreeningDecision, error)
+}
+
+// ErrBusClosed is returned when publishing to a closed event bus.
+var ErrBusClosed = errors.New("event bus is closed")
+
+// EventMessage is one event published on the event bus. Key is used for
+// partition affinity (Kafka-style): all messages with the same key are
+// delivered in order to the same partition.
+type EventMessage struct {
+	Topic   string
+	Key     string
+	Payload []byte
+	Headers map[string]string
+}
+
+// EventHandler processes a single event message. It must be idempotent:
+// at-least-once delivery means it can be invoked again after a crash.
+type EventHandler func(context.Context, EventMessage) error
+
+// EventBus is the Phase 3 event backbone. Every published message must be
+// delivered at least once to every consumer group subscribed to its topic.
+type EventBus interface {
+	Publish(ctx context.Context, msg EventMessage) error
+	// Subscribe registers a consumer-group handler for a topic. It starts
+	// delivery in the background and keeps delivering until ctx is cancelled.
+	Subscribe(ctx context.Context, topic, group string, handler EventHandler) error
+	Close() error
 }

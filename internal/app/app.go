@@ -29,6 +29,8 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 
+	kafkabus "whatsapp-payment-demo/internal/bus/kafka"
+	memorybus "whatsapp-payment-demo/internal/bus/memory"
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
@@ -69,6 +71,8 @@ type App struct {
 	rateClose         func() error
 	totpKey           []byte
 	sanctionsScreener ports.SanctionsScreener
+	eventBus          ports.EventBus
+	publisher         *service.EventPublisher
 }
 
 // New creates all application dependencies.
@@ -137,6 +141,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			rateClose = redisLimiter.Close
 		}
 	}
+	// Phase 3: the event backbone. "kafka" requires a broker; "memory" (the
+	// default) is the Kafka-compatible in-memory bus used by the demo and tests.
+	var eventBus ports.EventBus
+	switch strings.ToLower(cfg.EventBus) {
+	case "kafka":
+		kafkaBus, err := kafkabus.New(cfg.KafkaBrokers, cfg.KafkaGroupID, logger)
+		if err != nil {
+			repository.Close()
+			return nil, fmt.Errorf("open kafka event bus: %w", err)
+		}
+		eventBus = kafkaBus
+	case "memory", "":
+		eventBus = memorybus.New(cfg.EventBusPartitions, logger)
+	}
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
@@ -144,6 +162,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener),
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
+		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 	}, nil
 }
 
@@ -151,6 +170,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 func (a *App) Close() {
 	if a.rateClose != nil {
 		_ = a.rateClose()
+	}
+	if a.eventBus != nil {
+		_ = a.eventBus.Close()
 	}
 	a.store.Close()
 }
@@ -306,7 +328,18 @@ func (a *App) RecomputeAllRisk(ctx context.Context) error {
 // MonitorTransactions runs the C14 transaction-monitoring rules over the
 // configured lookback window and returns how many alerts were raised.
 func (a *App) MonitorTransactions(ctx context.Context) error {
-	raised, err := a.store.RunTransactionMonitor(ctx, time.Now().Add(-a.cfg.MonitorVelocityWindow), kyc.MonitorConfig{
+	raised, err := a.store.RunTransactionMonitor(ctx, time.Now().Add(-a.cfg.MonitorVelocityWindow), a.monitorConfig())
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "transaction monitor completed", "alerts", raised, "window", a.cfg.MonitorVelocityWindow.String())
+	return nil
+}
+
+// monitorConfig builds the kyc.MonitorConfig shared by the periodic monitor
+// and the Phase 3 event-driven compliance consumer.
+func (a *App) monitorConfig() kyc.MonitorConfig {
+	return kyc.MonitorConfig{
 		VelocityWindow:     a.cfg.MonitorVelocityWindow,
 		VelocityLimit:      a.cfg.MonitorVelocityLimit,
 		StructuringWindow:  a.cfg.MonitorStructuringWindow,
@@ -316,12 +349,7 @@ func (a *App) MonitorTransactions(ctx context.Context) error {
 		RoundAmountStep:    a.cfg.MonitorRoundAmountStep,
 		RoundAmountMin:     a.cfg.MonitorRoundAmountMin,
 		HighRiskCategories: a.cfg.MonitorHighRiskCategories,
-	})
-	if err != nil {
-		return err
 	}
-	a.logger.InfoContext(ctx, "transaction monitor completed", "alerts", raised, "window", a.cfg.MonitorVelocityWindow.String())
-	return nil
 }
 
 // SyncVTPassDataPlans imports every current VTPass data variation into Xego's catalog.
@@ -517,17 +545,20 @@ func (a *App) routes() http.Handler {
 
 func (a *App) runWorkers(ctx context.Context) {
 	outboxTicker := time.NewTicker(2 * time.Second)
+	eventTicker := time.NewTicker(1 * time.Second)
 	reconcileTicker := time.NewTicker(1 * time.Minute)
 	recon3Ticker := time.NewTicker(24 * time.Hour)
 	retentionTicker := time.NewTicker(24 * time.Hour)
 	rescreenTicker := time.NewTicker(24 * time.Hour)
 	monitorTicker := time.NewTicker(15 * time.Minute)
 	defer outboxTicker.Stop()
+	defer eventTicker.Stop()
 	defer reconcileTicker.Stop()
 	defer recon3Ticker.Stop()
 	defer retentionTicker.Stop()
 	defer rescreenTicker.Stop()
 	defer monitorTicker.Stop()
+	a.startEventConsumers(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -537,6 +568,10 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.processPaystackWebhooks(ctx)
 			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
+		case <-eventTicker.C:
+			if err := a.publisher.Drain(ctx); err != nil {
+				a.logger.WarnContext(ctx, "event publisher failed", "error", err)
+			}
 		case <-reconcileTicker.C:
 			if err := a.payments.Reconcile(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
@@ -557,6 +592,23 @@ func (a *App) runWorkers(ctx context.Context) {
 			if err := a.MonitorTransactions(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
 			}
+		}
+	}
+}
+
+func (a *App) startEventConsumers(ctx context.Context) {
+	notification := service.NewNotificationConsumer(a.store, a.payments, a.logger)
+	compliance := service.NewComplianceConsumer(a.store, a.monitorConfig(), a.logger)
+	for _, sub := range []struct {
+		topic   string
+		group   string
+		handler ports.EventHandler
+	}{
+		{domain.TopicPaymentSucceeded, "xego.notifications", notification.HandlePaymentSucceeded},
+		{domain.TopicPaymentSucceeded, "xego.compliance", compliance.HandlePaymentSucceeded},
+	} {
+		if err := a.eventBus.Subscribe(ctx, sub.topic, sub.group, sub.handler); err != nil {
+			a.logger.ErrorContext(ctx, "subscribe event consumer failed", "topic", sub.topic, "group", sub.group, "error", err)
 		}
 	}
 }

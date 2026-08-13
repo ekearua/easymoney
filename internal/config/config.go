@@ -102,6 +102,13 @@ type Config struct {
 
 	RedisURL string
 
+	// EventBus selects the Phase 3 event backbone: "memory" (default, the
+	// Kafka-compatible in-memory bus) or "kafka" (segmentio/kafka-go).
+	EventBus           string
+	EventBusPartitions int
+	KafkaBrokers       []string
+	KafkaGroupID       string
+
 	RateLimitWebhooksPerMinute int
 	RateLimitPublicPerMinute   int
 	RateLimitScanPerMinute     int
@@ -173,6 +180,9 @@ func Load() (Config, error) {
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
+		EventBus:                   strings.ToLower(env("EVENT_BUS", "memory")),
+		EventBusPartitions:         int(envInt64("EVENT_BUS_PARTITIONS", 4)),
+		KafkaGroupID:               env("KAFKA_GROUP_ID", "xego"),
 		RateLimitWebhooksPerMinute: int(envInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
 		RateLimitPublicPerMinute:   int(envInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
 		RateLimitScanPerMinute:     int(envInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
@@ -192,6 +202,19 @@ func Load() (Config, error) {
 				cfg.MonitorHighRiskCategories = append(cfg.MonitorHighRiskCategories, s)
 			}
 		}
+	}
+	if raw := os.Getenv("KAFKA_BROKERS"); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				cfg.KafkaBrokers = append(cfg.KafkaBrokers, s)
+			}
+		}
+	}
+	if cfg.EventBus != "memory" && cfg.EventBus != "kafka" {
+		return Config{}, fmt.Errorf("EVENT_BUS must be \"memory\" or \"kafka\", got %q", cfg.EventBus)
+	}
+	if cfg.EventBus == "kafka" && len(cfg.KafkaBrokers) == 0 {
+		return Config{}, errors.New("KAFKA_BROKERS is required when EVENT_BUS=kafka")
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)

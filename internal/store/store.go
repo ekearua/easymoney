@@ -2897,6 +2897,89 @@ func (s *Store) RunTransactionMonitor(ctx context.Context, since time.Time, cfg 
 	return raised, nil
 }
 
+// PaymentTransactionInput loads the monitoring input for one settled payment,
+// including its merchant name and category.
+func (s *Store) PaymentTransactionInput(ctx context.Context, paymentID uuid.UUID) (kyc.TransactionInput, error) {
+	var t kyc.TransactionInput
+	err := s.pool.QueryRow(ctx, `
+		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
+		FROM payments p
+		JOIN merchants m ON m.id = p.merchant_id
+		WHERE p.id=$1`, paymentID).Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt)
+	return t, err
+}
+
+// RunTransactionMonitorForPayment evaluates one newly settled payment against
+// the monitoring rules together with the customer's recent history (Phase 3
+// event-driven consumer). It is idempotent: an alert already recorded for a
+// payment under the same rule is not re-raised, so redelivery is safe.
+func (s *Store) RunTransactionMonitorForPayment(ctx context.Context, payment kyc.TransactionInput, cfg kyc.MonitorConfig) (int, error) {
+	if cfg.VelocityWindow <= 0 {
+		cfg.VelocityWindow = 24 * time.Hour
+	}
+	if cfg.StructuringWindow <= 0 {
+		cfg.StructuringWindow = 24 * time.Hour
+	}
+	since := payment.PaidAt.Add(-cfg.VelocityWindow)
+	if earlier := payment.PaidAt.Add(-cfg.StructuringWindow); earlier.Before(since) {
+		since = earlier
+	}
+	history, err := s.settledPaymentsForUser(ctx, payment.UserID, since, payment.PaidAt)
+	if err != nil {
+		return 0, err
+	}
+	history = append(history, payment)
+	raised := 0
+	for _, alert := range kyc.RunTransactionMonitor(history, cfg) {
+		recorded, err := s.alertExistsForPayment(ctx, alert.UserID, alert.Rule, alert.PaymentIDs)
+		if err != nil {
+			return raised, err
+		}
+		if recorded {
+			continue
+		}
+		if err := s.insertTransactionAlert(ctx, alert.UserID, alert); err != nil {
+			return raised, err
+		}
+		raised++
+	}
+	return raised, nil
+}
+
+func (s *Store) settledPaymentsForUser(ctx context.Context, userID uuid.UUID, since, before time.Time) ([]kyc.TransactionInput, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
+		FROM payments p
+		JOIN merchants m ON m.id = p.merchant_id
+		WHERE p.status='succeeded' AND p.user_id=$1 AND p.paid_at >= $2 AND p.paid_at < $3
+		ORDER BY p.paid_at`, userID, since, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var inputs []kyc.TransactionInput
+	for rows.Next() {
+		var t kyc.TransactionInput
+		if err := rows.Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt); err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, t)
+	}
+	return inputs, rows.Err()
+}
+
+// alertExistsForPayment reports whether an alert for any of the payment IDs
+// was already recorded under the rule, making monitoring idempotent.
+func (s *Store) alertExistsForPayment(ctx context.Context, userID uuid.UUID, rule string, paymentIDs []uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM transaction_alerts
+			WHERE user_id=$1 AND rule=$2 AND payment_id = ANY($3)
+		)`, userID, rule, paymentIDs).Scan(&exists)
+	return exists, err
+}
+
 func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, alert kyc.MonitorAlert) error {
 	details, _ := json.Marshal(alert.Details)
 	if details == nil {
@@ -3076,11 +3159,28 @@ func (s *Store) ReviewManualReviewCase(ctx context.Context, caseID int64, approv
 		return ManualReviewCase{}, fmt.Errorf("commit review: %w", err)
 	}
 	if approve {
-		if _, err := s.AdvanceKYCTier(ctx, c.UserID, c.RequestedTier, nil, actor); err != nil {
+		if _, err := s.AdvanceKYCTier(ctx, c.UserID, c.RequestedTier, requiredTierEvidence(c.RequestedTier), actor); err != nil {
 			return ManualReviewCase{}, err
 		}
 	}
 	return c, nil
+}
+
+// requiredTierEvidence returns the evidence keys a tier requires. A reviewer's
+// approval carries the weight of that verification, so an approved tier_upgrade
+// case supplies them instead of the user's self-service submission.
+func requiredTierEvidence(to string) []string {
+	switch to {
+	case kyc.TierL1:
+		return []string{kyc.EvChannelConfirmed}
+	case kyc.TierL2:
+		return []string{kyc.EvIdentityOnFile}
+	case kyc.TierL3:
+		return []string{kyc.EvNINBVNVerified}
+	case kyc.TierL4:
+		return []string{kyc.EvEDDCompleted}
+	}
+	return nil
 }
 
 func mergeEvidence(existing []string, extra []string) []string {
@@ -4750,7 +4850,9 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	var from domain.PaymentStatus
 	var amountKobo int64
 	var currency string
-	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo, currency FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &amountKobo, &currency); err != nil {
+	var userID, merchantID uuid.UUID
+	var provider, reference string
+	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo, currency, user_id, merchant_id, provider, provider_reference FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &amountKobo, &currency, &userID, &merchantID, &provider, &reference); err != nil {
 		return false, err
 	}
 	if from == to {
@@ -4782,6 +4884,12 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
 		VALUES($1,$2,$3,$4,$5)`, paymentID, from, to, source, raw); err != nil {
+		return false, err
+	}
+	// Phase 3: emit the terminal domain fact into the transactional outbox.
+	// Events are drained onto the event bus by the publisher, so consumers
+	// (notifications, compliance) no longer run inline in this transaction.
+	if err := s.insertPaymentEvent(ctx, tx, paymentID, from, to, source, userID, merchantID, provider, reference, amountKobo, currency); err != nil {
 		return false, err
 	}
 	if outbox != nil {

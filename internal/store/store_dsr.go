@@ -260,7 +260,7 @@ func (s *Store) ExportUserData(ctx context.Context, userID uuid.UUID) (DataSubje
 		dest *json.RawMessage
 		sql  string
 	}{
-		{&out.KYCProfile, jsonAggSQL(`SELECT id, user_id, tier, tier_updated_at, evidence, last_screening_decision, review_status, risk_band, risk_updated_at, created_at, updated_at FROM kyc_profiles WHERE user_id=%s`)},
+		{&out.KYCProfile, jsonAggSQL(`SELECT user_id AS id, user_id, tier, tier_updated_at, evidence, last_screening_decision, review_status, risk_band, risk_updated_at, created_at, updated_at FROM kyc_profiles WHERE user_id=%s`)},
 		{&out.Verifications, jsonAggSQL(`SELECT id, user_id, verification_type, status, provider, provider_reference, result, verified_at, expires_at FROM customer_verifications WHERE user_id=%s`)},
 		{&out.Screening, jsonAggSQL(`SELECT id, user_id, provider, decision, matched_names, screened_at, rescreen_due FROM screening_results WHERE user_id=%s`)},
 		{&out.RiskEvents, jsonAggSQL(`SELECT id, user_id, event_type, score, details, occurred_at FROM risk_events WHERE user_id=%s`)},

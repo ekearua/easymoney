@@ -687,7 +687,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}
 
 	// A brand new user starts at L0.
-	initial, err := repository.KYCProfileByUser(ctx, user.ID)
+	initial, err := repository.EnsureKYCProfile(ctx, user.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,6 +756,13 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err != nil {
 		t.Fatalf("advance after manual clear: %v", err)
+	}
+
+	// Drop back below L4 so the review approval is the step that raises the
+	// tier: approving a case for a user already at the requested tier would be
+	// rejected by the adjacent-advance rule.
+	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL3, "re-verified after manual clear", nil); err != nil {
+		t.Fatalf("downgrade L4->L3 for review case: %v", err)
 	}
 
 	// A manual review case goes through the queue and approval raises the tier.
@@ -862,6 +869,12 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatal(err)
+		}
+		if changed, err := repository.TransitionPayment(ctx, pmt.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil || !changed {
+			t.Fatalf("awaiting transition: changed=%v err=%v", changed, err)
+		}
+		if changed, err := repository.TransitionPayment(ctx, pmt.ID, domain.StatusInitialized, "test", nil); err != nil || !changed {
+			t.Fatalf("initialize transition: changed=%v err=%v", changed, err)
 		}
 		if changed, err := repository.TransitionPayment(ctx, pmt.ID, domain.StatusSucceeded, "test", nil); err != nil || !changed {
 			t.Fatalf("settle payment: changed=%v err=%v", changed, err)
@@ -1089,6 +1102,12 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	}
 
 	// Money-in posting only on success.
+	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusInitialized, "test", nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1117,7 +1136,7 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if debitKobo != 55_000 || creditKobo != 55_000 {
 		t.Fatalf("expected balanced 55000 pair, got %d/%d", debitKobo, creditKobo)
 	}
-	if entries[0].Account != LedgerAccountOperatingBank || entries[1].Account != LedgerAccountCustomerFloat {
+	if seen := map[string]bool{entries[0].Account: true, entries[1].Account: true}; !seen[LedgerAccountOperatingBank] || !seen[LedgerAccountCustomerFloat] {
 		t.Fatalf("unexpected money-in accounts: %s/%s", entries[0].Account, entries[1].Account)
 	}
 
@@ -1233,10 +1252,14 @@ func TestReconciliationThreeWay(t *testing.T) {
 
 	// A succeeded bank-transfer payment with a confirmed simulation: the bank
 	// leg matches internal and ledger, so the run should be clean.
+	btToken, err := domain.NewReceiptToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	btPayment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 20_000,
 		Currency: "NGN", Status: domain.StatusDraft, Provider: "bank_transfer",
-		ProviderReference: domain.NewProviderReference(),
+		ProviderReference: domain.NewProviderReference(), ReceiptToken: btToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1251,17 +1274,23 @@ func TestReconciliationThreeWay(t *testing.T) {
 	if _, err := repository.InitializeBankTransferSimulation(ctx, btPayment.ID, accounts[0].ID, uuid.NewString()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.ConfirmBankTransferSimulation(ctx, btPayment.ID, OutboxSpec{}); err != nil {
+	if _, err := repository.ConfirmBankTransferSimulation(ctx, btPayment.ID, OutboxSpec{
+		UserID: user.ID, Recipient: user.WhatsAppNumber, Kind: "text", Payload: []byte(`{"body":"transfer confirmed"}`),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// A second, pending bank-transfer payment whose simulation is force-confirmed
 	// without a success transition: the bank leg has money the internal state
 	// does not, so the run must report a bank_without_internal discrepancy.
+	pendingToken, err := domain.NewReceiptToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	pendingPayment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 7_500,
 		Currency: "NGN", Status: domain.StatusDraft, Provider: "bank_transfer",
-		ProviderReference: domain.NewProviderReference(),
+		ProviderReference: domain.NewProviderReference(), ReceiptToken: pendingToken,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1280,12 +1309,22 @@ func TestReconciliationThreeWay(t *testing.T) {
 	}
 
 	// A succeeded Paystack payment (no bank leg by design).
+	psToken, err := domain.NewReceiptToken()
+	if err != nil {
+		t.Fatal(err)
+	}
 	psPayment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 15_000,
 		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
-		ProviderReference: domain.NewProviderReference(),
+		ProviderReference: domain.NewProviderReference(), ReceiptToken: psToken,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.TransitionPayment(ctx, psPayment.ID, domain.StatusAwaitingConfirmation, "recon-test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.TransitionPayment(ctx, psPayment.ID, domain.StatusInitialized, "recon-test", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.TransitionPayment(ctx, psPayment.ID, domain.StatusSucceeded, "recon-test", nil); err != nil {

@@ -162,7 +162,6 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
-		s.notifyMerchantPayment(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -217,7 +216,6 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
-		s.notifyMerchantPayment(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -262,7 +260,10 @@ func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment sto
 	return nil
 }
 
-func (s *PaymentService) notifyMerchantPayment(ctx context.Context, payment store.PaymentView) {
+// NotifyMerchantPayment enqueues the invoice-owner notification for a settled
+// payment. It is invoked by the Phase 3 notification consumer rather than
+// inline in the payment transaction.
+func (s *PaymentService) NotifyMerchantPayment(ctx context.Context, payment store.PaymentView) {
 	invoice, err := s.store.InvoiceByPaymentID(ctx, payment.ID)
 	if err != nil {
 		return
