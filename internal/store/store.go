@@ -767,7 +767,25 @@ func (s *Store) Seed(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, string(body))
+	if _, err = s.pool.Exec(ctx, string(body)); err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO users (whatsapp_number, display_name, email, account_level, onboarding_complete, number_confirmed_at)
+		VALUES ('+2348000000001', 'Demo Merchant Admin', 'admin@xego.local', 'merchant', true, now())
+		ON CONFLICT (whatsapp_number) DO UPDATE SET
+			display_name = EXCLUDED.display_name,
+			account_level = 'merchant',
+			onboarding_complete = true`)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO merchant_owners(merchant_id, user_id)
+		SELECT m.id, u.id
+		FROM merchants m
+		JOIN users u ON u.whatsapp_number = '+2348000000001'
+		ON CONFLICT DO NOTHING`)
 	return err
 }
 
