@@ -112,6 +112,24 @@ func TestResultOutboxPreservesPaymentChannel(t *testing.T) {
 	}
 }
 
+func TestResultOutboxSkipsAPIChannel(t *testing.T) {
+	t.Parallel()
+	payments := &PaymentService{
+		cfg: config.Config{BaseURL: "https://demo.example"},
+	}
+	payment := store.PaymentView{
+		Payment: domain.Payment{
+			UserID: uuid.New(), AmountKobo: 50_000, ReceiptToken: "receipt-token",
+			Channel: ChannelAPI, Recipient: "+2348012345678",
+		},
+		MerchantName: "Lagos Lunchbox", LastInboundAt: time.Now(),
+	}
+	outbox := payments.resultOutbox(payment, domain.StatusSucceeded)
+	if outbox.Channel != ChannelAPI || outbox.UserID != uuid.Nil {
+		t.Fatalf("API channel should produce a skip-sentinel outbox, got channel=%q user=%s", outbox.Channel, outbox.UserID)
+	}
+}
+
 func TestGatewayStatusMapping(t *testing.T) {
 	t.Parallel()
 	if got := mapGatewayStatus("success"); got != domain.StatusSucceeded {

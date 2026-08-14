@@ -132,6 +132,7 @@ Public and webhook endpoints are rate limited per client IP with fixed one-minut
 - **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/paystack`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
 - **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
 - **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
+- **Partner API** (per key, `/api/v1/*`): `RATE_LIMIT_API_KEYS_PER_MINUTE` (default 300)
 
 When `REDIS_URL` is set, counters live in Redis (atomic, shared across replicas, keys expire per window). Without Redis, an in-memory limiter is used per process. If Redis becomes unreachable the limiter fails open and logs the error, so an unavailable cache never blocks payments.
 
@@ -308,6 +309,37 @@ https://<host>/webhooks/vtpass
 ```
 
 If `VTPASS_WEBHOOK_SECRET` is set, Xego validates the `X-VTPass-Webhook-Secret` header (never a query parameter) against it. VTPass callbacks are recorded in `/admin/webhooks` and can mark pending data orders fulfilled or failed by provider reference/request id.
+
+## Partner API
+
+Merchants initiate card payments server-to-server and poll or verify them. Credentials are minted in the merchant dashboard (`/merchant/settings` → **Partner API keys**); the plaintext key is shown exactly once. Only the SHA-256 hash of the key is stored, so a lost key must be revoked and recreated.
+
+Base path: `/api/v1`. Requests are rate limited per key (`RATE_LIMIT_API_KEYS_PER_MINUTE`, default 300).
+
+### Authentication
+
+Every request carries three headers, with the key doubling as the HMAC signing secret:
+
+- `X-Xego-Key`: the API key, e.g. `xeg_sk_test_...` (test) or `xeg_sk_live_...` (production)
+- `X-Xego-Timestamp`: current unix seconds (requests outside a 5-minute window are rejected)
+- `X-Xego-Signature`: lowercase hex `HMAC-SHA256(key, METHOD\nPATH\nTIMESTAMP\nBODY)` where `METHOD` is uppercase (`POST`/`GET`), `PATH` is the escaped request path (`/api/v1/payments`), and `BODY` is the raw request body (empty for `GET`)
+
+```text
+POST /api/v1/payments
+X-Xego-Key: xeg_sk_test_...
+X-Xego-Timestamp: 1720000000
+X-Xego-Signature: <hex hmac>
+
+{"reference":"order-123","amount":{"value":50000,"currency":"NGN"},"customer":{"phone":"+2348012345678","email":"buyer@example.com"}}
+```
+
+### Endpoints
+
+- `POST /payments` — initiate a card payment. Idempotent on `reference` (replaying the same reference returns the existing payment). Body fields: `reference` (required, ≤64 chars, the merchant's idempotency key), `amount.value` in kobo / `amount.currency` (`NGN`), `customer.phone` (E.164) and optional `customer.email`, optional `idempotency_key`, `redirect_url`, and `metadata` (opaque object echoed into the payment record).
+- `GET /payments/{reference}` — current payment state.
+- `POST /payments/{reference}/verify` — re-check the payment against the gateway and return the authoritative status.
+
+Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 
 ## Manual acceptance script
 

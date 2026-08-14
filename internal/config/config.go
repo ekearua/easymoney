@@ -113,6 +113,7 @@ type Config struct {
 	RateLimitWebhooksPerMinute int
 	RateLimitPublicPerMinute   int
 	RateLimitScanPerMinute     int
+	RateLimitAPIKeysPerMinute  int
 
 	InvoiceAcceptedNumbers []string
 }
@@ -188,6 +189,7 @@ func Load() (Config, error) {
 		RateLimitWebhooksPerMinute: int(envInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
 		RateLimitPublicPerMinute:   int(envInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
 		RateLimitScanPerMinute:     int(envInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
+		RateLimitAPIKeysPerMinute:  int(envInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {

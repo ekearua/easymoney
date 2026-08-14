@@ -80,6 +80,26 @@ func TestReceiptTokensAreOpaqueAndUnique(t *testing.T) {
 	}
 }
 
+func TestCanonicalE164Phone(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "08012345678", want: "+2348012345678"},
+		{input: "+2348012345678", want: "+2348012345678"},
+		{input: "2348012345678", want: "+2348012345678"},
+		{input: " 234-801-2345-678 ", want: "+2348012345678"},
+		{input: "", want: ""},
+		{input: "   ", want: ""},
+	}
+	for _, test := range tests {
+		if got := CanonicalE164Phone(test.input); got != test.want {
+			t.Errorf("CanonicalE164Phone(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
 func TestFormatNGN(t *testing.T) {
 	t.Parallel()
 	if got := FormatNGN(12_345_067); got != "₦123,450.67" {

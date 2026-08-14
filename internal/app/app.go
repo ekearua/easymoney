@@ -452,6 +452,13 @@ func (a *App) routes() http.Handler {
 	router.With(scanLimit).Post("/api/readers/scan", a.readerScan)
 	router.Handle("/static/*", http.FileServer(http.FS(web.Assets)))
 
+	router.Route("/api/v1", func(api chi.Router) {
+		api.Use(a.requireAPIKey)
+		api.Post("/payments", a.apiCreatePayment)
+		api.Get("/payments/{reference}", a.apiPaymentStatus)
+		api.Post("/payments/{reference}/verify", a.apiVerifyPayment)
+	})
+
 	router.Get("/admin/login", a.loginPage)
 	router.With(a.limitLogin).Post("/admin/login", a.login)
 	router.Get("/admin/login/totp", a.totpPage)
@@ -526,6 +533,8 @@ func (a *App) routes() http.Handler {
 		m.Get("/merchant/payments", a.merchantPayments)
 		m.Get("/merchant/settings", a.merchantSettings)
 		m.Post("/merchant/settings", a.merchantUpdateSettings)
+		m.Post("/merchant/api-keys", a.merchantCreateAPIKey)
+		m.Post("/merchant/api-keys/{id}/revoke", a.merchantRevokeAPIKey)
 		m.Get("/merchant/profile", a.merchantProfile)
 		m.Post("/merchant/profile", a.merchantUpdateProfile)
 		m.Get("/merchant/services", a.merchantServicesList)
@@ -2490,8 +2499,14 @@ func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		qrTTL = 86400
 	}
+	apiKeys, err := a.store.ListMerchantAPIKeys(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
 	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
 		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600, "TOTPEnabled": a.cfg.TOTPEnabled,
+		"APIKeys": apiKeys,
 	})
 }
 

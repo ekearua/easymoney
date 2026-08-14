@@ -33,6 +33,8 @@ const (
 	ChannelTelegram = "telegram"
 	// ChannelSMS identifies lightweight SMS-originated request-code orders.
 	ChannelSMS = "sms"
+	// ChannelAPI identifies payments initiated through the merchant Partner API.
+	ChannelAPI = "api"
 
 	pickerPageSize = 8
 	recentLimit    = 3

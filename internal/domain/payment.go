@@ -4,6 +4,7 @@ package domain
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -121,6 +122,26 @@ func randomCapabilityToken() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }
 
+// CanonicalE164Phone normalizes a customer contact from the API and link entry
+// points into E.164 digits with a leading "+". A leading Nigerian local "0" is
+// converted to the +234 country code; non-digit characters are stripped.
+func CanonicalE164Phone(raw string) string {
+	var digits strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	number := digits.String()
+	if number == "" {
+		return ""
+	}
+	if strings.HasPrefix(number, "0") {
+		number = "234" + number[1:]
+	}
+	return "+" + number
+}
+
 // Payment is the provider-neutral aggregate persisted by the service.
 type Payment struct {
 	ID                uuid.UUID
@@ -136,6 +157,8 @@ type Payment struct {
 	CheckoutURL       string
 	CheckoutToken     string
 	ReceiptToken      string
+	MerchantReference string
+	Metadata          json.RawMessage
 	FailureReason     string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time

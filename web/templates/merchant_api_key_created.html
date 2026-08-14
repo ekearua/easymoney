@@ -1,0 +1,17 @@
+{{define "merchant_api_key_created.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <h1>API key created</h1>
+  <section class="panel">
+    <div class="alert success">
+      <p><strong>Copy this key now &mdash; it is shown only once and cannot be recovered.</strong></p>
+    </div>
+    <p class="muted">Name: {{.KeyName}}</p>
+    <p class="mono">{{.KeyValue}}</p>
+    <p class="muted">Send it in the <code>X-Xego-Key</code> header and use it as the HMAC signing secret for <code>X-Xego-Signature</code>. Store it in your secret manager; revoke it from Payment settings if it is ever exposed.</p>
+    <p><a class="btn" href="/merchant/settings">Back to payment settings</a></p>
+  </section>
+</main></body></html>
+{{end}}

@@ -357,6 +357,12 @@ func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue dom
 	if channel == "" {
 		channel = ChannelWhatsApp
 	}
+	// API-initiated payments have no chat session to message: the caller tells
+	// the customer where to pay, and the API response carries the status. Return
+	// the api sentinel so transitionPayment skips the outbox row entirely.
+	if channel == ChannelAPI {
+		return store.OutboxSpec{Channel: ChannelAPI}
+	}
 	return store.OutboxSpec{UserID: payment.UserID, Channel: channel, Recipient: recipient, Kind: kind, Payload: payload}
 }
 
