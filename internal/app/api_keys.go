@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -304,6 +305,177 @@ func (a *App) apiVerifyPayment(w http.ResponseWriter, r *http.Request) {
 		ResourceID:   sql.NullString{String: payment.ID.String(), Valid: true},
 	})
 	a.writePaymentJSON(w, updated)
+}
+
+type apiInvoiceItem struct {
+	Description string `json:"description"`
+	Quantity    int    `json:"quantity"`
+	UnitAmount  int64  `json:"unit_amount"`
+}
+
+type apiCreateInvoiceRequest struct {
+	Reference   string           `json:"reference"`
+	Customer    apiCustomer      `json:"customer"`
+	Items       []apiInvoiceItem `json:"items"`
+	DeliveryFee int64            `json:"delivery_fee"`
+	Currency    string           `json:"currency"`
+	DueAt       *time.Time       `json:"due_at"`
+}
+
+// apiCreateInvoice creates a merchant invoice from line items through the
+// Partner API. It is idempotent on the merchant-supplied reference: replaying
+// the same reference returns the existing invoice.
+func (a *App) apiCreateInvoice(w http.ResponseWriter, r *http.Request) {
+	auth, _ := apiKeyAuthFromContext(r.Context())
+	var req apiCreateInvoiceRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, apiKeyMaxBodyBytes)).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.Currency != "" && req.Currency != "NGN" {
+		writeAPIError(w, http.StatusUnprocessableEntity, "currency_invalid", "only NGN is supported")
+		return
+	}
+	if len(req.Items) == 0 {
+		writeAPIError(w, http.StatusUnprocessableEntity, "items_invalid", "at least one line item is required")
+		return
+	}
+	items := make([]store.InvoiceItem, 0, len(req.Items))
+	subtotal := int64(0)
+	for _, item := range req.Items {
+		description := strings.TrimSpace(item.Description)
+		if description == "" || item.Quantity <= 0 || item.UnitAmount <= 0 {
+			writeAPIError(w, http.StatusUnprocessableEntity, "items_invalid", "each item needs a description, a quantity, and a unit amount")
+			return
+		}
+		items = append(items, store.InvoiceItem{Description: description, Quantity: item.Quantity, UnitPriceKobo: item.UnitAmount})
+		subtotal += int64(item.Quantity) * item.UnitAmount
+	}
+	if req.DeliveryFee < 0 {
+		writeAPIError(w, http.StatusUnprocessableEntity, "delivery_fee_invalid", "delivery_fee must be zero or positive")
+		return
+	}
+	total := subtotal + req.DeliveryFee
+	if total < apiMinAmountKobo || total > apiMaxAmountKobo {
+		writeAPIError(w, http.StatusUnprocessableEntity, "amount_out_of_range", "invoice total must be between NGN 1.00 and NGN 10,000,000.00")
+		return
+	}
+	reference := strings.ToUpper(strings.TrimSpace(req.Reference))
+	if len(reference) > apiMaxReferenceLen {
+		writeAPIError(w, http.StatusUnprocessableEntity, "reference_invalid", "reference must be at most 64 characters")
+		return
+	}
+	phone := domain.CanonicalE164Phone(req.Customer.Phone)
+	if len(strings.TrimPrefix(phone, "+")) < 10 {
+		writeAPIError(w, http.StatusUnprocessableEntity, "customer_invalid", "customer.phone must be a valid E.164 number")
+		return
+	}
+	ctx := r.Context()
+
+	if reference != "" {
+		if invoice, err := a.store.InvoiceByReference(ctx, reference); err == nil {
+			if invoice.MerchantID != auth.merchant.ID {
+				writeAPIError(w, http.StatusConflict, "reference_taken", "that reference already belongs to another merchant")
+				return
+			}
+			a.writeInvoiceJSON(w, invoice)
+			return
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			a.logger.Error("api invoice lookup failed", "error", err)
+			writeAPIError(w, http.StatusInternalServerError, "internal", "invoice lookup failed")
+			return
+		}
+	}
+
+	ownerID, err := a.store.MerchantOwnerID(ctx, auth.merchant.ID)
+	if err != nil {
+		a.logger.Error("api invoice merchant owner lookup failed", "error", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal", "invoice creation failed")
+		return
+	}
+	invoice, err := a.store.CreateInvoice(ctx, store.InvoiceSpec{
+		MerchantID:             auth.merchant.ID,
+		CreatedByUserID:        ownerID,
+		CustomerWhatsAppNumber: phone,
+		CustomerEmail:          strings.ToLower(strings.TrimSpace(req.Customer.Email)),
+		DeliveryFeeKobo:        req.DeliveryFee,
+		DueAt:                  req.DueAt,
+		Reference:              reference,
+		Items:                  items,
+	})
+	if err != nil {
+		// Unique violation from a concurrent replay of the same reference:
+		// return the invoice that won the race.
+		if reference != "" {
+			if winner, lookupErr := a.store.InvoiceByReference(ctx, reference); lookupErr == nil && winner.MerchantID == auth.merchant.ID {
+				a.writeInvoiceJSON(w, winner)
+				return
+			}
+		}
+		a.logger.Error("api invoice creation failed", "error", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal", "invoice creation failed")
+		return
+	}
+	_, _ = a.store.AppendAuditLog(ctx, store.AuditLog{
+		ActorType:    "merchant",
+		ActorID:      uuid.NullUUID{UUID: auth.merchant.ID, Valid: true},
+		Action:       "api.invoices.create",
+		ResourceType: sql.NullString{String: "invoice", Valid: true},
+		ResourceID:   sql.NullString{String: invoice.ID.String(), Valid: true},
+		Details:      map[string]any{"reference": invoice.Reference, "total_kobo": invoice.TotalKobo},
+	})
+	a.writeInvoiceJSON(w, invoice)
+}
+
+// apiInvoiceStatus returns the current state of a merchant invoice, including
+// how much has been paid toward the total.
+func (a *App) apiInvoiceStatus(w http.ResponseWriter, r *http.Request) {
+	auth, _ := apiKeyAuthFromContext(r.Context())
+	reference := chi.URLParam(r, "reference")
+	invoice, err := a.store.InvoiceByReference(r.Context(), reference)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeAPIError(w, http.StatusNotFound, "not_found", "no invoice with that reference")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "internal", "invoice lookup failed")
+		return
+	}
+	if invoice.MerchantID != auth.merchant.ID {
+		writeAPIError(w, http.StatusNotFound, "not_found", "no invoice with that reference")
+		return
+	}
+	a.writeInvoiceJSON(w, invoice)
+}
+
+func (a *App) writeInvoiceJSON(w http.ResponseWriter, invoice store.InvoiceView) {
+	items := make([]map[string]any, 0, len(invoice.Items))
+	for _, item := range invoice.Items {
+		items = append(items, map[string]any{
+			"description": item.Description,
+			"quantity":    item.Quantity,
+			"unit_amount": item.UnitPriceKobo,
+		})
+	}
+	response := map[string]any{
+		"invoice_id": invoice.ID.String(),
+		"reference":  invoice.Reference,
+		"status":     invoice.Status,
+		"amount": map[string]any{
+			"value":    invoice.TotalKobo,
+			"currency": "NGN",
+		},
+		"amount_paid": map[string]any{
+			"value":    invoice.AmountPaidKobo,
+			"currency": "NGN",
+		},
+		"items":      items,
+		"created_at": invoice.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if a.cfg.WhatsAppPhoneNumber != "" {
+		response["pay_link"] = "https://wa.me/" + a.cfg.WhatsAppPhoneNumber + "?text=" + url.QueryEscape("PAY "+invoice.Reference)
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *App) writePaymentJSON(w http.ResponseWriter, payment store.PaymentView) {

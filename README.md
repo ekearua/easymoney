@@ -338,8 +338,25 @@ X-Xego-Signature: <hex hmac>
 - `POST /payments` — initiate a card payment. Idempotent on `reference` (replaying the same reference returns the existing payment). Body fields: `reference` (required, ≤64 chars, the merchant's idempotency key), `amount.value` in kobo / `amount.currency` (`NGN`), `customer.phone` (E.164) and optional `customer.email`, optional `idempotency_key`, `redirect_url`, and `metadata` (opaque object echoed into the payment record).
 - `GET /payments/{reference}` — current payment state.
 - `POST /payments/{reference}/verify` — re-check the payment against the gateway and return the authoritative status.
+- `POST /invoices` — create an invoice from line items. Idempotent on the optional `reference` (max 64 chars, uppercased; replaying returns the existing invoice). Body fields: `items` (required; each `{description, quantity, unit_amount}` in kobo), optional `reference`, `delivery_fee`, `currency` (`NGN`), `due_at` (RFC 3339), and `customer.phone` / `customer.email`. Returns the invoice with `status`, `amount`, `amount_paid`, `items`, and a `pay_link` (`wa.me` deep link).
+- `GET /invoices/{reference}` — current invoice state, including `amount_paid`.
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
+
+### Webhook notifications
+
+When a payment reaches a terminal state (`succeeded` / `failed`), Xego POSTs the event to the merchant's callback URL, configured in the merchant dashboard (`/merchant/settings` → **Webhook notifications**). The webhook signing secret is minted there and shown exactly once; it is sealed at rest. Set a *test* endpoint (e.g. a local `ngrok http 8080` tunnel to your dev machine) to observe deliveries.
+
+```text
+POST https://shop.example.com/xego/webhook
+Content-Type: application/json
+X-Xego-Event: payment.succeeded
+X-Xego-Signature: <lowercase hex HMAC-SHA256(webhook_secret, body)>
+
+{"reference":"ORD-8371","payment_id":"7f1c...","status":"succeeded","amount":{"value":250000,"currency":"NGN"},"paid_at":"2026-08-12T10:05:00Z","receipt_url":"https://pay.xego.ng/receipts/<token>"}
+```
+
+Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret, body)` with the raw body bytes and compare case-insensitively (identical contract to Paystack's `validateWebhook`). Failed payloads carry no `paid_at` or `receipt_url`. Deliveries are durable and retried with exponential backoff (2, 4, 8, 16, 32 minutes); a delivery that still fails after the cap is dead-lettered as `failed` in `merchant_webhook_deliveries` for operators to inspect.
 
 ## Manual acceptance script
 

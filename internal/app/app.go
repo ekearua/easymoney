@@ -73,6 +73,7 @@ type App struct {
 	sanctionsScreener ports.SanctionsScreener
 	eventBus          ports.EventBus
 	publisher         *service.EventPublisher
+	merchantWebhooks  *service.MerchantWebhookDeliverer
 }
 
 // New creates all application dependencies.
@@ -163,6 +164,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
+		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
 	}, nil
 }
 
@@ -457,6 +459,8 @@ func (a *App) routes() http.Handler {
 		api.Post("/payments", a.apiCreatePayment)
 		api.Get("/payments/{reference}", a.apiPaymentStatus)
 		api.Post("/payments/{reference}/verify", a.apiVerifyPayment)
+		api.Post("/invoices", a.apiCreateInvoice)
+		api.Get("/invoices/{reference}", a.apiInvoiceStatus)
 	})
 
 	router.Get("/admin/login", a.loginPage)
@@ -535,6 +539,7 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/settings", a.merchantUpdateSettings)
 		m.Post("/merchant/api-keys", a.merchantCreateAPIKey)
 		m.Post("/merchant/api-keys/{id}/revoke", a.merchantRevokeAPIKey)
+		m.Post("/merchant/webhook", a.merchantUpdateWebhook)
 		m.Get("/merchant/profile", a.merchantProfile)
 		m.Post("/merchant/profile", a.merchantUpdateProfile)
 		m.Get("/merchant/services", a.merchantServicesList)
@@ -579,6 +584,7 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.processPaystackWebhooks(ctx)
 			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
+			a.processMerchantWebhooks(ctx)
 		case <-eventTicker.C:
 			if err := a.publisher.Drain(ctx); err != nil {
 				a.logger.WarnContext(ctx, "event publisher failed", "error", err)
@@ -610,6 +616,7 @@ func (a *App) runWorkers(ctx context.Context) {
 func (a *App) startEventConsumers(ctx context.Context) {
 	notification := service.NewNotificationConsumer(a.store, a.payments, a.logger)
 	compliance := service.NewComplianceConsumer(a.store, a.monitorConfig(), a.logger)
+	webhooks := service.NewMerchantWebhookConsumer(a.store, a.cfg.BaseURL, a.logger)
 	for _, sub := range []struct {
 		topic   string
 		group   string
@@ -617,6 +624,8 @@ func (a *App) startEventConsumers(ctx context.Context) {
 	}{
 		{domain.TopicPaymentSucceeded, "xego.notifications", notification.HandlePaymentSucceeded},
 		{domain.TopicPaymentSucceeded, "xego.compliance", compliance.HandlePaymentSucceeded},
+		{domain.TopicPaymentSucceeded, "xego.merchant_webhooks", webhooks.HandlePaymentSucceeded},
+		{domain.TopicPaymentFailed, "xego.merchant_webhooks", webhooks.HandlePaymentFailed},
 	} {
 		if err := a.eventBus.Subscribe(ctx, sub.topic, sub.group, sub.handler); err != nil {
 			a.logger.ErrorContext(ctx, "subscribe event consumer failed", "topic", sub.topic, "group", sub.group, "error", err)
@@ -658,6 +667,14 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 			continue
 		}
 		_ = a.store.CompleteWebhook(ctx, event.ID, "processed", "")
+	}
+}
+
+// processMerchantWebhooks delivers one batch of signed outbound webhooks to
+// merchant callback URLs.
+func (a *App) processMerchantWebhooks(ctx context.Context) {
+	if err := a.merchantWebhooks.DeliverDue(ctx); err != nil {
+		a.logger.WarnContext(ctx, "process merchant webhooks", "error", err)
 	}
 }
 
@@ -2504,9 +2521,14 @@ func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
+	webhookCfg, err := a.store.MerchantWebhookConfig(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
 	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
 		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600, "TOTPEnabled": a.cfg.TOTPEnabled,
-		"APIKeys": apiKeys,
+		"APIKeys": apiKeys, "WebhookURL": webhookCfg.URL, "WebhookSecretSet": webhookCfg.Secret != "",
 	})
 }
 

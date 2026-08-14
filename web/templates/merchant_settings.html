@@ -87,5 +87,24 @@
     </div>
     {{end}}
   </section>
+  <section class="panel">
+    <h2>Webhook notifications</h2>
+    <p class="muted">We POST a signed <code>payment.succeeded</code> or <code>payment.failed</code> event to your callback URL whenever a payment terminalises. Verify the <code>X-Xego-Signature</code> header (HMAC-SHA256 of the raw body) before trusting the payload.</p>
+
+    <form method="post" action="/merchant/webhook">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="form-grid">
+        <label>Callback URL
+          <input type="url" name="webhook_url" value="{{.WebhookURL}}" placeholder="https://shop.example.com/xego/webhook" maxlength="512">
+        </label>
+      </div>
+      <p class="muted">Signing secret: {{if .WebhookSecretSet}}configured{{else}}not yet configured &mdash; saving this form will generate one and show it once{{end}}</p>
+      <label class="checkbox-row">
+        <input type="checkbox" name="rotate_secret">
+        Rotate the webhook secret (a new one is shown on the next page)
+      </label>
+      <button type="submit">Save webhook settings</button>
+    </form>
+  </section>
 </main></body></html>
 {{end}}

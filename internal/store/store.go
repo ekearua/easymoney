@@ -291,6 +291,7 @@ type InvoiceSpec struct {
 	CustomerEmail          string
 	DeliveryFeeKobo        int64
 	DueAt                  *time.Time
+	Reference              string
 	Items                  []InvoiceItem
 }
 
@@ -1396,7 +1397,10 @@ func (s *Store) CreateInvoice(ctx context.Context, spec InvoiceSpec) (InvoiceVie
 		return InvoiceView{}, err
 	}
 	defer tx.Rollback(ctx)
-	reference := newInvoiceReference()
+	reference := strings.ToUpper(strings.TrimSpace(spec.Reference))
+	if reference == "" {
+		reference = newInvoiceReference()
+	}
 	var invoice InvoiceView
 	err = tx.QueryRow(ctx, `
 		INSERT INTO invoices
@@ -5962,6 +5966,7 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 		table, key, pred string
 	}{
 		{"webhook_deliveries", "id", `received_at < $1`},
+		{"merchant_webhook_deliveries", "id", `created_at < $1`},
 		{"inbound_messages", "provider_message_id", `received_at < $1`},
 		{"message_outbox", "id", `created_at < $1`},
 		{"sms_requests", "provider_message_id", `received_at < $1`},
