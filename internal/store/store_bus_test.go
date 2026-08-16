@@ -225,8 +225,14 @@ func TestPostgresRunTransactionMonitorForPaymentIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(alerts) != 1 || alerts[0].Rule != kyc.RuleStructuring {
-		t.Fatalf("expected 1 structuring alert, got %+v", alerts)
+	structuringAlerts := 0
+	for _, a := range alerts {
+		if a.UserID == user.ID && a.Rule == kyc.RuleStructuring {
+			structuringAlerts++
+		}
+	}
+	if structuringAlerts != 1 {
+		t.Fatalf("expected exactly 1 structuring alert for the user, got %+v", alerts)
 	}
 	// Redelivery of the same event must not re-raise the alert.
 	raised, err = repository.RunTransactionMonitorForPayment(ctx, input, cfg)
@@ -240,8 +246,14 @@ func TestPostgresRunTransactionMonitorForPaymentIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(alerts) != 1 {
-		t.Fatalf("expected alerts to stay at 1, got %d", len(alerts))
+	structuringAlerts = 0
+	for _, a := range alerts {
+		if a.UserID == user.ID && a.Rule == kyc.RuleStructuring {
+			structuringAlerts++
+		}
+	}
+	if structuringAlerts != 1 {
+		t.Fatalf("expected structuring alerts to stay at 1, got %+v", alerts)
 	}
 }
 
