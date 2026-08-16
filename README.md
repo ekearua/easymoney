@@ -130,7 +130,7 @@ Role checks are enforced by middleware on every admin route; disabled accounts a
 Public and webhook endpoints are rate limited per client IP with fixed one-minute windows:
 
 - **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/paystack`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
-- **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
+- **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`, `/link/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
 - **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
 - **Partner API** (per key, `/api/v1/*`): `RATE_LIMIT_API_KEYS_PER_MINUTE` (default 300)
 
@@ -340,6 +340,8 @@ X-Xego-Signature: <hex hmac>
 - `POST /payments/{reference}/verify` — re-check the payment against the gateway and return the authoritative status.
 - `POST /invoices` — create an invoice from line items. Idempotent on the optional `reference` (max 64 chars, uppercased; replaying returns the existing invoice). Body fields: `items` (required; each `{description, quantity, unit_amount}` in kobo), optional `reference`, `delivery_fee`, `currency` (`NGN`), `due_at` (RFC 3339), and `customer.phone` / `customer.email`. Returns the invoice with `status`, `amount`, `amount_paid`, `items`, and a `pay_link` (`wa.me` deep link).
 - `GET /invoices/{reference}` — current invoice state, including `amount_paid`.
+- `POST /checkouts` — mint a general request-money link for an individual. No merchant or customer is bound at creation: the payer is resolved when someone opens the link. Body fields: `amount.value` (required, in kobo) / `amount.currency` (`NGN`), optional `reference` (≤64 chars, uppercased; replaying returns the existing checkout), `note` (≤500 chars), `redirect_url`, and `expires_at` (RFC 3339; past dates rejected). Returns the checkout with `status` (`open`), `checkout_url` (the public `/link/{token}` page), and — once resolved — `payment_id` / `payment_status`.
+- `GET /checkouts/{reference}` — current checkout state. When a payer resolves the link a payment is created against the payee merchant; terminal payment success marks the checkout `paid`.
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 

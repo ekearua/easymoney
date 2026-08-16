@@ -1,0 +1,34 @@
+{{define "link.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{if eq .Checkout.Status "open"}}Payment request - {{.Checkout.PayeeName}}{{else}}Payment request{{end}}</title>
+<link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Payment request</p>
+  <h1>{{.Checkout.PayeeName}}</h1>
+  {{if .Checkout.Note}}<p class="muted">{{.Checkout.Note}}</p>{{end}}
+  <p class="receipt-amount">{{money .Checkout.AmountKobo}}</p>
+  <dl>
+    {{if .Checkout.Reference}}<div><dt>Reference</dt><dd class="mono">{{.Checkout.Reference}}</dd></div>{{end}}
+    <div><dt>Status</dt><dd>{{.Checkout.Status}}</dd></div>
+    {{if .Checkout.ExpiresAt}}<div><dt>Expires</dt><dd>{{date .Checkout.ExpiresAt}}</dd></div>{{end}}
+  </dl>
+  {{if eq .Checkout.Status "open"}}
+    <form method="post" action="/link/{{.Checkout.Token}}/resolve">
+      <label for="phone">Your WhatsApp number</label>
+      <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+234 801 234 5678" required>
+      {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+      <p class="muted">We will send the receipt to this number after you pay.</p>
+      <button type="submit">Continue</button>
+    </form>
+  {{else if eq .Checkout.Status "expired"}}
+    <p class="muted">This payment request has expired. Ask the sender to create a new link.</p>
+  {{else if eq .Checkout.Status "cancelled"}}
+    <p class="muted">This payment request was cancelled.</p>
+  {{else}}
+    <p class="muted">This payment request has been completed.</p>
+  {{end}}
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+</main></body></html>
+{{end}}

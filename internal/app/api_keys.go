@@ -307,6 +307,120 @@ func (a *App) apiVerifyPayment(w http.ResponseWriter, r *http.Request) {
 	a.writePaymentJSON(w, updated)
 }
 
+type apiCreateCheckoutRequest struct {
+	Reference   string         `json:"reference"`
+	Note        string         `json:"note"`
+	Amount      apiAmount      `json:"amount"`
+	RedirectURL string         `json:"redirect_url"`
+	ExpiresAt   *time.Time     `json:"expires_at"`
+	Metadata    map[string]any `json:"metadata"`
+}
+
+// apiCreateCheckout mints a general request-money link for an individual. No
+// merchant or customer is bound at creation: the payer is resolved when the
+// hosted link is opened. Replaying the same payee reference returns the
+// existing checkout.
+func (a *App) apiCreateCheckout(w http.ResponseWriter, r *http.Request) {
+	auth, _ := apiKeyAuthFromContext(r.Context())
+	var req apiCreateCheckoutRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, apiKeyMaxBodyBytes)).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.Amount.Currency != "" && req.Amount.Currency != "NGN" {
+		writeAPIError(w, http.StatusUnprocessableEntity, "currency_invalid", "only NGN is supported")
+		return
+	}
+	if req.Amount.Value < apiMinAmountKobo || req.Amount.Value > apiMaxAmountKobo {
+		writeAPIError(w, http.StatusUnprocessableEntity, "amount_out_of_range", "amount must be between NGN 1.00 and NGN 10,000,000.00")
+		return
+	}
+	reference := strings.ToUpper(strings.TrimSpace(req.Reference))
+	if len(reference) > apiMaxReferenceLen {
+		writeAPIError(w, http.StatusUnprocessableEntity, "reference_invalid", "reference must be at most 64 characters")
+		return
+	}
+	note := strings.TrimSpace(req.Note)
+	if len(note) > 500 {
+		writeAPIError(w, http.StatusUnprocessableEntity, "note_invalid", "note must be at most 500 characters")
+		return
+	}
+	redirectURL := strings.TrimSpace(req.RedirectURL)
+	if redirectURL != "" && !strings.HasPrefix(redirectURL, "https://") && !strings.HasPrefix(redirectURL, "http://") {
+		writeAPIError(w, http.StatusUnprocessableEntity, "redirect_url_invalid", "redirect_url must be an absolute http(s) URL")
+		return
+	}
+	if req.ExpiresAt != nil && req.ExpiresAt.Before(time.Now()) {
+		writeAPIError(w, http.StatusUnprocessableEntity, "expires_at_invalid", "expires_at must be in the future")
+		return
+	}
+	ctx := r.Context()
+	checkout, err := a.payments.CreateCheckout(ctx, auth.merchant, store.CheckoutSpec{
+		PayeeMerchantID: auth.merchant.ID,
+		Reference:       reference,
+		Note:            note,
+		AmountKobo:      req.Amount.Value,
+		Currency:        "NGN",
+		RedirectURL:     redirectURL,
+		ExpiresAt:       req.ExpiresAt,
+	})
+	if err != nil {
+		a.logger.Error("api checkout creation failed", "error", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal", "checkout creation failed")
+		return
+	}
+	_, _ = a.store.AppendAuditLog(ctx, store.AuditLog{
+		ActorType:    "merchant",
+		ActorID:      uuid.NullUUID{UUID: auth.merchant.ID, Valid: true},
+		Action:       "api.checkouts.create",
+		ResourceType: sql.NullString{String: "checkout", Valid: true},
+		ResourceID:   sql.NullString{String: checkout.ID.String(), Valid: true},
+		Details:      map[string]any{"reference": checkout.Reference, "amount_kobo": checkout.AmountKobo},
+	})
+	a.writeCheckoutJSON(w, checkout)
+}
+
+// apiCheckoutStatus returns the current state of a request-money link.
+func (a *App) apiCheckoutStatus(w http.ResponseWriter, r *http.Request) {
+	auth, _ := apiKeyAuthFromContext(r.Context())
+	reference := chi.URLParam(r, "reference")
+	checkout, err := a.store.CheckoutByPayeeAndReference(r.Context(), auth.merchant.ID, reference)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeAPIError(w, http.StatusNotFound, "not_found", "no checkout with that reference")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "internal", "checkout lookup failed")
+		return
+	}
+	a.writeCheckoutJSON(w, checkout)
+}
+
+func (a *App) writeCheckoutJSON(w http.ResponseWriter, checkout store.CheckoutView) {
+	response := map[string]any{
+		"checkout_id": checkout.ID.String(),
+		"reference":   checkout.Reference,
+		"status":      checkout.Status,
+		"amount": map[string]any{
+			"value":    checkout.AmountKobo,
+			"currency": checkout.Currency,
+		},
+		"checkout_url": a.cfg.BaseURL + "/link/" + checkout.Token,
+		"created_at":   checkout.CreatedAt.UTC().Format(time.RFC3339),
+	}
+	if checkout.Note != "" {
+		response["note"] = checkout.Note
+	}
+	if checkout.PaymentID.Valid {
+		response["payment_status"] = checkout.PaymentStatus
+		response["payment_id"] = checkout.PaymentID.UUID.String()
+	}
+	if checkout.ExpiresAt != nil {
+		response["expires_at"] = checkout.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 type apiInvoiceItem struct {
 	Description string `json:"description"`
 	Quantity    int    `json:"quantity"`

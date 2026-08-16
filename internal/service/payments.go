@@ -88,6 +88,41 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 	return s.store.PaymentByID(ctx, payment.ID)
 }
 
+// CreateCheckout mints a general request-money link for a payee. No customer is
+// bound at creation: the payer is resolved when the hosted link is opened.
+func (s *PaymentService) CreateCheckout(ctx context.Context, payee store.Merchant, spec store.CheckoutSpec) (store.CheckoutView, error) {
+	if payee.ID != spec.PayeeMerchantID {
+		return store.CheckoutView{}, errors.New("checkout payee does not match authenticated merchant")
+	}
+	return s.store.CreateCheckout(ctx, spec)
+}
+
+// ResolveCheckout turns an opened request-money link into a draft payment bound
+// to the payee merchant and the resolved payer. The payer is canonicalized to
+// E.164 and resolved or created, mirroring the chat and Partner API paths.
+func (s *PaymentService) ResolveCheckout(ctx context.Context, checkout store.CheckoutView, payerPhone string) (store.PaymentView, error) {
+	phone := domain.CanonicalE164Phone(payerPhone)
+	if len(strings.TrimPrefix(phone, "+")) < 10 {
+		return store.PaymentView{}, errors.New("payer phone must be a valid E.164 number")
+	}
+	payee, err := s.store.MerchantByID(ctx, checkout.PayeeMerchantID)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	user, err := s.store.GetOrCreateUser(ctx, phone)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	payment, err := s.CreateDraftForProvider(ctx, user, payee, checkout.AmountKobo, ProviderPaystack, ChannelCheckout, phone)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	if err := s.store.LinkCheckoutPayment(ctx, checkout.ID, payment.ID); err != nil {
+		return store.PaymentView{}, err
+	}
+	return payment, nil
+}
+
 // HostedCheckoutURL returns the branded page where the customer reviews and
 // confirms the payment before the secure gateway is initialized.
 func (s *PaymentService) HostedCheckoutURL(payment store.PaymentView) string {

@@ -36,11 +36,17 @@ func NewMerchantWebhookConsumer(repository *store.Store, baseURL string, logger 
 	return &MerchantWebhookConsumer{store: repository, baseURL: baseURL, logger: logger}
 }
 
-// HandlePaymentSucceeded queues a payment.succeeded delivery for the merchant.
+// HandlePaymentSucceeded queues a payment.succeeded delivery for the merchant
+// and closes any request-money checkouts attached to the payment.
 func (c *MerchantWebhookConsumer) HandlePaymentSucceeded(ctx context.Context, msg ports.EventMessage) error {
 	var event domain.PaymentSucceeded
 	if err := json.Unmarshal(msg.Payload, &event); err != nil {
 		return fmt.Errorf("decode payment.succeeded: %w", err)
+	}
+	if id, err := uuid.Parse(event.PaymentID); err == nil {
+		if err := c.store.MarkCheckoutsPaidByPayment(ctx, id); err != nil {
+			return err
+		}
 	}
 	return c.enqueue(ctx, event.PaymentID, domain.TopicPaymentSucceeded)
 }

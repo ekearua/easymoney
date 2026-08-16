@@ -22,6 +22,7 @@ func TestTemplatesParse(t *testing.T) {
 		"sub":         func(a, b int64) int64 { return a - b },
 		"inc":         func(i int) int { return i + 1 },
 		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"date":        func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		t.Fatalf("parse templates: %v", err)
@@ -73,7 +74,7 @@ func TestTemplatesParse(t *testing.T) {
 		"Title":          "Ledger",
 		"CSRF":           "x",
 		"AdminRole":      "admin",
-		"Entries": []store.LedgerEntry{{JournalRef: "r1", EntryType: "debit", Account: "1100_operating_bank", AmountKobo: 100, Description: "d", Hash: "h"}},
+		"Entries":        []store.LedgerEntry{{JournalRef: "r1", EntryType: "debit", Account: "1100_operating_bank", AmountKobo: 100, Description: "d", Hash: "h"}},
 		"Balances":       []store.LedgerAccountBalance{{Account: "1100_operating_bank", DebitKobo: 100, CreditKobo: 0, NetKobo: 100}},
 		"ChainCount":     2,
 		"ChainBroken":    -1,
@@ -89,14 +90,14 @@ func TestTemplatesParse(t *testing.T) {
 
 	buf.Reset()
 	execRecon := map[string]any{
-		"AppName": "Xego",
-		"Title":   "Reconciliation",
-		"CSRF":    "x",
+		"AppName":   "Xego",
+		"Title":     "Reconciliation",
+		"CSRF":      "x",
 		"AdminRole": "compliance",
-		"Runs": []store.ReconciliationRun{{ID: 1, RunType: "auto", CreatedBy: "system", InternalCount: 3, LedgerCount: 3, BankCount: 3, DiscrepancyCount: 1, Status: "discrepancies", CreatedAt: time.Now()}},
-		"Items":   []store.ReconciliationItem{{Category: "internal_without_ledger", Reference: "r1", ExpectedKobo: 100, ActualKobo: 0, Detail: "succeeded payment has no ledger money-in posting"}},
-		"Result":  "",
-		"Error":   "",
+		"Runs":      []store.ReconciliationRun{{ID: 1, RunType: "auto", CreatedBy: "system", InternalCount: 3, LedgerCount: 3, BankCount: 3, DiscrepancyCount: 1, Status: "discrepancies", CreatedAt: time.Now()}},
+		"Items":     []store.ReconciliationItem{{Category: "internal_without_ledger", Reference: "r1", ExpectedKobo: 100, ActualKobo: 0, Detail: "succeeded payment has no ledger money-in posting"}},
+		"Result":    "",
+		"Error":     "",
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_reconciliation.html", execRecon); err != nil {
 		t.Fatalf("execute admin_reconciliation.html: %v", err)
@@ -104,11 +105,11 @@ func TestTemplatesParse(t *testing.T) {
 
 	buf.Reset()
 	execGuard := map[string]any{
-		"AppName": "Xego",
-		"Title":   "Chat guard",
+		"AppName":   "Xego",
+		"Title":     "Chat guard",
 		"AdminRole": "compliance",
-		"Events": []store.ChatGuardEvent{{Channel: "whatsapp", Sender: "+2348012345678", Category: "card", RedactedText: "my card [REDACTED:card] thanks", CreatedAt: time.Now()}},
-		"Total":   int64(1),
+		"Events":    []store.ChatGuardEvent{{Channel: "whatsapp", Sender: "+2348012345678", Category: "card", RedactedText: "my card [REDACTED:card] thanks", CreatedAt: time.Now()}},
+		"Total":     int64(1),
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_chat_guard.html", execGuard); err != nil {
 		t.Fatalf("execute admin_chat_guard.html: %v", err)

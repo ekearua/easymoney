@@ -118,6 +118,18 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"sub":         func(a, b int64) int64 { return a - b },
 		"inc":         func(i int) int { return i + 1 },
 		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"date": func(t any) string {
+			switch v := t.(type) {
+			case time.Time:
+				return v.Local().Format("Jan 2, 2006 3:04 PM")
+			case *time.Time:
+				if v == nil {
+					return ""
+				}
+				return v.Local().Format("Jan 2, 2006 3:04 PM")
+			}
+			return ""
+		},
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		repository.Close()
@@ -446,6 +458,8 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Get("/payments/return", a.paymentReturn)
 	router.With(publicLimit).Get("/checkout/{token}", a.hostedCheckout)
 	router.With(publicLimit).Post("/checkout/{token}/pay", a.hostedCheckoutPay)
+	router.With(publicLimit).Get("/link/{token}", a.checkoutLink)
+	router.With(publicLimit).Post("/link/{token}/resolve", a.checkoutLinkResolve)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
@@ -461,6 +475,8 @@ func (a *App) routes() http.Handler {
 		api.Post("/payments/{reference}/verify", a.apiVerifyPayment)
 		api.Post("/invoices", a.apiCreateInvoice)
 		api.Get("/invoices/{reference}", a.apiInvoiceStatus)
+		api.Post("/checkouts", a.apiCreateCheckout)
+		api.Get("/checkouts/{reference}", a.apiCheckoutStatus)
 	})
 
 	router.Get("/admin/login", a.loginPage)
@@ -585,6 +601,7 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
 			a.processMerchantWebhooks(ctx)
+			a.expireCheckouts(ctx)
 		case <-eventTicker.C:
 			if err := a.publisher.Drain(ctx); err != nil {
 				a.logger.WarnContext(ctx, "event publisher failed", "error", err)
@@ -675,6 +692,13 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 func (a *App) processMerchantWebhooks(ctx context.Context) {
 	if err := a.merchantWebhooks.DeliverDue(ctx); err != nil {
 		a.logger.WarnContext(ctx, "process merchant webhooks", "error", err)
+	}
+}
+
+// expireCheckouts closes request-money links that passed their expiry.
+func (a *App) expireCheckouts(ctx context.Context) {
+	if err := a.store.ExpireCheckouts(ctx, time.Now()); err != nil {
+		a.logger.WarnContext(ctx, "expire checkouts", "error", err)
 	}
 }
 
@@ -1097,6 +1121,74 @@ func (a *App) renderHostedCheckout(w http.ResponseWriter, r *http.Request, payme
 		"AppName": a.cfg.AppName, "Payment": payment, "Invoice": invoice,
 		"DataOrder": dataOrder, "Thrift": thrift, "BaseURL": a.cfg.BaseURL,
 	}, status)
+}
+
+// checkoutLink renders a general request-money link and resolves the payer
+// before any payment is created.
+func (a *App) checkoutLink(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	checkout, err := a.store.CheckoutByToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if checkout.Status == "paid" {
+		if checkout.PaymentID.Valid {
+			if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+				http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	a.render(w, "link.html", map[string]any{
+		"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+	})
+}
+
+// checkoutLinkResolve collects the payer's WhatsApp number on the hosted link
+// page, creates the payment against the payee, and hands off to the branded
+// checkout page to confirm and pay.
+func (a *App) checkoutLinkResolve(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	checkout, err := a.store.CheckoutByToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if checkout.Status == "paid" {
+		if checkout.PaymentID.Valid {
+			if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+				http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	if checkout.Status != "open" {
+		a.render(w, "link.html", map[string]any{
+			"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+			"Error": "This payment request is no longer open.",
+		})
+		return
+	}
+	phone := strings.TrimSpace(r.FormValue("phone"))
+	payment, err := a.payments.ResolveCheckout(r.Context(), checkout, phone)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "checkout resolve failed", "checkout_id", checkout.ID, "error", err)
+		a.render(w, "link.html", map[string]any{
+			"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+			"Error": "Enter the WhatsApp number where you want to receive the receipt.",
+		})
+		return
+	}
+	http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
 }
 
 func (a *App) receipt(w http.ResponseWriter, r *http.Request) {

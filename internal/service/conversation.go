@@ -35,6 +35,8 @@ const (
 	ChannelSMS = "sms"
 	// ChannelAPI identifies payments initiated through the merchant Partner API.
 	ChannelAPI = "api"
+	// ChannelCheckout identifies payments initiated from a general request-money link.
+	ChannelCheckout = "checkout"
 
 	pickerPageSize = 8
 	recentLimit    = 3
