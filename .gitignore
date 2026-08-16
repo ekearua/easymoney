@@ -1,5 +1,6 @@
 .env
 bin/
+/xego-demo.exe
 coverage.out
 *.log
 .idea/
