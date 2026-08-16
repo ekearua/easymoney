@@ -421,6 +421,40 @@ func (a *App) writeCheckoutJSON(w http.ResponseWriter, checkout store.CheckoutVi
 	writeJSON(w, http.StatusOK, response)
 }
 
+// apiBalance returns the authenticated merchant's settlement position from the
+// append-only ledger (migration 040). available_balance is the net merchant
+// payable: money collected on the merchant's behalf that has not been settled
+// out or reversed. The ledger map breaks the position down per account.
+func (a *App) apiBalance(w http.ResponseWriter, r *http.Request) {
+	auth, _ := apiKeyAuthFromContext(r.Context())
+	balances, err := a.store.MerchantLedgerBalance(r.Context(), auth.merchant.ID)
+	if err != nil {
+		a.logger.Error("api balance lookup failed", "error", err)
+		writeAPIError(w, http.StatusInternalServerError, "internal", "balance lookup failed")
+		return
+	}
+	ledger := make(map[string]map[string]any, len(balances))
+	var available int64
+	for _, b := range balances {
+		ledger[b.Account] = map[string]any{
+			"net":     b.NetKobo,
+			"debits":  b.DebitKobo,
+			"credits": b.CreditKobo,
+		}
+		if b.Account == store.LedgerAccountMerchantPayable {
+			available = -b.NetKobo
+		}
+	}
+	if available < 0 {
+		available = 0
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"currency":          "NGN",
+		"available_balance": map[string]any{"value": available, "currency": "NGN"},
+		"ledger":            ledger,
+	})
+}
+
 type apiInvoiceItem struct {
 	Description string `json:"description"`
 	Quantity    int    `json:"quantity"`

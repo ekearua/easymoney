@@ -342,6 +342,18 @@ X-Xego-Signature: <hex hmac>
 - `GET /invoices/{reference}` — current invoice state, including `amount_paid`.
 - `POST /checkouts` — mint a general request-money link for an individual. No merchant or customer is bound at creation: the payer is resolved when someone opens the link. Body fields: `amount.value` (required, in kobo) / `amount.currency` (`NGN`), optional `reference` (≤64 chars, uppercased; replaying returns the existing checkout), `note` (≤500 chars), `redirect_url`, and `expires_at` (RFC 3339; past dates rejected). Returns the checkout with `status` (`open`), `checkout_url` (the public `/link/{token}` page), and — once resolved — `payment_id` / `payment_status`.
 - `GET /checkouts/{reference}` — current checkout state. When a payer resolves the link a payment is created against the payee merchant; terminal payment success marks the checkout `paid`.
+- `GET /balance` — the authenticated merchant's settlement position, derived from the append-only ledger (each posting is merchant-scoped). `available_balance.value` is the net merchant payable (kobo): money collected on the merchant's behalf that has not been settled out or reversed. `ledger` breaks the position down per account (`net`, `debits`, `credits` in kobo). Response:
+  ```json
+  {
+    "currency": "NGN",
+    "available_balance": {"value": 250000, "currency": "NGN"},
+    "ledger": {
+      "1100_operating_bank": {"net": 250000, "debits": 250000, "credits": 0},
+      "2100_customer_float": {"net": 0, "debits": 250000, "credits": 250000},
+      "3100_merchant_payable": {"net": -250000, "debits": 0, "credits": 250000}
+    }
+  }
+  ```
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 

@@ -1588,12 +1588,14 @@ func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.U
 	var invoiceID uuid.UUID
 	var paidKobo int64
 	var currency string
+	var invoiceMerchantID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		SELECT ip.invoice_id, ip.amount_kobo, COALESCE(p.currency,'NGN')
+		SELECT ip.invoice_id, ip.amount_kobo, COALESCE(p.currency,'NGN'), i.merchant_id
 		FROM invoice_payments ip
 		JOIN payments p ON p.id=ip.payment_id
+		JOIN invoices i ON i.id=ip.invoice_id
 		WHERE ip.payment_id=$1
-		FOR UPDATE OF ip`, paymentID).Scan(&invoiceID, &paidKobo, &currency)
+		FOR UPDATE OF ip`, paymentID).Scan(&invoiceID, &paidKobo, &currency, &invoiceMerchantID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return InvoiceView{}, false, tx.Commit(ctx)
 	}
@@ -1610,7 +1612,7 @@ func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.U
 	// is confirmed against an invoice. Reversing the payment journal reference
 	// unwinds both the money-in and this allocation.
 	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "invoice_payment", paymentID.String(),
-		LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Invoice payment allocation", "system", paidKobo); err != nil {
+		LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Invoice payment allocation", "system", paidKobo, &invoiceMerchantID); err != nil {
 		return InvoiceView{}, false, err
 	}
 	var total, paid int64
@@ -3564,7 +3566,7 @@ func (s *Store) ApplyThriftContributionPaymentSuccess(ctx context.Context, payme
 	if changed {
 		// C16: contribution moves from the customer float into the thrift pool.
 		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "thrift_contribution", contributionID.String(),
-			LedgerAccountCustomerFloat, LedgerAccountThriftPool, "NGN", "Thrift contribution", "system", contributionKobo); err != nil {
+			LedgerAccountCustomerFloat, LedgerAccountThriftPool, "NGN", "Thrift contribution", "system", contributionKobo, nil); err != nil {
 			return ThriftContributionView{}, false, err
 		}
 	}
@@ -3675,7 +3677,7 @@ func (s *Store) MarkThriftPayoutCompleted(ctx context.Context, payoutID uuid.UUI
 	}
 	// C16: the pool disburses to the winning member via the operating bank.
 	if err := s.postLedgerPair(ctx, tx, payoutID.String(), "thrift_payout", payoutID.String(),
-		LedgerAccountThriftPool, LedgerAccountOperatingBank, "NGN", "Thrift payout disbursement", "system", payoutKobo); err != nil {
+		LedgerAccountThriftPool, LedgerAccountOperatingBank, "NGN", "Thrift payout disbursement", "system", payoutKobo, nil); err != nil {
 		return err
 	}
 	if err := insertThriftEvent(ctx, tx, groupID, cycleID, uuid.Nil, "payout_completed_simulated", map[string]any{}); err != nil {
@@ -4587,7 +4589,7 @@ func (s *Store) transitionDataOrderTx(ctx context.Context, tx pgx.Tx, orderID uu
 		// C16: revenue recognition on fulfilment; the customer float (already
 		// credited at payment success) is cleared against sales revenue.
 		if err := s.postLedgerPair(ctx, tx, orderID.String(), "data_order", orderID.String(),
-			LedgerAccountCustomerFloat, LedgerAccountSalesRevenue, "NGN", "Data order revenue recognition", "system", amountKobo); err != nil {
+			LedgerAccountCustomerFloat, LedgerAccountSalesRevenue, "NGN", "Data order revenue recognition", "system", amountKobo, nil); err != nil {
 			return false, err
 		}
 	}
@@ -4913,9 +4915,33 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		// C16: money-in posting. Customer funds arrive into the operating bank
 		// account as a customer float liability; purpose-specific allocations
 		// (invoice, thrift pool, sales revenue) follow in their own hooks.
-		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-			LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received", "system", amountKobo); err != nil {
+		// Thrift and data-order payments are platform-level movements, so their
+		// money-in stays untagged. Plain merchant collections (chat, checkout,
+		// API) are tagged and additionally accrue the merchant payable.
+		var isInvoice, isThrift, isData bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS(SELECT 1 FROM invoice_payments WHERE payment_id=$1),
+			       EXISTS(SELECT 1 FROM thrift_contributions WHERE payment_id=$1),
+			       EXISTS(SELECT 1 FROM data_orders WHERE payment_id=$1)`, paymentID).
+			Scan(&isInvoice, &isThrift, &isData); err != nil {
 			return false, err
+		}
+		var tag *uuid.UUID
+		if !isThrift && !isData {
+			tag = &merchantID
+		}
+		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+			LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received", "system", amountKobo, tag); err != nil {
+			return false, err
+		}
+		if !isInvoice && !isThrift && !isData {
+			// Move the collected funds from the customer float into the
+			// merchant payable: the merchant is owed this money until a
+			// settlement payout unwinds it.
+			if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+				LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Merchant collection accrual", "system", amountKobo, &merchantID); err != nil {
+				return false, err
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -5072,7 +5098,8 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 	var provider string
 	var amountKobo int64
 	var currency string
-	if err := tx.QueryRow(ctx, `SELECT status, provider, amount_kobo, currency FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider, &amountKobo, &currency); err != nil {
+	var merchantID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT status, provider, amount_kobo, currency, merchant_id FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider, &amountKobo, &currency, &merchantID); err != nil {
 		return false, err
 	}
 	if provider != "bank_transfer" {
@@ -5097,10 +5124,30 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, paid_at=COALESCE(paid_at, now()), updated_at=now() WHERE id=$1`, paymentID, domain.StatusSucceeded); err != nil {
 		return false, err
 	}
-	// C16: money-in posting, mirroring the Paystack success path.
-	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-		LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received (bank transfer)", "system", amountKobo); err != nil {
+	// C16: money-in posting, mirroring the Paystack success path. Thrift and
+	// data-order payments stay untagged platform movements; plain merchant
+	// collections are tagged and accrue the merchant payable.
+	var isInvoice, isThrift, isData bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM invoice_payments WHERE payment_id=$1),
+		       EXISTS(SELECT 1 FROM thrift_contributions WHERE payment_id=$1),
+		       EXISTS(SELECT 1 FROM data_orders WHERE payment_id=$1)`, paymentID).
+		Scan(&isInvoice, &isThrift, &isData); err != nil {
 		return false, err
+	}
+	var tag *uuid.UUID
+	if !isThrift && !isData {
+		tag = &merchantID
+	}
+	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+		LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received (bank transfer)", "system", amountKobo, tag); err != nil {
+		return false, err
+	}
+	if !isInvoice && !isThrift && !isData {
+		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+			LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Merchant collection accrual", "system", amountKobo, &merchantID); err != nil {
+			return false, err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)

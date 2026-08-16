@@ -477,6 +477,7 @@ func (a *App) routes() http.Handler {
 		api.Get("/invoices/{reference}", a.apiInvoiceStatus)
 		api.Post("/checkouts", a.apiCreateCheckout)
 		api.Get("/checkouts/{reference}", a.apiCheckoutStatus)
+		api.Get("/balance", a.apiBalance)
 	})
 
 	router.Get("/admin/login", a.loginPage)

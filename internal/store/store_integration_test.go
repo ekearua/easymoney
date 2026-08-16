@@ -1115,12 +1115,16 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 ledger rows for money-in, got %d", len(entries))
+	// A plain merchant collection posts a money-in pair plus a merchant-payable
+	// accrual pair (migration 040), so 4 ledger rows are expected.
+	if len(entries) != 4 {
+		t.Fatalf("expected 4 ledger rows for money-in + accrual, got %d", len(entries))
 	}
 	debits, credits := 0, 0
 	var debitKobo, creditKobo int64
+	seenAccounts := map[string]bool{}
 	for _, e := range entries {
+		seenAccounts[e.Account] = true
 		switch e.EntryType {
 		case "debit":
 			debits++
@@ -1130,14 +1134,19 @@ func TestLedgerDoubleEntry(t *testing.T) {
 			creditKobo += e.AmountKobo
 		}
 	}
-	if debits != 1 || credits != 1 {
-		t.Fatalf("expected balanced pair (1 debit, 1 credit), got %d/%d", debits, credits)
+	if debits != 2 || credits != 2 {
+		t.Fatalf("expected balanced pairs (2 debits, 2 credits), got %d/%d", debits, credits)
 	}
-	if debitKobo != 55_000 || creditKobo != 55_000 {
-		t.Fatalf("expected balanced 55000 pair, got %d/%d", debitKobo, creditKobo)
+	if debitKobo != 110_000 || creditKobo != 110_000 {
+		t.Fatalf("expected balanced 110000 book, got %d/%d", debitKobo, creditKobo)
 	}
-	if seen := map[string]bool{entries[0].Account: true, entries[1].Account: true}; !seen[LedgerAccountOperatingBank] || !seen[LedgerAccountCustomerFloat] {
-		t.Fatalf("unexpected money-in accounts: %s/%s", entries[0].Account, entries[1].Account)
+	if !seenAccounts[LedgerAccountOperatingBank] || !seenAccounts[LedgerAccountCustomerFloat] || !seenAccounts[LedgerAccountMerchantPayable] {
+		t.Fatalf("unexpected money-in accounts: %v", seenAccounts)
+	}
+	for _, e := range entries {
+		if e.MerchantID == nil || *e.MerchantID != merchant.ID {
+			t.Fatalf("expected merchant-scoped posting, got merchant_id=%v", e.MerchantID)
+		}
 	}
 
 	// Chain verifies; book sums to zero.
@@ -1145,8 +1154,8 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 2 || broken != -1 {
-		t.Fatalf("expected sound chain of 2, got count=%d broken=%d", count, broken)
+	if count != 4 || broken != -1 {
+		t.Fatalf("expected sound chain of 4, got count=%d broken=%d", count, broken)
 	}
 	balances, err := repository.LedgerBalanceSummary(ctx)
 	if err != nil {
@@ -1168,27 +1177,27 @@ func TestLedgerDoubleEntry(t *testing.T) {
 		t.Fatal("expected append-only trigger to reject DELETE on ledger_entries")
 	}
 
-	// Reversal posts two offsetting entries and returns the book to zero.
+	// Reversal posts offsetting entries and returns the book to zero.
 	reversed, err := repository.PostLedgerReversal(ctx, payment.ID.String(), "test correction", "admin@xego.test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reversed != 2 {
-		t.Fatalf("expected 2 reversal rows, got %d", reversed)
+	if reversed != 4 {
+		t.Fatalf("expected 4 reversal rows, got %d", reversed)
 	}
 	entries, err = repository.ListLedgerEntries(ctx, 50)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 4 {
-		t.Fatalf("expected 4 ledger rows after reversal, got %d", len(entries))
+	if len(entries) != 8 {
+		t.Fatalf("expected 8 ledger rows after reversal, got %d", len(entries))
 	}
 	count, broken, err = repository.VerifyLedgerChain(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count != 4 || broken != -1 {
-		t.Fatalf("expected sound chain of 4 after reversal, got count=%d broken=%d", count, broken)
+	if count != 8 || broken != -1 {
+		t.Fatalf("expected sound chain of 8 after reversal, got count=%d broken=%d", count, broken)
 	}
 	balances, err = repository.LedgerBalanceSummary(ctx)
 	if err != nil {
@@ -1210,6 +1219,163 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	// Reversing an unknown reference must be rejected.
 	if _, err := repository.PostLedgerReversal(ctx, uuid.NewString(), "nope", "admin@xego.test"); err == nil {
 		t.Fatal("expected reversal of unknown journal reference to be rejected")
+	}
+}
+
+// TestMerchantLedgerBalance verifies P3: the ledger carries a merchant
+// dimension so GET /api/v1/balance can report per-merchant settlement
+// positions. Plain merchant collections accrue the merchant payable exactly
+// once, invoice payments accrue only through the invoice allocation (no double
+// count), merchants stay isolated, and reversals unwind the position.
+func TestMerchantLedgerBalance(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE reconciliations,bank_transfer_simulations,ledger_entries,payment_events,payments,users,merchants,data_orders,
+		         data_order_events,invoice_payments,invoices,invoice_items,
+		         thrift_contributions,thrift_payouts,thrift_cycles,thrift_events,
+		         thrift_groups,thrift_members,message_outbox,audit_logs,
+		         chat_guard_events,
+		         service_purchases,registered_services,merchant_owners,merchant_registrations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348070000201")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantA, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merchantB, err := repository.MerchantBySlug(ctx, "kora-books")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	balanceFor := func(m uuid.UUID) int64 {
+		balances, err := repository.MerchantLedgerBalance(ctx, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range balances {
+			if b.Account == LedgerAccountMerchantPayable {
+				return -b.NetKobo
+			}
+		}
+		return 0
+	}
+
+	settle := func(merchant uuid.UUID, amount int64) (uuid.UUID, error) {
+		token, err := domain.NewReceiptToken()
+		if err != nil {
+			return uuid.Nil, err
+		}
+		payment, err := repository.CreatePayment(ctx, domain.Payment{
+			ID: uuid.New(), UserID: user.ID, MerchantID: merchant, AmountKobo: amount,
+			Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+			ProviderReference: domain.NewProviderReference(), ReceiptToken: token,
+		})
+		if err != nil {
+			return uuid.Nil, err
+		}
+		if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil {
+			return uuid.Nil, err
+		}
+		if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusInitialized, "test", nil); err != nil {
+			return uuid.Nil, err
+		}
+		if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil {
+			return uuid.Nil, err
+		}
+		return payment.ID, nil
+	}
+
+	// Generic merchant collections accrue the merchant payable.
+	paymentA, err := settle(merchantA.ID, 50_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := balanceFor(merchantA.ID); got != 50_000 {
+		t.Fatalf("expected merchant A payable 50000, got %d", got)
+	}
+	if _, err := settle(merchantB.ID, 30_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := balanceFor(merchantB.ID); got != 30_000 {
+		t.Fatalf("expected merchant B payable 30000, got %d", got)
+	}
+	if got := balanceFor(merchantA.ID); got != 50_000 {
+		t.Fatalf("merchant A must be isolated from B, got %d", got)
+	}
+
+	// An invoice payment accrues only through the invoice allocation hook.
+	ownerID, err := repository.MerchantOwnerID(ctx, merchantA.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoice, err := repository.CreateInvoice(ctx, InvoiceSpec{
+		MerchantID: merchantA.ID, CreatedByUserID: ownerID,
+		CustomerWhatsAppNumber: user.WhatsAppNumber,
+		Items:                  []InvoiceItem{{Description: "item", Quantity: 1, UnitPriceKobo: 20_000}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := domain.NewReceiptToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoicePayment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: user.ID, MerchantID: merchantA.ID, AmountKobo: 20_000,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		ProviderReference: domain.NewProviderReference(), ReceiptToken: token,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CreateInvoicePayment(ctx, invoice.ID, invoicePayment.ID, user.ID, 20_000); err != nil {
+		t.Fatal(err)
+	}
+	for _, to := range []domain.PaymentStatus{domain.StatusAwaitingConfirmation, domain.StatusInitialized, domain.StatusSucceeded} {
+		if _, err := repository.TransitionPayment(ctx, invoicePayment.ID, to, "test", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := repository.ApplyInvoicePaymentSuccess(ctx, invoicePayment.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := balanceFor(merchantA.ID); got != 70_000 {
+		t.Fatalf("expected merchant A payable 70000 after invoice, got %d", got)
+	}
+
+	// Reversing the generic collection unwinds that merchant's position.
+	reversed, err := repository.PostLedgerReversal(ctx, paymentA.String(), "test correction", "admin@xego.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reversed != 4 {
+		t.Fatalf("expected 4 reversal rows, got %d", reversed)
+	}
+	if got := balanceFor(merchantA.ID); got != 20_000 {
+		t.Fatalf("expected merchant A payable 20000 after reversal, got %d", got)
+	}
+	if got := balanceFor(merchantB.ID); got != 30_000 {
+		t.Fatalf("merchant B must be untouched by A's reversal, got %d", got)
 	}
 }
 
