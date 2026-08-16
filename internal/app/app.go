@@ -1145,6 +1145,18 @@ func (a *App) checkoutLink(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// An open link that was already resolved continues the active payment
+	// attempt instead of asking for the payer phone again.
+	if checkout.Status == "open" && checkout.PaymentID.Valid {
+		if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+			switch payment.Status {
+			case domain.StatusFailed, domain.StatusAbandoned, domain.StatusExpired, domain.StatusSucceeded:
+			default:
+				http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
 	a.render(w, "link.html", map[string]any{
 		"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
 	})

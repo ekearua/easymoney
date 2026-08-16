@@ -100,10 +100,20 @@ func (s *PaymentService) CreateCheckout(ctx context.Context, payee store.Merchan
 // ResolveCheckout turns an opened request-money link into a draft payment bound
 // to the payee merchant and the resolved payer. The payer is canonicalized to
 // E.164 and resolved or created, mirroring the chat and Partner API paths.
+// Resolution is idempotent: reopening the link for an active attempt returns
+// the existing payment, so a link can never collect money twice. A fresh
+// payment is minted only when the previous attempt reached a terminal state
+// (failed, abandoned, expired, or already succeeded).
 func (s *PaymentService) ResolveCheckout(ctx context.Context, checkout store.CheckoutView, payerPhone string) (store.PaymentView, error) {
 	phone := domain.CanonicalE164Phone(payerPhone)
 	if len(strings.TrimPrefix(phone, "+")) < 10 {
 		return store.PaymentView{}, errors.New("payer phone must be a valid E.164 number")
+	}
+	if checkout.PaymentID.Valid {
+		existing, err := s.store.PaymentByID(ctx, checkout.PaymentID.UUID)
+		if err == nil && !paymentAttemptTerminal(existing.Status) {
+			return existing, nil
+		}
 	}
 	payee, err := s.store.MerchantByID(ctx, checkout.PayeeMerchantID)
 	if err != nil {
@@ -121,6 +131,16 @@ func (s *PaymentService) ResolveCheckout(ctx context.Context, checkout store.Che
 		return store.PaymentView{}, err
 	}
 	return payment, nil
+}
+
+// paymentAttemptTerminal reports whether a payment reached a state from which a
+// checkout link should mint a fresh attempt on the next resolve.
+func paymentAttemptTerminal(status domain.PaymentStatus) bool {
+	switch status {
+	case domain.StatusFailed, domain.StatusAbandoned, domain.StatusExpired, domain.StatusSucceeded:
+		return true
+	}
+	return false
 }
 
 // HostedCheckoutURL returns the branded page where the customer reviews and

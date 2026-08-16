@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"whatsapp-payment-demo/internal/config"
+	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -78,6 +79,39 @@ func TestResolveCheckout(t *testing.T) {
 	}
 	if !linked.PaymentID.Valid || linked.PaymentID.UUID != payment.ID {
 		t.Fatalf("checkout not linked to resolved payment: %+v", linked)
+	}
+
+	// Resolution is idempotent: reopening the link returns the same active
+	// payment instead of minting a second one.
+	again, err := payments.ResolveCheckout(ctx, linked, "+2348012340777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != payment.ID {
+		t.Fatalf("expected the same payment on re-resolve, got %s (was %s)", again.ID, payment.ID)
+	}
+
+	// After the attempt reaches a terminal failed state, resolving again mints
+	// a fresh payment and re-links the checkout.
+	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusInitialized, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusFailed, "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := payments.ResolveCheckout(ctx, linked, "+2348012340777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ID == payment.ID {
+		t.Fatal("expected a fresh payment after the previous attempt failed")
+	}
+	relinked, err := repository.CheckoutByToken(ctx, checkout.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !relinked.PaymentID.Valid || relinked.PaymentID.UUID != fresh.ID {
+		t.Fatalf("checkout not re-linked to the fresh payment: %+v", relinked)
 	}
 
 	if _, err := payments.ResolveCheckout(ctx, checkout, "0801"); err == nil {
