@@ -245,7 +245,9 @@ func truncateServiceData(t *testing.T, ctx context.Context, databaseURL string) 
 	if _, err := pool.Exec(ctx, `
 		TRUNCATE business_event_outbox,transaction_alerts,risk_events,manual_review_cases,
 		         message_outbox,inbound_messages,webhook_deliveries,payment_events,payments,
-		         conversation_sessions,users,merchants RESTART IDENTITY CASCADE`); err != nil {
+		         merchant_settlement_accounts,settlement_batches,settlement_lines,payouts,
+		         merchant_webhook_deliveries,conversation_sessions,users,merchants
+		         RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 }

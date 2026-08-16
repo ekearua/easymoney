@@ -22,7 +22,7 @@ type MerchantWebhookConfig struct {
 type MerchantWebhookDelivery struct {
 	ID         int64
 	MerchantID uuid.UUID
-	PaymentID  uuid.UUID
+	SourceID   uuid.UUID
 	Event      string
 	Payload    []byte
 	Attempts   int
@@ -79,17 +79,18 @@ func (s *Store) MerchantWebhookConfig(ctx context.Context, merchantID uuid.UUID)
 }
 
 // EnqueueMerchantWebhook queues a signed delivery for the merchant. It is
-// idempotent per (merchant, payment, event): redelivered bus events are no-ops.
-// The payload is sealed at rest like chat payloads.
-func (s *Store) EnqueueMerchantWebhook(ctx context.Context, merchantID, paymentID uuid.UUID, event string, payload []byte) (bool, error) {
+// idempotent per (merchant, source, event): redelivered bus events are no-ops.
+// Payment events carry the payment id as source; settlement and payout events
+// carry their own id. The payload is sealed at rest like chat payloads.
+func (s *Store) EnqueueMerchantWebhook(ctx context.Context, merchantID, sourceID uuid.UUID, event string, payload []byte) (bool, error) {
 	sealed, err := s.sealValue(payload)
 	if err != nil {
 		return false, err
 	}
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO merchant_webhook_deliveries(merchant_id,payment_id,event,payload)
+		INSERT INTO merchant_webhook_deliveries(merchant_id,source_id,event,payload)
 		VALUES($1,$2,$3,$4)
-		ON CONFLICT (merchant_id,payment_id,event) DO NOTHING`, merchantID, paymentID, event, sealed)
+		ON CONFLICT (merchant_id,source_id,event) DO NOTHING`, merchantID, sourceID, event, sealed)
 	if err != nil {
 		return false, err
 	}
@@ -104,7 +105,7 @@ func (s *Store) ClaimMerchantWebhooks(ctx context.Context, limit int) ([]Merchan
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		SELECT id,merchant_id,payment_id,event,payload,attempts
+		SELECT id,merchant_id,source_id,event,payload,attempts
 		FROM merchant_webhook_deliveries
 		WHERE status IN ('pending','sending') AND available_at <= now()
 		ORDER BY id
@@ -117,7 +118,7 @@ func (s *Store) ClaimMerchantWebhooks(ctx context.Context, limit int) ([]Merchan
 	for rows.Next() {
 		var delivery MerchantWebhookDelivery
 		var payload string
-		if err := rows.Scan(&delivery.ID, &delivery.MerchantID, &delivery.PaymentID, &delivery.Event, &payload, &delivery.Attempts); err != nil {
+		if err := rows.Scan(&delivery.ID, &delivery.MerchantID, &delivery.SourceID, &delivery.Event, &payload, &delivery.Attempts); err != nil {
 			rows.Close()
 			return nil, err
 		}

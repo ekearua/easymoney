@@ -74,6 +74,7 @@ type App struct {
 	eventBus          ports.EventBus
 	publisher         *service.EventPublisher
 	merchantWebhooks  *service.MerchantWebhookDeliverer
+	settlements       *service.SettlementService
 }
 
 // New creates all application dependencies.
@@ -177,6 +178,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
+		settlements:      service.NewSettlementService(repository, nil, logger),
 	}, nil
 }
 
@@ -243,6 +245,25 @@ func (a *App) ReconcileThreeWay(ctx context.Context) error {
 			"category", it.Category, "reference", it.Reference,
 			"expected_kobo", it.ExpectedKobo, "actual_kobo", it.ActualKobo, "detail", it.Detail)
 	}
+	return nil
+}
+
+// Settle cuts a merchant's payable into a batch and dispatches its payout,
+// returning a summary for the CLI. Passing a batch number that already exists
+// replays the batch and its payout idempotently.
+func (a *App) Settle(ctx context.Context, merchantID uuid.UUID, batchNo string) error {
+	batch, err := a.settlements.Cut(ctx, merchantID, batchNo)
+	if err != nil {
+		return err
+	}
+	payout, err := a.settlements.RequestPayout(ctx, batchNo, nil)
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "settlement complete",
+		"batch_no", batch.BatchNo, "merchant_id", batch.MerchantID.String(),
+		"total_kobo", batch.TotalKobo, "status", batch.Status,
+		"payout", payout.Status, "payout_id", payout.ID.String(), "external_ref", payout.ExternalRef)
 	return nil
 }
 
@@ -478,6 +499,13 @@ func (a *App) routes() http.Handler {
 		api.Post("/checkouts", a.apiCreateCheckout)
 		api.Get("/checkouts/{reference}", a.apiCheckoutStatus)
 		api.Get("/balance", a.apiBalance)
+		api.Post("/settlements", a.apiCreateSettlement)
+		api.Get("/settlements/{batch_no}", a.apiSettlementStatus)
+		api.Post("/settlements/{batch_no}/payout", a.apiRequestPayout)
+		api.Post("/settlements/{batch_no}/payout/reverse", a.apiReversePayout)
+		api.Get("/payouts/{reference}", a.apiPayoutStatus)
+		api.Post("/settlement-accounts", a.apiCreateSettlementAccount)
+		api.Get("/settlement-accounts", a.apiListSettlementAccounts)
 	})
 
 	router.Get("/admin/login", a.loginPage)
@@ -534,6 +562,11 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/role", a.adminUpdateAdminRole)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/enabled", a.adminToggleAdminEnabled)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins/{id}/password", a.adminResetAdminPassword)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/settlements", a.adminSettlements)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/accounts/{id}/approve", a.adminApproveSettlementAccount)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/accounts/{id}/disable", a.adminDisableSettlementAccount)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/payouts/{id}/retry", a.adminRetryPayout)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/payouts/{id}/reverse", a.adminReversePayout)
 		admin.Post("/admin/logout", a.logout)
 	})
 	router.Get("/merchant/login", a.merchantLogin)
@@ -584,6 +617,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	retentionTicker := time.NewTicker(24 * time.Hour)
 	rescreenTicker := time.NewTicker(24 * time.Hour)
 	monitorTicker := time.NewTicker(15 * time.Minute)
+	settlementTicker := time.NewTicker(10 * time.Second)
 	defer outboxTicker.Stop()
 	defer eventTicker.Stop()
 	defer reconcileTicker.Stop()
@@ -591,6 +625,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer retentionTicker.Stop()
 	defer rescreenTicker.Stop()
 	defer monitorTicker.Stop()
+	defer settlementTicker.Stop()
 	a.startEventConsumers(ctx)
 	for {
 		select {
@@ -627,6 +662,8 @@ func (a *App) runWorkers(ctx context.Context) {
 			if err := a.MonitorTransactions(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
 			}
+		case <-settlementTicker.C:
+			a.runSettlementDispatcher(ctx)
 		}
 	}
 }
@@ -644,6 +681,10 @@ func (a *App) startEventConsumers(ctx context.Context) {
 		{domain.TopicPaymentSucceeded, "xego.compliance", compliance.HandlePaymentSucceeded},
 		{domain.TopicPaymentSucceeded, "xego.merchant_webhooks", webhooks.HandlePaymentSucceeded},
 		{domain.TopicPaymentFailed, "xego.merchant_webhooks", webhooks.HandlePaymentFailed},
+		{domain.TopicSettlementBatchCreated, "xego.merchant_webhooks", webhooks.HandleSettlementBatchCreated},
+		{domain.TopicSettlementBatchProcessed, "xego.merchant_webhooks", webhooks.HandleSettlementBatchProcessed},
+		{domain.TopicPayoutSucceeded, "xego.merchant_webhooks", webhooks.HandlePayoutSucceeded},
+		{domain.TopicPayoutFailed, "xego.merchant_webhooks", webhooks.HandlePayoutFailed},
 	} {
 		if err := a.eventBus.Subscribe(ctx, sub.topic, sub.group, sub.handler); err != nil {
 			a.logger.ErrorContext(ctx, "subscribe event consumer failed", "topic", sub.topic, "group", sub.group, "error", err)

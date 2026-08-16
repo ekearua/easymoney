@@ -20,12 +20,14 @@ import (
 // Chart of accounts. Keeping codes as Go constants (no mutable accounts table)
 // guarantees every posting references a known, balanced book.
 const (
-	LedgerAccountOperatingBank   = "1100_operating_bank"
-	LedgerAccountCustomerFloat   = "2100_customer_float"
-	LedgerAccountMerchantPayable = "3100_merchant_payable"
-	LedgerAccountSalesRevenue    = "4100_sales_revenue"
-	LedgerAccountProviderCost    = "5100_provider_cost"
-	LedgerAccountThriftPool      = "6100_thrift_pool"
+	LedgerAccountOperatingBank      = "1100_operating_bank"
+	LedgerAccountCustomerFloat      = "2100_customer_float"
+	LedgerAccountMerchantPayable    = "3100_merchant_payable"
+	LedgerAccountSettlementPayable  = "3200_settlement_payable"
+	LedgerAccountSettlementSuspense = "1300_settlement_suspense"
+	LedgerAccountSalesRevenue       = "4100_sales_revenue"
+	LedgerAccountProviderCost       = "5100_provider_cost"
+	LedgerAccountThriftPool         = "6100_thrift_pool"
 )
 
 // LedgerEntry is one side of a double-entry posting.

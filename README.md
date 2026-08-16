@@ -50,6 +50,8 @@ Useful commands:
 go test ./...
 go vet ./...
 go run ./cmd/demo reconcile
+go run ./cmd/demo reconcile3
+go run ./cmd/demo settle <merchant-id> <batch-no>
 go run ./cmd/demo retain
 ```
 
@@ -354,6 +356,15 @@ X-Xego-Signature: <hex hmac>
     }
   }
   ```
+- `POST /settlements` — cut a settlement batch. Freezes the merchant's succeeded, un-batched payments into a batch (merchant goes `3100 merchant_payable` → `3200 settlement_payable`). Idempotent on `batch_no` (replaying the same batch number returns the existing batch). Body fields: `batch_no` (required, ≤64 chars), optional `cutoff_at` (RFC 3339). Returns the batch with `batch_no`, `total.value` (kobo), `line_count`, `status` (`open`), and `batched_payments` (references of the included payments).
+- `GET /settlements/{batch_no}` — batch state, including `status` (`open` / `scheduled` / `processed` / `failed`), totals, and each included payment.
+- `POST /settlements/{batch_no}/payout` — request payout for an open batch to the merchant's default active settlement account. Returns the payout (queued → dispatched by the settlement worker → `completed` / `failed`).
+- `POST /settlements/{batch_no}/payout/reverse` — reverse a failed/processing payout, reopen its batch, and (merchant-only) release the funds back to `3100 merchant_payable`; a fresh payout can then be requested. Operator-only variant adds a reason.
+- `GET /payouts/{reference}` — payout state (`queued` / `processing` / `completed` / `failed` / `reversed`), destination account, and rail `external_ref`.
+- `POST /settlement-accounts` — register a payout destination. Body fields: `bank_code` (NIP bank code, e.g. `044`), `account_number`, `account_name`. The first account becomes the merchant's default; payouts target the default active account.
+- `GET /settlement-accounts` — the merchant's settlement accounts with `status` (`pending` / `active` / `disabled`) and `is_default`.
+
+Payout rail: the default provider is `simulated` — bank code `011` always declines (for testing failure/retry/reverse), any other bank code succeeds and returns `external_ref = SIM-PAY-<reference>-<unix>`. The rail idempotency key is the payout row id, so a retry of the same payout replays its deterministic outcome while a reversed payout (a fresh row) gets a fresh outcome. Admin console (`/admin/settlements`) lists all accounts/batches/payouts and allows account approval/disabling and payout retry/reverse.
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 

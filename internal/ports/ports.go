@@ -167,6 +167,34 @@ type SanctionsScreener interface {
 	Screen(context.Context, ScreeningRequest) (ScreeningDecision, error)
 }
 
+// PayoutRequest contains the neutral payout instruction sent to a bank rail.
+type PayoutRequest struct {
+	Reference     string // settlement batch_no, used as the idempotency key
+	AccountName   string
+	AccountNumber string
+	BankCode      string
+	AmountKobo    int64
+	Currency      string
+}
+
+// PayoutResult is the provider-neutral outcome of a payout attempt.
+type PayoutResult struct {
+	ExternalRef string
+	Status      string // "succeeded", "failed", "pending"
+	Message     string
+}
+
+// ErrPayoutPending is returned by a rail when the outcome is not yet final and
+// the payout must be rechecked later rather than retried.
+var ErrPayoutPending = errors.New("payout outcome pending")
+
+// PayoutProvider isolates outbound settlements from a specific bank rail
+// (Paystack Transfers, Flutterwave Transfers, Providus, ...). Implementations
+// must be safe for concurrent use.
+type PayoutProvider interface {
+	Payout(context.Context, PayoutRequest) (PayoutResult, error)
+}
+
 // ErrBusClosed is returned when publishing to a closed event bus.
 var ErrBusClosed = errors.New("event bus is closed")
 

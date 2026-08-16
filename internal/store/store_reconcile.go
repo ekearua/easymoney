@@ -195,6 +195,77 @@ func (s *Store) RunReconciliation(ctx context.Context, runType, createdBy string
 		}
 	}
 
+	// Leg 4 (S1): completed payouts must have a money-out posting on the
+	// settlement payable account; every such posting must belong to a completed
+	// payout. Money-out is the debit to 3200 with source_type 'payout'.
+	type payoutLeg struct {
+		BatchNo string
+		Amount  int64
+	}
+	completedPayouts := map[string]payoutLeg{}
+	rows, err = tx.Query(ctx, `
+		SELECT p.id, b.batch_no, p.amount_kobo
+		FROM payouts p JOIN settlement_batches b ON b.id=p.batch_id
+		WHERE p.status='completed'`)
+	if err != nil {
+		return ReconciliationRun{}, nil, err
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		var p payoutLeg
+		if err := rows.Scan(&id, &p.BatchNo, &p.Amount); err != nil {
+			rows.Close()
+			return ReconciliationRun{}, nil, err
+		}
+		completedPayouts[id.String()] = p
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ReconciliationRun{}, nil, err
+	}
+
+	payoutLedger := map[string]int64{}
+	rows, err = tx.Query(ctx, `
+		SELECT source_id, SUM(amount_kobo)
+		FROM ledger_entries
+		WHERE entry_type='debit' AND account=$1 AND source_type='payout' AND reversal_of IS NULL
+		GROUP BY source_id`, LedgerAccountSettlementPayable)
+	if err != nil {
+		return ReconciliationRun{}, nil, err
+	}
+	for rows.Next() {
+		var ref string
+		var amount int64
+		if err := rows.Scan(&ref, &amount); err != nil {
+			rows.Close()
+			return ReconciliationRun{}, nil, err
+		}
+		payoutLedger[ref] = amount
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ReconciliationRun{}, nil, err
+	}
+
+	for ref, p := range completedPayouts {
+		posted, ok := payoutLedger[ref]
+		if !ok {
+			add("payout_without_ledger", p.BatchNo,
+				"completed payout has no money-out posting", p.Amount, 0)
+			continue
+		}
+		if posted != p.Amount {
+			add("payout_amount_mismatch", p.BatchNo,
+				fmt.Sprintf("payout %d vs ledger %d", p.Amount, posted), p.Amount, posted)
+		}
+	}
+	for ref, posted := range payoutLedger {
+		if _, ok := completedPayouts[ref]; !ok {
+			add("ledger_without_payout", ref,
+				fmt.Sprintf("money-out posting %d has no completed payout", posted), posted, 0)
+		}
+	}
+
 	run.DiscrepancyCount = len(items)
 	run.Status = "clean"
 	if len(items) > 0 {

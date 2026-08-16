@@ -1,0 +1,71 @@
+{{define "admin_settlements.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Finance</p><h1>Settlements</h1>
+<p class="muted">Merchant payout destinations, settlement cuts, and outbound payouts. Cuts move merchant_payable (3100) to settlement_payable (3200); payouts move funds from the operating bank (1100).</p></div></header>
+
+{{if .Result}}<div class="notice ok">Action recorded.</div>{{end}}
+{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <h2>Settlement accounts</h2>
+  <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Bank</th><th>Account number</th><th>Name</th><th>Default</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  {{range .Accounts}}<tr>
+    <td>{{index $.AccountMerchants .ID}}</td>
+    <td class="mono">{{.BankCode}}</td>
+    <td class="mono">{{.AccountNumber}}</td>
+    <td>{{.AccountName}}</td>
+    <td>{{if .IsDefault}}yes{{else}}no{{end}}</td>
+    <td><span class="status {{if eq .Status "active"}}ok{{else}}warn{{end}}">{{.Status}}{{if .ApprovedBy}} · approved{{end}}</span></td>
+    <td>
+      {{if and (ne .Status "active") (eq $.AdminRole "admin")}}
+      <form method="post" action="/admin/settlements/accounts/{{.ID}}/approve" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Approve</button></form>
+      {{end}}
+      {{if and (eq .Status "active") (eq $.AdminRole "admin")}}
+      <form method="post" action="/admin/settlements/accounts/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Disable</button></form>
+      {{end}}
+    </td>
+  </tr>{{else}}<tr><td colspan="7">No settlement accounts yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Batches</h2>
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Merchant</th><th>Cutoff</th><th>Total</th><th>Lines</th><th>Status</th></tr></thead><tbody>
+  {{range .Batches}}<tr>
+    <td class="mono">{{.BatchNo}}</td>
+    <td>{{index $.MerchantNames .MerchantID}}</td>
+    <td style="white-space:nowrap">{{.CutoffAt.Format "02 Jan 2006 15:04"}}</td>
+    <td>{{money .TotalKobo}}</td>
+    <td>{{.LineCount}}</td>
+    <td><span class="status {{if eq .Status "processed"}}ok{{else if eq .Status "open"}}muted{{else}}warn{{end}}">{{.Status}}</span></td>
+  </tr>{{else}}<tr><td colspan="6">No batches yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Payouts</h2>
+  <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Amount</th><th>Provider ref</th><th>Attempts</th><th>Status</th><th>Error</th><th>Actions</th></tr></thead><tbody>
+  {{range .Payouts}}<tr>
+    <td>{{index $.MerchantNames .MerchantID}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td class="mono">{{if .ExternalRef}}{{.ExternalRef}}{{else}}—{{end}}</td>
+    <td>{{.Attempts}}</td>
+    <td><span class="status {{if eq .Status "completed"}}ok{{else if eq .Status "queued"}}muted{{else if eq .Status "reversed"}}muted{{else}}warn{{end}}">{{.Status}}</span></td>
+    <td class="muted">{{if .LastError}}{{.LastError}}{{else}}—{{end}}</td>
+    <td>
+      {{if eq .Status "failed"}}
+        {{if eq $.AdminRole "admin"}}
+        <form method="post" action="/admin/settlements/payouts/{{.ID}}/retry" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Retry</button></form>
+        <form method="post" action="/admin/settlements/payouts/{{.ID}}/reverse" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="reason" value="operator reversal"><button type="submit">Reverse</button></form>
+        {{end}}
+      {{else}}—{{end}}
+    </td>
+  </tr>{{else}}<tr><td colspan="7">No payouts yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

@@ -13,6 +13,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/google/uuid"
+
 	"whatsapp-payment-demo/internal/app"
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/logging"
@@ -88,6 +90,15 @@ func run() error {
 		return application.Reconcile(ctx)
 	case "reconcile3":
 		return application.ReconcileThreeWay(ctx)
+	case "settle":
+		if len(os.Args) < 4 {
+			return fmt.Errorf("usage: settle <merchant-id> <batch-no>")
+		}
+		merchantID, err := uuid.Parse(os.Args[2])
+		if err != nil {
+			return fmt.Errorf("invalid merchant id: %w", err)
+		}
+		return application.Settle(ctx, merchantID, os.Args[3])
 	case "retain":
 		return application.PurgeExpiredData(ctx)
 	case "rescreen":
@@ -115,6 +126,6 @@ func run() error {
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

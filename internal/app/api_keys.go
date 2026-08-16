@@ -441,8 +441,9 @@ func (a *App) apiBalance(w http.ResponseWriter, r *http.Request) {
 			"debits":  b.DebitKobo,
 			"credits": b.CreditKobo,
 		}
-		if b.Account == store.LedgerAccountMerchantPayable {
-			available = -b.NetKobo
+		switch b.Account {
+		case store.LedgerAccountMerchantPayable, store.LedgerAccountSettlementPayable:
+			available += -b.NetKobo
 		}
 	}
 	if available < 0 {

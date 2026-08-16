@@ -60,6 +60,42 @@ func (c *MerchantWebhookConsumer) HandlePaymentFailed(ctx context.Context, msg p
 	return c.enqueue(ctx, event.PaymentID, domain.TopicPaymentFailed)
 }
 
+// HandleSettlementBatchCreated queues a settlement.batch.created delivery.
+func (c *MerchantWebhookConsumer) HandleSettlementBatchCreated(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.SettlementBatchCreated
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode settlement.batch.created: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.BatchID, domain.TopicSettlementBatchCreated, msg.Payload)
+}
+
+// HandleSettlementBatchProcessed queues a settlement.batch.processed delivery.
+func (c *MerchantWebhookConsumer) HandleSettlementBatchProcessed(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.SettlementBatchProcessed
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode settlement.batch.processed: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.BatchID, domain.TopicSettlementBatchProcessed, msg.Payload)
+}
+
+// HandlePayoutSucceeded queues a payout.succeeded delivery.
+func (c *MerchantWebhookConsumer) HandlePayoutSucceeded(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.PayoutSucceeded
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode payout.succeeded: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.PayoutID, domain.TopicPayoutSucceeded, msg.Payload)
+}
+
+// HandlePayoutFailed queues a payout.failed delivery.
+func (c *MerchantWebhookConsumer) HandlePayoutFailed(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.PayoutFailed
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode payout.failed: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.PayoutID, domain.TopicPayoutFailed, msg.Payload)
+}
+
 // enqueue builds the delivery payload from the authoritative payment row and
 // writes it only when the merchant has registered a callback URL.
 func (c *MerchantWebhookConsumer) enqueue(ctx context.Context, paymentID, topic string) error {
@@ -89,6 +125,36 @@ func (c *MerchantWebhookConsumer) enqueue(ctx context.Context, paymentID, topic 
 	}
 	if queued {
 		c.logger.Info("merchant webhook queued", "merchant_id", payment.MerchantID, "payment_id", id, "event", topic)
+	}
+	return nil
+}
+
+// enqueueEvent queues a delivery whose payload is a domain fact already (a
+// settlement or payout event) rather than a rendered payment envelope. The
+// source id is the batch or payout id so redeliveries stay idempotent.
+func (c *MerchantWebhookConsumer) enqueueEvent(ctx context.Context, merchantID, sourceID, event string, payload []byte) error {
+	merchant, err := uuid.Parse(merchantID)
+	if err != nil {
+		return fmt.Errorf("parse merchant id: %w", err)
+	}
+	source, err := uuid.Parse(sourceID)
+	if err != nil {
+		return fmt.Errorf("parse source id: %w", err)
+	}
+	cfg, err := c.store.MerchantWebhookConfig(ctx, merchant)
+	if err != nil {
+		return err
+	}
+	if cfg.URL == "" {
+		c.logger.Debug("merchant has no webhook url; skipping delivery", "merchant_id", merchant, "source_id", source, "event", event)
+		return nil
+	}
+	queued, err := c.store.EnqueueMerchantWebhook(ctx, merchant, source, event, payload)
+	if err != nil {
+		return err
+	}
+	if queued {
+		c.logger.Info("merchant webhook queued", "merchant_id", merchant, "source_id", source, "event", event)
 	}
 	return nil
 }

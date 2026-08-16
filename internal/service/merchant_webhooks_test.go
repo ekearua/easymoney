@@ -189,7 +189,7 @@ func TestMerchantWebhookEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if err := pool.QueryRow(ctx, `SELECT status FROM merchant_webhook_deliveries WHERE payment_id=$1`, payment.ID).Scan(&status); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT status FROM merchant_webhook_deliveries WHERE source_id=$1`, payment.ID).Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	if status != "sent" {
