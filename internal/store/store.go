@@ -5041,6 +5041,9 @@ func (s *Store) InitializeBankTransferSimulation(ctx context.Context, paymentID,
 		return BankTransferInstruction{}, err
 	}
 
+	if !domain.CanTransition(from, domain.StatusPending) {
+		return BankTransferInstruction{}, fmt.Errorf("invalid payment transition %s -> %s", from, domain.StatusPending)
+	}
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, updated_at=now() WHERE id=$1`, paymentID, domain.StatusPending); err != nil {
 		return BankTransferInstruction{}, err
 	}
@@ -5054,12 +5057,7 @@ func (s *Store) InitializeBankTransferSimulation(ctx context.Context, paymentID,
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
-		VALUES($1,$2,$3,'bank_transfer.instructions',$4)`, paymentID, from, domain.StatusInitialized, detail); err != nil {
-		return BankTransferInstruction{}, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
-		VALUES($1,$2,$3,'bank_transfer.awaiting_user_transfer',$4)`, paymentID, domain.StatusInitialized, domain.StatusPending, detail); err != nil {
+		VALUES($1,$2,$3,'bank_transfer.initialize',$4)`, paymentID, from, domain.StatusPending, detail); err != nil {
 		return BankTransferInstruction{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

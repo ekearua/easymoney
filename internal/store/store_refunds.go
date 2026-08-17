@@ -85,6 +85,9 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 	if status != "succeeded" {
 		return Refund{}, fmt.Errorf("cannot refund payment in status %q (must be succeeded)", status)
 	}
+	if !domain.CanTransition(domain.PaymentStatus(status), domain.StatusRefunded) {
+		return Refund{}, fmt.Errorf("invalid payment transition %s -> refunded", status)
+	}
 	// Reject if already refunded.
 	var existing int
 	if err := tx.QueryRow(ctx, `

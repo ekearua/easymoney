@@ -31,7 +31,7 @@ const (
 
 var validTransitions = map[PaymentStatus]map[PaymentStatus]bool{
 	StatusDraft:                {StatusAwaitingConfirmation: true, StatusExpired: true},
-	StatusAwaitingConfirmation: {StatusInitialized: true, StatusAbandoned: true, StatusExpired: true},
+	StatusAwaitingConfirmation: {StatusInitialized: true, StatusPending: true, StatusAbandoned: true, StatusExpired: true},
 	StatusInitialized:          {StatusPending: true, StatusSucceeded: true, StatusFailed: true, StatusAbandoned: true, StatusExpired: true},
 	StatusPending:              {StatusSucceeded: true, StatusFailed: true, StatusAbandoned: true, StatusExpired: true},
 	StatusSucceeded:            {StatusRefunded: true},
