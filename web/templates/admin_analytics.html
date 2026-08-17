@@ -1,0 +1,89 @@
+{{define "admin_analytics.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Finance</p><h1>Analytics</h1>
+<p class="muted">Settlement and revenue analytics for the selected period. Data is aggregated from the append-only ledger and settlement tables.</p></div></header>
+
+<section class="panel">
+  <h2>Period</h2>
+  <form method="get" action="/admin/analytics" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+    <label>From <input type="date" name="from" value="{{.From.Format "2006-01-02"}}"></label>
+    <label>To <input type="date" name="to" value="{{.To.Format "2006-01-02"}}"></label>
+    <button type="submit">Update</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Summary</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">
+    <div class="card"><p class="eyebrow">Payments</p><p class="big">{{.TotalPayments}}</p></div>
+    <div class="card"><p class="eyebrow">Collections</p><p class="big">{{money .TotalCollections}}</p></div>
+    <div class="card"><p class="eyebrow">Fees earned</p><p class="big">{{money .TotalFees}}</p></div>
+    <div class="card"><p class="eyebrow">Refunds</p><p class="big">{{money .TotalRefunds}}</p></div>
+    <div class="card"><p class="eyebrow">Net revenue</p><p class="big">{{money .NetRevenue}}</p></div>
+    <div class="card"><p class="eyebrow">Batches cut</p><p class="big">{{.TotalBatches}}</p></div>
+    <div class="card"><p class="eyebrow">Payouts</p><p class="big">{{money .TotalPayouts}}</p></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Daily Revenue</h2>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Payments</th><th>Collections</th><th>Fees</th><th>Refunds</th><th>Net</th></tr></thead><tbody>
+  {{range .Revenue}}<tr>
+    <td>{{.Date.Format "02 Jan"}}</td>
+    <td>{{.PaymentsCount}}</td>
+    <td>{{money .Collections}}</td>
+    <td>{{money .Fees}}</td>
+    <td>{{money .Refunds}}</td>
+    <td><strong>{{money .NetRevenue}}</strong></td>
+  </tr>{{else}}<tr><td colspan="6">No revenue data in this period.</td></tr>{{end}}
+  </tbody></table></div>
+  <a href="/admin/analytics/export?report=revenue&from={{.From.Format "2006-01-02"}}&to={{.To.Format "2006-01-02"}}&format=csv">Download CSV</a>
+</section>
+
+<section class="panel">
+  <h2>Merchant Settlements</h2>
+  <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Batches</th><th>Total</th><th>Fees</th><th>Payouts</th></tr></thead><tbody>
+  {{range .Merchants}}<tr>
+    <td>{{.MerchantName}}</td>
+    <td>{{.BatchCount}}</td>
+    <td>{{money .TotalKobo}}</td>
+    <td>{{money .FeeKobo}}</td>
+    <td>{{money .PayoutKobo}}</td>
+  </tr>{{else}}<tr><td colspan="5">No settlement data.</td></tr>{{end}}
+  </tbody></table></div>
+  <a href="/admin/analytics/export?report=merchants&format=csv">Download CSV</a>
+</section>
+
+<section class="panel">
+  <h2>Transaction Volume</h2>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Status</th><th>Count</th><th>Total</th><th>Average</th></tr></thead><tbody>
+  {{range .Volume}}<tr>
+    <td>{{.Date.Format "02 Jan"}}</td>
+    <td><span class="status {{if eq .Status "succeeded"}}ok{{else if eq .Status "failed"}}error{{else}}muted{{end}}">{{.Status}}</span></td>
+    <td>{{.Count}}</td>
+    <td>{{money .TotalKobo}}</td>
+    <td>{{money .AverageKobo}}</td>
+  </tr>{{else}}<tr><td colspan="5">No volume data in this period.</td></tr>{{end}}
+  </tbody></table></div>
+  <a href="/admin/analytics/export?report=volume&from={{.From.Format "2006-01-02"}}&to={{.To.Format "2006-01-02"}}&format=csv">Download CSV</a>
+</section>
+
+<section class="panel">
+  <h2>Payouts</h2>
+  <div class="table-wrap"><table><thead><tr><th>Date</th><th>Batch</th><th>Amount</th><th>Status</th><th>Provider ref</th></tr></thead><tbody>
+  {{range .Payouts}}<tr>
+    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 15:04"}}</td>
+    <td class="mono">{{.BatchNo}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td><span class="status {{if eq .Status "completed"}}ok{{else if eq .Status "failed"}}error{{else if eq .Status "reversed"}}muted{{else}}warn{{end}}">{{.Status}}</span></td>
+    <td class="mono">{{if .ExternalRef}}{{.ExternalRef}}{{else}}—{{end}}</td>
+  </tr>{{else}}<tr><td colspan="5">No payouts in this period.</td></tr>{{end}}
+  </tbody></table></div>
+  <a href="/admin/analytics/export?report=payouts&from={{.From.Format "2006-01-02"}}&to={{.To.Format "2006-01-02"}}&format=csv">Download CSV</a>
+</section>
+</main></body></html>
+{{end}}
