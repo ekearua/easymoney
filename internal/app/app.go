@@ -599,6 +599,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/refunds/{id}/fail", a.adminRefundFail)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/disputes", a.adminDisputes)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/disputes/{id}/resolve", a.adminResolveDispute)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/siem", a.adminSIEM)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/siem/export", a.adminSIEMExport)
 		admin.Post("/admin/logout", a.logout)
 	})
 	router.Get("/merchant/login", a.merchantLogin)

@@ -1,0 +1,61 @@
+{{define "admin_siem.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>SIEM Event Log</h1>
+<p class="muted">Unified view of domain events and audit log entries. Filter by topic, source, merchant, or time range. Export as CSV or JSON for SIEM ingestion.</p></div></header>
+
+{{if .Result}}<div class="notice ok">Action recorded.</div>{{end}}
+{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <h2>Filters</h2>
+  <form method="get" action="/admin/siem" style="display:flex;gap:12px;flex-wrap:wrap;align-items:end">
+    <label>Topic prefix
+      <input type="text" name="topic" value="{{.Filter.Topic}}" placeholder="payment. or admin.">
+    </label>
+    <label>Source
+      <select name="source">
+        <option value="">All</option>
+        <option value="business_event" {{if eq .Filter.Source "business_event"}}selected{{end}}>Business events</option>
+        <option value="audit" {{if eq .Filter.Source "audit"}}selected{{end}}>Audit log</option>
+      </select>
+    </label>
+    <label>Merchant ID
+      <input type="text" name="merchant_id" value="{{.Filter.MerchantID}}" placeholder="uuid">
+    </label>
+    <label>From
+      <input type="datetime-local" name="from" {{if .Filter.From}}value="{{.Filter.From.UTC.Format "2006-01-02T15:04"}}{{end}}">
+    </label>
+    <label>To
+      <input type="datetime-local" name="to" {{if .Filter.To}}value="{{.Filter.To.UTC.Format "2006-01-02T15:04"}}{{end}}">
+    </label>
+    <label>Limit
+      <input type="number" name="limit" value="{{.Filter.Limit}}" min="1" max="10000" style="width:80px">
+    </label>
+    <button type="submit">Search</button>
+  </form>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <a href="/admin/siem/export?format=json&topic={{.Filter.Topic}}&source={{.Filter.Source}}&merchant_id={{.Filter.MerchantID}}&limit={{.Filter.Limit}}" class="button">Export JSON</a>
+    <a href="/admin/siem/export?format=csv&topic={{.Filter.Topic}}&source={{.Filter.Source}}&merchant_id={{.Filter.MerchantID}}&limit={{.Filter.Limit}}" class="button">Export CSV</a>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Events ({{len .Events}})</h2>
+  <div class="table-wrap"><table><thead><tr><th>Time</th><th>Source</th><th>Topic</th><th>Key</th><th>Actor</th><th>IP</th><th>Payload</th></tr></thead><tbody>
+  {{range .Events}}<tr>
+    <td style="white-space:nowrap">{{.Timestamp.UTC.Format "02 Jan 2006 15:04:05"}}</td>
+    <td><span class="status {{if eq .Source "business_event"}}ok{{else}}muted{{end}}">{{.Source}}</span></td>
+    <td class="mono">{{.Topic}}</td>
+    <td class="mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">{{.Key}}</td>
+    <td>{{.Actor}}</td>
+    <td class="mono">{{if .IP}}{{.IP}}{{else}}—{{end}}</td>
+    <td><details><summary>View</summary><pre style="white-space:pre-wrap;max-width:400px">{{.Payload}}</pre></details></td>
+  </tr>{{else}}<tr><td colspan="7">No events match the current filters.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}
