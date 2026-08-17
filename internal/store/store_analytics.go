@@ -175,13 +175,14 @@ func (s *Store) PayoutReport(ctx context.Context, from, to *time.Time, limit int
 
 // TransactionVolume returns daily payment volume grouped by status.
 func (s *Store) TransactionVolume(ctx context.Context, from, to time.Time) ([]TransactionVolumeRow, error) {
+	end := to.AddDate(0, 0, 1)
 	rows, err := s.pool.Query(ctx, `
 		SELECT created_at::date AS date, status, count(*), SUM(amount_kobo),
 		       CASE WHEN count(*)>0 THEN SUM(amount_kobo)/count(*) ELSE 0 END
 		FROM payments
-		WHERE created_at >= $1 AND created_at < $2 + interval '1 day'
+		WHERE created_at >= $1 AND created_at < $2
 		GROUP BY created_at::date, status
-		ORDER BY created_at::date, status`, from, to)
+		ORDER BY created_at::date, status`, from, end)
 	if err != nil {
 		return nil, err
 	}
