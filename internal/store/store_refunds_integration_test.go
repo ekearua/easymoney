@@ -162,7 +162,7 @@ func TestRefundLifecycle(t *testing.T) {
 
 	t.Run("refund in processed batch rejected", func(t *testing.T) {
 		// p2 is still succeeded. Cut it into a batch.
-		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-1", time.Time{})
+		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-1", time.Time{}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +180,7 @@ func TestRefundLifecycle(t *testing.T) {
 		// Create a fresh succeeded payment.
 		p3 := createSucceeded("refund-ref-3", 75_000)
 		// Cut into a batch.
-		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-2", time.Time{})
+		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-2", time.Time{}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -24,25 +24,27 @@ import (
 type SettlementService struct {
 	store    *store.Store
 	provider ports.PayoutProvider
+	feeBps   int
 	logger   *slog.Logger
 }
 
 // NewSettlementService constructs the settlement orchestrator. A nil provider
-// defaults to the simulated rail.
-func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger) *SettlementService {
+// defaults to the simulated rail. feeBps is the settlement fee in basis points
+// (250 = 2.5 %) applied at batch-cut time.
+func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger, feeBps int) *SettlementService {
 	if provider == nil {
 		provider = NewSimulatedPayoutProvider()
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SettlementService{store: repository, provider: provider, logger: logger}
+	return &SettlementService{store: repository, provider: provider, feeBps: feeBps, logger: logger}
 }
 
 // Cut freezes the merchant's settled payable into a batch with the given
 // external batch number. Replaying a known batch returns it unchanged.
 func (s *SettlementService) Cut(ctx context.Context, merchantID uuid.UUID, batchNo string) (store.SettlementBatch, error) {
-	return s.store.CutSettlement(ctx, merchantID, batchNo, time.Time{})
+	return s.store.CutSettlement(ctx, merchantID, batchNo, time.Time{}, s.feeBps)
 }
 
 // RequestPayout settles a batch to the merchant's default destination, or to

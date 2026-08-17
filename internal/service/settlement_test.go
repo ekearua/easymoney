@@ -47,7 +47,7 @@ func TestSettlementServiceDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewSettlementService(repository, NewSimulatedPayoutProvider(), testLogger())
+	svc := NewSettlementService(repository, NewSimulatedPayoutProvider(), testLogger(), 0)
 
 	batch, err := svc.Cut(ctx, merchant.ID, "BATCH-SVC-1")
 	if err != nil {

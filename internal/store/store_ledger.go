@@ -26,6 +26,7 @@ const (
 	LedgerAccountSettlementPayable  = "3200_settlement_payable"
 	LedgerAccountSettlementSuspense = "1300_settlement_suspense"
 	LedgerAccountSalesRevenue       = "4100_sales_revenue"
+	LedgerAccountSettlementFees     = "5200_settlement_fees"
 	LedgerAccountProviderCost       = "5100_provider_cost"
 	LedgerAccountThriftPool         = "6100_thrift_pool"
 )

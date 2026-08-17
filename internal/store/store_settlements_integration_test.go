@@ -99,7 +99,7 @@ func TestSettlementLifecycle(t *testing.T) {
 	}
 
 	// Cut freezes 200,000 into a batch and moves the liability to 3200.
-	batch, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-001", time.Time{})
+	batch, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-001", time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSettlementLifecycle(t *testing.T) {
 	}
 
 	// Replaying the batch is a no-op.
-	again, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-001", time.Time{})
+	again, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-001", time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestSettlementLifecycle(t *testing.T) {
 
 	// Failure / retry / reverse path.
 	p3 := createSucceeded("ref-settle-3", 50_000)
-	batch2, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-002", time.Time{})
+	batch2, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-002", time.Time{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

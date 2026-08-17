@@ -34,15 +34,17 @@
 
 <section class="panel">
   <h2>Batches</h2>
-  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Merchant</th><th>Cutoff</th><th>Total</th><th>Lines</th><th>Status</th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Merchant</th><th>Cutoff</th><th>Total</th><th>Fee</th><th>Payout</th><th>Lines</th><th>Status</th></tr></thead><tbody>
   {{range .Batches}}<tr>
     <td class="mono">{{.BatchNo}}</td>
     <td>{{index $.MerchantNames .MerchantID}}</td>
     <td style="white-space:nowrap">{{.CutoffAt.Format "02 Jan 2006 15:04"}}</td>
     <td>{{money .TotalKobo}}</td>
+    <td>{{money .FeeKobo}} <span class="muted">({{.FeeBps}} bps)</span></td>
+    <td>{{money (sub .TotalKobo .FeeKobo)}}</td>
     <td>{{.LineCount}}</td>
     <td><span class="status {{if eq .Status "processed"}}ok{{else if eq .Status "open"}}muted{{else}}warn{{end}}">{{.Status}}</span></td>
-  </tr>{{else}}<tr><td colspan="6">No batches yet.</td></tr>{{end}}
+  </tr>{{else}}<tr><td colspan="8">No batches yet.</td></tr>{{end}}
   </tbody></table></div>
 </section>
 

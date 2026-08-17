@@ -372,6 +372,7 @@ Payout rail: the default provider is `simulated` — bank code `011` always decl
 - `GET /disputes/{id}` — dispute detail.
 
 Refund rail: the default provider is `simulated` — always succeeds with `provider_refund_id = SIM-REF-<payment_id>-<unix>`. Admin console (`/admin/refunds`) lists all refunds with a "Fail" action for pending refunds. Admin console (`/admin/disputes`) lists all disputes with "Won"/"Lost" resolution actions.
+- Settlement fee: configurable via `SETTLEMENT_FEE_BPS` (default 250 = 2.5%). Fee is calculated at batch-cut time and recorded as a separate ledger entry (`dr 3200 / cr 5200_settlement_fees`). The payout amount is always `total_kobo - fee_kobo`. Batch API response includes `fee` and `payout_amount` objects.
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 

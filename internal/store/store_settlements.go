@@ -67,6 +67,8 @@ type SettlementBatch struct {
 	MerchantID    uuid.UUID
 	Status        string
 	TotalKobo     int64
+	FeeKobo       int64
+	FeeBps        int
 	LineCount     int
 	CutoffAt      time.Time
 	LedgerJournal string
@@ -226,9 +228,10 @@ func (s *Store) DefaultSettlementAccount(ctx context.Context, merchantID uuid.UU
 // ---------------------------------------------------------------------------
 
 // CutSettlement freezes the merchant's succeeded, un-batched payments into a
-// batch and moves the liability from 3100 to 3200 on the ledger. Idempotent on
-// batch_no: replaying a known batch returns it unchanged.
-func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo string, cutoffAt time.Time) (SettlementBatch, error) {
+// batch and moves the liability from 3100 to 3200 on the ledger. A fee is
+// deducted as a separate ledger entry (dr 3200 / cr 5200) so the payout amount
+// is always total minus fee. Idempotent on batch_no.
+func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo string, cutoffAt time.Time, feeBps int) (SettlementBatch, error) {
 	if existing, err := s.SettlementBatchByBatchNo(ctx, batchNo); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -278,15 +281,16 @@ func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo
 	if total <= 0 {
 		return SettlementBatch{}, fmt.Errorf("nothing to settle for merchant %s", merchantID)
 	}
+	feeKobo := total * int64(feeBps) / 10_000
 
 	var batch SettlementBatch
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO settlement_batches(batch_no,merchant_id,total_kobo,line_count,cutoff_at,ledger_journal)
-		VALUES($1,$2,$3,$4,$5,$6)
-		RETURNING id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at`,
-		batchNo, merchantID, total, len(lines), cutoffAt, "STL:"+batchNo).Scan(
+		INSERT INTO settlement_batches(batch_no,merchant_id,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+		RETURNING id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at`,
+		batchNo, merchantID, total, feeKobo, feeBps, len(lines), cutoffAt, "STL:"+batchNo).Scan(
 		&batch.ID, &batch.BatchNo, &batch.MerchantID, &batch.Status, &batch.TotalKobo,
-		&batch.LineCount, &batch.CutoffAt, &batch.LedgerJournal, &batch.CreatedAt, &batch.ProcessedAt); err != nil {
+		&batch.FeeKobo, &batch.FeeBps, &batch.LineCount, &batch.CutoffAt, &batch.LedgerJournal, &batch.CreatedAt, &batch.ProcessedAt); err != nil {
 		return SettlementBatch{}, fmt.Errorf("insert settlement batch: %w", err)
 	}
 	for _, l := range lines {
@@ -301,6 +305,13 @@ func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo
 		"Settlement cut "+batchNo, "system", total, &merchantID); err != nil {
 		return SettlementBatch{}, err
 	}
+	if feeKobo > 0 {
+		if err := s.postLedgerPair(ctx, tx, "STL:"+batchNo+":FEE", "settlement", batch.ID.String(),
+			LedgerAccountSettlementPayable, LedgerAccountSettlementFees, "NGN",
+			"Settlement fee "+batchNo, "system", feeKobo, &merchantID); err != nil {
+			return SettlementBatch{}, err
+		}
+	}
 	if err := s.emitSettlementBatchCreatedTx(ctx, tx, batch); err != nil {
 		return SettlementBatch{}, err
 	}
@@ -314,10 +325,10 @@ func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo
 func (s *Store) SettlementBatchByBatchNo(ctx context.Context, batchNo string) (SettlementBatch, error) {
 	var b SettlementBatch
 	err := s.pool.QueryRow(ctx, `
-		SELECT id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at
+		SELECT id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at
 		FROM settlement_batches WHERE batch_no=$1`, batchNo).Scan(
 		&b.ID, &b.BatchNo, &b.MerchantID, &b.Status, &b.TotalKobo,
-		&b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt)
+		&b.FeeKobo, &b.FeeBps, &b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt)
 	return b, err
 }
 
@@ -325,10 +336,10 @@ func (s *Store) SettlementBatchByBatchNo(ctx context.Context, batchNo string) (S
 func (s *Store) SettlementBatchByID(ctx context.Context, batchID uuid.UUID) (SettlementBatch, error) {
 	var b SettlementBatch
 	err := s.pool.QueryRow(ctx, `
-		SELECT id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at
+		SELECT id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at
 		FROM settlement_batches WHERE id=$1`, batchID).Scan(
 		&b.ID, &b.BatchNo, &b.MerchantID, &b.Status, &b.TotalKobo,
-		&b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt)
+		&b.FeeKobo, &b.FeeBps, &b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt)
 	return b, err
 }
 
@@ -338,7 +349,7 @@ func (s *Store) ListSettlementBatches(ctx context.Context, merchantID uuid.UUID,
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at
+		SELECT id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at
 		FROM settlement_batches WHERE merchant_id=$1 ORDER BY created_at DESC LIMIT $2`, merchantID, limit)
 	if err != nil {
 		return nil, err
@@ -348,7 +359,7 @@ func (s *Store) ListSettlementBatches(ctx context.Context, merchantID uuid.UUID,
 	for rows.Next() {
 		var b SettlementBatch
 		if err := rows.Scan(&b.ID, &b.BatchNo, &b.MerchantID, &b.Status, &b.TotalKobo,
-			&b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt); err != nil {
+			&b.FeeKobo, &b.FeeBps, &b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt); err != nil {
 			return nil, err
 		}
 		batches = append(batches, b)
@@ -363,7 +374,7 @@ func (s *Store) ListAllSettlementBatches(ctx context.Context, limit int) ([]Sett
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at
+		SELECT id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at
 		FROM settlement_batches ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -373,7 +384,7 @@ func (s *Store) ListAllSettlementBatches(ctx context.Context, limit int) ([]Sett
 	for rows.Next() {
 		var b SettlementBatch
 		if err := rows.Scan(&b.ID, &b.BatchNo, &b.MerchantID, &b.Status, &b.TotalKobo,
-			&b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt); err != nil {
+			&b.FeeKobo, &b.FeeBps, &b.LineCount, &b.CutoffAt, &b.LedgerJournal, &b.CreatedAt, &b.ProcessedAt); err != nil {
 			return nil, err
 		}
 		batches = append(batches, b)
@@ -415,7 +426,7 @@ func (s *Store) CreatePayout(ctx context.Context, batchID, destinationID uuid.UU
 	var p Payout
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO payouts(batch_id,merchant_id,destination_id,amount_kobo,provider)
-		SELECT b.id,b.merchant_id,$2,b.total_kobo,$3
+		SELECT b.id,b.merchant_id,$2,(b.total_kobo - b.fee_kobo),$3
 		FROM settlement_batches b WHERE b.id=$1
 		RETURNING id,batch_id,merchant_id,destination_id,amount_kobo,status,COALESCE(external_ref,''),provider,attempts,last_error,ledger_journal,created_at,completed_at`,
 		batchID, destinationID, SettlementProviderDefault).Scan(
@@ -458,10 +469,10 @@ func (s *Store) ClaimPayoutForDispatch(ctx context.Context, batchID uuid.UUID) (
 		return PayoutDispatch{}, err
 	}
 	if err := tx.QueryRow(ctx, `
-		SELECT id,batch_no,merchant_id,status,total_kobo,line_count,cutoff_at,ledger_journal,created_at,processed_at
+		SELECT id,batch_no,merchant_id,status,total_kobo,fee_kobo,fee_bps,line_count,cutoff_at,ledger_journal,created_at,processed_at
 		FROM settlement_batches WHERE id=$1`, batchID).Scan(
 		&d.Batch.ID, &d.Batch.BatchNo, &d.Batch.MerchantID, &d.Batch.Status, &d.Batch.TotalKobo,
-		&d.Batch.LineCount, &d.Batch.CutoffAt, &d.Batch.LedgerJournal, &d.Batch.CreatedAt, &d.Batch.ProcessedAt); err != nil {
+		&d.Batch.FeeKobo, &d.Batch.FeeBps, &d.Batch.LineCount, &d.Batch.CutoffAt, &d.Batch.LedgerJournal, &d.Batch.CreatedAt, &d.Batch.ProcessedAt); err != nil {
 		return PayoutDispatch{}, err
 	}
 	if err := tx.QueryRow(ctx, `

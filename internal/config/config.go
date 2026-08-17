@@ -115,6 +115,8 @@ type Config struct {
 	RateLimitScanPerMinute     int
 	RateLimitAPIKeysPerMinute  int
 
+	SettlementFeeBps int
+
 	InvoiceAcceptedNumbers []string
 }
 
@@ -190,6 +192,8 @@ func Load() (Config, error) {
 		RateLimitPublicPerMinute:   int(envInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
 		RateLimitScanPerMinute:     int(envInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
 		RateLimitAPIKeysPerMinute:  int(envInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
+
+		SettlementFeeBps: int(envInt64("SETTLEMENT_FEE_BPS", 250)),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {

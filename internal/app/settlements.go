@@ -264,6 +264,8 @@ func (a *App) settlementBatchJSON(batch store.SettlementBatch, lines []store.Set
 		"merchant_id":    batch.MerchantID.String(),
 		"status":         batch.Status,
 		"amount":         map[string]any{"value": batch.TotalKobo, "currency": "NGN"},
+		"fee":            map[string]any{"value": batch.FeeKobo, "currency": "NGN", "bps": batch.FeeBps},
+		"payout_amount":  map[string]any{"value": batch.TotalKobo - batch.FeeKobo, "currency": "NGN"},
 		"line_count":     batch.LineCount,
 		"lines":          lineView,
 		"ledger_journal": batch.LedgerJournal,
