@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // MerchantAPIKeyView is a stored Partner API credential joined with its
@@ -102,14 +103,22 @@ func (s *Store) PaymentByMerchantReference(ctx context.Context, merchantID uuid.
 	return s.paymentBy(ctx, "p.merchant_id=$1 AND p.merchant_reference=$2", merchantID, reference)
 }
 
+// PaymentByIdempotencyKey returns an existing payment for a merchant+idempotency key pair.
+func (s *Store) PaymentByIdempotencyKey(ctx context.Context, merchantID uuid.UUID, idempotencyKey string) (PaymentView, error) {
+	if idempotencyKey == "" {
+		return PaymentView{}, pgx.ErrNoRows
+	}
+	return s.paymentBy(ctx, "p.merchant_id=$1 AND p.idempotency_key=$2", merchantID, idempotencyKey)
+}
+
 // SetPaymentInitiationMeta stamps the merchant idempotency reference and the
 // echoed request metadata onto an already-created payment. Both columns are
 // NOT NULL, so a nil/empty metadata input is stored as an empty object.
-func (s *Store) SetPaymentInitiationMeta(ctx context.Context, paymentID uuid.UUID, reference string, metadata []byte) error {
+func (s *Store) SetPaymentInitiationMeta(ctx context.Context, paymentID uuid.UUID, reference string, idempotencyKey string, metadata []byte) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE payments
-		SET merchant_reference=$2,metadata=$3::jsonb,updated_at=now()
-		WHERE id=$1`, paymentID, reference, metadataValue(metadata))
+		SET merchant_reference=$2,idempotency_key=COALESCE(NULLIF($3,''),merchant_reference),metadata=$4::jsonb,updated_at=now()
+		WHERE id=$1`, paymentID, reference, idempotencyKey, metadataValue(metadata))
 	if err != nil {
 		return fmt.Errorf("set payment initiation metadata: %w", err)
 	}

@@ -197,6 +197,18 @@ func (a *App) apiCreatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
+	// R4: Check idempotency key first (Partner API dedup).
+	if req.IdempotencyKey != "" {
+		if existing, err := a.store.PaymentByIdempotencyKey(ctx, auth.merchant.ID, req.IdempotencyKey); err == nil {
+			a.writePaymentJSON(w, existing)
+			return
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			a.logger.Error("api idempotency key lookup failed", "error", err)
+			writeAPIError(w, http.StatusInternalServerError, "internal", "payment lookup failed")
+			return
+		}
+	}
+
 	existing, err := a.store.PaymentByMerchantReference(ctx, auth.merchant.ID, reference)
 	if err == nil {
 		a.writePaymentJSON(w, existing)
@@ -233,8 +245,8 @@ func (a *App) apiCreatePayment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		meta = []byte(`{}`)
 	}
-	if err := a.store.SetPaymentInitiationMeta(ctx, payment.ID, reference, meta); err != nil {
-		// Unique-violation from a concurrent replay of the same reference:
+	if err := a.store.SetPaymentInitiationMeta(ctx, payment.ID, reference, req.IdempotencyKey, meta); err != nil {
+		// Unique-violation from a concurrent replay of the same reference or idempotency key:
 		// return the payment that won the race.
 		if winner, lookupErr := a.store.PaymentByMerchantReference(ctx, auth.merchant.ID, reference); lookupErr == nil {
 			a.writePaymentJSON(w, winner)

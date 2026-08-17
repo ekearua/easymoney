@@ -51,9 +51,11 @@ func (s *Store) InsertBusinessEvent(ctx context.Context, topic, key string, payl
 }
 
 func (s *Store) insertBusinessEventTx(ctx context.Context, tx pgx.Tx, topic, key string, payload []byte) error {
+	dedupKey := topic + ":" + key
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO business_event_outbox(topic,event_key,payload)
-		VALUES($1,$2,$3::jsonb)`, topic, key, string(payload)); err != nil {
+		INSERT INTO business_event_outbox(topic,event_key,dedup_key,payload)
+		VALUES($1,$2,$3,$4::jsonb)
+		ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING`, topic, key, dedupKey, string(payload)); err != nil {
 		return fmt.Errorf("insert business event: %w", err)
 	}
 	return nil
