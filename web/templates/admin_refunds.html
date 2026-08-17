@@ -1,0 +1,35 @@
+{{define "admin_refunds.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Finance</p><h1>Refunds</h1>
+<p class="muted">Full refunds reverse the original payment's ledger entries (dr/cr unwind) and transition the payment to refunded status. Payments already in a scheduled/processed settlement batch cannot be refunded until the payout is reversed.</p></div></header>
+
+{{if .Result}}<div class="notice ok">Action recorded.</div>{{end}}
+{{if .Error}}<div class="notice error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <h2>Refunds</h2>
+  <div class="table-wrap"><table><thead><tr><th>Refund ID</th><th>Payment</th><th>Merchant</th><th>Amount</th><th>Reason</th><th>Provider ref</th><th>Status</th><th>Error</th><th>Created</th><th>Actions</th></tr></thead><tbody>
+  {{range .Refunds}}<tr>
+    <td class="mono" style="font-size:0.8em">{{.ID}}</td>
+    <td class="mono" style="font-size:0.8em">{{.PaymentID}}</td>
+    <td>{{index $.MerchantNames .MerchantID}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Reason}}</td>
+    <td class="mono">{{if .ProviderRefundID}}{{.ProviderRefundID}}{{else}}—{{end}}</td>
+    <td><span class="status {{if eq .Status "succeeded"}}ok{{else if eq .Status "pending"}}warn{{else}}error{{end}}">{{.Status}}</span></td>
+    <td class="muted">{{if .LastError}}{{.LastError}}{{else}}—{{end}}</td>
+    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td>
+      {{if and (eq .Status "pending") (eq $.AdminRole "admin")}}
+      <form method="post" action="/admin/refunds/{{.ID}}/fail" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Fail</button></form>
+      {{else}}—{{end}}
+    </td>
+  </tr>{{else}}<tr><td colspan="10">No refunds yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

@@ -99,6 +99,11 @@ func run() error {
 			return fmt.Errorf("invalid merchant id: %w", err)
 		}
 		return application.Settle(ctx, merchantID, os.Args[3])
+	case "refund":
+		if len(os.Args) < 4 {
+			return fmt.Errorf("usage: refund <merchant-id> <payment-reference>")
+		}
+		return application.Refund(ctx, os.Args[2], os.Args[3])
 	case "retain":
 		return application.PurgeExpiredData(ctx)
 	case "rescreen":
@@ -126,6 +131,6 @@ func run() error {
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

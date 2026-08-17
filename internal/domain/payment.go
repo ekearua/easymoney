@@ -26,6 +26,7 @@ const (
 	StatusFailed               PaymentStatus = "failed"
 	StatusAbandoned            PaymentStatus = "abandoned"
 	StatusExpired              PaymentStatus = "expired"
+	StatusRefunded             PaymentStatus = "refunded"
 )
 
 var validTransitions = map[PaymentStatus]map[PaymentStatus]bool{
@@ -33,6 +34,7 @@ var validTransitions = map[PaymentStatus]map[PaymentStatus]bool{
 	StatusAwaitingConfirmation: {StatusInitialized: true, StatusAbandoned: true, StatusExpired: true},
 	StatusInitialized:          {StatusPending: true, StatusSucceeded: true, StatusFailed: true, StatusAbandoned: true, StatusExpired: true},
 	StatusPending:              {StatusSucceeded: true, StatusFailed: true, StatusAbandoned: true, StatusExpired: true},
+	StatusSucceeded:            {StatusRefunded: true},
 }
 
 // CanTransition reports whether a state change preserves the monotonic payment lifecycle.

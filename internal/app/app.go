@@ -75,6 +75,8 @@ type App struct {
 	publisher         *service.EventPublisher
 	merchantWebhooks  *service.MerchantWebhookDeliverer
 	settlements       *service.SettlementService
+	refunds           *service.RefundService
+	disputes          *service.DisputeService
 }
 
 // New creates all application dependencies.
@@ -179,6 +181,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
 		settlements:      service.NewSettlementService(repository, nil, logger),
+		refunds:          service.NewRefundService(repository, nil, logger),
+		disputes:         service.NewDisputeService(repository),
 	}, nil
 }
 
@@ -264,6 +268,26 @@ func (a *App) Settle(ctx context.Context, merchantID uuid.UUID, batchNo string) 
 		"batch_no", batch.BatchNo, "merchant_id", batch.MerchantID.String(),
 		"total_kobo", batch.TotalKobo, "status", batch.Status,
 		"payout", payout.Status, "payout_id", payout.ID.String(), "external_ref", payout.ExternalRef)
+	return nil
+}
+
+// Refund refunds a merchant's succeeded payment and posts the ledger reversal.
+func (a *App) Refund(ctx context.Context, merchantSlug, paymentReference string) error {
+	merchant, err := a.store.MerchantBySlug(ctx, merchantSlug)
+	if err != nil {
+		return fmt.Errorf("merchant %q: %w", merchantSlug, err)
+	}
+	payment, err := a.store.PaymentByMerchantReference(ctx, merchant.ID, paymentReference)
+	if err != nil {
+		return fmt.Errorf("payment %q: %w", paymentReference, err)
+	}
+	refund, err := a.refunds.Refund(ctx, payment.ID.String(), "CLI refund")
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "refund complete",
+		"refund_id", refund.ID.String(), "payment_id", payment.ID.String(),
+		"amount_kobo", refund.AmountKobo, "status", refund.Status)
 	return nil
 }
 
@@ -506,6 +530,10 @@ func (a *App) routes() http.Handler {
 		api.Get("/payouts/{reference}", a.apiPayoutStatus)
 		api.Post("/settlement-accounts", a.apiCreateSettlementAccount)
 		api.Get("/settlement-accounts", a.apiListSettlementAccounts)
+		api.Post("/payments/{reference}/refund", a.apiRefundPayment)
+		api.Get("/refunds/{id}", a.apiRefundStatus)
+		api.Get("/disputes", a.apiListDisputes)
+		api.Get("/disputes/{id}", a.apiDisputeDetail)
 	})
 
 	router.Get("/admin/login", a.loginPage)
@@ -567,6 +595,10 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/accounts/{id}/disable", a.adminDisableSettlementAccount)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/payouts/{id}/retry", a.adminRetryPayout)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/payouts/{id}/reverse", a.adminReversePayout)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/refunds", a.adminRefunds)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/refunds/{id}/fail", a.adminRefundFail)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/disputes", a.adminDisputes)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/disputes/{id}/resolve", a.adminResolveDispute)
 		admin.Post("/admin/logout", a.logout)
 	})
 	router.Get("/merchant/login", a.merchantLogin)
@@ -685,6 +717,8 @@ func (a *App) startEventConsumers(ctx context.Context) {
 		{domain.TopicSettlementBatchProcessed, "xego.merchant_webhooks", webhooks.HandleSettlementBatchProcessed},
 		{domain.TopicPayoutSucceeded, "xego.merchant_webhooks", webhooks.HandlePayoutSucceeded},
 		{domain.TopicPayoutFailed, "xego.merchant_webhooks", webhooks.HandlePayoutFailed},
+		{domain.TopicPaymentRefunded, "xego.merchant_webhooks", webhooks.HandlePaymentRefunded},
+		{domain.TopicPaymentDisputed, "xego.merchant_webhooks", webhooks.HandlePaymentDisputed},
 	} {
 		if err := a.eventBus.Subscribe(ctx, sub.topic, sub.group, sub.handler); err != nil {
 			a.logger.ErrorContext(ctx, "subscribe event consumer failed", "topic", sub.topic, "group", sub.group, "error", err)

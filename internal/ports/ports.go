@@ -195,6 +195,27 @@ type PayoutProvider interface {
 	Payout(context.Context, PayoutRequest) (PayoutResult, error)
 }
 
+// RefundRequest contains the neutral refund instruction sent to a payment
+// provider (Paystack, etc.).
+type RefundRequest struct {
+	PaymentID  string // provider reference of the original payment
+	AmountKobo int64
+	Currency   string
+}
+
+// RefundResult is the provider-neutral outcome of a refund attempt.
+type RefundResult struct {
+	Status   string // "succeeded", "failed"
+	RefundID string // provider's refund reference
+	Message  string
+}
+
+// RefundProvider isolates refund processing from a specific payment provider.
+// Implementations must be safe for concurrent use.
+type RefundProvider interface {
+	Refund(context.Context, RefundRequest) (RefundResult, error)
+}
+
 // ErrBusClosed is returned when publishing to a closed event bus.
 var ErrBusClosed = errors.New("event bus is closed")
 

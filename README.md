@@ -52,6 +52,7 @@ go vet ./...
 go run ./cmd/demo reconcile
 go run ./cmd/demo reconcile3
 go run ./cmd/demo settle <merchant-id> <batch-no>
+go run ./cmd/demo refund <merchant-id> <payment-reference>
 go run ./cmd/demo retain
 ```
 
@@ -365,6 +366,12 @@ X-Xego-Signature: <hex hmac>
 - `GET /settlement-accounts` — the merchant's settlement accounts with `status` (`pending` / `active` / `disabled`) and `is_default`.
 
 Payout rail: the default provider is `simulated` — bank code `011` always declines (for testing failure/retry/reverse), any other bank code succeeds and returns `external_ref = SIM-PAY-<reference>-<unix>`. The rail idempotency key is the payout row id, so a retry of the same payout replays its deterministic outcome while a reversed payout (a fresh row) gets a fresh outcome. Admin console (`/admin/settlements`) lists all accounts/batches/payouts and allows account approval/disabling and payout retry/reverse.
+- `POST /payments/{reference}/refund` — full refund for a succeeded payment. The payment must not be in a scheduled/processed settlement batch (reverse the payout first). Emits `payment.refunded`, posts a ledger reversal, and transitions the payment to `refunded`. Returns the refund with `status` (`pending` → `completed` via simulated rail). Body: optional `reason`.
+- `GET /refunds/{id}` — refund status.
+- `GET /disputes` — list the merchant's disputes.
+- `GET /disputes/{id}` — dispute detail.
+
+Refund rail: the default provider is `simulated` — always succeeds with `provider_refund_id = SIM-REF-<payment_id>-<unix>`. Admin console (`/admin/refunds`) lists all refunds with a "Fail" action for pending refunds. Admin console (`/admin/disputes`) lists all disputes with "Won"/"Lost" resolution actions.
 
 Responses are JSON. `status` values match the internal lifecycle (`awaiting_confirmation`, `initialized`, `pending`, `succeeded`, `failed`, ...); `checkout_url` is the branded hosted checkout page the customer should open. Errors use an envelope: `{"error":{"code":"...","message":"..."}}` with `code` values such as `unauthorized`, `invalid_request`, `amount_out_of_range`, `not_found`, `rate_limited`.
 

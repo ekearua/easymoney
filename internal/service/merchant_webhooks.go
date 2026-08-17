@@ -96,6 +96,24 @@ func (c *MerchantWebhookConsumer) HandlePayoutFailed(ctx context.Context, msg po
 	return c.enqueueEvent(ctx, event.MerchantID, event.PayoutID, domain.TopicPayoutFailed, msg.Payload)
 }
 
+// HandlePaymentRefunded queues a payment.refunded delivery.
+func (c *MerchantWebhookConsumer) HandlePaymentRefunded(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.PaymentRefunded
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode payment.refunded: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.RefundID, domain.TopicPaymentRefunded, msg.Payload)
+}
+
+// HandlePaymentDisputed queues a payment.disputed delivery.
+func (c *MerchantWebhookConsumer) HandlePaymentDisputed(ctx context.Context, msg ports.EventMessage) error {
+	var event domain.PaymentDisputed
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return fmt.Errorf("decode payment.disputed: %w", err)
+	}
+	return c.enqueueEvent(ctx, event.MerchantID, event.DisputeID, domain.TopicPaymentDisputed, msg.Payload)
+}
+
 // enqueue builds the delivery payload from the authoritative payment row and
 // writes it only when the merchant has registered a callback URL.
 func (c *MerchantWebhookConsumer) enqueue(ctx context.Context, paymentID, topic string) error {

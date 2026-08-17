@@ -89,3 +89,31 @@ type PayoutFailed struct {
 	AmountKobo int64  `json:"amount_kobo"`
 	Message    string `json:"message"`
 }
+
+// S2 refund + dispute topics.
+const (
+	// TopicPaymentRefunded carries a PaymentRefunded fact.
+	TopicPaymentRefunded = "payment.refunded"
+	// TopicPaymentDisputed carries a PaymentDisputed fact.
+	TopicPaymentDisputed = "payment.disputed"
+)
+
+// PaymentRefunded is emitted when a succeeded payment is fully refunded.
+type PaymentRefunded struct {
+	PaymentID  string `json:"payment_id"`
+	MerchantID string `json:"merchant_id"`
+	RefundID   string `json:"refund_id"`
+	Reference  string `json:"reference"`
+	Currency   string `json:"currency"`
+	AmountKobo int64  `json:"amount_kobo"`
+	Reason     string `json:"reason"`
+}
+
+// PaymentDisputed is emitted when a dispute is opened against a payment.
+type PaymentDisputed struct {
+	PaymentID  string `json:"payment_id"`
+	MerchantID string `json:"merchant_id"`
+	DisputeID  string `json:"dispute_id"`
+	Reference  string `json:"reference"`
+	Reason     string `json:"reason"`
+}
