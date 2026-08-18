@@ -207,6 +207,64 @@ func (a *App) adminRefundFail(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin/refunds?result=failed", http.StatusSeeOther)
 }
 
+// adminRefundApprove approves a pending refund request (maker-checker).
+func (a *App) adminRefundApprove(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	refundID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid refund id", http.StatusBadRequest)
+		return
+	}
+	adminID := adminIDFromContext(r.Context())
+	if adminID == uuid.Nil {
+		http.Error(w, "admin identity required", http.StatusForbidden)
+		return
+	}
+	ref, err := a.refunds.ApproveRefund(r.Context(), refundID.String(), adminID, "admin.approve")
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "approve refund", "refund_id", refundID, "error", err)
+		http.Redirect(w, r, "/admin/refunds?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	a.audit(r, "admin.refund.approved", "refund", refundID.String(), map[string]any{
+		"payment_id": ref.PaymentID.String(),
+		"amount_kobo": ref.AmountKobo,
+	})
+	http.Redirect(w, r, "/admin/refunds?result=approved", http.StatusSeeOther)
+}
+
+// adminRefundReject rejects a pending refund request.
+func (a *App) adminRefundReject(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	refundID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid refund id", http.StatusBadRequest)
+		return
+	}
+	adminID := adminIDFromContext(r.Context())
+	if adminID == uuid.Nil {
+		http.Error(w, "admin identity required", http.StatusForbidden)
+		return
+	}
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if reason == "" {
+		reason = "rejected by operator"
+	}
+	if err := a.store.RejectRefund(r.Context(), refundID, adminID, reason); err != nil {
+		a.logger.WarnContext(r.Context(), "reject refund", "refund_id", refundID, "error", err)
+		http.Redirect(w, r, "/admin/refunds?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	a.audit(r, "admin.refund.rejected", "refund", refundID.String(), map[string]any{"reason": reason})
+	http.Redirect(w, r, "/admin/refunds?result=rejected", http.StatusSeeOther)
+}
+
 // adminDisputes lists all disputes with merchant names.
 func (a *App) adminDisputes(w http.ResponseWriter, r *http.Request) {
 	disputes, err := a.store.ListAllDisputes(r.Context(), 200)

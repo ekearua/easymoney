@@ -56,13 +56,32 @@ func TestRefundServiceRefund(t *testing.T) {
 	svc := NewRefundService(repository, nil, testLogger())
 	refund, err := svc.Refund(ctx, payment.ID.String(), "test refund")
 	if err != nil {
-		t.Fatalf("refund: %v", err)
+		t.Fatalf("refund request: %v", err)
 	}
-	if refund.Status != store.RefundSucceeded {
-		t.Fatalf("expected succeeded refund, got %s", refund.Status)
+	if refund.ApprovalStatus != "pending_approval" {
+		t.Fatalf("expected pending_approval, got %s", refund.ApprovalStatus)
 	}
 	if refund.AmountKobo != 200_000 {
 		t.Fatalf("expected 200000, got %d", refund.AmountKobo)
+	}
+
+	// Approve the refund (maker-checker) — create an admin user first.
+	if err := repository.EnsureAdminUser(ctx, "ops@xego.local", "x"); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := repository.AdminUserByEmail(ctx, "ops@xego.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := svc.ApproveRefund(ctx, refund.ID.String(), admin.ID, "admin.approve")
+	if err != nil {
+		t.Fatalf("approve refund: %v", err)
+	}
+	if approved.Status != store.RefundSucceeded {
+		t.Fatalf("expected succeeded refund after approval, got %s", approved.Status)
+	}
+	if approved.ApprovalStatus != "approved" {
+		t.Fatalf("expected approval_status=approved, got %s", approved.ApprovalStatus)
 	}
 
 	// Payment is now refunded.

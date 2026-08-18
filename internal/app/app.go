@@ -597,6 +597,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/settlements/payouts/{id}/reverse", a.adminReversePayout)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/refunds", a.adminRefunds)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/refunds/{id}/fail", a.adminRefundFail)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/refunds/{id}/approve", a.adminRefundApprove)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/refunds/{id}/reject", a.adminRefundReject)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/disputes", a.adminDisputes)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/disputes/{id}/resolve", a.adminResolveDispute)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/siem", a.adminSIEM)

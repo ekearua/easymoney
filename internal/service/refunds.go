@@ -27,20 +27,28 @@ func NewRefundService(repository *store.Store, provider ports.RefundProvider, lo
 	return &RefundService{store: repository, provider: provider, logger: logger}
 }
 
-// Refund validates preconditions, dispatches the refund to the provider, and
-// processes the result. The store handles ledger reversal and payment
-// transition atomically.
+// Refund creates a refund request pending admin approval (maker-checker).
+// The actual provider dispatch happens only after ApproveRefund is called.
 func (s *RefundService) Refund(ctx context.Context, paymentID, reason string) (store.Refund, error) {
 	pid := uuid.MustParse(paymentID)
+	ref, err := s.store.RequestRefund(ctx, pid, reason, "merchant", nil)
+	if err != nil {
+		return store.Refund{}, err
+	}
+	s.logger.Info("refund requested (pending approval)", "payment_id", paymentID, "refund_id", ref.ID)
+	return ref, nil
+}
 
-	// 1. Create the refund and post the ledger reversal inside one transaction.
-	ref, err := s.store.RefundPayment(ctx, pid, reason, "merchant", nil)
+// ApproveRefund approves a pending refund request and dispatches to the provider.
+func (s *RefundService) ApproveRefund(ctx context.Context, refundID string, approvedBy uuid.UUID, postedBy string) (store.Refund, error) {
+	rid := uuid.MustParse(refundID)
+	ref, err := s.store.ApproveRefund(ctx, rid, approvedBy, postedBy)
 	if err != nil {
 		return store.Refund{}, err
 	}
 
-	// 2. Dispatch to the provider.
-	payment, err := s.store.PaymentByID(ctx, pid)
+	// Dispatch to the provider.
+	payment, err := s.store.PaymentByID(ctx, ref.PaymentID)
 	if err != nil {
 		return ref, fmt.Errorf("load payment for provider call: %w", err)
 	}
@@ -54,7 +62,7 @@ func (s *RefundService) Refund(ctx context.Context, paymentID, reason string) (s
 		return ref, fmt.Errorf("provider refund: %w", err)
 	}
 
-	// 3. Provider declined.
+	// Provider declined.
 	if result.Status != "succeeded" {
 		message := result.Message
 		if message == "" {
@@ -64,12 +72,17 @@ func (s *RefundService) Refund(ctx context.Context, paymentID, reason string) (s
 		return s.store.RefundByID(ctx, ref.ID)
 	}
 
-	// 4. Provider accepted — complete the refund.
+	// Provider accepted — complete the refund.
 	if err := s.store.CompleteRefund(ctx, ref.ID, result.RefundID); err != nil {
 		return ref, err
 	}
-	s.logger.Info("refund completed", "payment_id", paymentID, "provider_refund_id", result.RefundID)
+	s.logger.Info("refund completed", "refund_id", refundID, "provider_refund_id", result.RefundID)
 	return s.store.RefundByID(ctx, ref.ID)
+}
+
+// RejectRefund rejects a pending refund request.
+func (s *RefundService) RejectRefund(ctx context.Context, refundID string, rejectedBy uuid.UUID, reason string) error {
+	return s.store.RejectRefund(ctx, uuid.MustParse(refundID), rejectedBy, reason)
 }
 
 // RefundByID returns one refund by its id.

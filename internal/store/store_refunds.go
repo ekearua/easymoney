@@ -41,11 +41,14 @@ type Refund struct {
 	AmountKobo       int64
 	Reason           string
 	Status           string
+	ApprovalStatus   string
 	ProviderRefundID string
 	LastError        string
 	AdminID          uuid.UUID
+	ApprovedBy       uuid.UUID
 	CreatedAt        time.Time
 	CompletedAt      *time.Time
+	ApprovedAt       *time.Time
 }
 
 // Dispute is a provider-initiated chargeback or complaint against a payment.
@@ -180,6 +183,185 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 	return refund, tx.Commit(ctx)
 }
 
+// RequestRefund creates a refund request with approval_status='pending_approval'.
+// It validates preconditions and removes the payment from any open settlement
+// batch, but does NOT transition the payment or post ledger — those happen
+// only after approval via ApproveRefund.
+func (s *Store) RequestRefund(ctx context.Context, paymentID uuid.UUID, reason, postedBy string, adminID *uuid.UUID) (Refund, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Refund{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock and validate the payment.
+	var merchantID uuid.UUID
+	var amountKobo int64
+	var status string
+	if err := tx.QueryRow(ctx, `
+		SELECT merchant_id, amount_kobo, status
+		FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(
+		&merchantID, &amountKobo, &status); err != nil {
+		return Refund{}, fmt.Errorf("load payment: %w", err)
+	}
+	if status != "succeeded" {
+		return Refund{}, fmt.Errorf("cannot refund payment in status %q (must be succeeded)", status)
+	}
+	if !domain.CanTransition(domain.PaymentStatus(status), domain.StatusRefunded) {
+		return Refund{}, fmt.Errorf("invalid payment transition %s -> refunded", status)
+	}
+	// Reject if already refunded.
+	var existing int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM refunds WHERE payment_id=$1 AND status IN ('pending','succeeded')`, paymentID).Scan(&existing); err != nil {
+		return Refund{}, err
+	}
+	if existing > 0 {
+		return Refund{}, fmt.Errorf("payment %s already has an active refund", paymentID)
+	}
+
+	// 2. Check settlement batch status.
+	var batchStatus sql.NullString
+	var batchID *uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		SELECT sb.status, sb.id
+		FROM settlement_lines sl
+		JOIN settlement_batches sb ON sb.id=sl.batch_id
+		WHERE sl.payment_id=$1 AND sb.status IN ('open','scheduled','processed')
+		ORDER BY sb.created_at DESC LIMIT 1`, paymentID).Scan(&batchStatus, &batchID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return Refund{}, err
+	}
+	if batchStatus.Valid && batchStatus.String != "open" {
+		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first", paymentID, batchStatus.String)
+	}
+
+	// 3. If in an open batch, remove the line and recompute totals.
+	if batchID != nil {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM settlement_lines WHERE payment_id=$1 AND batch_id=$2`, paymentID, *batchID); err != nil {
+			return Refund{}, fmt.Errorf("remove settlement line: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE settlement_batches
+			SET total_kobo = (SELECT COALESCE(sum(amount_kobo),0) FROM settlement_lines WHERE batch_id=$1),
+			    line_count = (SELECT count(*) FROM settlement_lines WHERE batch_id=$1)
+			WHERE id=$1`, *batchID); err != nil {
+			return Refund{}, fmt.Errorf("recompute batch: %w", err)
+		}
+	}
+
+	// 4. Create the refund record with approval_status='pending_approval'.
+	var refund Refund
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO refunds(payment_id,merchant_id,amount_kobo,reason,status,approval_status,admin_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id,payment_id,merchant_id,amount_kobo,reason,status,approval_status,provider_refund_id,last_error,
+		          COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),created_at,completed_at`,
+		paymentID, merchantID, amountKobo, reason, RefundPending, "pending_approval", adminID).Scan(
+		&refund.ID, &refund.PaymentID, &refund.MerchantID, &refund.AmountKobo, &refund.Reason,
+		&refund.Status, &refund.ApprovalStatus, &refund.ProviderRefundID, &refund.LastError,
+		&refund.AdminID, &refund.CreatedAt, &refund.CompletedAt); err != nil {
+		return Refund{}, fmt.Errorf("insert refund: %w", err)
+	}
+
+	return refund, tx.Commit(ctx)
+}
+
+// ApproveRefund marks a refund as approved and executes the actual refund:
+// transitions payment to refunded, posts ledger reversal, emits event.
+// Must be called by a different admin than the one who requested the refund.
+func (s *Store) ApproveRefund(ctx context.Context, refundID, approvedBy uuid.UUID, postedBy string) (Refund, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Refund{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock the refund and validate.
+	var paymentID uuid.UUID
+	var merchantID uuid.UUID
+	var amountKobo int64
+	var reason, approvalStatus string
+	var requestedBy sql.NullString
+	if err := tx.QueryRow(ctx, `
+		SELECT payment_id, merchant_id, amount_kobo, reason, approval_status,
+		       COALESCE(admin_id::text, '')
+		FROM refunds WHERE id=$1 FOR UPDATE`, refundID).Scan(
+		&paymentID, &merchantID, &amountKobo, &reason, &approvalStatus, &requestedBy); err != nil {
+		return Refund{}, fmt.Errorf("load refund: %w", err)
+	}
+	if approvalStatus != "pending_approval" {
+		return Refund{}, fmt.Errorf("refund is not pending approval (current: %s)", approvalStatus)
+	}
+	// Maker-checker: approver must differ from requester.
+	if requestedBy.Valid && requestedBy.String == approvedBy.String() {
+		return Refund{}, fmt.Errorf("approver must differ from the refund requester")
+	}
+
+	// 2. Mark approved.
+	if _, err := tx.Exec(ctx, `
+		UPDATE refunds SET approval_status='approved', approved_by=$2, approved_at=now()
+		WHERE id=$1`, refundID, approvedBy); err != nil {
+		return Refund{}, fmt.Errorf("approve refund: %w", err)
+	}
+
+	// 3. Transition payment to refunded.
+	if _, err := tx.Exec(ctx, `
+		UPDATE payments SET status='refunded', updated_at=now() WHERE id=$1`, paymentID); err != nil {
+		return Refund{}, fmt.Errorf("transition payment: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
+		VALUES($1,'succeeded','refunded',$2,$3::jsonb)`, paymentID, postedBy, fmt.Sprintf(`{"reason":%q}`, reason)); err != nil {
+		return Refund{}, err
+	}
+
+	// 4. Post ledger reversal for the original payment.
+	reversalJournal := paymentID.String()
+	if _, err := s.postLedgerReversalTx(ctx, tx, reversalJournal, "Refund: "+reason, postedBy); err != nil {
+		return Refund{}, fmt.Errorf("ledger reversal: %w", err)
+	}
+
+	// 5. Emit the payment.refunded event.
+	var reference string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(merchant_reference,'') FROM payments WHERE id=$1`, paymentID).Scan(&reference); err != nil {
+		return Refund{}, err
+	}
+	fact, err := json.Marshal(domain.PaymentRefunded{
+		PaymentID:  paymentID.String(),
+		MerchantID: merchantID.String(),
+		RefundID:   refundID.String(),
+		Reference:  reference,
+		AmountKobo: amountKobo,
+		Reason:     reason,
+	})
+	if err != nil {
+		return Refund{}, err
+	}
+	if err := s.insertBusinessEventTx(ctx, tx, "payment.refunded", "payment:"+paymentID.String(), fact); err != nil {
+		return Refund{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Refund{}, err
+	}
+	return s.RefundByID(ctx, refundID)
+}
+
+// RejectRefund marks a refund request as rejected by a checker.
+func (s *Store) RejectRefund(ctx context.Context, refundID, rejectedBy uuid.UUID, reason string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE refunds SET approval_status='rejected', approved_by=$2, approved_at=now(), last_error=$3
+		WHERE id=$1 AND approval_status='pending_approval'`, refundID, rejectedBy, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("refund not found or not pending approval")
+	}
+	return nil
+}
+
 // postLedgerReversalTx is the transactional variant of PostLedgerReversal used
 // by RefundPayment so the reversal commits atomically with the state change.
 func (s *Store) postLedgerReversalTx(ctx context.Context, tx pgx.Tx, journalRef, reason, postedBy string) (int, error) {
@@ -268,12 +450,14 @@ func (s *Store) FailRefund(ctx context.Context, refundID uuid.UUID, message stri
 func (s *Store) RefundByID(ctx context.Context, refundID uuid.UUID) (Refund, error) {
 	var r Refund
 	err := s.pool.QueryRow(ctx, `
-		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,provider_refund_id,last_error,
-		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),created_at,completed_at
+		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,approval_status,provider_refund_id,last_error,
+		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),
+		       COALESCE(approved_by,'00000000-0000-0000-0000-000000000000'),
+		       created_at,completed_at,approved_at
 		FROM refunds WHERE id=$1`, refundID).Scan(
 		&r.ID, &r.PaymentID, &r.MerchantID, &r.AmountKobo, &r.Reason,
-		&r.Status, &r.ProviderRefundID, &r.LastError,
-		&r.AdminID, &r.CreatedAt, &r.CompletedAt)
+		&r.Status, &r.ApprovalStatus, &r.ProviderRefundID, &r.LastError,
+		&r.AdminID, &r.ApprovedBy, &r.CreatedAt, &r.CompletedAt, &r.ApprovedAt)
 	if err != nil {
 		return Refund{}, err
 	}
@@ -286,8 +470,10 @@ func (s *Store) ListRefunds(ctx context.Context, merchantID uuid.UUID, limit int
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,provider_refund_id,last_error,
-		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),created_at,completed_at
+		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,approval_status,provider_refund_id,last_error,
+		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),
+		       COALESCE(approved_by,'00000000-0000-0000-0000-000000000000'),
+		       created_at,completed_at,approved_at
 		FROM refunds WHERE merchant_id=$1
 		ORDER BY created_at DESC LIMIT $2`, merchantID, limit)
 	if err != nil {
@@ -303,8 +489,10 @@ func (s *Store) ListAllRefunds(ctx context.Context, limit int) ([]Refund, error)
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,provider_refund_id,last_error,
-		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),created_at,completed_at
+		SELECT id,payment_id,merchant_id,amount_kobo,reason,status,approval_status,provider_refund_id,last_error,
+		       COALESCE(admin_id,'00000000-0000-0000-0000-000000000000'),
+		       COALESCE(approved_by,'00000000-0000-0000-0000-000000000000'),
+		       created_at,completed_at,approved_at
 		FROM refunds ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -319,8 +507,8 @@ func scanRefunds(rows pgx.Rows) ([]Refund, error) {
 		var r Refund
 		if err := rows.Scan(
 			&r.ID, &r.PaymentID, &r.MerchantID, &r.AmountKobo, &r.Reason,
-			&r.Status, &r.ProviderRefundID, &r.LastError,
-			&r.AdminID, &r.CreatedAt, &r.CompletedAt); err != nil {
+			&r.Status, &r.ApprovalStatus, &r.ProviderRefundID, &r.LastError,
+			&r.AdminID, &r.ApprovedBy, &r.CreatedAt, &r.CompletedAt, &r.ApprovedAt); err != nil {
 			return nil, err
 		}
 		refunds = append(refunds, r)
