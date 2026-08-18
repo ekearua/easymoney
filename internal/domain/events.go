@@ -96,6 +96,8 @@ const (
 	TopicPaymentRefunded = "payment.refunded"
 	// TopicPaymentDisputed carries a PaymentDisputed fact.
 	TopicPaymentDisputed = "payment.disputed"
+	// TopicReconciliationDiscrepancy carries a ReconciliationDiscrepancy fact.
+	TopicReconciliationDiscrepancy = "reconciliation.discrepancy"
 )
 
 // PaymentRefunded is emitted when a succeeded payment is fully refunded.
@@ -116,4 +118,12 @@ type PaymentDisputed struct {
 	DisputeID  string `json:"dispute_id"`
 	Reference  string `json:"reference"`
 	Reason     string `json:"reason"`
+}
+
+// ReconciliationDiscrepancy is emitted when automated reconciliation detects discrepancies.
+type ReconciliationDiscrepancy struct {
+	RunID        int64  `json:"run_id"`
+	Discrepancies int   `json:"discrepancies"`
+	Status       string `json:"status"`
+	TriggeredBy  string `json:"triggered_by"`
 }

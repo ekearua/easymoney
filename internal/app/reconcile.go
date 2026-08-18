@@ -5,10 +5,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
 
+	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -54,6 +56,17 @@ func (a *App) adminReconciliationRun(w http.ResponseWriter, r *http.Request) {
 		"type": "manual", "discrepancies": len(items), "status": run.Status,
 	})
 	a.logger.InfoContext(r.Context(), "manual reconciliation complete", "run_id", run.ID, "discrepancies", len(items))
+	if len(items) > 0 {
+		event := domain.ReconciliationDiscrepancy{
+			RunID:         run.ID,
+			Discrepancies: len(items),
+			Status:        run.Status,
+			TriggeredBy:   adminEmail,
+		}
+		if payload, err := json.Marshal(event); err == nil {
+			_ = a.store.InsertBusinessEvent(r.Context(), domain.TopicReconciliationDiscrepancy, "recon:"+strconv.FormatInt(run.ID, 10), payload)
+		}
+	}
 	http.Redirect(w, r, "/admin/reconciliation?result=ran", http.StatusSeeOther)
 }
 
@@ -67,6 +80,15 @@ func (a *App) runReconciliationAuto(ctx context.Context) (bool, error) {
 	if len(items) > 0 {
 		a.logger.WarnContext(ctx, "scheduled reconciliation found discrepancies",
 			"run_id", run.ID, "discrepancies", len(items), "status", run.Status)
+		event := domain.ReconciliationDiscrepancy{
+			RunID:         run.ID,
+			Discrepancies: len(items),
+			Status:        run.Status,
+			TriggeredBy:   "system",
+		}
+		if payload, err := json.Marshal(event); err == nil {
+			_ = a.store.InsertBusinessEvent(ctx, domain.TopicReconciliationDiscrepancy, "recon:"+strconv.FormatInt(run.ID, 10), payload)
+		}
 		return true, nil
 	}
 	a.logger.InfoContext(ctx, "scheduled reconciliation clean", "run_id", run.ID)
