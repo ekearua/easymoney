@@ -576,6 +576,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/scanning/readers", a.adminCreateServiceReader)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/scanning/services/{id}/whitelist", a.adminSetPhoneWhitelist)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/webhooks", a.adminWebhooks)
+		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/dead-letter", a.adminDeadLetter)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/dead-letter/{id}/replay", a.adminDeadLetterReplay)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/totp/disable", func(w http.ResponseWriter, r *http.Request) {
 			adminID := adminIDFromContext(r.Context())
 			a.totpDisable(w, r, "admin", &adminID, "/admin/metrics")
@@ -2435,6 +2437,46 @@ func (a *App) adminWebhooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderAdmin(w, "webhooks.html", r, "Webhooks", map[string]any{"Webhooks": webhooks})
+}
+
+func (a *App) adminDeadLetter(w http.ResponseWriter, r *http.Request) {
+	webhooks, err := a.store.ListFailedWebhooks(r.Context(), 200)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	events, err := a.store.ListFailedBusinessEvents(r.Context(), 200)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "dead_letter.html", r, "Dead-Letter Queue", map[string]any{"Webhooks": webhooks, "Events": events})
+}
+
+func (a *App) adminDeadLetterReplay(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	kind := r.URL.Query().Get("kind")
+	switch kind {
+	case "webhook":
+		if err := a.store.ReplayDeadLetter(r.Context(), id); err != nil {
+			http.Error(w, "replay failed", http.StatusInternalServerError)
+			return
+		}
+	case "event":
+		if err := a.store.ReplayBusinessEvent(r.Context(), id); err != nil {
+			http.Error(w, "replay failed", http.StatusInternalServerError)
+			return
+		}
+	default:
+		http.Error(w, "unknown kind", http.StatusBadRequest)
+		return
+	}
+	a.audit(r, "admin.dead_letter.replay", "dead_letter", strconv.FormatInt(id, 10), map[string]any{"kind": kind, "id": id})
+	http.Redirect(w, r, "/admin/dead-letter", http.StatusSeeOther)
 }
 
 func (a *App) merchantScanner(w http.ResponseWriter, r *http.Request) {

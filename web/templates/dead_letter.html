@@ -1,0 +1,20 @@
+{{define "dead_letter.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Operations</p><h1>Dead-Letter Queue</h1><p>Failed webhook deliveries and business events after exhausting retries (5 attempts). Replay to reprocess.</p></div></header>
+
+<h2>Webhook Deliveries</h2>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Provider</th><th>Event Key</th><th>Error</th><th>Received</th><th></th></tr></thead><tbody>
+{{range .Webhooks}}<tr><td>{{.ID}}</td><td>{{.Provider}}</td><td class="mono">{{.EventKey}}</td><td>{{.ErrorMessage}}</td><td>{{.ReceivedAt.Format "02 Jan 2006 15:04:05"}}</td>
+<td><form method="POST" action="/admin/dead-letter/{{.ID}}/replay?kind=webhook"><button type="submit">Replay</button></form></td></tr>
+{{else}}<tr><td colspan="6">No dead-lettered webhooks.</td></tr>{{end}}</tbody></table></div>
+
+<h2>Business Events</h2>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Topic</th><th>Event Key</th><th>Attempts</th><th>Error</th><th>Created</th><th></th></tr></thead><tbody>
+{{range .Events}}<tr><td>{{.ID}}</td><td>{{.Topic}}</td><td class="mono">{{.EventKey}}</td><td>{{.Attempts}}</td><td>{{.LastError}}</td><td>{{.CreatedAt.Format "02 Jan 2006 15:04:05"}}</td>
+<td><form method="POST" action="/admin/dead-letter/{{.ID}}/replay?kind=event"><button type="submit">Replay</button></form></td></tr>
+{{else}}<tr><td colspan="7">No dead-lettered business events.</td></tr>{{end}}</tbody></table></div>
+</main></body></html>
+{{end}}

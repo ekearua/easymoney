@@ -5371,6 +5371,35 @@ func (s *Store) ListWebhooks(ctx context.Context, limit int) ([]WebhookView, err
 	return deliveries, rows.Err()
 }
 
+// ListFailedWebhooks returns dead-lettered webhook deliveries for admin review.
+func (s *Store) ListFailedWebhooks(ctx context.Context, limit int) ([]WebhookView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,provider,event_key,signature_valid,processing_status,error_message,received_at,processed_at
+		FROM webhook_deliveries WHERE processing_status='failed' ORDER BY received_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var deliveries []WebhookView
+	for rows.Next() {
+		var delivery WebhookView
+		if err := rows.Scan(&delivery.ID, &delivery.Provider, &delivery.EventKey, &delivery.SignatureValid, &delivery.ProcessingStatus, &delivery.ErrorMessage, &delivery.ReceivedAt, &delivery.ProcessedAt); err != nil {
+			return nil, err
+		}
+		deliveries = append(deliveries, delivery)
+	}
+	return deliveries, rows.Err()
+}
+
+// ReplayDeadLetter resets a dead-lettered webhook for reprocessing.
+func (s *Store) ReplayDeadLetter(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE webhook_deliveries
+		SET processing_status='received',attempts=0,error_message='',available_at=now()
+		WHERE id=$1 AND processing_status='failed'`, id)
+	return err
+}
+
 // EnqueueText adds a durable outbound text notification.
 func (s *Store) EnqueueText(ctx context.Context, userID uuid.UUID, recipient, body string) error {
 	return s.EnqueueTextForChannel(ctx, userID, "whatsapp", recipient, body)

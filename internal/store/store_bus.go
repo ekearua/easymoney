@@ -162,3 +162,43 @@ func (s *Store) RetryBusinessEvent(ctx context.Context, id int64, attempts int, 
 		WHERE id=$1`, id, status, nextAttempts, redact.Error(message, redact.DefaultMaxLen), time.Now().Add(delay))
 	return err
 }
+
+// BusinessEventView is a read-only projection for the admin DLQ surface.
+type BusinessEventView struct {
+	ID        int64
+	Topic     string
+	EventKey  string
+	Status    string
+	Attempts  int
+	LastError string
+	CreatedAt time.Time
+}
+
+// ListFailedBusinessEvents returns dead-lettered outbox events for admin review.
+func (s *Store) ListFailedBusinessEvents(ctx context.Context, limit int) ([]BusinessEventView, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id,topic,event_key,status,attempts,last_error,created_at
+		FROM business_event_outbox WHERE status='failed' ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []BusinessEventView
+	for rows.Next() {
+		var ev BusinessEventView
+		if err := rows.Scan(&ev.ID, &ev.Topic, &ev.EventKey, &ev.Status, &ev.Attempts, &ev.LastError, &ev.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
+}
+
+// ReplayBusinessEvent resets a dead-lettered outbox event for reprocessing.
+func (s *Store) ReplayBusinessEvent(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE business_event_outbox
+		SET status='pending',attempts=0,last_error='',available_at=now()
+		WHERE id=$1 AND status='failed'`, id)
+	return err
+}
