@@ -564,6 +564,7 @@ type GatewayEvent struct {
 	ID        int64  `json:"-"`
 	Event     string `json:"event"`
 	Reference string `json:"reference"`
+	Message   string `json:"message"`
 	Attempts  int    `json:"-"`
 }
 

@@ -672,6 +672,7 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-outboxTicker.C:
 			a.processInboundMessages(ctx)
 			a.processGatewayWebhooks(ctx)
+			a.processVTPassWebhooks(ctx)
 			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
 			a.processMerchantWebhooks(ctx)
@@ -762,6 +763,24 @@ func (a *App) processGatewayWebhooks(ctx context.Context) {
 		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, a.cfg.PaymentProvider+".webhook")
 		if processErr != nil {
 			a.logger.ErrorContext(ctx, "process gateway webhook", "reference", event.Reference, "error", processErr)
+			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
+			continue
+		}
+		_ = a.store.CompleteWebhook(ctx, event.ID, "processed", "")
+	}
+}
+
+// processVTPassWebhooks claims pending VTPass webhooks and applies the results.
+func (a *App) processVTPassWebhooks(ctx context.Context) {
+	events, err := a.store.ClaimGatewayWebhooks(ctx, "vtpass", 20)
+	if err != nil {
+		a.logger.WarnContext(ctx, "claim VTPass webhooks", "error", err)
+		return
+	}
+	for _, event := range events {
+		_, _, processErr := a.data.ApplyProviderResult(ctx, event.Reference, event.Event, event.Message)
+		if processErr != nil {
+			a.logger.ErrorContext(ctx, "process VTPass webhook", "reference", event.Reference, "error", processErr)
 			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
 			continue
 		}
@@ -1082,7 +1101,7 @@ func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
 	if parseErr == nil {
 		payload, _ = json.Marshal(map[string]string{"reference": event.Reference, "status": event.Status, "message": event.Message})
 	}
-	deliveryID, fresh, storeErr := a.store.RecordWebhook(r.Context(), "vtpass", eventKey, secretValid && parseErr == nil, payload)
+	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), "vtpass", eventKey, secretValid && parseErr == nil, payload)
 	if storeErr != nil {
 		http.Error(w, "storage error", http.StatusServiceUnavailable)
 		return
@@ -1097,20 +1116,7 @@ func (a *App) receiveVTPassWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid payload", http.StatusBadRequest)
 		return
 	}
-	if !fresh {
-		writeJSON(w, http.StatusOK, map[string]string{"response": "success"})
-		return
-	}
-	if _, changed, err := a.data.ApplyProviderResult(r.Context(), event.Reference, event.Status, event.Message); err != nil {
-		a.logger.WarnContext(r.Context(), "process VTPass webhook", "reference", event.Reference, "error", err)
-		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
-		http.Error(w, "processing failed", http.StatusInternalServerError)
-		return
-	} else if changed {
-		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "processed", "")
-	} else {
-		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "ignored", "")
-	}
+	// Return 200 immediately — processing is deferred to processVTPassWebhooks.
 	writeJSON(w, http.StatusOK, map[string]string{"response": "success"})
 }
 
