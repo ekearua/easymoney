@@ -556,6 +556,7 @@ func (a *App) routes() http.Handler {
 	router.With(a.limitLogin).Post("/admin/login/totp", a.totpVerify)
 	router.Group(func(admin chi.Router) {
 		admin.Use(a.requireAdmin)
+		admin.Use(a.rateLimit("admin", 120))
 		admin.Get("/admin", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
 		})
