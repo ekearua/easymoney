@@ -31,6 +31,20 @@ const (
 	LedgerAccountThriftPool         = "6100_thrift_pool"
 )
 
+// validLedgerAccounts is the set of allowed account codes. Every posting must
+// reference accounts from this set to prevent typos or unauthorized accounts.
+var validLedgerAccounts = map[string]bool{
+	LedgerAccountOperatingBank:      true,
+	LedgerAccountCustomerFloat:      true,
+	LedgerAccountMerchantPayable:    true,
+	LedgerAccountSettlementPayable:  true,
+	LedgerAccountSettlementSuspense: true,
+	LedgerAccountSalesRevenue:       true,
+	LedgerAccountSettlementFees:     true,
+	LedgerAccountProviderCost:       true,
+	LedgerAccountThriftPool:         true,
+}
+
 // LedgerEntry is one side of a double-entry posting.
 type LedgerEntry struct {
 	ID          int64
@@ -105,6 +119,18 @@ func (s *Store) postLedgerPair(ctx context.Context, tx pgx.Tx, journalRef, sourc
 	}
 	if debitAccount == creditAccount {
 		return fmt.Errorf("ledger posting debits and credits the same account %q", debitAccount)
+	}
+	if !validLedgerAccounts[debitAccount] {
+		return fmt.Errorf("ledger posting references unknown debit account %q", debitAccount)
+	}
+	if !validLedgerAccounts[creditAccount] {
+		return fmt.Errorf("ledger posting references unknown credit account %q", creditAccount)
+	}
+	if currency == "" {
+		return fmt.Errorf("ledger posting requires a non-empty currency")
+	}
+	if description == "" {
+		return fmt.Errorf("ledger posting requires a non-empty description")
 	}
 	if _, err := s.appendLedgerEntryTx(ctx, tx, LedgerEntry{
 		JournalRef: journalRef, SourceType: sourceType, SourceID: sourceID, EntryType: "debit",
@@ -332,4 +358,22 @@ func (s *Store) VerifyLedgerChain(ctx context.Context) (int, int, error) {
 		}
 	}
 	return count, broken, nil
+}
+
+// VerifyDoubleEntry checks that the entire ledger balances to zero. A sound
+// double-entry book always has net=0 across all accounts. Returns the list of
+// account balances and whether any account has a non-zero net.
+func (s *Store) VerifyDoubleEntry(ctx context.Context) ([]LedgerAccountBalance, bool, error) {
+	balances, err := s.LedgerBalanceSummary(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	balanced := true
+	for _, b := range balances {
+		if b.NetKobo != 0 {
+			balanced = false
+			break
+		}
+	}
+	return balances, balanced, nil
 }
