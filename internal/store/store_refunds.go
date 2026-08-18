@@ -448,7 +448,7 @@ func (s *Store) CompleteRefund(ctx context.Context, refundID uuid.UUID, provider
 func (s *Store) FailRefund(ctx context.Context, refundID uuid.UUID, message string) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE refunds SET status=$1, last_error=$2, completed_at=now()
-		WHERE id=$3 AND status='pending'`, RefundFailed, message, refundID)
+		WHERE id=$3 AND status='pending' AND approval_status != 'pending_approval'`, RefundFailed, message, refundID)
 	if err != nil {
 		return err
 	}

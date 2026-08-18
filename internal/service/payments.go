@@ -238,8 +238,8 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	if err != nil {
 		return store.PaymentView{}, false, err
 	}
-	if payment.Provider != ProviderPaystack {
-		return payment, false, fmt.Errorf("provider %q does not support gateway verification (only card providers)", payment.Provider)
+	if payment.Provider == ProviderBankTransfer {
+		return payment, false, fmt.Errorf("provider %q does not use gateway verification", payment.Provider)
 	}
 	verification, err := s.gateway.Verify(ctx, reference)
 	if err != nil {
