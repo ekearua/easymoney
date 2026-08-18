@@ -5292,8 +5292,8 @@ func (s *Store) CompleteWebhook(ctx context.Context, id int64, processingStatus,
 	return err
 }
 
-// ClaimPaystackWebhooks leases normalized charge events for verification.
-func (s *Store) ClaimPaystackWebhooks(ctx context.Context, limit int) ([]GatewayEvent, error) {
+// ClaimGatewayWebhooks leases normalized gateway events for a specific provider.
+func (s *Store) ClaimGatewayWebhooks(ctx context.Context, provider string, limit int) ([]GatewayEvent, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -5302,10 +5302,10 @@ func (s *Store) ClaimPaystackWebhooks(ctx context.Context, limit int) ([]Gateway
 	rows, err := tx.Query(ctx, `
 		SELECT id,payload,attempts
 		FROM webhook_deliveries
-		WHERE provider='paystack' AND processing_status IN ('received','processing')
+		WHERE provider=$1 AND processing_status IN ('received','processing')
 		  AND signature_valid=true AND available_at <= now()
 		ORDER BY received_at
-		FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
+		FOR UPDATE SKIP LOCKED LIMIT $2`, provider, limit)
 	if err != nil {
 		return nil, err
 	}

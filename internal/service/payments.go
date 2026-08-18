@@ -239,7 +239,7 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		return store.PaymentView{}, false, err
 	}
 	if payment.Provider != ProviderPaystack {
-		return payment, false, fmt.Errorf("provider %q does not support Paystack verification", payment.Provider)
+		return payment, false, fmt.Errorf("provider %q does not support gateway verification (only card providers)", payment.Provider)
 	}
 	verification, err := s.gateway.Verify(ctx, reference)
 	if err != nil {
@@ -354,11 +354,14 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 	if !strings.EqualFold(verification.Currency, payment.Currency) {
 		return errors.New("verified currency does not match payment")
 	}
-	if verification.Domain != "test" {
-		return errors.New("non-test Paystack transaction rejected by demo")
-	}
-	if verification.Status == "success" && verification.Channel != "card" {
-		return errors.New("non-card Paystack transaction rejected by demo")
+	// Paystack-specific demo guardrails: only test keys and card channels.
+	if payment.Provider == ProviderPaystack {
+		if verification.Domain != "test" {
+			return errors.New("non-test Paystack transaction rejected by demo")
+		}
+		if verification.Status == "success" && verification.Channel != "card" {
+			return errors.New("non-card Paystack transaction rejected by demo")
+		}
 	}
 	if value := verification.Metadata["payment_id"]; value != "" && value != payment.ID.String() {
 		return errors.New("verified payment metadata does not match")

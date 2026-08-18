@@ -669,7 +669,7 @@ func (a *App) runWorkers(ctx context.Context) {
 			return
 		case <-outboxTicker.C:
 			a.processInboundMessages(ctx)
-			a.processPaystackWebhooks(ctx)
+			a.processGatewayWebhooks(ctx)
 			a.processDataFulfilments(ctx)
 			a.deliverOutbox(ctx)
 			a.processMerchantWebhooks(ctx)
@@ -746,10 +746,10 @@ func (a *App) processInboundMessages(ctx context.Context) {
 	}
 }
 
-func (a *App) processPaystackWebhooks(ctx context.Context) {
-	events, err := a.store.ClaimPaystackWebhooks(ctx, 20)
+func (a *App) processGatewayWebhooks(ctx context.Context) {
+	events, err := a.store.ClaimGatewayWebhooks(ctx, a.cfg.PaymentProvider, 20)
 	if err != nil {
-		a.logger.WarnContext(ctx, "claim Paystack webhooks", "error", err)
+		a.logger.WarnContext(ctx, "claim gateway webhooks", "provider", a.cfg.PaymentProvider, "error", err)
 		return
 	}
 	for _, event := range events {
@@ -757,9 +757,9 @@ func (a *App) processPaystackWebhooks(ctx context.Context) {
 			_ = a.store.CompleteWebhook(ctx, event.ID, "ignored", "")
 			continue
 		}
-		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, "paystack.webhook")
+		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, a.cfg.PaymentProvider+".webhook")
 		if processErr != nil {
-			a.logger.ErrorContext(ctx, "process Paystack webhook", "reference", event.Reference, "error", processErr)
+			a.logger.ErrorContext(ctx, "process gateway webhook", "reference", event.Reference, "error", processErr)
 			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
 			continue
 		}

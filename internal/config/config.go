@@ -24,6 +24,9 @@ type Config struct {
 	LogLevel    slog.Level
 	LogFormat   string
 
+	// PaymentProvider selects the default payment gateway ("paystack", "vtpass", etc.).
+	PaymentProvider string
+
 	// DataEncryptionKey is the AES-256-GCM key for application-level encryption
 	// at rest (chat payloads, session CSRF tokens). Required in production;
 	// empty elsewhere runs in plaintext passthrough.
@@ -128,6 +131,7 @@ func Load() (Config, error) {
 		BaseURL:                    strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		DatabaseURL:                os.Getenv("DATABASE_URL"),
+		PaymentProvider:            env("PAYMENT_PROVIDER", "paystack"),
 		AdminEmail:                 strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
 		AdminPasswordHash:          os.Getenv("ADMIN_PASSWORD_HASH"),
 		TOTPEnabled:                envBool("TOTP_ENABLED", env("APP_ENV", "development") == "production"),

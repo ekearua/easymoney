@@ -20,7 +20,7 @@ func TestValidateVerification(t *testing.T) {
 	merchantID := uuid.New()
 	payment := store.PaymentView{Payment: domain.Payment{
 		ID: paymentID, MerchantID: merchantID, AmountKobo: 50_000, Currency: "NGN",
-		ProviderReference: "wpd_ref",
+		Provider: ProviderPaystack, ProviderReference: "wpd_ref",
 	}}
 	valid := ports.Verification{
 		Reference: "wpd_ref", Status: "success", AmountKobo: 50_000,
