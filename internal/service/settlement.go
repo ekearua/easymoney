@@ -26,19 +26,40 @@ type SettlementService struct {
 	provider ports.PayoutProvider
 	feeBps   int
 	logger   *slog.Logger
+
+	payoutMinKobo      int64
+	payoutMaxKobo      int64
+	payoutDailyCapKobo int64
+	payoutDailyCount   int
 }
 
 // NewSettlementService constructs the settlement orchestrator. A nil provider
 // defaults to the simulated rail. feeBps is the settlement fee in basis points
 // (250 = 2.5 %) applied at batch-cut time.
-func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger, feeBps int) *SettlementService {
+func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger, feeBps int, opts ...SettlementOption) *SettlementService {
 	if provider == nil {
 		provider = NewSimulatedPayoutProvider()
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &SettlementService{store: repository, provider: provider, feeBps: feeBps, logger: logger}
+	s := &SettlementService{store: repository, provider: provider, feeBps: feeBps, logger: logger}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// SettlementOption configures optional settlement service parameters.
+type SettlementOption func(*SettlementService)
+
+func WithPayoutLimits(minKobo, maxKobo, dailyCapKobo int64, dailyCount int) SettlementOption {
+	return func(s *SettlementService) {
+		s.payoutMinKobo = minKobo
+		s.payoutMaxKobo = maxKobo
+		s.payoutDailyCapKobo = dailyCapKobo
+		s.payoutDailyCount = dailyCount
+	}
 }
 
 // Cut freezes the merchant's settled payable into a batch with the given
@@ -89,6 +110,23 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 	}
 	if payout.Status == store.PayoutCompleted {
 		return payout, nil
+	}
+	payoutAmount := batch.TotalKobo - batch.FeeKobo
+	if s.payoutMinKobo > 0 && payoutAmount < s.payoutMinKobo {
+		return store.Payout{}, fmt.Errorf("payout amount %d kobo is below minimum %d kobo", payoutAmount, s.payoutMinKobo)
+	}
+	if s.payoutMaxKobo > 0 && payoutAmount > s.payoutMaxKobo {
+		return store.Payout{}, fmt.Errorf("payout amount %d kobo exceeds maximum %d kobo", payoutAmount, s.payoutMaxKobo)
+	}
+	dailyCount, dailyTotal, err := s.store.DailyPayoutStats(ctx, batch.MerchantID)
+	if err != nil {
+		return store.Payout{}, err
+	}
+	if s.payoutDailyCount > 0 && dailyCount >= s.payoutDailyCount {
+		return store.Payout{}, fmt.Errorf("merchant has reached daily payout count limit (%d/%d)", dailyCount, s.payoutDailyCount)
+	}
+	if s.payoutDailyCapKobo > 0 && dailyTotal+payoutAmount > s.payoutDailyCapKobo {
+		return store.Payout{}, fmt.Errorf("merchant would exceed daily payout cap (%d+%d > %d kobo)", dailyTotal, payoutAmount, s.payoutDailyCapKobo)
 	}
 	return s.dispatch(ctx, payout)
 }

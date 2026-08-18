@@ -120,6 +120,11 @@ type Config struct {
 
 	SettlementFeeBps int
 
+	PayoutMinKobo         int64
+	PayoutMaxKobo         int64
+	PayoutDailyCapKobo    int64
+	PayoutDailyCountLimit int
+
 	InvoiceAcceptedNumbers []string
 }
 
@@ -198,6 +203,11 @@ func Load() (Config, error) {
 		RateLimitAPIKeysPerMinute:  int(envInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
 		SettlementFeeBps: int(envInt64("SETTLEMENT_FEE_BPS", 250)),
+
+		PayoutMinKobo:         envInt64("PAYOUT_MIN_KOBO", 100_00),
+		PayoutMaxKobo:         envInt64("PAYOUT_MAX_KOBO", 10_000_00),
+		PayoutDailyCapKobo:    envInt64("PAYOUT_DAILY_CAP_KOBO", 50_000_00),
+		PayoutDailyCountLimit: int(envInt64("PAYOUT_DAILY_COUNT_LIMIT", 10)),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {

@@ -181,7 +181,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, nil, logger, cfg.SettlementFeeBps),
+		settlements:      service.NewSettlementService(repository, nil, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
 		refunds:          service.NewRefundService(repository, nil, logger),
 		disputes:         service.NewDisputeService(repository),
 	}, nil

@@ -438,6 +438,16 @@ func (s *Store) CreatePayout(ctx context.Context, batchID, destinationID uuid.UU
 	return p, nil
 }
 
+// DailyPayoutStats returns today's payout count and total amount for a merchant.
+func (s *Store) DailyPayoutStats(ctx context.Context, merchantID uuid.UUID) (count int, totalKobo int64, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*), COALESCE(sum(amount_kobo),0)
+		FROM payouts WHERE merchant_id=$1
+		  AND created_at >= date_trunc('day', now())
+		  AND status != 'reversed'`, merchantID).Scan(&count, &totalKobo)
+	return
+}
+
 // ClaimPayoutForDispatch leases a queued payout for one provider attempt and
 // marks the batch scheduled. Returns the claim or pgx.ErrNoRows when nothing
 // is queued.
