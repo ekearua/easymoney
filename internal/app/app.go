@@ -77,6 +77,7 @@ type App struct {
 	settlements       *service.SettlementService
 	refunds           *service.RefundService
 	disputes          *service.DisputeService
+	workerWg          sync.WaitGroup
 }
 
 // New creates all application dependencies.
@@ -453,6 +454,7 @@ func (a *App) RunServer(ctx context.Context) error {
 	go a.runWorkers(ctx)
 	go func() {
 		<-ctx.Done()
+		a.logger.InfoContext(context.Background(), "shutdown signal received, draining")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
@@ -460,6 +462,17 @@ func (a *App) RunServer(ctx context.Context) error {
 	a.logger.InfoContext(ctx, "server listening", "addr", a.cfg.HTTPAddr, "base_url", a.cfg.BaseURL)
 	err := server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
+		done := make(chan struct{})
+		go func() {
+			a.workerWg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			a.logger.InfoContext(context.Background(), "workers drained")
+		case <-time.After(10 * time.Second):
+			a.logger.WarnContext(context.Background(), "worker drain timed out after 10s")
+		}
 		return nil
 	}
 	return err
@@ -486,6 +499,7 @@ func (a *App) routes() http.Handler {
 	router.Use(logging.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(middleware.Recoverer)
+	router.Use(a.accessLog)
 	router.Use(a.securityHeaders)
 	router.Get("/health/live", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -670,6 +684,7 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-outboxTicker.C:
+			a.workerWg.Add(1)
 			a.processInboundMessages(ctx)
 			a.processGatewayWebhooks(ctx)
 			a.processVTPassWebhooks(ctx)
@@ -677,32 +692,47 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.deliverOutbox(ctx)
 			a.processMerchantWebhooks(ctx)
 			a.expireCheckouts(ctx)
+			a.workerWg.Done()
 		case <-eventTicker.C:
+			a.workerWg.Add(1)
 			if err := a.publisher.Drain(ctx); err != nil {
 				a.logger.WarnContext(ctx, "event publisher failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-reconcileTicker.C:
+			a.workerWg.Add(1)
 			if err := a.payments.Reconcile(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-recon3Ticker.C:
+			a.workerWg.Add(1)
 			if _, err := a.runReconciliationAuto(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled three-way reconciliation failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-retentionTicker.C:
+			a.workerWg.Add(1)
 			if err := a.PurgeExpiredData(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled retention failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-rescreenTicker.C:
+			a.workerWg.Add(1)
 			if err := a.RescreenDue(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-monitorTicker.C:
+			a.workerWg.Add(1)
 			if err := a.MonitorTransactions(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
 			}
+			a.workerWg.Done()
 		case <-settlementTicker.C:
+			a.workerWg.Add(1)
 			a.runSettlementDispatcher(ctx)
+			a.workerWg.Done()
 		}
 	}
 }
@@ -897,11 +927,22 @@ func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageData
 func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+	checks := map[string]string{"database": "ok"}
+	ready := true
 	if err := a.store.Ping(ctx); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "not_ready"})
-		return
+		checks["database"] = err.Error()
+		ready = false
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	if a.eventBus != nil {
+		checks["event_bus"] = "ok"
+	} else {
+		checks["event_bus"] = "not_configured"
+	}
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, map[string]any{"status": checks, "ready": ready})
 }
 
 func (a *App) verifyWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
@@ -3108,6 +3149,31 @@ func (a *App) rateLimit(class string, limit int) func(http.Handler) http.Handler
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func (a *App) accessLog(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		a.logger.InfoContext(r.Context(), "request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"duration_ms", time.Since(start).Milliseconds(),
+			"remote", r.RemoteAddr,
+		)
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sw *statusWriter) WriteHeader(code int) {
+	sw.status = code
+	sw.ResponseWriter.WriteHeader(code)
 }
 
 func (a *App) securityHeaders(next http.Handler) http.Handler {
