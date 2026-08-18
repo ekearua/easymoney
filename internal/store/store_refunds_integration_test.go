@@ -41,6 +41,20 @@ func TestRefundLifecycle(t *testing.T) {
 	if err := repository.Seed(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.EnsureAdminUser(ctx, "maker@test.local", "x"); err != nil {
+		t.Fatal(err)
+	}
+	maker, err := repository.AdminUserByEmail(ctx, "maker@test.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.EnsureAdminUser(ctx, "checker@test.local", "x"); err != nil {
+		t.Fatal(err)
+	}
+	checker, err := repository.AdminUserByEmail(ctx, "checker@test.local")
+	if err != nil {
+		t.Fatal(err)
+	}
 	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
 	if err != nil {
 		t.Fatal(err)
@@ -71,20 +85,54 @@ func TestRefundLifecycle(t *testing.T) {
 	p1 := createSucceeded("refund-ref-1", 100_000)
 	p2 := createSucceeded("refund-ref-2", 50_000)
 
-	t.Run("refund succeeds", func(t *testing.T) {
-		refund, err := repository.RefundPayment(ctx, p1, "customer complaint", "admin", nil)
+	t.Run("maker-checker refund succeeds", func(t *testing.T) {
+		// Maker creates refund request.
+		refund, err := repository.RequestRefund(ctx, p1, "customer complaint", "merchant", nil)
 		if err != nil {
-			t.Fatalf("refund: %v", err)
+			t.Fatalf("request refund: %v", err)
 		}
-		if refund.Status != RefundPending {
-			t.Fatalf("expected pending, got %s", refund.Status)
+		if refund.ApprovalStatus != "pending_approval" {
+			t.Fatalf("expected pending_approval, got %s", refund.ApprovalStatus)
 		}
 		if refund.AmountKobo != 100_000 {
 			t.Fatalf("expected 100000, got %d", refund.AmountKobo)
 		}
 
-		// Payment is now refunded.
+		// Payment is still succeeded (not yet refunded).
 		p, err := repository.PaymentByID(ctx, p1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Status != domain.StatusSucceeded {
+			t.Fatalf("expected succeeded before approval, got %s", p.Status)
+		}
+
+		// Maker cannot approve their own refund (when admin_id is set).
+		// First, create one via admin path to test self-approval guard.
+		pSelf := createSucceeded("refund-ref-self", 25_000)
+		adminRefund, err := repository.RequestRefund(ctx, pSelf, "self-approval test", "admin", &maker.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = repository.ApproveRefund(ctx, adminRefund.ID, maker.ID, "admin.approve")
+		if err == nil {
+			t.Fatal("expected error for self-approval")
+		}
+
+		// Checker approves the original merchant-initiated refund.
+		approved, err := repository.ApproveRefund(ctx, refund.ID, checker.ID, "admin.approve")
+		if err != nil {
+			t.Fatalf("approve refund: %v", err)
+		}
+		if approved.ApprovalStatus != "approved" {
+			t.Fatalf("expected approved, got %s", approved.ApprovalStatus)
+		}
+		if approved.Status != RefundPending {
+			t.Fatalf("expected pending (before provider), got %s", approved.Status)
+		}
+
+		// Payment is now refunded.
+		p, err = repository.PaymentByID(ctx, p1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +140,7 @@ func TestRefundLifecycle(t *testing.T) {
 			t.Fatalf("expected refunded, got %s", p.Status)
 		}
 
-		// Ledger is reversed: both entries for this payment are now reversed.
+		// Ledger is reversed.
 		rows, err := repository.pool.Query(ctx, `
 			SELECT id, COALESCE(reversal_of,0) FROM ledger_entries WHERE journal_ref=$1 ORDER BY id`, p1.String())
 		if err != nil {
@@ -119,10 +167,10 @@ func TestRefundLifecycle(t *testing.T) {
 		}
 
 		// Complete the refund.
-		if err := repository.CompleteRefund(ctx, refund.ID, "SIM-REF-abc"); err != nil {
+		if err := repository.CompleteRefund(ctx, approved.ID, "SIM-REF-abc"); err != nil {
 			t.Fatal(err)
 		}
-		completed, err := repository.RefundByID(ctx, refund.ID)
+		completed, err := repository.RefundByID(ctx, approved.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,14 +180,14 @@ func TestRefundLifecycle(t *testing.T) {
 	})
 
 	t.Run("duplicate refund rejected", func(t *testing.T) {
-		_, err := repository.RefundPayment(ctx, p1, "double refund", "admin", nil)
+		_, err := repository.RequestRefund(ctx, p1, "double refund", "merchant", nil)
 		if err == nil {
 			t.Fatal("expected error for duplicate refund")
 		}
 	})
 
 	t.Run("already-refunded payment rejected", func(t *testing.T) {
-		_, err := repository.RefundPayment(ctx, p1, "refund again", "admin", nil)
+		_, err := repository.RequestRefund(ctx, p1, "refund again", "merchant", nil)
 		if err == nil {
 			t.Fatal("expected error for already-refunded payment")
 		}
@@ -154,32 +202,28 @@ func TestRefundLifecycle(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = repository.RefundPayment(ctx, payment.ID, "draft refund", "admin", nil)
+		_, err = repository.RequestRefund(ctx, payment.ID, "draft refund", "merchant", nil)
 		if err == nil {
 			t.Fatal("expected error for non-succeeded payment")
 		}
 	})
 
 	t.Run("refund in processed batch rejected", func(t *testing.T) {
-		// p2 is still succeeded. Cut it into a batch.
 		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-1", time.Time{}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Mark batch as processed (simulates payout completion).
 		if _, err := repository.pool.Exec(ctx, `UPDATE settlement_batches SET status='processed' WHERE id=$1`, batch.ID); err != nil {
 			t.Fatal(err)
 		}
-		_, err = repository.RefundPayment(ctx, p2, "processed batch refund", "admin", nil)
+		_, err = repository.RequestRefund(ctx, p2, "processed batch refund", "merchant", nil)
 		if err == nil {
 			t.Fatal("expected error for payment in processed batch")
 		}
 	})
 
 	t.Run("refund in open batch removes line", func(t *testing.T) {
-		// Create a fresh succeeded payment.
 		p3 := createSucceeded("refund-ref-3", 75_000)
-		// Cut into a batch.
 		batch, err := repository.CutSettlement(ctx, merchant.ID, "REFUND-BATCH-2", time.Time{}, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -187,12 +231,15 @@ func TestRefundLifecycle(t *testing.T) {
 		if batch.TotalKobo != 75_000 {
 			t.Fatalf("expected 75000, got %d", batch.TotalKobo)
 		}
-		// Refund the payment — should remove the line.
-		_, err = repository.RefundPayment(ctx, p3, "open batch refund", "admin", nil)
+		refund, err := repository.RequestRefund(ctx, p3, "open batch refund", "merchant", nil)
 		if err != nil {
-			t.Fatalf("refund in open batch: %v", err)
+			t.Fatalf("request refund in open batch: %v", err)
 		}
-		// Batch should now have 0 lines.
+		// Approve to execute.
+		_, err = repository.ApproveRefund(ctx, refund.ID, checker.ID, "admin.approve")
+		if err != nil {
+			t.Fatalf("approve refund: %v", err)
+		}
 		updated, err := repository.SettlementBatchByID(ctx, batch.ID)
 		if err != nil {
 			t.Fatal(err)

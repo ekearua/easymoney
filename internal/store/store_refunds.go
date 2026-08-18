@@ -101,8 +101,7 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, fmt.Errorf("payment %s already has an active refund", paymentID)
 	}
 
-	// 2. Check settlement batch status. Only open batches allow line removal;
-	//    scheduled or processed batches require operator escalation.
+	// 2. Check settlement batch status. Lock the batch to prevent concurrent CutSettlement.
 	var batchStatus sql.NullString
 	var batchID *uuid.UUID
 	if err := tx.QueryRow(ctx, `
@@ -117,8 +116,11 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first", paymentID, batchStatus.String)
 	}
 
-	// 3. If in an open batch, remove the line and recompute totals.
+	// 3. If in an open batch, lock it, remove the line and recompute totals.
 	if batchID != nil {
+		if _, err := tx.Exec(ctx, `SELECT id FROM settlement_batches WHERE id=$1 FOR UPDATE`, *batchID); err != nil {
+			return Refund{}, fmt.Errorf("lock batch: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `
 			DELETE FROM settlement_lines WHERE payment_id=$1 AND batch_id=$2`, paymentID, *batchID); err != nil {
 			return Refund{}, fmt.Errorf("remove settlement line: %w", err)
@@ -298,14 +300,27 @@ func (s *Store) ApproveRefund(ctx context.Context, refundID, approvedBy uuid.UUI
 		return Refund{}, fmt.Errorf("approver must differ from the refund requester")
 	}
 
-	// 2. Mark approved.
+	// 2. Lock the payment to prevent concurrent approve from double-reversing.
+	var paymentStatus string
+	var currency, reference string
+	if err := tx.QueryRow(ctx, `
+		SELECT status, currency, COALESCE(merchant_reference,'')
+		FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(
+		&paymentStatus, &currency, &reference); err != nil {
+		return Refund{}, fmt.Errorf("lock payment: %w", err)
+	}
+	if paymentStatus != "succeeded" {
+		return Refund{}, fmt.Errorf("payment is no longer succeeded (current: %s)", paymentStatus)
+	}
+
+	// 3. Mark approved.
 	if _, err := tx.Exec(ctx, `
 		UPDATE refunds SET approval_status='approved', approved_by=$2, approved_at=now()
 		WHERE id=$1`, refundID, approvedBy); err != nil {
 		return Refund{}, fmt.Errorf("approve refund: %w", err)
 	}
 
-	// 3. Transition payment to refunded.
+	// 4. Transition payment to refunded.
 	if _, err := tx.Exec(ctx, `
 		UPDATE payments SET status='refunded', updated_at=now() WHERE id=$1`, paymentID); err != nil {
 		return Refund{}, fmt.Errorf("transition payment: %w", err)
@@ -316,21 +331,18 @@ func (s *Store) ApproveRefund(ctx context.Context, refundID, approvedBy uuid.UUI
 		return Refund{}, err
 	}
 
-	// 4. Post ledger reversal for the original payment.
+	// 5. Post ledger reversal for the original payment.
 	reversalJournal := paymentID.String()
 	if _, err := s.postLedgerReversalTx(ctx, tx, reversalJournal, "Refund: "+reason, postedBy); err != nil {
 		return Refund{}, fmt.Errorf("ledger reversal: %w", err)
 	}
 
-	// 5. Emit the payment.refunded event.
-	var reference string
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(merchant_reference,'') FROM payments WHERE id=$1`, paymentID).Scan(&reference); err != nil {
-		return Refund{}, err
-	}
+	// 6. Emit the payment.refunded event.
 	fact, err := json.Marshal(domain.PaymentRefunded{
 		PaymentID:  paymentID.String(),
 		MerchantID: merchantID.String(),
 		RefundID:   refundID.String(),
+		Currency:   currency,
 		Reference:  reference,
 		AmountKobo: amountKobo,
 		Reason:     reason,
