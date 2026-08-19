@@ -334,6 +334,10 @@ func (s *PaymentService) NotifyMerchantPayment(ctx context.Context, payment stor
 	if err != nil {
 		return
 	}
+	prefs, err := s.store.MerchantNotificationPrefs(ctx, invoice.MerchantID)
+	if err != nil || !prefs.NotifyPayment {
+		return
+	}
 	owner, err := s.store.MerchantOwnerByInvoiceID(ctx, invoice.ID)
 	if err != nil || owner.WhatsAppNumber == "" {
 		return

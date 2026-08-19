@@ -3973,6 +3973,10 @@ func (s *ConversationService) NotifyMerchantApproved(ctx context.Context, owner 
 
 // NotifyMerchantPayment sends a WhatsApp message to the merchant owner when an invoice payment is received.
 func (s *ConversationService) NotifyMerchantPayment(ctx context.Context, invoice store.InvoiceView, paymentAmount int64) {
+	prefs, err := s.store.MerchantNotificationPrefs(ctx, invoice.MerchantID)
+	if err != nil || !prefs.NotifyPayment {
+		return
+	}
 	owner, err := s.store.MerchantOwnerByInvoiceID(ctx, invoice.ID)
 	if err != nil || owner.WhatsAppNumber == "" {
 		return

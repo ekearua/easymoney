@@ -1536,7 +1536,7 @@ func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	if err := a.store.CreateAdminSession(r.Context(), adminID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+	if err := a.store.CreateAdminSession(r.Context(), adminID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
@@ -1724,7 +1724,7 @@ func (a *App) completeMerchantLoginWithTOTP(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	if err := a.store.CreateMerchantSession(r.Context(), *merchantID, ownerID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+	if err := a.store.CreateMerchantSession(r.Context(), *merchantID, ownerID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
@@ -1787,7 +1787,7 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(adminCookieName); err == nil {
 		_ = a.store.DeleteAdminSession(r.Context(), cookie.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Path: "/admin", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Path: "/admin", MaxAge: -1, HttpOnly: true, Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 }
 
@@ -2069,11 +2069,18 @@ func (a *App) adminUpdateAdminRole(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "you cannot change your own role", http.StatusForbidden)
 		return
 	}
+	admin, err := a.store.AdminUserByID(r.Context(), id)
+	if err != nil || admin == nil {
+		http.Error(w, "admin not found", http.StatusNotFound)
+		return
+	}
+	oldRole := admin.Role
 	if err := a.store.UpdateAdminUserRole(r.Context(), id, role); err != nil {
 		http.Error(w, "save failed", http.StatusInternalServerError)
 		return
 	}
-	a.audit(r, "admin.admins.role_changed", "admin_user", id.String(), map[string]any{"new_role": role})
+	a.audit(r, "admin.admins.role_changed", "admin_user", id.String(), map[string]any{"old_role": oldRole, "new_role": role})
+	_ = a.store.DeleteAdminSessionsByUser(r.Context(), id)
 	http.Redirect(w, r, "/admin/admins", http.StatusSeeOther)
 }
 
@@ -3084,7 +3091,7 @@ func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	if err := a.store.CreateMerchantSession(r.Context(), merchant.ID, ownerID, token, csrf, time.Now().Add(12*time.Hour)); err != nil {
+	if err := a.store.CreateMerchantSession(r.Context(), merchant.ID, ownerID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
@@ -3104,7 +3111,7 @@ func (a *App) merchantLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie(merchantCookieName); err == nil {
 		_ = a.store.DeleteMerchantSession(r.Context(), cookie.Value)
 	}
-	http.SetCookie(w, &http.Cookie{Name: merchantCookieName, Path: "/merchant", MaxAge: -1, HttpOnly: true})
+	http.SetCookie(w, &http.Cookie{Name: merchantCookieName, Path: "/merchant", MaxAge: -1, HttpOnly: true, Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode})
 	http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
 }
 

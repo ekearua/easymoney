@@ -220,6 +220,14 @@ type Merchant struct {
 	AllowFullPayAlways    bool
 }
 
+// MerchantNotificationPrefs holds per-merchant notification opt-in flags.
+type MerchantNotificationPrefs struct {
+	NotifyPayment    bool
+	NotifyRefund     bool
+	NotifySettlement bool
+	NotifyApproval   bool
+}
+
 // MerchantRegistration is a chat-submitted merchant onboarding request.
 type MerchantRegistration struct {
 	ID           uuid.UUID
@@ -1079,6 +1087,23 @@ func (s *Store) MerchantBySlug(ctx context.Context, slug string) (Merchant, erro
 		&merchant.AllowFullPayAlways,
 	)
 	return merchant, err
+}
+
+// MerchantNotificationPrefs returns the notification opt-in flags for a merchant.
+func (s *Store) MerchantNotificationPrefs(ctx context.Context, merchantID uuid.UUID) (MerchantNotificationPrefs, error) {
+	var p MerchantNotificationPrefs
+	err := s.pool.QueryRow(ctx, `
+		SELECT notify_payment, notify_refund, notify_settlement, notify_approval
+		FROM merchants WHERE id=$1`, merchantID).Scan(&p.NotifyPayment, &p.NotifyRefund, &p.NotifySettlement, &p.NotifyApproval)
+	return p, err
+}
+
+// UpdateMerchantNotificationPrefs sets the notification opt-in flags for a merchant.
+func (s *Store) UpdateMerchantNotificationPrefs(ctx context.Context, merchantID uuid.UUID, p MerchantNotificationPrefs) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET notify_payment=$2, notify_refund=$3, notify_settlement=$4, notify_approval=$5
+		WHERE id=$1`, merchantID, p.NotifyPayment, p.NotifyRefund, p.NotifySettlement, p.NotifyApproval)
+	return err
 }
 
 // SearchMerchants returns one customer-facing page of active merchants.
@@ -5644,6 +5669,12 @@ func (s *Store) ValidateAdminSession(ctx context.Context, token string) (adminID
 func (s *Store) DeleteAdminSession(ctx context.Context, token string) error {
 	hash := sha256.Sum256([]byte(token))
 	_, err := s.pool.Exec(ctx, `DELETE FROM admin_sessions WHERE token_hash=$1`, hash[:])
+	return err
+}
+
+// DeleteAdminSessionsByUser invalidates all sessions for an admin (e.g. after role change).
+func (s *Store) DeleteAdminSessionsByUser(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM admin_sessions WHERE user_id=$1`, userID)
 	return err
 }
 

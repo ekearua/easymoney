@@ -125,6 +125,8 @@ type Config struct {
 	PayoutDailyCapKobo    int64
 	PayoutDailyCountLimit int
 
+	AuthSessionTTL time.Duration
+
 	InvoiceAcceptedNumbers []string
 }
 
@@ -208,6 +210,8 @@ func Load() (Config, error) {
 		PayoutMaxKobo:         envInt64("PAYOUT_MAX_KOBO", 10_000_00),
 		PayoutDailyCapKobo:    envInt64("PAYOUT_DAILY_CAP_KOBO", 50_000_00),
 		PayoutDailyCountLimit: int(envInt64("PAYOUT_DAILY_COUNT_LIMIT", 10)),
+
+		AuthSessionTTL: envDuration("AUTH_SESSION_TTL", 12*time.Hour),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {
