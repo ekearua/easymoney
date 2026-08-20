@@ -242,3 +242,33 @@ type EventBus interface {
 	Subscribe(ctx context.Context, topic, group string, handler EventHandler) error
 	Close() error
 }
+
+// ImageReader extracts text from an image. Implementations should handle
+// photos of documents (NIN/BVN slips, transfer receipts) and return the
+// readable text content.
+type ImageReader interface {
+	ReadImage(ctx context.Context, imageData []byte, mimeType string, prompt string) (string, error)
+}
+
+// SpeechToText transcribes audio bytes into text. Implementations should
+// support common voice-note formats (OGG/Opus, MP3, WAV).
+type SpeechToText interface {
+	Transcribe(ctx context.Context, audioData []byte, mimeType string, language string) (string, error)
+}
+
+// ChatAI classifies free-text input into FSM intents and generates
+// conversational responses. Implementations must be stateless and fast.
+type ChatAI interface {
+	// ClassifyIntent maps a user message to one of the known FSM intents.
+	// Returns the intent name, extracted entities, and a confidence score.
+	ClassifyIntent(ctx context.Context, userMessage string, contextLines []string) (IntentResult, error)
+	// Answer generates a conversational response to a question.
+	Answer(ctx context.Context, question string, contextLines []string) (string, error)
+}
+
+// IntentResult is the outcome of an AI intent classification.
+type IntentResult struct {
+	Intent     string            `json:"intent"`
+	Entities   map[string]string `json:"entities,omitempty"`
+	Confidence float64           `json:"confidence"`
+}

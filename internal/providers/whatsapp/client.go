@@ -36,6 +36,10 @@ type InboundMessage struct {
 	From        string
 	Text        string
 	Interactive string
+	MediaType   string // image, audio, video, document, sticker, ""
+	MediaID     string
+	MediaMime   string
+	Caption     string
 	Timestamp   time.Time
 }
 
@@ -65,7 +69,7 @@ func (c *Client) ValidateSignature(body []byte, signature string) error {
 	return nil
 }
 
-// ParseInbound extracts customer text and interactive selections from a webhook.
+// ParseInbound extracts customer text, interactive selections, and media from a webhook.
 func ParseInbound(body []byte) ([]InboundMessage, error) {
 	var envelope struct {
 		Entry []struct {
@@ -90,6 +94,29 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 								Title string `json:"title"`
 							} `json:"list_reply"`
 						} `json:"interactive"`
+						Image struct {
+							ID       string `json:"id"`
+							MimeType string `json:"mime_type"`
+							Caption  string `json:"caption"`
+						} `json:"image"`
+						Audio struct {
+							ID       string `json:"id"`
+							MimeType string `json:"mime_type"`
+						} `json:"audio"`
+						Video struct {
+							ID       string `json:"id"`
+							MimeType string `json:"mime_type"`
+							Caption  string `json:"caption"`
+						} `json:"video"`
+						Document struct {
+							ID       string `json:"id"`
+							MimeType string `json:"mime_type"`
+							Caption  string `json:"caption"`
+						} `json:"document"`
+						Sticker struct {
+							ID       string `json:"id"`
+							MimeType string `json:"mime_type"`
+						} `json:"sticker"`
 					} `json:"messages"`
 				} `json:"value"`
 			} `json:"changes"`
@@ -108,6 +135,32 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 				}
 				if message.Interactive.ListReply.ID != "" {
 					parsed.Interactive = message.Interactive.ListReply.ID
+				}
+				// Capture media if present.
+				switch message.Type {
+				case "image":
+					parsed.MediaType = "image"
+					parsed.MediaID = message.Image.ID
+					parsed.MediaMime = message.Image.MimeType
+					parsed.Caption = message.Image.Caption
+				case "audio":
+					parsed.MediaType = "audio"
+					parsed.MediaID = message.Audio.ID
+					parsed.MediaMime = message.Audio.MimeType
+				case "video":
+					parsed.MediaType = "video"
+					parsed.MediaID = message.Video.ID
+					parsed.MediaMime = message.Video.MimeType
+					parsed.Caption = message.Video.Caption
+				case "document":
+					parsed.MediaType = "document"
+					parsed.MediaID = message.Document.ID
+					parsed.MediaMime = message.Document.MimeType
+					parsed.Caption = message.Document.Caption
+				case "sticker":
+					parsed.MediaType = "sticker"
+					parsed.MediaID = message.Sticker.ID
+					parsed.MediaMime = message.Sticker.MimeType
 				}
 				if unix, err := strconv.ParseInt(message.Timestamp, 10, 64); err == nil {
 					parsed.Timestamp = time.Unix(unix, 0)
@@ -311,4 +364,67 @@ func (c *Client) send(ctx context.Context, payload map[string]any) error {
 func recipientForCloudAPI(to string) string {
 	replacer := strings.NewReplacer("+", "", " ", "", "-", "", "(", "", ")", "")
 	return replacer.Replace(strings.TrimSpace(to))
+}
+
+// DownloadMedia retrieves media bytes from the WhatsApp Graph API.
+// It performs the two-step fetch: media ID → signed URL → bytes. The returned
+// mime type indicates the content type. A size cap of 16 MiB is enforced to
+// protect memory.
+func (c *Client) DownloadMedia(ctx context.Context, mediaID string) ([]byte, string, error) {
+	if c.accessToken == "" {
+		return nil, "", errors.New("WhatsApp credentials are not configured")
+	}
+	if c.graphVersion == "" {
+		return nil, "", errors.New("WhatsApp graph version is not configured")
+	}
+
+	// Step 1: resolve media ID to a signed download URL.
+	endpoint := fmt.Sprintf("https://graph.facebook.com/%s/%s", c.graphVersion, mediaID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.accessToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("WhatsApp media resolve: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, "", fmt.Errorf("WhatsApp media resolve read: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("WhatsApp media resolve returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	var mediaInfo struct {
+		URL      string `json:"url"`
+		MimeType string `json:"mime_type"`
+	}
+	if err := json.Unmarshal(respBody, &mediaInfo); err != nil {
+		return nil, "", fmt.Errorf("WhatsApp media resolve decode: %w", err)
+	}
+	if mediaInfo.URL == "" {
+		return nil, "", errors.New("WhatsApp media resolve returned no URL")
+	}
+
+	// Step 2: download the actual bytes from the signed URL.
+	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaInfo.URL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	dlResp, err := c.http.Do(dlReq)
+	if err != nil {
+		return nil, "", fmt.Errorf("WhatsApp media download: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode < 200 || dlResp.StatusCode >= 300 {
+		dlBody, _ := io.ReadAll(io.LimitReader(dlResp.Body, 1<<20))
+		return nil, "", fmt.Errorf("WhatsApp media download returned %s: %s", dlResp.Status, strings.TrimSpace(string(dlBody)))
+	}
+	data, err := io.ReadAll(io.LimitReader(dlResp.Body, 16<<20)) // 16 MiB cap
+	if err != nil {
+		return nil, "", fmt.Errorf("WhatsApp media download read: %w", err)
+	}
+	return data, mediaInfo.MimeType, nil
 }

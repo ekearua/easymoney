@@ -34,6 +34,10 @@ type InboundMessage struct {
 	Username        string
 	Text            string
 	Interactive     string
+	MediaType       string // voice, audio, photo, document, video, ""
+	MediaID         string
+	MediaMime       string
+	Caption         string
 	CallbackQueryID string
 }
 
@@ -57,13 +61,14 @@ func (c *Client) ValidateSecret(header string) error {
 	return nil
 }
 
-// ParseInbound extracts text messages and callback-query button selections.
+// ParseInbound extracts text messages, media, and callback-query button selections.
 func ParseInbound(body []byte) ([]InboundMessage, error) {
 	var update struct {
 		UpdateID int64 `json:"update_id"`
 		Message  *struct {
 			MessageID int64  `json:"message_id"`
 			Text      string `json:"text"`
+			Caption   string `json:"caption"`
 			Chat      struct {
 				ID int64 `json:"id"`
 			} `json:"chat"`
@@ -71,6 +76,28 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 				ID       int64  `json:"id"`
 				Username string `json:"username"`
 			} `json:"from"`
+			Voice *struct {
+				FileID   string `json:"file_id"`
+				MimeType string `json:"mime_type"`
+			} `json:"voice"`
+			Audio *struct {
+				FileID   string `json:"file_id"`
+				MimeType string `json:"mime_type"`
+			} `json:"audio"`
+			Photo []struct {
+				FileID string `json:"file_id"`
+				Width  int    `json:"width"`
+				Height int    `json:"height"`
+			} `json:"photo"`
+			Document *struct {
+				FileID   string `json:"file_id"`
+				MimeType string `json:"mime_type"`
+				FileName string `json:"file_name"`
+			} `json:"document"`
+			Video *struct {
+				FileID   string `json:"file_id"`
+				MimeType string `json:"mime_type"`
+			} `json:"video"`
 		} `json:"message"`
 		CallbackQuery *struct {
 			ID      string `json:"id"`
@@ -94,14 +121,40 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 		return nil, nil
 	}
 	if update.Message != nil {
-		return []InboundMessage{{
+		msg := InboundMessage{
 			UpdateID:  update.UpdateID,
 			MessageID: strconv.FormatInt(update.Message.MessageID, 10),
 			ChatID:    strconv.FormatInt(update.Message.Chat.ID, 10),
 			UserID:    strconv.FormatInt(update.Message.From.ID, 10),
 			Username:  strings.TrimSpace(update.Message.From.Username),
 			Text:      strings.TrimSpace(update.Message.Text),
-		}}, nil
+			Caption:   strings.TrimSpace(update.Message.Caption),
+		}
+		// Capture media if present.
+		if update.Message.Voice != nil {
+			msg.MediaType = "voice"
+			msg.MediaID = update.Message.Voice.FileID
+			msg.MediaMime = update.Message.Voice.MimeType
+		} else if update.Message.Audio != nil {
+			msg.MediaType = "audio"
+			msg.MediaID = update.Message.Audio.FileID
+			msg.MediaMime = update.Message.Audio.MimeType
+		} else if len(update.Message.Photo) > 0 {
+			// Pick the largest photo size.
+			largest := update.Message.Photo[len(update.Message.Photo)-1]
+			msg.MediaType = "photo"
+			msg.MediaID = largest.FileID
+			msg.MediaMime = "image/jpeg"
+		} else if update.Message.Document != nil {
+			msg.MediaType = "document"
+			msg.MediaID = update.Message.Document.FileID
+			msg.MediaMime = update.Message.Document.MimeType
+		} else if update.Message.Video != nil {
+			msg.MediaType = "video"
+			msg.MediaID = update.Message.Video.FileID
+			msg.MediaMime = update.Message.Video.MimeType
+		}
+		return []InboundMessage{msg}, nil
 	}
 	if update.CallbackQuery != nil {
 		return []InboundMessage{{
@@ -253,4 +306,76 @@ func truncateButton(value string) string {
 		return value
 	}
 	return value[:61] + "..."
+}
+
+// DownloadFile retrieves file bytes from the Telegram Bot API using the file_id.
+func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	if c.botToken == "" {
+		return nil, "", errors.New("Telegram bot token is not configured")
+	}
+	// Step 1: get the file path from Telegram.
+	getFileURL := fmt.Sprintf("%s/bot%s/getFile?file_id=%s", c.apiBase, c.botToken, fileID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getFileURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("Telegram getFile: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, "", fmt.Errorf("Telegram getFile read: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("Telegram getFile returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	var fileInfo struct {
+		Result struct {
+			FileID   string `json:"file_id"`
+			FileSize int64  `json:"file_size"`
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &fileInfo); err != nil {
+		return nil, "", fmt.Errorf("Telegram getFile decode: %w", err)
+	}
+	if fileInfo.Result.FilePath == "" {
+		return nil, "", errors.New("Telegram getFile returned no path")
+	}
+
+	// Step 2: download the actual bytes.
+	dlURL := fmt.Sprintf("%s/file/bot%s/%s", c.apiBase, c.botToken, fileInfo.Result.FilePath)
+	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	dlResp, err := c.http.Do(dlReq)
+	if err != nil {
+		return nil, "", fmt.Errorf("Telegram download: %w", err)
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode < 200 || dlResp.StatusCode >= 300 {
+		dlBody, _ := io.ReadAll(io.LimitReader(dlResp.Body, 1<<20))
+		return nil, "", fmt.Errorf("Telegram download returned %s: %s", dlResp.Status, strings.TrimSpace(string(dlBody)))
+	}
+	data, err := io.ReadAll(io.LimitReader(dlResp.Body, 16<<20)) // 16 MiB cap
+	if err != nil {
+		return nil, "", fmt.Errorf("Telegram download read: %w", err)
+	}
+	// Guess mime from file_path extension.
+	mimeType := "application/octet-stream"
+	if strings.HasSuffix(fileInfo.Result.FilePath, ".ogg") {
+		mimeType = "audio/ogg"
+	} else if strings.HasSuffix(fileInfo.Result.FilePath, ".jpg") || strings.HasSuffix(fileInfo.Result.FilePath, ".jpeg") {
+		mimeType = "image/jpeg"
+	} else if strings.HasSuffix(fileInfo.Result.FilePath, ".png") {
+		mimeType = "image/png"
+	} else if strings.HasSuffix(fileInfo.Result.FilePath, ".mp4") {
+		mimeType = "video/mp4"
+	} else if strings.HasSuffix(fileInfo.Result.FilePath, ".pdf") {
+		mimeType = "application/pdf"
+	}
+	return data, mimeType, nil
 }

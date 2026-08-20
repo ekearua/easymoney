@@ -32,6 +32,7 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
+	aiprovider "whatsapp-payment-demo/internal/providers/ai"
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
@@ -73,6 +74,11 @@ type App struct {
 	refunds           *service.RefundService
 	disputes          *service.DisputeService
 	workerWg          sync.WaitGroup
+
+	// AI providers (nil when AI_ENABLED=false).
+	imageReader  ports.ImageReader
+	speechToText ports.SpeechToText
+	chatAI       ports.ChatAI
 }
 
 // New creates all application dependencies.
@@ -98,6 +104,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
 	var identityVerifier ports.IdentityVerifier = identityprovider.NewSimulator()
+	identityProviderName := "simulated"
+	switch strings.ToLower(cfg.IdentityProvider) {
+	case "simulated", "":
+		// default simulator
+	case "ninbvnportal":
+		if cfg.NINBVNPortalKey == "" {
+			repository.Close()
+			return nil, errors.New("NINBVNPORTAL_API_KEY is required when IDENTITY_PROVIDER=ninbvnportal")
+		}
+		p := identityprovider.NewNINBVNPortal(cfg.NINBVNPortalURL, cfg.NINBVNPortalKey, cfg.NINBVNPortalTimeout)
+		identityVerifier = p
+		identityProviderName = p.ProviderName()
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported IDENTITY_PROVIDER %q", cfg.IdentityProvider)
+	}
 	var sanctionsScreener ports.SanctionsScreener = screeningprovider.NewSimulator()
 	switch strings.ToLower(cfg.ScreeningProvider) {
 	case "simulated", "":
@@ -108,6 +130,31 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	var emailSender ports.EmailSender
 	if cfg.SMTPHost != "" {
 		emailSender = emailprovider.NewSMTP(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom)
+	}
+	// AI providers: used for image-to-text, speech-to-text, and chat.
+	var imageReader ports.ImageReader
+	var speechToText ports.SpeechToText
+	var chatAI ports.ChatAI
+	if cfg.AIEnabled {
+		switch strings.ToLower(cfg.AIProvider) {
+		case "openai":
+			if cfg.AIAPIKey == "" {
+				repository.Close()
+				return nil, errors.New("AI_API_KEY is required when AI_PROVIDER=openai")
+			}
+			openai := aiprovider.NewOpenAI(cfg.AIAPIKey, "", cfg.AIAIModel, "", cfg.AITimeout)
+			imageReader = openai
+			speechToText = openai
+			chatAI = openai
+		case "simulated", "":
+			sim := aiprovider.NewSimulated()
+			imageReader = sim
+			speechToText = sim
+			chatAI = sim
+		default:
+			repository.Close()
+			return nil, fmt.Errorf("unsupported AI_PROVIDER %q", cfg.AIProvider)
+		}
 	}
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
@@ -167,11 +214,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	case "memory", "":
 		eventBus = memorybus.New(cfg.EventBusPartitions, logger)
 	}
+	convo := service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener, identityProviderName)
+	convo.SetMediaProviders(imageReader, speechToText, chatAI)
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
 		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
-		conversation: service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener),
+		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
@@ -179,6 +228,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		settlements:      service.NewSettlementService(repository, nil, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
 		refunds:          service.NewRefundService(repository, nil, logger),
 		disputes:         service.NewDisputeService(repository),
+		imageReader:      imageReader,
+		speechToText:     speechToText,
+		chatAI:           chatAI,
 	}, nil
 }
 

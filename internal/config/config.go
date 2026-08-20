@@ -80,8 +80,19 @@ type Config struct {
 	VTPassTimeout       time.Duration
 
 	IdentityProvider  string
+	NINBVNPortalKey   string
+	NINBVNPortalURL   string
+	NINBVNPortalTimeout time.Duration
 	ScreeningProvider string
 	KYCRescreenPeriod time.Duration
+
+	// AI / OCR / STT configuration (Phase 3-5).
+	AIEnabled  bool
+	AIProvider string
+	AIAPIKey   string
+	AIAIModel  string
+	AITimeout  time.Duration
+	AIMaxRPM   int
 
 	MonitorVelocityWindow     time.Duration
 	MonitorVelocityLimit      int
@@ -173,7 +184,16 @@ func Load() (Config, error) {
 		SMSAPIKey:                  os.Getenv("SMS_API_KEY"),
 		DataProvider:               strings.ToLower(env("DATA_PROVIDER", "simulated")),
 		IdentityProvider:           strings.ToLower(env("IDENTITY_PROVIDER", "simulated")),
+		NINBVNPortalKey:            os.Getenv("NINBVNPORTAL_API_KEY"),
+		NINBVNPortalURL:            strings.TrimRight(env("NINBVNPORTAL_BASE_URL", "https://ninbvnportal.com/api"), "/"),
+		NINBVNPortalTimeout:        envDuration("NINBVNPORTAL_TIMEOUT", 30*time.Second),
 		ScreeningProvider:          strings.ToLower(env("SCREENING_PROVIDER", "simulated")),
+		AIEnabled:                  envBool("AI_ENABLED", false),
+		AIProvider:                 strings.ToLower(env("AI_PROVIDER", "simulated")),
+		AIAPIKey:                   os.Getenv("AI_API_KEY"),
+		AIAIModel:                  env("AI_MODEL", ""),
+		AITimeout:                  envDuration("AI_TIMEOUT", 30*time.Second),
+		AIMaxRPM:                   int(envInt64("AI_MAX_REQUESTS_PER_MINUTE", 30)),
 		VTPassBaseURL:              strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
 		VTPassAPIKey:               os.Getenv("VTPASS_API_KEY"),
 		VTPassPublicKey:            os.Getenv("VTPASS_PUBLIC_KEY"),

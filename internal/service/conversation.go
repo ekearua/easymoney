@@ -41,17 +41,36 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
+	identityProviderName string
+
+	// AI/media providers (nil when AI_ENABLED=false).
+	imageReader  ports.ImageReader
+	speechToText ports.SpeechToText
+	chatAI       ports.ChatAI
+
 	acceptedMu      sync.RWMutex
 	acceptedNumbers map[string]bool
 }
 
 // NewConversationService constructs the customer-facing workflow.
-func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender, identity ports.IdentityVerifier, screener ports.SanctionsScreener) *ConversationService {
+func NewConversationService(cfg config.Config, repository *store.Store, payments *PaymentService, data *DataService, messengers map[string]ports.Messenger, email ports.EmailSender, identity ports.IdentityVerifier, screener ports.SanctionsScreener, identityProviderName ...string) *ConversationService {
 	accepted := make(map[string]bool, len(cfg.InvoiceAcceptedNumbers))
 	for _, n := range cfg.InvoiceAcceptedNumbers {
 		accepted[n] = true
 	}
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, acceptedNumbers: accepted}
+	pName := "simulated"
+	if len(identityProviderName) > 0 && identityProviderName[0] != "" {
+		pName = identityProviderName[0]
+	}
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, identityProviderName: pName, acceptedNumbers: accepted}
+}
+
+// SetMediaProviders configures the optional AI/media providers for image-to-text,
+// speech-to-text, and AI conversation support.
+func (s *ConversationService) SetMediaProviders(imageReader ports.ImageReader, speechToText ports.SpeechToText, chatAI ports.ChatAI) {
+	s.imageReader = imageReader
+	s.speechToText = speechToText
+	s.chatAI = chatAI
 }
 
 // AcceptedInvoiceNumbers returns the current list of accepted customer phone numbers.
@@ -98,6 +117,12 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	input := strings.TrimSpace(message.Text)
 	if message.Interactive != "" {
 		input = message.Interactive
+	}
+
+	// Pre-process media: extract text from images (OCR) and audio (STT).
+	// This converts media messages into text before the FSM sees them.
+	if message.MediaType != "" && message.MediaID != "" && input == "" {
+		input = s.processMedia(ctx, message)
 	}
 
 	// C18 chat content guard: Xego never asks for card numbers, PINs, CVVs, or
@@ -289,7 +314,17 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoiceBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "confirm_session_switch":
 		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
+	case "ai_assistant":
+		return s.handleAIAssistant(ctx, message.Channel, recipient, user, session, input)
 	default:
+		// AI intent routing: when enabled and a chat AI is available,
+		// try to classify the input before falling back to keyword matching.
+		if s.chatAI != nil && s.cfg.AIEnabled {
+			intent, err := s.chatAI.ClassifyIntent(ctx, input, nil)
+			if err == nil && intent.Confidence >= 0.7 && intent.Intent != "none" {
+				return s.routeAIIntent(ctx, message.Channel, recipient, user, session, intent)
+			}
+		}
 		return s.handleMenu(ctx, message.Channel, recipient, user, session, input)
 	}
 }
@@ -378,4 +413,121 @@ func normalizeChannel(channel string) string {
 		return ChannelTelegram
 	}
 	return ChannelWhatsApp
+}
+
+// processMedia extracts text from media messages using OCR (images) or STT (audio).
+// Returns empty string if the provider is unavailable or processing fails.
+func (s *ConversationService) processMedia(ctx context.Context, message store.InboundMessage) string {
+	switch message.MediaType {
+	case "image", "photo", "document":
+		if s.imageReader == nil {
+			return ""
+		}
+		// For documents, we still try OCR if it looks like an image MIME type.
+		if message.MediaType == "document" && !strings.HasPrefix(message.MediaMime, "image/") {
+			return ""
+		}
+		prompt := "Extract all readable text from this image."
+		if strings.Contains(strings.ToLower(message.Caption), "receipt") || strings.Contains(strings.ToLower(message.Caption), "proof") || strings.Contains(strings.ToLower(message.Caption), "transfer") {
+			prompt = "Extract the payment reference number, amount, date, sender, and recipient from this transfer receipt."
+		} else if strings.Contains(strings.ToLower(message.Caption), "nin") || strings.Contains(strings.ToLower(message.Caption), "bvn") || strings.Contains(strings.ToLower(message.Caption), "slip") {
+			prompt = "Extract the NIN or BVN number from this identity slip."
+		}
+		text, err := s.imageReader.ReadImage(ctx, nil, message.MediaMime, prompt)
+		if err != nil {
+			return ""
+		}
+		return text
+
+	case "audio", "voice":
+		if s.speechToText == nil {
+			return ""
+		}
+		text, err := s.speechToText.Transcribe(ctx, nil, message.MediaMime, "en")
+		if err != nil {
+			return ""
+		}
+		return text
+	}
+	return ""
+}
+
+// handleAIAssistant processes free-text questions via the AI chat provider.
+func (s *ConversationService) handleAIAssistant(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if strings.EqualFold(input, "exit") || strings.EqualFold(input, "menu") || strings.EqualFold(input, "back") {
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, channel, recipient)
+	}
+	if s.chatAI == nil {
+		return s.sendText(ctx, channel, recipient, "AI assistant is not available right now. Type MENU to see your options.")
+	}
+	answer, err := s.chatAI.Answer(ctx, input, nil)
+	if err != nil {
+		return s.sendText(ctx, channel, recipient, "I couldn't process that right now. Type MENU to see your options.")
+	}
+	if answer == "" {
+		answer = "I'm not sure how to help with that. Type MENU to see your options."
+	}
+	return s.sendText(ctx, channel, recipient, answer)
+}
+
+// routeAIIntent maps an AI-classified intent to an existing FSM state.
+func (s *ConversationService) routeAIIntent(ctx context.Context, channel, recipient string, user store.User, session store.Session, intent ports.IntentResult) error {
+	switch intent.Intent {
+	case "pay":
+		session.State = "select_merchant"
+		session.Data = map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
+	case "buy_data":
+		session.State = "select_data_network"
+		session.Data = map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendDataNetworks(ctx, channel, recipient)
+	case "become_individual":
+		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
+	case "thrift":
+		session.State = "menu"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "To create a thrift group, choose Create thrift from the menu.")
+	case "invoice":
+		session.State = "menu"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "To create an invoice, choose Create invoice from the merchant menu.")
+	case "verify_id":
+		session.State = "individual_id_number"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send your NIN or BVN as: NIN <11-digit number> or BVN <11-digit number>")
+	case "menu":
+		return s.sendMenu(ctx, channel, recipient)
+	case "help":
+		return s.sendHelp(ctx, channel, recipient)
+	case "cancel":
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendMenu(ctx, channel, recipient)
+	case "ai":
+		session.State = "ai_assistant"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "I'm Xego's AI assistant. Ask me anything about payments, data, or thrift groups. Type MENU to exit.")
+	default:
+		return s.handleMenu(ctx, channel, recipient, user, session, "")
+	}
 }

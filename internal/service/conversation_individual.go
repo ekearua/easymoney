@@ -168,7 +168,7 @@ func (s *ConversationService) handleIndividualOccupation(ctx context.Context, ch
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at Level 2 (identity on file).\n\nTo finish Level 3 verification, send your 11-digit NIN or BVN. (Demo: a NIN starting 1 or a BVN starting 2 verifies; 8 = record mismatch; 9 = not found.)\n\nSend NIN or BVN, then your 11-digit number.")
+	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at Level 2 (identity on file).\n\nTo finish Level 3 verification, send your 11-digit NIN or BVN.\n\nSend NIN or BVN, then your 11-digit number.")
 }
 
 func (s *ConversationService) screenIndividual(ctx context.Context, user store.User, session store.Session) (string, error) {
@@ -183,7 +183,7 @@ func (s *ConversationService) screenIndividual(ctx context.Context, user store.U
 	}
 	if _, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
 		UserID:       user.ID,
-		Provider:     "simulated",
+		Provider:     s.identityProviderName,
 		Decision:     result.Decision,
 		MatchedNames: result.MatchedNames,
 	}, s.cfg.KYCRescreenPeriod); err != nil {
@@ -233,7 +233,7 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 			UserID:           user.ID,
 			VerificationType: kyc.EvNINBVNVerified,
 			Status:           "completed",
-			Provider:         "simulated",
+			Provider:         s.identityProviderName,
 			ProviderRef:      result.ProviderRef,
 			Result:           map[string]any{"id_type": idType, "match_name": result.MatchName, "match_dob": result.MatchDOB},
 		}); err != nil {

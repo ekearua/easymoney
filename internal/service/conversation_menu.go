@@ -112,6 +112,15 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendHistory(ctx, channel, recipient, user)
 	case "help", "menu_help":
 		return s.sendHelp(ctx, channel, recipient)
+	case "ask xego", "menu_ai", "ai", "assistant":
+		if s.chatAI == nil || !s.cfg.AIEnabled {
+			return s.sendText(ctx, channel, recipient, "AI assistant is not available right now. Type MENU to see your options.")
+		}
+		session.State = "ai_assistant"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "I'm Xego's AI assistant. Ask me anything about payments, data, or thrift groups. Type MENU to exit.")
 	default:
 		return s.sendMenu(ctx, channel, recipient)
 	}
@@ -161,6 +170,7 @@ func mainMenuRows() []ports.InteractiveRow {
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
 		{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
 		{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
+		{ID: "menu_ai", Title: "Ask Xego", Description: "Chat with our AI assistant"},
 		{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
 	}
 }

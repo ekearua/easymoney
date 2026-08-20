@@ -81,6 +81,10 @@ type InboundMessage struct {
 	Text        string
 	Interactive string
 	Username    string
+	MediaType   string // image, audio, video, document, photo, voice, ""
+	MediaID     string
+	MediaMime   string
+	Caption     string
 	Attempts    int
 }
 
@@ -125,7 +129,7 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 	if message.Recipient == "" {
 		message.Recipient = message.Sender
 	}
-	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username})
+	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "media_type": message.MediaType, "media_id": message.MediaID, "media_mime": message.MediaMime, "caption": message.Caption})
 	if err != nil {
 		return false, err
 	}
@@ -134,8 +138,8 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 		return false, err
 	}
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload)
-		VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, sealed)
+		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload, media_type, media_id, media_mime, caption)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, sealed, message.MediaType, message.MediaID, message.MediaMime, message.Caption)
 	return tag.RowsAffected() == 1, err
 }
 
@@ -147,7 +151,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		SELECT provider_message_id,channel,sender,recipient,payload,attempts
+		SELECT provider_message_id,channel,sender,recipient,payload,attempts,media_type,media_id,media_mime,caption
 		FROM inbound_messages
 		WHERE status IN ('pending','processing') AND available_at <= now()
 		ORDER BY received_at
@@ -159,7 +163,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	for rows.Next() {
 		var message InboundMessage
 		var payload string
-		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts); err != nil {
+		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts, &message.MediaType, &message.MediaID, &message.MediaMime, &message.Caption); err != nil {
 			rows.Close()
 			return nil, err
 		}
