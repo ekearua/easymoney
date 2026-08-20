@@ -113,7 +113,7 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, err
 	}
 	if batchStatus.Valid && batchStatus.String != "open" {
-		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first", paymentID, batchStatus.String)
+		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first: %w", paymentID, batchStatus.String, ErrPaymentInSettlementBatch)
 	}
 
 	// 3. If in an open batch, lock it, remove the line and recompute totals.
@@ -234,7 +234,7 @@ func (s *Store) RequestRefund(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, err
 	}
 	if batchStatus.Valid && batchStatus.String != "open" {
-		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first", paymentID, batchStatus.String)
+		return Refund{}, fmt.Errorf("payment %s is in a %s settlement batch; reverse the payout first: %w", paymentID, batchStatus.String, ErrPaymentInSettlementBatch)
 	}
 
 	// 3. If in an open batch, remove the line and recompute totals.

@@ -9,14 +9,17 @@ It also supports a mobile data purchase flow for MTN, Airtel, Glo, and 9mobile u
 Customer WhatsApp / Telegram
        | signed webhooks
        v
-Go service -------- PostgreSQL
-   |                 |- payment state and audit events
-   |                 |- durable webhook/inbound queues
-   |                 `- transactional message outbox
+app/ (HTTP handlers, admin panel)
    |
-   |- initialize/verify -> card checkout provider API
-   |- outbound messages -> WhatsApp Cloud API / Telegram Bot API
-   `- read-only admin + tokenized receipts
+   |- service/ (conversation state machine, refunds, settlements, invoices, KYC, data)
+   |      |
+   |      |- providers/payout/  (bank transfer rails)
+   |      `- providers/refund/  (refund rails)
+   |
+   `- store/ (PostgreSQL: payments, sessions, audit, KYC, thrift, invoices, data)
+              |- durable webhook/inbound queues
+              |- transactional message outbox
+              `- idempotent payout outbox
 ```
 
 Card payment success is written only after the backend calls provider verification and confirms the reference, amount, currency, channel, and available payment/merchant metadata. Bank-transfer success is written only after the customer taps **I have transferred** against generated transfer instructions.

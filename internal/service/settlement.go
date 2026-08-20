@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/providers/payout"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -38,7 +39,7 @@ type SettlementService struct {
 // (250 = 2.5 %) applied at batch-cut time.
 func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger, feeBps int, opts ...SettlementOption) *SettlementService {
 	if provider == nil {
-		provider = NewSimulatedPayoutProvider()
+		provider = payout.NewSimulatedProvider()
 	}
 	if logger == nil {
 		logger = slog.Default()

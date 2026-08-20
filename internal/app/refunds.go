@@ -70,7 +70,7 @@ func (a *App) apiRefundPayment(w http.ResponseWriter, r *http.Request) {
 
 	refund, err := a.refunds.Refund(r.Context(), payment.ID.String(), reason)
 	if err != nil {
-		if strings.Contains(err.Error(), "settlement batch") {
+		if errors.Is(err, store.ErrPaymentInSettlementBatch) {
 			writeAPIError(w, http.StatusConflict, "batch_conflict", err.Error())
 			return
 		}

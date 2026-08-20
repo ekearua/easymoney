@@ -121,7 +121,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
-			_ = enc.Encode(data)
+			if err := enc.Encode(data); err != nil {
+				a.logger.WarnContext(r.Context(), "json encode revenue", "error", err)
+				return
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/csv")
 			wr := csv.NewWriter(w)
@@ -137,6 +140,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 			wr.Flush()
+			if err := wr.Error(); err != nil {
+				a.logger.WarnContext(r.Context(), "csv write revenue", "error", err)
+				return
+			}
 		}
 	case "merchants":
 		data, err := a.store.MerchantSettlementSummary(r.Context())
@@ -148,7 +155,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
-			_ = enc.Encode(data)
+			if err := enc.Encode(data); err != nil {
+				a.logger.WarnContext(r.Context(), "json encode merchants", "error", err)
+				return
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/csv")
 			wr := csv.NewWriter(w)
@@ -159,6 +169,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("%d", m.PayoutKobo), fmt.Sprintf("%d", m.PayoutCount)})
 			}
 			wr.Flush()
+			if err := wr.Error(); err != nil {
+				a.logger.WarnContext(r.Context(), "csv write merchants", "error", err)
+				return
+			}
 		}
 	case "payouts":
 		data, err := a.store.PayoutReport(r.Context(), &from, &to, 5000)
@@ -170,7 +184,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
-			_ = enc.Encode(data)
+			if err := enc.Encode(data); err != nil {
+				a.logger.WarnContext(r.Context(), "json encode payouts", "error", err)
+				return
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/csv")
 			wr := csv.NewWriter(w)
@@ -184,6 +201,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 					p.Status, p.ExternalRef, p.Provider, p.CreatedAt.UTC().Format(time.RFC3339), completed})
 			}
 			wr.Flush()
+			if err := wr.Error(); err != nil {
+				a.logger.WarnContext(r.Context(), "csv write payouts", "error", err)
+				return
+			}
 		}
 	case "volume":
 		data, err := a.store.TransactionVolume(r.Context(), from, to)
@@ -195,7 +216,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			enc := json.NewEncoder(w)
 			enc.SetIndent("", "  ")
-			_ = enc.Encode(data)
+			if err := enc.Encode(data); err != nil {
+				a.logger.WarnContext(r.Context(), "json encode volume", "error", err)
+				return
+			}
 		} else {
 			w.Header().Set("Content-Type", "text/csv")
 			wr := csv.NewWriter(w)
@@ -205,6 +229,10 @@ func (a *App) adminAnalyticsExport(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("%d", v.Count), fmt.Sprintf("%d", v.TotalKobo), fmt.Sprintf("%d", v.AverageKobo)})
 			}
 			wr.Flush()
+			if err := wr.Error(); err != nil {
+				a.logger.WarnContext(r.Context(), "csv write volume", "error", err)
+				return
+			}
 		}
 	default:
 		http.Error(w, "unknown report", http.StatusBadRequest)

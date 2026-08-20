@@ -80,7 +80,10 @@ func (a *App) adminSIEMExport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(events)
+		if err := enc.Encode(events); err != nil {
+			a.logger.WarnContext(r.Context(), "json encode siem", "error", err)
+			return
+		}
 	}
 	a.audit(r, "admin.siem.exported", "siem", "", map[string]any{
 		"format": format, "count": len(events),
@@ -130,4 +133,7 @@ func (a *App) writeSIEMCSV(w http.ResponseWriter, events []store.SIEMEvent) {
 		})
 	}
 	wr.Flush()
+	if err := wr.Error(); err != nil {
+		a.logger.Warn("csv write siem", "error", err)
+	}
 }

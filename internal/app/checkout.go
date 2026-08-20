@@ -1,0 +1,333 @@
+package app
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	qrcode "github.com/skip2/go-qrcode"
+
+	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/service"
+	"whatsapp-payment-demo/internal/store"
+)
+
+func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
+	reference := strings.TrimSpace(r.URL.Query().Get("reference"))
+	if reference == "" {
+		http.Error(w, "missing reference", http.StatusBadRequest)
+		return
+	}
+	payment, _, err := a.payments.VerifyAndApply(r.Context(), reference, "paystack.callback")
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "callback verification failed", "reference", reference, "error", err)
+		http.Error(w, "Payment is still being verified. Return to WhatsApp or refresh your receipt shortly.", http.StatusAccepted)
+		return
+	}
+	http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+}
+
+// hostedCheckout renders the branded confirmation page for a payment capability.
+func (a *App) hostedCheckout(w http.ResponseWriter, r *http.Request) {
+	payment, ok := a.paymentByCheckoutToken(w, r)
+	if !ok {
+		return
+	}
+	if payment.Status == domain.StatusSucceeded {
+		http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+		return
+	}
+	a.renderHostedCheckout(w, r, payment, http.StatusOK)
+}
+
+// hostedCheckoutPay initializes the secure gateway only after the customer
+// confirms on the hosted page.
+func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
+	payment, ok := a.paymentByCheckoutToken(w, r)
+	if !ok {
+		return
+	}
+	switch payment.Status {
+	case domain.StatusSucceeded:
+		http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+		return
+	case domain.StatusInitialized, domain.StatusPending:
+		if payment.CheckoutURL != "" {
+			http.Redirect(w, r, payment.CheckoutURL, http.StatusSeeOther)
+			return
+		}
+	}
+	if payment.Provider != service.ProviderPaystack {
+		a.renderHostedCheckout(w, r, payment, http.StatusOK)
+		return
+	}
+	updated, err := a.payments.InitializeCheckout(r.Context(), payment)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "hosted checkout initialize failed", "payment_id", payment.ID, "error", err)
+		a.renderHostedCheckout(w, r, payment, http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(w, r, updated.CheckoutURL, http.StatusSeeOther)
+}
+
+func (a *App) paymentByCheckoutToken(w http.ResponseWriter, r *http.Request) (store.PaymentView, bool) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return store.PaymentView{}, false
+	}
+	payment, err := a.store.PaymentByCheckoutToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return store.PaymentView{}, false
+	}
+	return payment, true
+}
+
+func (a *App) renderHostedCheckout(w http.ResponseWriter, r *http.Request, payment store.PaymentView, status int) {
+	var invoice *store.InvoiceView
+	if view, err := a.store.InvoiceByPaymentID(r.Context(), payment.ID); err == nil {
+		invoice = &view
+	}
+	var dataOrder *store.DataOrderView
+	if order, err := a.store.DataOrderByPaymentID(r.Context(), payment.ID); err == nil {
+		dataOrder = &order
+	}
+	var thrift *store.ThriftContributionView
+	if view, err := a.store.ThriftContributionByPaymentID(r.Context(), payment.ID); err == nil {
+		thrift = &view
+	}
+	a.renderStatus(w, "checkout.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "Invoice": invoice,
+		"DataOrder": dataOrder, "Thrift": thrift, "BaseURL": a.cfg.BaseURL,
+	}, status)
+}
+
+// checkoutLink renders a general request-money link and resolves the payer
+// before any payment is created.
+func (a *App) checkoutLink(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	checkout, err := a.store.CheckoutByToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if checkout.Status == "paid" {
+		if checkout.PaymentID.Valid {
+			if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+				http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	// An open link that was already resolved continues the active payment
+	// attempt instead of asking for the payer phone again.
+	if checkout.Status == "open" && checkout.PaymentID.Valid {
+		if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+			switch payment.Status {
+			case domain.StatusFailed, domain.StatusAbandoned, domain.StatusExpired, domain.StatusSucceeded:
+			default:
+				http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	a.render(w, "link.html", map[string]any{
+		"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+	})
+}
+
+// checkoutLinkResolve collects the payer's WhatsApp number on the hosted link
+// page, creates the payment against the payee, and hands off to the branded
+// checkout page to confirm and pay.
+func (a *App) checkoutLinkResolve(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	checkout, err := a.store.CheckoutByToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if checkout.Status == "paid" {
+		if checkout.PaymentID.Valid {
+			if payment, err := a.store.PaymentByID(r.Context(), checkout.PaymentID.UUID); err == nil {
+				http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	if checkout.Status != "open" {
+		a.render(w, "link.html", map[string]any{
+			"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+			"Error": "This payment request is no longer open.",
+		})
+		return
+	}
+	phone := strings.TrimSpace(r.FormValue("phone"))
+	payment, err := a.payments.ResolveCheckout(r.Context(), checkout, phone)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "checkout resolve failed", "checkout_id", checkout.ID, "error", err)
+		a.render(w, "link.html", map[string]any{
+			"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+			"Error": "Enter the WhatsApp number where you want to receive the receipt.",
+		})
+		return
+	}
+	http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+}
+
+func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if len(token) < 32 {
+		http.NotFound(w, r)
+		return
+	}
+	payment, err := a.store.PaymentByReceiptToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var dataOrder *store.DataOrderView
+	if order, err := a.store.DataOrderByPaymentID(r.Context(), payment.ID); err == nil {
+		dataOrder = &order
+	}
+	var invoice *store.InvoiceView
+	if view, err := a.store.InvoiceByPaymentID(r.Context(), payment.ID); err == nil {
+		invoice = &view
+	}
+	var thrift *store.ThriftContributionView
+	if view, err := a.store.ThriftContributionByPaymentID(r.Context(), payment.ID); err == nil {
+		thrift = &view
+	}
+	var scanToken *store.ReceiptScanTokenView
+	if view, err := a.store.ReceiptScanTokenByPaymentID(r.Context(), payment.ID); err == nil {
+		scanToken = &view
+	}
+	a.render(w, "receipt.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder,
+		"Invoice": invoice, "Thrift": thrift, "ScanToken": scanToken, "BaseURL": a.cfg.BaseURL,
+	})
+}
+
+func (a *App) receiptScanQR(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	payment, err := a.store.PaymentByReceiptToken(r.Context(), token)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	scanToken, err := a.store.ReceiptScanTokenByPaymentID(r.Context(), payment.ID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// The QR payload contains only the opaque scan URL. Readers call the
+	// authenticated API to get safe receipt details and consume the token.
+	png, err := qrcode.Encode(a.cfg.BaseURL+"/scan/"+scanToken.Token, qrcode.Medium, 240)
+	if err != nil {
+		http.Error(w, "qr unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(png)
+}
+
+func (a *App) scanLanding(w http.ResponseWriter, r *http.Request) {
+	token := store.ExtractScanToken(chi.URLParam(r, "token"))
+	if token == "" {
+		http.NotFound(w, r)
+		return
+	}
+	a.render(w, "scan.html", map[string]any{"AppName": a.cfg.AppName, "Token": token})
+}
+
+func (a *App) readerScan(w http.ResponseWriter, r *http.Request) {
+	apiKey := strings.TrimSpace(r.Header.Get("X-Xego-Reader-Key"))
+	if apiKey == "" {
+		apiKey = strings.TrimPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+	}
+	var body struct {
+		Token string `json:"token"`
+		URL   string `json:"url"`
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+	} else if err := r.ParseForm(); err == nil {
+		body.Token = r.FormValue("token")
+		body.URL = r.FormValue("url")
+	}
+	tokenOrURL := body.Token
+	if tokenOrURL == "" {
+		tokenOrURL = body.URL
+	}
+	result, err := a.store.ValidateAndConsumeReceiptScan(r.Context(), apiKey, tokenOrURL, clientIP(r))
+	if err != nil {
+		http.Error(w, "scan unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	status := http.StatusOK
+	if result.Status != "valid_consumed" {
+		status = http.StatusConflict
+		if result.Status == "reader_not_authorized" {
+			status = http.StatusUnauthorized
+		}
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
+	reference := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "reference")))
+	if !strings.HasPrefix(reference, "XG-INV-") {
+		http.NotFound(w, r)
+		return
+	}
+	invoice, err := a.store.InvoiceByReference(r.Context(), reference)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	whatsappPayLink := ""
+	if a.cfg.WhatsAppPhoneNumber != "" {
+		whatsappPayLink = "https://wa.me/" + a.cfg.WhatsAppPhoneNumber + "?text=" + url.QueryEscape("PAY "+invoice.Reference)
+	}
+	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL, "WhatsAppPayLink": whatsappPayLink})
+}
+
+func (a *App) thriftGroup(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(chi.URLParam(r, "name"))
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	group, err := a.store.ThriftGroupByName(r.Context(), name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	members, _ := a.store.ThriftMembers(r.Context(), group.ID)
+	progress, _ := a.store.ThriftCycleProgressForGroup(r.Context(), group.ID)
+	a.render(w, "thrift_group.html", map[string]any{
+		"AppName":  a.cfg.AppName,
+		"Group":    group,
+		"Members":  members,
+		"Progress": progress,
+	})
+}

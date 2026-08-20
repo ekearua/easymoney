@@ -51,7 +51,7 @@ func (a *App) apiCreateSettlement(w http.ResponseWriter, r *http.Request) {
 	}
 	batch, err := a.settlements.Cut(r.Context(), auth.merchant.ID, batchNo)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) || strings.Contains(err.Error(), "nothing to settle") {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, store.ErrNothingToSettle) {
 			writeAPIError(w, http.StatusUnprocessableEntity, "nothing_to_settle", err.Error())
 			return
 		}
