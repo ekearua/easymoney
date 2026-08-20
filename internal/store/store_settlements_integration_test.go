@@ -324,6 +324,65 @@ func TestSettlementLifecycle(t *testing.T) {
 	if requeued != 1 {
 		t.Fatalf("expected 1 stale payout requeued, got %d", requeued)
 	}
+
+	// Payout-reverse-firebatch: reverse a processing (in-flight) payout.
+	p4 := createSucceeded("ref-settle-4", 75_000)
+	batch3, err := repository.CutSettlement(ctx, merchant.ID, "BATCH-003", time.Time{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inflightPayout, err := repository.CreatePayout(ctx, batch3.ID, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ClaimPayoutForDispatch(ctx, batch3.ID); err != nil {
+		t.Fatal(err)
+	}
+	processing, err := repository.PayoutByID(ctx, inflightPayout.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if processing.Status != PayoutProcessing {
+		t.Fatalf("expected processing payout, got %s", processing.Status)
+	}
+	if err := repository.ReversePayout(ctx, inflightPayout.ID, "provider timeout"); err != nil {
+		t.Fatal(err)
+	}
+	reversed2, err := repository.PayoutByID(ctx, inflightPayout.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reversed2.Status != PayoutReversed {
+		t.Fatalf("processing payout should be reversed: %+v", reversed2)
+	}
+	reopened2, err := repository.SettlementBatchByID(ctx, batch3.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened2.Status != SettlementBatchOpen {
+		t.Fatalf("batch should reopen after firebatch reversal: %+v", reopened2)
+	}
+	fresh2, err := repository.CreatePayout(ctx, batch3.ID, account.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ClaimPayoutForDispatch(ctx, batch3.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.CompletePayout(ctx, fresh2.ID, "SIM-PAY-BATCH-003-1"); err != nil {
+		t.Fatal(err)
+	}
+	done2, err := repository.PayoutByID(ctx, fresh2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done2.Status != PayoutCompleted {
+		t.Fatalf("expected completed payout after firebatch reversal: %+v", done2)
+	}
+	if got := merchantNet(ctx, t, repository, merchant.ID, LedgerAccountSettlementPayable); got != 0 {
+		t.Fatalf("settlement payable after firebatch cycle = %d, want 0", got)
+	}
+	_ = p4
 }
 
 func merchantNet(ctx context.Context, t *testing.T, repository *Store, merchantID uuid.UUID, account string) int64 {

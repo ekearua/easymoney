@@ -279,7 +279,7 @@ func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo
 		return SettlementBatch{}, err
 	}
 	if total <= 0 {
-		return SettlementBatch{}, fmt.Errorf("nothing to settle for merchant %s", merchantID)
+		return SettlementBatch{}, fmt.Errorf("nothing to settle for merchant %s: %w", merchantID, ErrNothingToSettle)
 	}
 	feeKobo := total * int64(feeBps) / 10_000
 
@@ -605,8 +605,8 @@ func (s *Store) ReversePayout(ctx context.Context, payoutID uuid.UUID, reason st
 		&p.ExternalRef, &p.Provider, &p.Attempts, &p.LastError, &p.LedgerJournal, &p.CreatedAt, &p.CompletedAt); err != nil {
 		return err
 	}
-	if p.Status != PayoutFailed {
-		return fmt.Errorf("only a failed payout can be reversed, payout %s is %s", payoutID, p.Status)
+	if p.Status != PayoutFailed && p.Status != PayoutProcessing {
+		return fmt.Errorf("only a failed or processing payout can be reversed, payout %s is %s", payoutID, p.Status)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE payouts SET status='reversed',last_error=$2 WHERE id=$1`, payoutID, reason); err != nil {

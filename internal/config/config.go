@@ -272,6 +272,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("WHATSAPP_GRAPH_VERSION must look like v25.0")
 	}
 	if cfg.Environment == "production" {
+		if cfg.PaymentProvider == "simulated" {
+			return Config{}, errors.New("PAYMENT_PROVIDER=simulated is not allowed in production")
+		}
 		for name, value := range map[string]string{
 			"DATABASE_URL":             cfg.DatabaseURL,
 			"ADMIN_PASSWORD_HASH":      cfg.AdminPasswordHash,
