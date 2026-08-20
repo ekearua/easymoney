@@ -225,6 +225,9 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
@@ -279,6 +282,9 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
@@ -287,9 +293,15 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 }
 
 func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
-	uses, err := s.store.ServicePurchaseQuantityByPaymentID(ctx, payment.ID)
+	uses, err := s.store.EventTicketPurchaseQuantityByPaymentID(ctx, payment.ID)
 	if err != nil {
 		return err
+	}
+	if uses <= 0 {
+		uses, err = s.store.ServicePurchaseQuantityByPaymentID(ctx, payment.ID)
+		if err != nil {
+			return err
+		}
 	}
 	token, created, err := s.store.EnsureReceiptScanToken(ctx, payment.ID, uses)
 	if errors.Is(err, pgx.ErrNoRows) {

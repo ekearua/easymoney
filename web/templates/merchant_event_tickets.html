@@ -1,0 +1,31 @@
+{{define "merchant_event_tickets.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Event tickets</h1><p class="muted">{{.Event.Name}}</p></div>
+  <a href="/merchant/events">← Back to events</a>
+</header>
+
+<section class="panel" style="margin-bottom:16px">
+  <h3>Ticket tiers</h3>
+  <div class="table-wrap"><table><thead><tr><th>Tier</th><th>Price</th><th>Sold</th><th>Capacity</th></tr></thead><tbody>
+  {{range .Tiers}}<tr>
+    <td>{{.Name}}</td>
+    <td>{{money .PriceKobo}}</td>
+    <td>{{.Sold}}</td>
+    <td>{{if lt .Capacity 0}}Unlimited{{else}}{{.Capacity}}{{end}}</td>
+  </tr>{{else}}<tr><td colspan="4">No tiers configured.</td></tr>{{end}}</tbody></table></div>
+</section>
+
+<div class="table-wrap"><table><thead><tr><th>Customer</th><th>Tier</th><th>Qty</th><th>Unit price</th><th>Total</th><th>Custom data</th><th>Date</th></tr></thead><tbody>
+{{range .Purchases}}<tr>
+  <td>{{.UserName}}<br><span class="mono">{{.WhatsAppNumber}}</span></td>
+  <td>{{.TierName}}</td>
+  <td>{{.Quantity}}</td>
+  <td>{{money .UnitPriceKobo}}</td>
+  <td><strong>{{money .TotalKobo}}</strong></td>
+  <td>{{range $i, $v := index $.CustomData .ID}}{{if $i}}, {{end}}{{.FieldName}}: {{.FieldValue}}{{else}}—{{end}}</td>
+  <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+</tr>{{else}}<tr><td colspan="7">No tickets sold yet.</td></tr>{{end}}</tbody></table></div>
+</main></body></html>
+{{end}}

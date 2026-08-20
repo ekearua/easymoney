@@ -1,0 +1,30 @@
+{{define "merchant_events_list.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Events</h1></div>
+    <a class="btn-scan" href="/merchant/events/new" style="text-decoration:none">+ New event</a>
+  </header>
+  {{if index . "Created"}}<div class="alert success">Event created.</div>{{end}}
+  {{if index . "Saved"}}<div class="alert success">Event updated.</div>{{end}}
+  {{if index . "Toggled"}}<div class="alert success">Event status updated.</div>{{end}}
+  {{if .Events}}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Venue</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+  {{range .Events}}<tr>
+    <td><strong>{{.Name}}</strong>{{if .Description}}<br><span class="muted">{{.Description}}</span>{{end}}</td>
+    <td>{{if .Venue}}{{.Venue}}{{else}}—{{end}}</td>
+    <td>{{if .EventStartAt}}{{.EventStartAt.Format "02 Jan 2006 15:04"}}{{if .EventEndAt}} — {{.EventEndAt.Format "15:04"}}{{end}}{{else}}—{{end}}</td>
+    <td>{{if .IsActive}}<span class="status succeeded">Active</span>{{else}}<span class="status failed">Inactive</span>{{end}}</td>
+    <td>
+      <a href="/merchant/events/{{.ID}}/edit">Edit</a>
+      <form method="post" action="/merchant/events/{{.ID}}/toggle" style="display:inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="link-button">{{if .IsActive}}Deactivate{{else}}Activate{{end}}</button>
+      </form>
+      <a href="/merchant/events/{{.ID}}/tickets">Tickets</a>
+    </td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No events yet. Create your first event for customers to buy tickets.</p></div>{{end}}
+</main></body></html>
+{{end}}

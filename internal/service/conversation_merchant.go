@@ -40,12 +40,16 @@ func (s *ConversationService) handleMerchant(ctx context.Context, channel, recip
 	if err != nil {
 		return err
 	}
-	if len(services) > 0 {
+	events, err := s.store.ListActiveEventsByMerchantID(ctx, merchant.ID)
+	if err != nil {
+		return err
+	}
+	if len(services) > 0 || len(events) > 0 {
 		session.State = "select_service_or_amount"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendServicePicker(ctx, channel, recipient, merchant, services)
+		return s.sendServicePicker(ctx, channel, recipient, merchant, services, events)
 	}
 	session.State = "enter_amount"
 	if err := s.saveSession(ctx, session); err != nil {
@@ -76,10 +80,12 @@ func (s *ConversationService) sendMerchants(ctx context.Context, channel, recipi
 	})
 }
 
-func (s *ConversationService) sendServicePicker(ctx context.Context, channel, recipient string, merchant store.Merchant, services []store.MerchantService) error {
+func (s *ConversationService) sendServicePicker(ctx context.Context, channel, recipient string, merchant store.Merchant, services []store.MerchantService, events []store.MerchantEvent) error {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("What would you like to pay %s for?\n", merchant.Name))
-	for i, svc := range services {
+	n := 0
+	for _, svc := range services {
+		n++
 		expiryText := ""
 		if svc.ExpiresAt != nil {
 			expiryText = fmt.Sprintf(" (expires %s)", svc.ExpiresAt.Format("02 Jan 2006"))
@@ -88,7 +94,19 @@ func (s *ConversationService) sendServicePicker(ctx context.Context, channel, re
 		if svc.QuantityAvailable >= 0 {
 			availText = fmt.Sprintf(" [%d left]", svc.QuantityAvailable)
 		}
-		sb.WriteString(fmt.Sprintf("\n%d. %s — %s%s%s", i+1, svc.Name, domain.FormatNGN(svc.UnitPriceKobo), availText, expiryText))
+		sb.WriteString(fmt.Sprintf("\n%d. %s — %s%s%s", n, svc.Name, domain.FormatNGN(svc.UnitPriceKobo), availText, expiryText))
+	}
+	for _, evt := range events {
+		n++
+		dateText := ""
+		if evt.EventStartAt != nil {
+			dateText = fmt.Sprintf(" | %s", evt.EventStartAt.Format("02 Jan 2006 15:04"))
+		}
+		venueText := ""
+		if evt.Venue != "" {
+			venueText = fmt.Sprintf(" @ %s", evt.Venue)
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. 📅 %s%s%s", n, evt.Name, venueText, dateText))
 	}
 	sb.WriteString("\n\nSend the number of your choice, or type CUSTOM to enter an amount.")
 	return s.sendText(ctx, channel, recipient, sb.String())

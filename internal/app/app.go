@@ -493,6 +493,13 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/services/{id}/edit", a.merchantServiceUpdate)
 		m.Post("/merchant/services/{id}/toggle", a.merchantServiceToggle)
 		m.Get("/merchant/services/{id}/payments", a.merchantServicePayments)
+		m.Get("/merchant/events", a.merchantEventsList)
+		m.Get("/merchant/events/new", a.merchantEventNewForm)
+		m.Post("/merchant/events/new", a.merchantEventCreate)
+		m.Get("/merchant/events/{id}/edit", a.merchantEventEditForm)
+		m.Post("/merchant/events/{id}/edit", a.merchantEventUpdate)
+		m.Post("/merchant/events/{id}/toggle", a.merchantEventToggle)
+		m.Get("/merchant/events/{id}/tickets", a.merchantEventTickets)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
 		m.Post("/merchant/totp/disable", func(w http.ResponseWriter, r *http.Request) {
 			merchantID := merchantIDFromContext(r.Context())

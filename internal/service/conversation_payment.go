@@ -42,7 +42,7 @@ func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel
 	}
 	input = strings.TrimSpace(input)
 	if input == "" {
-		return s.sendText(ctx, channel, recipient, "Send the number of a service above, or type CUSTOM to enter an amount.")
+		return s.sendText(ctx, channel, recipient, "Send the number above, or type CUSTOM to enter an amount.")
 	}
 	if strings.EqualFold(input, "custom") || strings.EqualFold(input, "custom amount") {
 		session.State = "enter_amount"
@@ -58,17 +58,36 @@ func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel
 	if err != nil {
 		return err
 	}
-	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(services) {
-		svc := services[n-1]
-		session.Data["service_id"] = svc.ID.String()
-		session.Data["service_name"] = svc.Name
-		session.Data["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
-		session.State = "enter_service_quantity"
+	events, err := s.store.ListActiveEventsByMerchantID(ctx, merchant.ID)
+	if err != nil {
+		return err
+	}
+	total := len(services) + len(events)
+	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= total {
+		if n <= len(services) {
+			svc := services[n-1]
+			session.Data["service_id"] = svc.ID.String()
+			session.Data["service_name"] = svc.Name
+			session.Data["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+			session.State = "enter_service_quantity"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+		}
+		evt := events[n-len(services)-1]
+		tiers, err := s.store.ActiveTiersByEventID(ctx, evt.ID)
+		if err != nil || len(tiers) == 0 {
+			return s.sendText(ctx, channel, recipient, "This event has no ticket tiers available.")
+		}
+		session.Data["event_id"] = evt.ID.String()
+		session.Data["event_name"] = evt.Name
+		session.State = "select_event_tier"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient,
-			fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+		return s.sendEventTierPicker(ctx, channel, recipient, evt, tiers)
 	}
 	lower := strings.ToLower(input)
 	for _, svc := range services {
@@ -84,7 +103,22 @@ func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel
 				fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
 		}
 	}
-	return s.sendServicePicker(ctx, channel, recipient, merchant, services)
+	for _, evt := range events {
+		if strings.Contains(strings.ToLower(evt.Name), lower) {
+			tiers, err := s.store.ActiveTiersByEventID(ctx, evt.ID)
+			if err != nil || len(tiers) == 0 {
+				return s.sendText(ctx, channel, recipient, "This event has no ticket tiers available.")
+			}
+			session.Data["event_id"] = evt.ID.String()
+			session.Data["event_name"] = evt.Name
+			session.State = "select_event_tier"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendEventTierPicker(ctx, channel, recipient, evt, tiers)
+		}
+	}
+	return s.sendServicePicker(ctx, channel, recipient, merchant, services, events)
 }
 
 func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -104,6 +138,40 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 				domain.FormatNGN(total), domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
 	}
 	serviceID := session.Data["service_id"]
+	eventTierID := session.Data["event_tier_id"]
+	isEvent := eventTierID != ""
+	session.Data["service_quantity"] = strconv.Itoa(qty)
+	session.Data["amount_kobo"] = strconv.FormatInt(total, 10)
+	svcName := session.Data["service_name"]
+	if isEvent {
+		tier, err := s.store.TierByID(ctx, uuid.MustParse(eventTierID))
+		if err != nil {
+			return err
+		}
+		if tier.Capacity >= 0 && int64(tier.Capacity-tier.Sold) < int64(qty) {
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("Sorry, only %d tickets left in this tier. Enter a smaller quantity.", tier.Capacity-tier.Sold))
+		}
+		customFields, _ := s.store.ListEventCustomFields(ctx, tier.ID)
+		if len(customFields) > 0 {
+			session.Data["custom_fields_prompt"] = buildEventCustomFieldsPrompt(customFields)
+			session.State = "collect_custom_fields"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			fieldOrder := buildEventCustomFieldsNames(customFields)
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("%s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\n%s\n\nSend all values separated by commas in this order: %s\nExample: %s",
+					svcName, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total), session.Data["custom_fields_prompt"], fieldOrder, buildEventCustomFieldsExample(customFields)))
+		}
+		session.State = "confirm_service_purchase"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("%s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+				svcName, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total)))
+	}
 	svc, err := s.store.MerchantServiceByID(ctx, uuid.MustParse(serviceID))
 	if err != nil {
 		return err
@@ -112,8 +180,6 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 		return s.sendText(ctx, channel, recipient,
 			fmt.Sprintf("Sorry, only %d available. Enter a smaller quantity.", svc.QuantityAvailable))
 	}
-	session.Data["service_quantity"] = strconv.Itoa(qty)
-	session.Data["amount_kobo"] = strconv.FormatInt(total, 10)
 	customFields, _ := s.store.ListServiceCustomFields(ctx, svc.ID)
 	if len(customFields) > 0 {
 		session.Data["custom_fields_prompt"] = buildCustomFieldsPrompt(customFields)
@@ -133,6 +199,70 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("Service: %s\nQuantity: %d\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
 			svc.Name, qty, domain.FormatNGN(unitPrice), domain.FormatNGN(total)))
+}
+
+func (s *ConversationService) handleEventTierSelection(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	merchant, err := s.store.MerchantBySlug(ctx, session.Data["merchant_slug"])
+	if err != nil {
+		session.State = "select_merchant"
+		_ = s.saveSession(ctx, session)
+		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
+	}
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return s.sendText(ctx, channel, recipient, "Send the number of a ticket tier above, or type BACK to choose a different option.")
+	}
+	if strings.EqualFold(input, "back") {
+		session.State = "select_service_or_amount"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		services, _ := s.store.ListActiveMerchantServices(ctx, merchant.ID)
+		events, _ := s.store.ListActiveEventsByMerchantID(ctx, merchant.ID)
+		return s.sendServicePicker(ctx, channel, recipient, merchant, services, events)
+	}
+	eventID, _ := uuid.Parse(session.Data["event_id"])
+	tiers, err := s.store.ActiveTiersByEventID(ctx, eventID)
+	if err != nil {
+		return err
+	}
+	if n, err := strconv.Atoi(input); err == nil && n >= 1 && n <= len(tiers) {
+		tier := tiers[n-1]
+		if tier.Capacity >= 0 && tier.Sold >= tier.Capacity {
+			return s.sendText(ctx, channel, recipient, "Sorry, that tier is sold out. Choose another tier.")
+		}
+		session.Data["event_tier_id"] = tier.ID.String()
+		session.Data["service_name"] = session.Data["event_name"] + " — " + tier.Name
+		session.Data["unit_price_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
+		delete(session.Data, "event_id")
+		delete(session.Data, "event_name")
+		session.State = "enter_service_quantity"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("%s — %s each\n\nHow many tickets? (Enter a number, default is 1)", session.Data["service_name"], domain.FormatNGN(tier.PriceKobo)))
+	}
+	return s.sendEventTierPicker(ctx, channel, recipient, store.MerchantEvent{ID: eventID, Name: session.Data["event_name"]}, tiers)
+}
+
+func (s *ConversationService) sendEventTierPicker(ctx context.Context, channel, recipient string, evt store.MerchantEvent, tiers []store.EventTicketTier) error {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🎫 %s — choose a ticket tier:\n", evt.Name))
+	for i, tier := range tiers {
+		availText := ""
+		if tier.Capacity >= 0 {
+			remaining := tier.Capacity - tier.Sold
+			if remaining <= 0 {
+				availText = " [SOLD OUT]"
+			} else {
+				availText = fmt.Sprintf(" [%d left]", remaining)
+			}
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s — %s%s", i+1, tier.Name, domain.FormatNGN(tier.PriceKobo), availText))
+	}
+	sb.WriteString("\n\nSend the number of your choice, or type BACK to go back.")
+	return s.sendText(ctx, channel, recipient, sb.String())
 }
 
 func buildCustomFieldsNames(fields []store.ServiceCustomField) string {
@@ -169,6 +299,40 @@ func buildCustomFieldsPrompt(fields []store.ServiceCustomField) string {
 	return sb.String()
 }
 
+func buildEventCustomFieldsNames(fields []store.EventCustomField) string {
+	names := make([]string, len(fields))
+	for i, f := range fields {
+		names[i] = f.FieldName
+	}
+	return strings.Join(names, ", ")
+}
+
+func buildEventCustomFieldsExample(fields []store.EventCustomField) string {
+	vals := make([]string, len(fields))
+	for i, f := range fields {
+		switch f.FieldType {
+		case "number":
+			vals[i] = strconv.Itoa(i + 1)
+		default:
+			vals[i] = "value" + strconv.Itoa(i+1)
+		}
+	}
+	return strings.Join(vals, ", ")
+}
+
+func buildEventCustomFieldsPrompt(fields []store.EventCustomField) string {
+	var sb strings.Builder
+	sb.WriteString("This ticket requires the following info:")
+	for _, f := range fields {
+		req := ""
+		if f.IsRequired {
+			req = " (required)"
+		}
+		sb.WriteString(fmt.Sprintf("\n• %s%s", f.FieldName, req))
+	}
+	return sb.String()
+}
+
 func (s *ConversationService) handleCollectCustomFields(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	input = strings.TrimSpace(input)
 	if strings.EqualFold(input, "skip") {
@@ -179,28 +343,50 @@ func (s *ConversationService) handleCollectCustomFields(ctx context.Context, cha
 		unitP, _ := strconv.ParseInt(session.Data["unit_price_kobo"], 10, 64)
 		amt, _ := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
 		return s.sendText(ctx, channel, recipient,
-			fmt.Sprintf("Service: %s\nQuantity: %s\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+			fmt.Sprintf("%s\nQuantity: %s\nUnit price: %s\nTotal: %s\n\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
 				session.Data["service_name"], session.Data["service_quantity"], domain.FormatNGN(unitP), domain.FormatNGN(amt)))
 	}
-	serviceID, _ := uuid.Parse(session.Data["service_id"])
-	fields, err := s.store.ListServiceCustomFields(ctx, serviceID)
-	if err != nil {
-		return err
-	}
+	tierIDStr := session.Data["event_tier_id"]
+	isEvent := tierIDStr != ""
 	parts := strings.Split(input, ",")
 	var fieldValues []string
 	fieldMap := make(map[string]string)
-	for i, f := range fields {
-		var val string
-		if i < len(parts) {
-			val = strings.TrimSpace(parts[i])
+	if isEvent {
+		tierID, _ := uuid.Parse(tierIDStr)
+		fields, err := s.store.ListEventCustomFields(ctx, tierID)
+		if err != nil {
+			return err
 		}
-		if f.IsRequired && val == "" {
-			return s.sendText(ctx, channel, recipient,
-				fmt.Sprintf("%s is required. Please send all values again separated by commas.", f.FieldName))
+		for i, f := range fields {
+			var val string
+			if i < len(parts) {
+				val = strings.TrimSpace(parts[i])
+			}
+			if f.IsRequired && val == "" {
+				return s.sendText(ctx, channel, recipient,
+					fmt.Sprintf("%s is required. Please send all values again separated by commas.", f.FieldName))
+			}
+			fieldValues = append(fieldValues, val)
+			fieldMap[f.FieldName] = val
 		}
-		fieldValues = append(fieldValues, val)
-		fieldMap[f.FieldName] = val
+	} else {
+		serviceID, _ := uuid.Parse(session.Data["service_id"])
+		fields, err := s.store.ListServiceCustomFields(ctx, serviceID)
+		if err != nil {
+			return err
+		}
+		for i, f := range fields {
+			var val string
+			if i < len(parts) {
+				val = strings.TrimSpace(parts[i])
+			}
+			if f.IsRequired && val == "" {
+				return s.sendText(ctx, channel, recipient,
+					fmt.Sprintf("%s is required. Please send all values again separated by commas.", f.FieldName))
+			}
+			fieldValues = append(fieldValues, val)
+			fieldMap[f.FieldName] = val
+		}
 	}
 	data, _ := json.Marshal(fieldMap)
 	session.Data["custom_data_json"] = string(data)
@@ -209,13 +395,13 @@ func (s *ConversationService) handleCollectCustomFields(ctx context.Context, cha
 		return err
 	}
 	prompt := ""
-	for _, f := range fields {
-		prompt += fmt.Sprintf("%s: %s\n", f.FieldName, fieldMap[f.FieldName])
+	for k, v := range fieldMap {
+		prompt += fmt.Sprintf("%s: %s\n", k, v)
 	}
 	unitP, _ := strconv.ParseInt(session.Data["unit_price_kobo"], 10, 64)
 	amt, _ := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
 	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Service: %s\nQuantity: %s\nUnit price: %s\nTotal: %s\n%s\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
+		fmt.Sprintf("%s\nQuantity: %s\nUnit price: %s\nTotal: %s\n%s\nReply CONFIRM to proceed to payment, or CANCEL to go back.",
 			session.Data["service_name"], session.Data["service_quantity"], domain.FormatNGN(unitP), domain.FormatNGN(amt), prompt))
 }
 
@@ -250,14 +436,21 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	}
 	serviceIDStr := session.Data["service_id"]
 	serviceQtyStr := session.Data["service_quantity"]
+	eventTierIDStr := session.Data["event_tier_id"]
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
 		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
 		if err != nil {
 			return err
 		}
-		if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
-			return err
+		if eventTierIDStr != "" {
+			if err := s.recordEventTicketPurchase(ctx, payment.ID, eventTierIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
+		} else {
+			if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
 		}
 		session.State = "confirm_payment"
 		session.Data["payment_id"] = payment.ID.String()
@@ -269,6 +462,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		session.State = "select_transfer_bank"
 		session.Data["service_id"] = serviceIDStr
 		session.Data["service_quantity"] = serviceQtyStr
+		session.Data["event_tier_id"] = eventTierIDStr
 		delete(session.Data, "bank_query")
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -304,6 +498,36 @@ func (s *ConversationService) recordServicePurchase(ctx context.Context, payment
 		var fieldMap map[string]string
 		if err := json.Unmarshal([]byte(customDataJSON), &fieldMap); err == nil && len(fieldMap) > 0 {
 			_ = s.store.SavePurchaseCustomData(ctx, purchaseID, fieldMap)
+		}
+	}
+	return nil
+}
+
+func (s *ConversationService) recordEventTicketPurchase(ctx context.Context, paymentID uuid.UUID, tierIDStr, qtyStr, customDataJSON string) error {
+	if tierIDStr == "" || qtyStr == "" {
+		return nil
+	}
+	tierID, err := uuid.Parse(tierIDStr)
+	if err != nil {
+		return nil
+	}
+	qty, _ := strconv.Atoi(qtyStr)
+	if qty <= 0 {
+		qty = 1
+	}
+	tier, err := s.store.TierByID(ctx, tierID)
+	if err != nil {
+		return err
+	}
+	total := int64(qty) * tier.PriceKobo
+	purchaseID, err := s.store.CreateEventTicketPurchase(ctx, tierID, paymentID, qty, tier.PriceKobo, total)
+	if err != nil {
+		return err
+	}
+	if customDataJSON != "" {
+		var fieldMap map[string]string
+		if err := json.Unmarshal([]byte(customDataJSON), &fieldMap); err == nil && len(fieldMap) > 0 {
+			_ = s.store.SaveEventPurchaseCustomData(ctx, purchaseID, fieldMap)
 		}
 	}
 	return nil
@@ -349,8 +573,15 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, channel, r
 	if err != nil {
 		return err
 	}
-	if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
-		return err
+	eventTierIDStr := session.Data["event_tier_id"]
+	if eventTierIDStr != "" {
+		if err := s.recordEventTicketPurchase(ctx, payment.ID, eventTierIDStr, session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
+			return err
+		}
+	} else {
+		if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
+			return err
+		}
 	}
 	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
 	if err != nil {

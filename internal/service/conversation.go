@@ -192,6 +192,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleMerchant(ctx, message.Channel, recipient, user, session, input)
 	case "select_service_or_amount":
 		return s.handleServiceOrAmount(ctx, message.Channel, recipient, user, session, input)
+	case "select_event_tier":
+		return s.handleEventTierSelection(ctx, message.Channel, recipient, user, session, input)
 	case "enter_service_quantity":
 		return s.handleServiceQuantity(ctx, message.Channel, recipient, user, session, input)
 	case "confirm_service_purchase":

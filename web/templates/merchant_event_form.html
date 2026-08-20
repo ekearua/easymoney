@@ -1,0 +1,82 @@
+{{define "merchant_event_form.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <h1>{{if .Edit}}Edit{{else}}New{{end}} event</h1>
+  <section class="panel">
+    <form method="post" action="{{if .Edit}}/merchant/events/{{.Event.ID}}/edit{{else}}/merchant/events/new{{end}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="form-grid">
+        <label>Event name <input name="name" value="{{if .Edit}}{{.Event.Name}}{{end}}" required></label>
+        <label>Venue <input name="venue" value="{{if .Edit}}{{.Event.Venue}}{{end}}" placeholder="e.g. Eko Hotel, Lagos"></label>
+        <label>Starts at <input type="datetime-local" name="event_start_at" value="{{if .Edit}}{{if .Event.EventStartAt}}{{.Event.EventStartAt.Format "2006-01-02T15:04"}}{{end}}{{end}}"></label>
+        <label>Ends at <input type="datetime-local" name="event_end_at" value="{{if .Edit}}{{if .Event.EventEndAt}}{{.Event.EventEndAt.Format "2006-01-02T15:04"}}{{end}}{{end}}"></label>
+        <label>Image URL <input name="image_url" value="{{if .Edit}}{{.Event.ImageURL}}{{end}}" placeholder="https://..."></label>
+      </div>
+      <label>Description
+        <textarea name="description" rows="3">{{if .Edit}}{{.Event.Description}}{{end}}</textarea>
+      </label>
+
+      <hr>
+      <h3>Ticket tiers</h3>
+      <div id="tier-list">
+        {{range $i, $t := .Tiers}}
+        <div class="cf-row">
+          <input name="tier_name[]" placeholder="Tier name (e.g. VIP)" value="{{$t.Name}}">
+          <input type="number" name="tier_price_kobo[]" placeholder="Price (kobo)" min="1" value="{{$t.PriceKobo}}">
+          <input type="number" name="tier_capacity[]" placeholder="Capacity (-1 = unlimited)" value="{{$t.Capacity}}">
+          <input type="hidden" name="tier_active[]" value="{{if $t.IsActive}}1{{else}}0{{end}}">
+          <label class="checkbox-row"><input type="checkbox" {{if $t.IsActive}}checked{{end}} onchange="this.previousElementSibling.value=this.checked?'1':'0'"> Active</label>
+          <button type="button" class="btn-sm danger cf-remove-btn">✕</button>
+        </div>
+        {{end}}
+      </div>
+      <button type="button" class="btn-sm" id="tier-add-btn">+ Add tier</button>
+
+      <hr>
+      <h3>Attendee fields <small class="muted">(optional — collected from all ticket buyers)</small></h3>
+      <div id="cf-list">
+        {{range $i, $f := .CustomFields}}
+        <div class="cf-row">
+          <input name="cf_name[]" placeholder="Field name (e.g. Attendee name)" value="{{$f.FieldName}}">
+          <select name="cf_type[]">
+            <option value="text" {{if eq $f.FieldType "text"}}selected{{end}}>Text</option>
+            <option value="number" {{if eq $f.FieldType "number"}}selected{{end}}>Number</option>
+            <option value="select" {{if eq $f.FieldType "select"}}selected{{end}}>Select</option>
+          </select>
+          <input name="cf_options[]" placeholder="Options (comma-separated, for Select)" value="{{$f.FieldOptions}}">
+          <label class="checkbox-row"><input type="checkbox" name="cf_required[]" value="1" {{if $f.IsRequired}}checked{{end}}> Required</label>
+          <button type="button" class="btn-sm danger cf-remove-btn">✕</button>
+        </div>
+        {{end}}
+      </div>
+      <button type="button" class="btn-sm" id="cf-add-btn">+ Add field</button>
+
+      <button type="submit">{{if .Edit}}Update{{else}}Create{{end}} event</button>
+    </form>
+  </section>
+</main>
+<script src="/static/merchant-services.js"></script>
+<script>
+(function(){
+  var addBtn=document.getElementById('tier-add-btn');
+  var list=document.getElementById('tier-list');
+  if(addBtn&&list){
+    addBtn.addEventListener('click',function(){
+      var div=document.createElement('div');
+      div.className='cf-row';
+      div.innerHTML=
+        '<input name="tier_name[]" placeholder="Tier name (e.g. VIP)">'+
+        '<input type="number" name="tier_price_kobo[]" placeholder="Price (kobo)" min="1">'+
+        '<input type="number" name="tier_capacity[]" placeholder="Capacity (-1 = unlimited)" value="-1">'+
+        '<input type="hidden" name="tier_active[]" value="1">'+
+        '<label class="checkbox-row"><input type="checkbox" checked onchange="this.previousElementSibling.value=this.checked?\'1\':\'0\'"> Active</label>'+
+        '<button type="button" class="btn-sm danger cf-remove-btn">✕</button>';
+      list.appendChild(div);
+    });
+  }
+})();
+</script>
+</body></html>
+{{end}}
