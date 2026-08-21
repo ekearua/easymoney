@@ -133,23 +133,25 @@ func (a *App) processInboundMessages(ctx context.Context) {
 }
 
 func (a *App) processGatewayWebhooks(ctx context.Context) {
-	events, err := a.store.ClaimGatewayWebhooks(ctx, a.cfg.PaymentProvider, 20)
-	if err != nil {
-		a.logger.WarnContext(ctx, "claim gateway webhooks", "provider", a.cfg.PaymentProvider, "error", err)
-		return
-	}
-	for _, event := range events {
-		if event.Event != "charge.success" {
-			_ = a.store.CompleteWebhook(ctx, event.ID, "ignored", "")
+	for _, provider := range a.payments.ProviderList() {
+		events, err := a.store.ClaimGatewayWebhooks(ctx, provider, 20)
+		if err != nil {
+			a.logger.WarnContext(ctx, "claim gateway webhooks", "provider", provider, "error", err)
 			continue
 		}
-		_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, a.cfg.PaymentProvider+".webhook")
-		if processErr != nil {
-			a.logger.ErrorContext(ctx, "process gateway webhook", "reference", event.Reference, "error", processErr)
-			_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
-			continue
+		for _, event := range events {
+			if !a.payments.IsGatewaySuccessEvent(provider, event.Event) {
+				_ = a.store.CompleteWebhook(ctx, event.ID, "ignored", "")
+				continue
+			}
+			_, _, processErr := a.payments.VerifyAndApply(ctx, event.Reference, provider+".webhook")
+			if processErr != nil {
+				a.logger.ErrorContext(ctx, "process gateway webhook", "reference", event.Reference, "provider", provider, "error", processErr)
+				_ = a.store.RetryWebhook(ctx, event.ID, event.Attempts, processErr.Error())
+				continue
+			}
+			_ = a.store.CompleteWebhook(ctx, event.ID, "processed", "")
 		}
-		_ = a.store.CompleteWebhook(ctx, event.ID, "processed", "")
 	}
 }
 

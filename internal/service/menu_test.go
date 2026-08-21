@@ -28,7 +28,7 @@ func TestMenuRowsStayWithinWhatsAppLimit(t *testing.T) {
 
 func TestNestedMenuRowsExposeExpectedActions(t *testing.T) {
 	t.Parallel()
-	assertRowsContain(t, mainMenuRows(), "menu_merchant_services", "menu_thrift_services", "menu_status", "menu_history", "menu_help")
+	assertRowsContain(t, mainMenuRows(), "menu_merchant_services", "menu_thrift_services", "menu_pay_individual", "menu_status", "menu_history", "menu_help")
 	assertRowsContain(t, merchantServicesRows(), "menu_register_merchant", "menu_generate_invoice", "menu_merchant_dashboard", "menu_main")
 	assertRowsContain(t, thriftMenuRows(), "menu_become_individual", "menu_create_thrift", "menu_join_thrift", "menu_thrift_dashboard", "menu_main")
 }

@@ -58,6 +58,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 			return err
 		}
 		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
+	case "pay individual", "menu_pay_individual", "send money":
+		return s.startPayIndividual(ctx, channel, recipient, user, session)
 	case "data", "menu_buy_data", "buy data":
 		session.State = "select_data_network"
 		session.Data = map[string]string{}
@@ -165,6 +167,7 @@ func (s *ConversationService) sendThriftMenu(ctx context.Context, channel, recip
 func mainMenuRows() []ports.InteractiveRow {
 	return []ports.InteractiveRow{
 		{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
+		{ID: "menu_pay_individual", Title: "Pay an individual", Description: "Send money to someone's bank"},
 		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
 		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},

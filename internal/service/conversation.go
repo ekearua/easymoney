@@ -314,6 +314,23 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoicePayBank(ctx, message.Channel, recipient, user, session, input)
 	case "await_invoice_bank_transfer":
 		return s.handleInvoiceBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_phone":
+		return s.handlePayIndividualPhone(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_amount":
+		return s.handlePayIndividualAmount(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_bank_code":
+		return s.handlePayIndividualBankCode(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_account":
+		return s.handlePayIndividualAccount(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_confirm":
+		return s.handlePayIndividualConfirm(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_method":
+		return s.handlePayIndividualMethod(ctx, message.Channel, recipient, user, session, input)
+	case "await_individual_bank_transfer":
+		return s.handleAwaitIndividualBankTransfer(ctx, message.Channel, recipient, user, session, input)
+	case "await_individual_payment":
+		// Card checkout: webhook will complete. Acknowledge if user sends text.
+		return s.sendText(ctx, message.Channel, recipient, "Your card payment is being processed. We'll notify you when it's complete.")
 	case "confirm_session_switch":
 		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "ai_assistant":

@@ -22,6 +22,8 @@ import (
 const (
 	LedgerAccountOperatingBank      = "1100_operating_bank"
 	LedgerAccountCustomerFloat      = "2100_customer_float"
+	LedgerAccountUserPayable        = "2300_user_payable"
+	LedgerAccountXegoPayable        = "2300_xego_payable"
 	LedgerAccountMerchantPayable    = "3100_merchant_payable"
 	LedgerAccountSettlementPayable  = "3200_settlement_payable"
 	LedgerAccountSettlementSuspense = "1300_settlement_suspense"
@@ -36,6 +38,8 @@ const (
 var validLedgerAccounts = map[string]bool{
 	LedgerAccountOperatingBank:      true,
 	LedgerAccountCustomerFloat:      true,
+	LedgerAccountUserPayable:        true,
+	LedgerAccountXegoPayable:        true,
 	LedgerAccountMerchantPayable:    true,
 	LedgerAccountSettlementPayable:  true,
 	LedgerAccountSettlementSuspense: true,

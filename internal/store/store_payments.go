@@ -290,9 +290,9 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		// C16: money-in posting. Customer funds arrive into the operating bank
 		// account as a customer float liability; purpose-specific allocations
 		// (invoice, thrift pool, sales revenue) follow in their own hooks.
-		// Thrift and data-order payments are platform-level movements, so their
-		// money-in stays untagged. Plain merchant collections (chat, checkout,
-		// API) are tagged and additionally accrue the merchant payable.
+		// Plain merchant collection splits (Xego fee + merchant receivable) are
+		// recorded by ApplyPaymentSplits called from PaymentService after the
+		// transition succeeds.
 		var isInvoice, isThrift, isData bool
 		if err := tx.QueryRow(ctx, `
 			SELECT EXISTS(SELECT 1 FROM invoice_payments WHERE payment_id=$1),
@@ -308,15 +308,6 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
 			LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received", "system", amountKobo, tag); err != nil {
 			return false, err
-		}
-		if !isInvoice && !isThrift && !isData {
-			// Move the collected funds from the customer float into the
-			// merchant payable: the merchant is owed this money until a
-			// settlement payout unwinds it.
-			if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-				LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Merchant collection accrual", "system", amountKobo, &merchantID); err != nil {
-				return false, err
-			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `

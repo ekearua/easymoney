@@ -50,6 +50,24 @@ type Config struct {
 	PaystackSecretKey string
 	PaystackBaseURL   string
 
+	FlutterwaveSecretKey     string
+	FlutterwavePublicKey     string
+	FlutterwaveBaseURL       string
+	FlutterwaveWebhookSecret string
+
+	// Fee configuration (kobo). These control the Xego platform fee
+	// applied as a split on merchant collection payments.
+	FeeCardBPS              int64
+	FeeCardFixedKobo        int64
+	FeeCardCapKobo          int64
+	FeeDVABPS               int64
+	FeeDVAFixedKobo         int64
+	FeeDVACapKobo           int64
+	FeeTransferBPS          int64
+	FeeTransferFixedKobo    int64
+	FeeTransferCapKobo      int64
+	FeeNIPPayoutFlatKobo    int64
+
 	WhatsAppVerifyToken    string
 	WhatsAppAppSecret      string
 	WhatsAppAccessToken    string
@@ -164,6 +182,20 @@ func Load() (Config, error) {
 		SMTPFrom:                   strings.TrimSpace(os.Getenv("SMTP_FROM")),
 		PaystackSecretKey:          os.Getenv("PAYSTACK_SECRET_KEY"),
 		PaystackBaseURL:            strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
+		FlutterwaveSecretKey:       os.Getenv("FLUTTERWAVE_SECRET_KEY"),
+		FlutterwavePublicKey:       os.Getenv("FLUTTERWAVE_PUBLIC_KEY"),
+		FlutterwaveBaseURL:         strings.TrimRight(env("FLUTTERWAVE_BASE_URL", "https://api.flutterwave.com"), "/"),
+		FlutterwaveWebhookSecret:   os.Getenv("FLUTTERWAVE_WEBHOOK_SECRET"),
+		FeeCardBPS:                 envInt64("XEGO_FEE_CARD_BPS", 200),
+		FeeCardFixedKobo:           envInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
+		FeeCardCapKobo:             envInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
+		FeeDVABPS:                  envInt64("XEGO_FEE_DVA_BPS", 150),
+		FeeDVAFixedKobo:            envInt64("XEGO_FEE_DVA_FIXED_KOBO", 0),
+		FeeDVACapKobo:              envInt64("XEGO_FEE_DVA_CAP_KOBO", 150000),
+		FeeTransferBPS:             envInt64("XEGO_FEE_TRANSFER_BPS", 180),
+		FeeTransferFixedKobo:       envInt64("XEGO_FEE_TRANSFER_FIXED_KOBO", 0),
+		FeeTransferCapKobo:         envInt64("XEGO_FEE_TRANSFER_CAP_KOBO", 250000),
+		FeeNIPPayoutFlatKobo:       envInt64("XEGO_FEE_NIP_PAYOUT_FLAT_KOBO", 10000),
 		WhatsAppVerifyToken:        os.Getenv("WHATSAPP_VERIFY_TOKEN"),
 		WhatsAppAppSecret:          os.Getenv("WHATSAPP_APP_SECRET"),
 		WhatsAppAccessToken:        os.Getenv("WHATSAPP_ACCESS_TOKEN"),
@@ -298,7 +330,6 @@ func Load() (Config, error) {
 		for name, value := range map[string]string{
 			"DATABASE_URL":             cfg.DatabaseURL,
 			"ADMIN_PASSWORD_HASH":      cfg.AdminPasswordHash,
-			"PAYSTACK_SECRET_KEY":      cfg.PaystackSecretKey,
 			"WHATSAPP_VERIFY_TOKEN":    cfg.WhatsAppVerifyToken,
 			"WHATSAPP_APP_SECRET":      cfg.WhatsAppAppSecret,
 			"WHATSAPP_ACCESS_TOKEN":    cfg.WhatsAppAccessToken,
@@ -312,8 +343,22 @@ func Load() (Config, error) {
 		if len(cfg.DataEncryptionKey) == 0 {
 			return Config{}, errors.New("DATA_ENCRYPTION_KEY is required in production")
 		}
-		if !strings.HasPrefix(cfg.PaystackSecretKey, "sk_test_") {
-			return Config{}, fmt.Errorf("PAYSTACK_SECRET_KEY must be a Paystack test key")
+		// Require keys for configured payment providers.
+		hasAnyProvider := false
+		if strings.EqualFold(cfg.PaymentProvider, "paystack") || cfg.PaystackSecretKey != "" {
+			if cfg.PaystackSecretKey == "" {
+				return Config{}, errors.New("PAYSTACK_SECRET_KEY is required in production when paystack is enabled")
+			}
+			hasAnyProvider = true
+		}
+		if cfg.FlutterwaveSecretKey != "" {
+			if cfg.FlutterwavePublicKey == "" {
+				return Config{}, errors.New("FLUTTERWAVE_PUBLIC_KEY is required when FLUTTERWAVE_SECRET_KEY is set")
+			}
+			hasAnyProvider = true
+		}
+		if !hasAnyProvider {
+			return Config{}, errors.New("at least one payment provider (PAYSTACK_SECRET_KEY or FLUTTERWAVE_SECRET_KEY) is required in production")
 		}
 		if cfg.TelegramEnabled {
 			for name, value := range map[string]string{

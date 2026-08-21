@@ -191,6 +191,40 @@ func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) receiveFlutterwaveWebhook(w http.ResponseWriter, r *http.Request) {
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	event, validationErr := a.flutterwave.ValidateWebhook(body, r.Header.Get("verif-hash"))
+	eventKey := digest(body)
+	if event.Reference != "" {
+		eventKey = event.Event + ":" + event.Reference
+	}
+	payload := json.RawMessage(`{}`)
+	if validationErr == nil {
+		payload, _ = json.Marshal(store.GatewayEvent{Event: event.Event, Reference: event.Reference})
+	}
+	deliveryID, fresh, err := a.store.RecordWebhook(r.Context(), "flutterwave", eventKey, validationErr == nil, payload)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if !fresh || event.Event != "charge.completed" {
+		if fresh {
+			_ = a.store.CompleteWebhook(context.Background(), deliveryID, "ignored", "")
+		}
+		return
+	}
+}
+
 // vtpassWebhookSecretValid reports whether the VTPass callback is authorized.
 // C28: the shared secret is carried in the X-VTPass-Webhook-Secret header and
 // never in the URL. A query-parameter secret is deliberately ignored, so a

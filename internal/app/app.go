@@ -36,6 +36,7 @@ import (
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
+	flutterwaveprovider "whatsapp-payment-demo/internal/providers/flutterwave"
 	"whatsapp-payment-demo/internal/providers/paystack"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/providers/telegram"
@@ -56,6 +57,7 @@ type App struct {
 	logger            *slog.Logger
 	store             *store.Store
 	paystack          *paystack.Client
+	flutterwave       *flutterwaveprovider.Client
 	telegram          *telegram.Client
 	whatsapp          *whatsapp.Client
 	payments          *service.PaymentService
@@ -90,6 +92,21 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	repository.SetDataKey(cfg.DataEncryptionKey)
 	paystackClient := paystack.New(cfg.PaystackSecretKey, cfg.PaystackBaseURL)
+	// Build the payment gateway registry.
+	gateways := map[string]ports.PaymentGateway{}
+	if cfg.PaystackSecretKey != "" {
+		gateways[service.ProviderPaystack] = paystackClient
+	}
+	var flutterwaveClient *flutterwaveprovider.Client
+	if cfg.FlutterwaveSecretKey != "" {
+		flutterwaveClient = flutterwaveprovider.New(cfg.FlutterwaveSecretKey, cfg.FlutterwavePublicKey, cfg.FlutterwaveBaseURL, cfg.FlutterwaveWebhookSecret)
+		gateways[service.ProviderFlutterwave] = flutterwaveClient
+	}
+	if len(gateways) == 0 {
+		// Always have at least the paystack client for backwards compat.
+		gateways[service.ProviderPaystack] = paystackClient
+	}
+	router := service.NewProviderRouter(gateways, logger)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
 	var telegramClient *telegram.Client
 	messengers := map[string]ports.Messenger{service.ChannelWhatsApp: whatsappClient}
@@ -97,7 +114,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		telegramClient = telegram.New(cfg.TelegramBotToken, cfg.TelegramAPIBase, cfg.TelegramWebhookSecret)
 		messengers[service.ChannelTelegram] = telegramClient
 	}
-	paymentService := service.NewPaymentService(cfg, repository, paystackClient, logger)
+	paymentService := service.NewPaymentService(cfg, repository, gateways, router, logger)
 	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
 	if strings.EqualFold(cfg.DataProvider, "vtpass") {
 		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
@@ -218,7 +235,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
 	return &App{
 		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
-		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
+		flutterwave: flutterwaveClient, telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
@@ -352,6 +369,7 @@ func (a *App) routes() http.Handler {
 	router.With(webhookLimit).Post("/webhooks/telegram", a.receiveTelegramWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
 	router.With(webhookLimit).Post("/webhooks/paystack", a.receivePaystackWebhook)
+	router.With(webhookLimit).Post("/webhooks/flutterwave", a.receiveFlutterwaveWebhook)
 	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.With(publicLimit).Get("/payments/return", a.paymentReturn)
 	router.With(publicLimit).Get("/checkout/{token}", a.hostedCheckout)

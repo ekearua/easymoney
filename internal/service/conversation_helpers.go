@@ -307,7 +307,8 @@ func isInterruptibleState(state string) bool {
 	case "select_payment_method", "confirm_payment", "select_transfer_bank", "await_bank_transfer",
 		"invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer",
 		"thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer",
-		"select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer":
+		"select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer",
+		"pay_individual_method", "await_individual_bank_transfer", "await_individual_payment":
 		return true
 	default:
 		return false
@@ -382,6 +383,12 @@ func describeCurrentFlow(session store.Session) string {
 		return "paying a thrift contribution"
 	case "select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer":
 		return "purchasing mobile data"
+	case "pay_individual_method", "await_individual_bank_transfer", "await_individual_payment":
+		phone := session.Data["recipient_phone"]
+		if phone != "" {
+			return fmt.Sprintf("sending money to %s", phone)
+		}
+		return "sending money to an individual"
 	default:
 		return "in a payment flow"
 	}
@@ -468,6 +475,12 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
 		}
 		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
+	case "pay_individual_method":
+		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer. Send *bank transfer* to proceed.")
+	case "await_individual_bank_transfer":
+		return s.sendText(ctx, channel, recipient, "Waiting for your bank transfer confirmation. Send *confirm* when done.")
+	case "await_individual_payment":
+		return s.sendText(ctx, channel, recipient, "Your payment is being processed. We'll notify you when it's complete.")
 	default:
 		return s.sendText(ctx, channel, recipient, "That session expired. Please start again.")
 	}

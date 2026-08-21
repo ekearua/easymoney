@@ -23,22 +23,27 @@ import (
 
 // PaymentService owns checkout initialization and authoritative verification.
 type PaymentService struct {
-	cfg     config.Config
-	store   *store.Store
-	gateway ports.PaymentGateway
-	logger  *slog.Logger
+	cfg      config.Config
+	store    *store.Store
+	gateways map[string]ports.PaymentGateway
+	router   *ProviderRouter
+	logger   *slog.Logger
 }
 
 const (
 	// ProviderPaystack identifies card checkout attempts handled by Paystack.
 	ProviderPaystack = "paystack"
+	// ProviderFlutterwave identifies card checkout attempts handled by Flutterwave.
+	ProviderFlutterwave = "flutterwave"
 	// ProviderBankTransfer identifies the in-app simulated bank-transfer rail.
 	ProviderBankTransfer = "bank_transfer"
+	// ProviderAuto selects the best gateway via the router.
+	ProviderAuto = "auto"
 )
 
 // NewPaymentService creates the provider-neutral payment coordinator.
-func NewPaymentService(cfg config.Config, repository *store.Store, gateway ports.PaymentGateway, logger *slog.Logger) *PaymentService {
-	return &PaymentService{cfg: cfg, store: repository, gateway: gateway, logger: logger}
+func NewPaymentService(cfg config.Config, repository *store.Store, gateways map[string]ports.PaymentGateway, router *ProviderRouter, logger *slog.Logger) *PaymentService {
+	return &PaymentService{cfg: cfg, store: repository, gateways: gateways, router: router, logger: logger}
 }
 
 // CreateDraft creates a payment capability and moves it to customer confirmation.
@@ -48,7 +53,10 @@ func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merch
 
 // CreateDraftForProvider creates a payment attempt for the selected rail.
 func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
-	if provider != ProviderPaystack && provider != ProviderBankTransfer {
+	if provider == ProviderAuto {
+		provider = s.router.PickProvider()
+	}
+	if provider != ProviderPaystack && provider != ProviderFlutterwave && provider != ProviderBankTransfer {
 		return store.PaymentView{}, fmt.Errorf("unsupported payment provider %q", provider)
 	}
 	if channel == "" {
@@ -149,15 +157,19 @@ func (s *PaymentService) HostedCheckoutURL(payment store.PaymentView) string {
 	return s.cfg.BaseURL + "/checkout/" + payment.CheckoutToken
 }
 
-// InitializeCheckout calls Paystack only after explicit customer confirmation.
+// InitializeCheckout calls the gateway after explicit customer confirmation.
 func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.PaymentView) (store.PaymentView, error) {
-	if payment.Provider != ProviderPaystack {
-		return store.PaymentView{}, fmt.Errorf("payment provider %q cannot use Paystack checkout", payment.Provider)
+	if payment.Provider == ProviderBankTransfer {
+		return store.PaymentView{}, fmt.Errorf("payment provider %q cannot use gateway checkout", payment.Provider)
 	}
 	if payment.Status != domain.StatusAwaitingConfirmation {
 		return store.PaymentView{}, fmt.Errorf("payment is not awaiting confirmation")
 	}
-	checkout, err := s.gateway.Initialize(ctx, ports.InitializePayment{
+	gateway := s.gateways[payment.Provider]
+	if gateway == nil {
+		return store.PaymentView{}, fmt.Errorf("no gateway configured for provider %q", payment.Provider)
+	}
+	checkout, err := gateway.Initialize(ctx, ports.InitializePayment{
 		Reference:   payment.ProviderReference,
 		Email:       payment.UserEmail,
 		AmountKobo:  payment.AmountKobo,
@@ -228,6 +240,9 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.applyCollectionSplits(ctx, updated); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
@@ -244,14 +259,18 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	if payment.Provider == ProviderBankTransfer {
 		return payment, false, fmt.Errorf("provider %q does not use gateway verification", payment.Provider)
 	}
-	verification, err := s.gateway.Verify(ctx, reference)
+	gateway := s.gateways[payment.Provider]
+	if gateway == nil {
+		return payment, false, fmt.Errorf("no gateway configured for provider %q", payment.Provider)
+	}
+	verification, err := gateway.Verify(ctx, reference)
 	if err != nil {
 		return payment, false, err
 	}
 	if err := validateVerification(payment, verification); err != nil {
 		return payment, false, err
 	}
-	target := mapGatewayStatus(verification.Status)
+	target := mapGatewayStatus(payment.Provider, verification.Status)
 	if target == "" {
 		return payment, false, nil
 	}
@@ -285,11 +304,55 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
 			return payment, changed, err
 		}
+		if err := s.applyCollectionSplits(ctx, updated); err != nil {
+			return payment, changed, err
+		}
 		if err := s.createReceiptScanToken(ctx, updated); err != nil {
 			return payment, changed, err
 		}
 	}
 	return updated, changed, nil
+}
+
+// applyCollectionSplits computes the Xego platform fee and records the split
+// rows (fee + merchant receivable) for a plain merchant collection payment.
+// Invoice, thrift, and data payments skip splits: their ledger flows are
+// handled by their own hooks.
+func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment store.PaymentView) error {
+	isLinked, err := s.store.IsInvoiceThriftOrData(ctx, payment.ID)
+	if err != nil {
+		return err
+	}
+	if isLinked {
+		return nil
+	}
+
+	fee := XegoCollectionFee(s.cfg, payment.Channel, payment.AmountKobo)
+	merchantRecv := MerchantReceivable(payment.AmountKobo, fee.FeeKobo)
+
+	var splits []store.SplitSpec
+	if fee.FeeKobo > 0 {
+		splits = append(splits, store.SplitSpec{
+			SplitType:   "xego_fee",
+			Account:     store.LedgerAccountXegoPayable,
+			AmountKobo:  fee.FeeKobo,
+			Currency:    "NGN",
+			Description: "Xego collection fee",
+		})
+	}
+	if merchantRecv > 0 {
+		splits = append(splits, store.SplitSpec{
+			SplitType:   "merchant_receivable",
+			Account:     store.LedgerAccountMerchantPayable,
+			AmountKobo:  merchantRecv,
+			Currency:    "NGN",
+			Description: "Merchant receivable",
+		})
+	}
+	if len(splits) == 0 {
+		return nil
+	}
+	return s.store.ApplyPaymentSplits(ctx, payment.ID, payment.MerchantID, splits)
 }
 
 func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
@@ -370,7 +433,7 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 	if !strings.EqualFold(verification.Currency, payment.Currency) {
 		return errors.New("verified currency does not match payment")
 	}
-	// Paystack-specific demo guardrails: only test keys and card channels.
+	// Per-provider validation hooks.
 	if payment.Provider == ProviderPaystack {
 		if verification.Domain != "test" {
 			return errors.New("non-test Paystack transaction rejected by demo")
@@ -388,8 +451,13 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 	return nil
 }
 
-func mapGatewayStatus(status string) domain.PaymentStatus {
-	switch status {
+func mapGatewayStatus(provider, status string) domain.PaymentStatus {
+	normalized := status
+	switch provider {
+	case ProviderFlutterwave:
+		normalized = flutterwaveNormalize(status)
+	}
+	switch normalized {
 	case "success":
 		return domain.StatusSucceeded
 	case "failed", "reversed":
@@ -400,6 +468,19 @@ func mapGatewayStatus(status string) domain.PaymentStatus {
 		return domain.StatusPending
 	default:
 		return ""
+	}
+}
+
+// flutterwaveNormalize maps Flutterwave-specific gateway statuses to the
+// common set that mapGatewayStatus switches on.
+func flutterwaveNormalize(status string) string {
+	switch strings.ToLower(status) {
+	case "successful", "success":
+		return "success"
+	case "cancelled":
+		return "failed"
+	default:
+		return status
 	}
 }
 
@@ -468,4 +549,26 @@ func (s *PaymentService) expireStale(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ProviderList returns the names of all registered payment gateways.
+func (s *PaymentService) ProviderList() []string {
+	names := make([]string, 0, len(s.gateways))
+	for name := range s.gateways {
+		names = append(names, name)
+	}
+	return names
+}
+
+// IsGatewaySuccessEvent reports whether the given event name is the terminal
+// success event for the provider.
+func (s *PaymentService) IsGatewaySuccessEvent(provider, event string) bool {
+	switch provider {
+	case ProviderPaystack:
+		return event == "charge.success"
+	case ProviderFlutterwave:
+		return event == "charge.completed"
+	default:
+		return false
+	}
 }

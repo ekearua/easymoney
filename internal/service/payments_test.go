@@ -132,13 +132,20 @@ func TestResultOutboxSkipsAPIChannel(t *testing.T) {
 
 func TestGatewayStatusMapping(t *testing.T) {
 	t.Parallel()
-	if got := mapGatewayStatus("success"); got != domain.StatusSucceeded {
+	if got := mapGatewayStatus(ProviderPaystack, "success"); got != domain.StatusSucceeded {
 		t.Fatalf("success maps to %q", got)
 	}
-	if got := mapGatewayStatus("pending"); got != domain.StatusPending {
+	if got := mapGatewayStatus(ProviderPaystack, "pending"); got != domain.StatusPending {
 		t.Fatalf("pending maps to %q", got)
 	}
-	if got := mapGatewayStatus("mystery"); got != "" {
+	if got := mapGatewayStatus(ProviderPaystack, "mystery"); got != "" {
 		t.Fatalf("unknown maps to %q", got)
+	}
+	// Flutterwave: "successful" normalizes to "success".
+	if got := mapGatewayStatus(ProviderFlutterwave, "successful"); got != domain.StatusSucceeded {
+		t.Fatalf("flutterwave successful maps to %q", got)
+	}
+	if got := mapGatewayStatus(ProviderFlutterwave, "cancelled"); got != domain.StatusFailed {
+		t.Fatalf("flutterwave cancelled maps to %q", got)
 	}
 }
