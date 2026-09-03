@@ -230,7 +230,7 @@ func (a *App) apiCreatePayment(w http.ResponseWriter, r *http.Request) {
 		_ = a.store.UpdateUserEmail(ctx, user.ID, email)
 	}
 
-	payment, err := a.payments.CreateDraftForProvider(ctx, user, auth.merchant, req.Amount.Value, service.ProviderPaystack, service.ChannelAPI, phone)
+	payment, err := a.payments.CreateCollectionDraft(ctx, user, auth.merchant, req.Amount.Value, service.ProviderInterswitch, service.ChannelAPI, phone)
 	if err != nil {
 		a.logger.Error("api payment creation failed", "error", err)
 		writeAPIError(w, http.StatusInternalServerError, "internal", "payment creation failed")
@@ -299,7 +299,7 @@ func (a *App) apiVerifyPayment(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "internal", "payment lookup failed")
 		return
 	}
-	if payment.Provider != service.ProviderPaystack {
+	if payment.Provider != service.ProviderInterswitch {
 		writeAPIError(w, http.StatusConflict, "unsupported_rail", "verification is only supported for card payments")
 		return
 	}

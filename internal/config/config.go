@@ -24,7 +24,7 @@ type Config struct {
 	LogLevel    slog.Level
 	LogFormat   string
 
-	// PaymentProvider selects the default payment gateway ("paystack", "vtpass", etc.).
+	// PaymentProvider selects the default payment gateway ("interswitch", "vtpass", etc.).
 	PaymentProvider string
 
 	// DataEncryptionKey is the AES-256-GCM key for application-level encryption
@@ -47,13 +47,13 @@ type Config struct {
 	SMTPPassword             string
 	SMTPFrom                 string
 
-	PaystackSecretKey string
-	PaystackBaseURL   string
-
-	FlutterwaveSecretKey     string
-	FlutterwavePublicKey     string
-	FlutterwaveBaseURL       string
-	FlutterwaveWebhookSecret string
+	InterswitchClientID     string
+	InterswitchClientSecret string
+	InterswitchMerchantCode string
+	InterswitchPayItemID    string
+	InterswitchBaseURL      string
+	InterswitchCheckoutMode string
+	InterswitchWebhookSecret string
 
 	// Fee configuration (kobo). These control the Xego platform fee
 	// applied as a split on merchant collection payments.
@@ -167,7 +167,7 @@ func Load() (Config, error) {
 		BaseURL:                    strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		DatabaseURL:                os.Getenv("DATABASE_URL"),
-		PaymentProvider:            env("PAYMENT_PROVIDER", "paystack"),
+		PaymentProvider:            env("PAYMENT_PROVIDER", "interswitch"),
 		AdminEmail:                 strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
 		AdminPasswordHash:          os.Getenv("ADMIN_PASSWORD_HASH"),
 		TOTPEnabled:                envBool("TOTP_ENABLED", env("APP_ENV", "development") == "production"),
@@ -180,12 +180,13 @@ func Load() (Config, error) {
 		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
 		SMTPPassword:               os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:                   strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		PaystackSecretKey:          os.Getenv("PAYSTACK_SECRET_KEY"),
-		PaystackBaseURL:            strings.TrimRight(env("PAYSTACK_BASE_URL", "https://api.paystack.co"), "/"),
-		FlutterwaveSecretKey:       os.Getenv("FLUTTERWAVE_SECRET_KEY"),
-		FlutterwavePublicKey:       os.Getenv("FLUTTERWAVE_PUBLIC_KEY"),
-		FlutterwaveBaseURL:         strings.TrimRight(env("FLUTTERWAVE_BASE_URL", "https://api.flutterwave.com"), "/"),
-		FlutterwaveWebhookSecret:   os.Getenv("FLUTTERWAVE_WEBHOOK_SECRET"),
+		InterswitchClientID:        strings.TrimSpace(os.Getenv("INTERSWITCH_CLIENT_ID")),
+		InterswitchClientSecret:    os.Getenv("INTERSWITCH_CLIENT_SECRET"),
+		InterswitchMerchantCode:    strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE")),
+		InterswitchPayItemID:       strings.TrimSpace(os.Getenv("INTERSWITCH_PAY_ITEM_ID")),
+		InterswitchBaseURL:         strings.TrimRight(env("INTERSWITCH_BASE_URL", "https://sandbox.interswitchng.com"), "/"),
+		InterswitchCheckoutMode:    strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
+		InterswitchWebhookSecret:   os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
 		FeeCardBPS:                 envInt64("XEGO_FEE_CARD_BPS", 200),
 		FeeCardFixedKobo:           envInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
 		FeeCardCapKobo:             envInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
@@ -345,20 +346,20 @@ func Load() (Config, error) {
 		}
 		// Require keys for configured payment providers.
 		hasAnyProvider := false
-		if strings.EqualFold(cfg.PaymentProvider, "paystack") || cfg.PaystackSecretKey != "" {
-			if cfg.PaystackSecretKey == "" {
-				return Config{}, errors.New("PAYSTACK_SECRET_KEY is required in production when paystack is enabled")
+		if strings.EqualFold(cfg.PaymentProvider, "interswitch") || cfg.InterswitchClientSecret != "" {
+			if cfg.InterswitchClientID == "" {
+				return Config{}, errors.New("INTERSWITCH_CLIENT_ID is required in production when interswitch is enabled")
 			}
-			hasAnyProvider = true
-		}
-		if cfg.FlutterwaveSecretKey != "" {
-			if cfg.FlutterwavePublicKey == "" {
-				return Config{}, errors.New("FLUTTERWAVE_PUBLIC_KEY is required when FLUTTERWAVE_SECRET_KEY is set")
+			if cfg.InterswitchMerchantCode == "" {
+				return Config{}, errors.New("INTERSWITCH_MERCHANT_CODE is required in production when interswitch is enabled")
+			}
+			if cfg.InterswitchWebhookSecret == "" {
+				return Config{}, errors.New("INTERSWITCH_WEBHOOK_SECRET is required in production when interswitch is enabled")
 			}
 			hasAnyProvider = true
 		}
 		if !hasAnyProvider {
-			return Config{}, errors.New("at least one payment provider (PAYSTACK_SECRET_KEY or FLUTTERWAVE_SECRET_KEY) is required in production")
+			return Config{}, errors.New("at least one payment provider (INTERSWITCH_CLIENT_ID) is required in production")
 		}
 		if cfg.TelegramEnabled {
 			for name, value := range map[string]string{

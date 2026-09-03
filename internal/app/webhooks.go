@@ -157,13 +157,19 @@ func (a *App) receiveSMSWebhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
 }
 
-func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
+// receiveInterswitchWebhook handles the Interswitch outbound webhook. The
+// body is a signed JSON event (TRANSACTION.CREATED/UPDATED/COMPLETED)
+// authenticated via the X-Interswitch-Signature header using the dashboard
+// webhook secret. The event itself is not authoritative: it is recorded for
+// audit/dedup, and only a terminal COMPLETED event triggers a server-side
+// requery before value is delivered.
+func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) {
 	body, err := readBody(r, 1<<20)
 	if err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	event, validationErr := a.paystack.ValidateWebhook(body, r.Header.Get("X-Paystack-Signature"))
+	event, validationErr := a.interswitch.ValidateWebhook(body, r.Header.Get("X-Interswitch-Signature"))
 	eventKey := digest(body)
 	if event.Reference != "" {
 		eventKey = event.Event + ":" + event.Reference
@@ -172,7 +178,7 @@ func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 	if validationErr == nil {
 		payload, _ = json.Marshal(store.GatewayEvent{Event: event.Event, Reference: event.Reference})
 	}
-	deliveryID, fresh, err := a.store.RecordWebhook(r.Context(), "paystack", eventKey, validationErr == nil, payload)
+	deliveryID, fresh, err := a.store.RecordWebhook(r.Context(), "interswitch", eventKey, validationErr == nil, payload)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusServiceUnavailable)
 		return
@@ -183,46 +189,22 @@ func (a *App) receivePaystackWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	if !fresh || event.Event != "charge.success" {
-		if fresh {
-			_ = a.store.CompleteWebhook(context.Background(), deliveryID, "ignored", "")
-		}
+	_ = a.store.CompleteWebhook(context.Background(), deliveryID, "delivered", "")
+	if !fresh || event.Reference == "" {
 		return
 	}
-}
-
-func (a *App) receiveFlutterwaveWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := readBody(r, 1<<20)
+	// Only a terminal notification should trigger a confirmation requery.
+	// CREATED/UPDATED are recorded (dedup + audit) but carry no final status.
+	if !a.payments.IsGatewaySuccessEvent(service.ProviderInterswitch, event.Event) {
+		return
+	}
+	// The webhook itself is not trusted; requery is authoritative.
+	payment, _, err := a.payments.VerifyAndApply(r.Context(), event.Reference, "interswitch.webhook")
 	if err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
+		a.logger.WarnContext(r.Context(), "interswitch webhook verify failed", "reference", event.Reference, "error", err)
 		return
 	}
-	event, validationErr := a.flutterwave.ValidateWebhook(body, r.Header.Get("verif-hash"))
-	eventKey := digest(body)
-	if event.Reference != "" {
-		eventKey = event.Event + ":" + event.Reference
-	}
-	payload := json.RawMessage(`{}`)
-	if validationErr == nil {
-		payload, _ = json.Marshal(store.GatewayEvent{Event: event.Event, Reference: event.Reference})
-	}
-	deliveryID, fresh, err := a.store.RecordWebhook(r.Context(), "flutterwave", eventKey, validationErr == nil, payload)
-	if err != nil {
-		http.Error(w, "storage error", http.StatusServiceUnavailable)
-		return
-	}
-	if validationErr != nil {
-		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	if !fresh || event.Event != "charge.completed" {
-		if fresh {
-			_ = a.store.CompleteWebhook(context.Background(), deliveryID, "ignored", "")
-		}
-		return
-	}
+	a.logger.InfoContext(r.Context(), "interswitch webhook verified", "reference", event.Reference, "status", payment.Status)
 }
 
 // vtpassWebhookSecretValid reports whether the VTPass callback is authorized.

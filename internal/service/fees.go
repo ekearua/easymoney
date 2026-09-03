@@ -45,6 +45,20 @@ func XegoCollectionFee(cfg config.Config, channel string, amountKobo int64) FeeR
 	return FeeResult{Channel: channel, AmountKobo: amountKobo, FeeKobo: fee}
 }
 
+// FeeChannelForProvider maps a payment rail/provider to the fee channel used
+// to look up collection-fee parameters. Card rails (interswitch) bill under
+// "card"; the simulated in-app bank-transfer rail bills under "dva".
+func FeeChannelForProvider(provider string) string {
+	switch provider {
+	case ProviderInterswitch:
+		return "card"
+	case ProviderBankTransfer:
+		return "dva"
+	default:
+		return provider
+	}
+}
+
 // XegoPayoutFee returns the flat NIP payout fee deducted from the payout
 // amount. The recipient receives (amount − fee).
 func XegoPayoutFee(cfg config.Config, amountKobo int64) int64 {

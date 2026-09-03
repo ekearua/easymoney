@@ -143,7 +143,7 @@ func TestMerchantWebhookEndToEnd(t *testing.T) {
 	consumer := NewMerchantWebhookConsumer(repository, "https://pay.xego.ng", testLogger())
 	fact, err := json.Marshal(domain.PaymentSucceeded{
 		PaymentID: payment.ID.String(), UserID: user.ID.String(), MerchantID: merchant.ID.String(),
-		Reference: "ref", Provider: "paystack", Currency: "NGN", AmountKobo: 200_000_000, PaidAt: time.Now(),
+		Reference: "ref", Provider: "interswitch", Currency: "NGN", AmountKobo: 200_000_000, PaidAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)

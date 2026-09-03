@@ -20,8 +20,10 @@ func TestTemplatesParse(t *testing.T) {
 		"statusClass": func(any) string { return "" },
 		"percent":     func(float64) string { return "" },
 		"sub":         func(a, b int64) int64 { return a - b },
+		"add":         func(a, b int64) int64 { return a + b },
 		"inc":         func(i int) int { return i + 1 },
 		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
 		"date":        func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {

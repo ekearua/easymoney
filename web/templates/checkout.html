@@ -7,6 +7,13 @@
   <p class="eyebrow">{{if .Thrift}}Thrift contribution{{else if .Invoice}}Invoice payment{{else if .DataOrder}}Data order{{else}}Payment{{end}}</p>
   <h1>{{.Payment.MerchantName}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  {{if and (not .Thrift) (not .Invoice) (not .DataOrder) (gt (collectionFeeKobo .Payment) 0)}}
+  <dl class="fee-breakdown">
+    <div><dt>Merchant amount</dt><dd>{{money (sub .Payment.AmountKobo (collectionFeeKobo .Payment))}}</dd></div>
+    <div><dt>Collection fee</dt><dd>{{money (collectionFeeKobo .Payment)}}</dd></div>
+    <div><dt>Total to pay</dt><dd>{{money .Payment.AmountKobo}}</dd></div>
+  </dl>
+  {{end}}
   <dl>
     {{if .Thrift}}
     <div><dt>Thrift group</dt><dd>{{.Thrift.GroupName}}</dd></div>
@@ -25,7 +32,7 @@
     <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
   </dl>
   {{if eq .Payment.Status "awaiting_confirmation"}}
-    {{if eq .Payment.Provider "paystack"}}
+    {{if eq .Payment.Provider "interswitch"}}
     <form method="post" action="/checkout/{{.Payment.CheckoutToken}}/pay">
       <p class="muted">You will be taken to a secure payment page to complete this {{if .Invoice}}invoice payment{{else if .Thrift}}contribution{{else}}payment{{end}}.</p>
       <button type="submit">Pay securely</button>

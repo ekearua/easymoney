@@ -559,7 +559,7 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 	}
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, contribution.AmountKobo, ProviderPaystack, channel, recipient)
+		payment, err := s.createPaymentDraft(ctx, user, merchant, contribution.AmountKobo, ProviderInterswitch, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -575,7 +575,7 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
 			s.payments.HostedCheckoutURL(payment))
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, contribution.AmountKobo, ProviderBankTransfer, channel, recipient)
+		payment, err := s.createPaymentDraft(ctx, user, merchant, contribution.AmountKobo, ProviderBankTransfer, channel, recipient)
 		if err != nil {
 			return err
 		}

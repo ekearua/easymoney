@@ -69,7 +69,7 @@ go run ./cmd/demo retain
 6. Set `PUBLIC_HOST` to the sslip.io hostname and `BASE_URL` to its HTTPS URL.
 7. Start or restart the service.
 
-Caddy obtains and renews TLS automatically. If the reserved public IP or hostname changes, update `PUBLIC_HOST`, `BASE_URL`, Meta's callback URL, Telegram's webhook URL, Paystack's webhook URL, and the approved WhatsApp template link policy as applicable.
+Caddy obtains and renews TLS automatically. If the reserved public IP or hostname changes, update `PUBLIC_HOST`, `BASE_URL`, Meta's callback URL, Telegram's webhook URL, Interswitch's webhook URL, and the approved WhatsApp template link policy as applicable.
 
 Back up PostgreSQL before upgrades. Keep the database port private; only Caddy exposes public ports.
 
@@ -135,7 +135,7 @@ Role checks are enforced by middleware on every admin route; disabled accounts a
 
 Public and webhook endpoints are rate limited per client IP with fixed one-minute windows:
 
-- **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/paystack`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
+- **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/interswitch`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
 - **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`, `/link/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
 - **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
 - **Partner API** (per key, `/api/v1/*`): `RATE_LIMIT_API_KEYS_PER_MINUTE` (default 300)
@@ -242,14 +242,15 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 
 The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegram updates.
 
-### Paystack
+### Interswitch Web Checkout
 
-- Use only an `sk_test_...` secret.
-- Webhook URL: `https://<host>/webhooks/paystack`
-- Callback URL is supplied per transaction as `https://<host>/payments/return`.
-- Enable card checkout for the test integration.
+- Use only a TEST-mode integration for the demo.
+- Complete the merchant, pay item, and webhook secret fields in `.env` (`INTERSWITCH_MERCHANT_CODE`, `INTERSWITCH_PAY_ITEM_ID`, `INTERSWITCH_WEBHOOK_SECRET`).
+- Webhook URL: `https://<host>/webhooks/interswitch` — Interswitch POSTs signed JSON events (`TRANSACTION.CREATED`, `TRANSACTION.UPDATED`, `TRANSACTION.COMPLETED`) here. The body is authenticated with an HMAC-SHA512 digest sent in the `X-Interswitch-Signature` header, recomputed with the dashboard webhook secret (`INTERSWITCH_WEBHOOK_SECRET`, distinct from `INTERSWITCH_CLIENT_SECRET`). A missing or invalid signature is rejected with `401`. Configure the webhook in the Quickteller Business dashboard (Developer Tools → Webhooks → Transactions) and reply to the event with an empty `200` (Interswitch retries up to 5× on non-200).
+- Return URL: `https://<host>/payments/return` — the customer-facing redirect after checkout.
+- Set `INTERSWITCH_CHECKOUT_MODE=TEST`; the service rejects live verifications.
 
-The callback never marks a transaction successful by itself. Both callback and webhook invoke server-side verification.
+The webhook and the return-page callback never mark a transaction successful by themselves: only a terminal `TRANSACTION.COMPLETED` webhook triggers a confirmation, and the outcome is always established by an authoritative server-side requery (`gettransaction.json`) before success is written. A background reconciler (`Reconcile`) re-checks any Interswitch payment still unresolved after 30s as a safety net.
 
 ### SMS data request codes
 
@@ -394,7 +395,7 @@ X-Xego-Signature: <lowercase hex HMAC-SHA256(webhook_secret, body)>
 {"reference":"ORD-8371","payment_id":"7f1c...","status":"succeeded","amount":{"value":250000,"currency":"NGN"},"paid_at":"2026-08-12T10:05:00Z","receipt_url":"https://pay.xego.ng/receipts/<token>"}
 ```
 
-Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret, body)` with the raw body bytes and compare case-insensitively (identical contract to Paystack's `validateWebhook`). Failed payloads carry no `paid_at` or `receipt_url`. Deliveries are durable and retried with exponential backoff (2, 4, 8, 16, 32 minutes); a delivery that still fails after the cap is dead-lettered as `failed` in `merchant_webhook_deliveries` for operators to inspect.
+Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret, body)` with the raw body bytes and compare case-insensitively (identical contract to the payment webhook validators). Failed payloads carry no `paid_at` or `receipt_url`. Deliveries are durable and retried with exponential backoff (2, 4, 8, 16, 32 minutes); a delivery that still fails after the cap is dead-lettered as `failed` in `merchant_webhook_deliveries` for operators to inspect.
 
 ## Manual acceptance script
 
@@ -408,7 +409,7 @@ Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret,
 8. For bank transfer, choose a collection bank from the bank list. You can browse pages or type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
 9. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
 10. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
-11. Repeat the Paystack webhook and confirm the payment and notification are not duplicated.
+11. Replay the Interswitch webhook (signed `TRANSACTION.COMPLETED`) and confirm the payment and notification are not duplicated.
 12. Choose **Buy Data**, select a network and plan, enter a beneficiary phone number, pay, and confirm the data order becomes fulfilled after payment success.
 13. Post an SMS command to `/webhooks/sms` and confirm the response contains a request code and checkout URL.
 

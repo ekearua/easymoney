@@ -439,7 +439,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	eventTierIDStr := session.Data["event_tier_id"]
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
+		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderInterswitch, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -569,7 +569,7 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, channel, r
 	if err != nil {
 		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
 	}
-	payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
+	payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 	if err != nil {
 		return err
 	}
@@ -597,9 +597,15 @@ func (s *ConversationService) handleTransferBank(ctx context.Context, channel, r
 }
 
 func (s *ConversationService) sendCardReview(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
+	fee := XegoCollectionFee(s.cfg, "card", amount).FeeKobo
+	charge := amount + fee
+	var feeLine string
+	if fee > 0 {
+		feeLine = fmt.Sprintf("\nCollection fee: %s\nTotal to pay: %s", domain.FormatNGN(fee), domain.FormatNGN(charge))
+	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount)),
+		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount), feeLine),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Continue"},
 			{ID: "cancel_payment", Title: "Cancel"},

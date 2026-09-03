@@ -9,7 +9,7 @@ func TestProductionRequiresAtLeastOnePaymentProvider(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYMENT_PROVIDER", "paystack")
+	t.Setenv("PAYMENT_PROVIDER", "interswitch")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -17,18 +17,20 @@ func TestProductionRequiresAtLeastOnePaymentProvider(t *testing.T) {
 	t.Setenv("WHATSAPP_GRAPH_VERSION", "v25.0")
 	t.Setenv("DATA_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "PAYSTACK_SECRET_KEY") {
-		t.Fatalf("expected PAYSTACK_SECRET_KEY validation, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "INTERSWITCH_CLIENT_ID") {
+		t.Fatalf("expected INTERSWITCH_CLIENT_ID validation, got %v", err)
 	}
 }
 
-func TestProductionAllowsFlutterwaveOnly(t *testing.T) {
+func TestProductionAllowsInterswitchOnly(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYMENT_PROVIDER", "flutterwave")
-	t.Setenv("FLUTTERWAVE_SECRET_KEY", "FLWSECK_TEST_ok")
-	t.Setenv("FLUTTERWAVE_PUBLIC_KEY", "FLWPUBK_TEST_ok")
+	t.Setenv("PAYMENT_PROVIDER", "interswitch")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_SECRET", "cs_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -40,17 +42,18 @@ func TestProductionAllowsFlutterwaveOnly(t *testing.T) {
 	t.Setenv("BASE_URL", "https://example.com")
 	_, err := Load()
 	if err != nil {
-		t.Fatalf("flutterwave-only config should be valid in production, got %v", err)
+		t.Fatalf("interswitch-only config should be valid in production, got %v", err)
 	}
 }
 
-func TestProductionRejectsFlutterwaveKeyWithoutPublicKey(t *testing.T) {
+func TestProductionRejectsInterswitchSecretWithoutClientID(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYMENT_PROVIDER", "paystack")
-	t.Setenv("FLUTTERWAVE_SECRET_KEY", "FLWSECK_TEST_ok")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("PAYMENT_PROVIDER", "interswitch")
+	t.Setenv("INTERSWITCH_CLIENT_SECRET", "cs_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -59,8 +62,8 @@ func TestProductionRejectsFlutterwaveKeyWithoutPublicKey(t *testing.T) {
 	t.Setenv("DATA_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	t.Setenv("BASE_URL", "https://example.com")
 	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "FLUTTERWAVE_PUBLIC_KEY") {
-		t.Fatalf("expected FLUTTERWAVE_PUBLIC_KEY validation, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "INTERSWITCH_CLIENT_ID") {
+		t.Fatalf("expected INTERSWITCH_CLIENT_ID validation, got %v", err)
 	}
 }
 
@@ -68,7 +71,9 @@ func TestProductionRejectsDemoCodeInChat(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -87,7 +92,9 @@ func TestProductionRequiresTOTPKey(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -106,7 +113,9 @@ func TestProductionRejectsMalformedTOTPKey(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -126,7 +135,9 @@ func TestProductionRequiresDataEncryptionKey(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -143,7 +154,9 @@ func TestProductionRejectsMalformedDataEncryptionKey(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
-	t.Setenv("PAYSTACK_SECRET_KEY", "sk_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
+	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")

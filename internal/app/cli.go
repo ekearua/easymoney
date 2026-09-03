@@ -18,7 +18,7 @@ func (a *App) Seed(ctx context.Context) error {
 	return a.store.Seed(ctx)
 }
 
-// Reconcile verifies unresolved Paystack transactions.
+// Reconcile verifies unresolved Interswitch transactions.
 func (a *App) Reconcile(ctx context.Context) error {
 	return a.payments.Reconcile(ctx)
 }
@@ -144,7 +144,35 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			}
 		}
 	}
-	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked)
+
+	// Business KYB profiles are rescreened by legal entity name. A blocked
+	// rescreen forces the business back to B0 and stops further advancement,
+	// which immediately lowers the payout ceilings ReserveAllowance enforces.
+	businessDue, err := a.store.BusinessKYBProfilesDueForRescreen(ctx, time.Now().Add(-a.cfg.KYCRescreenPeriod), 50)
+	if err != nil {
+		a.logger.WarnContext(ctx, "list business profiles for rescreen", "error", err)
+	}
+	businessScreened, businessBlocked := 0, 0
+	for _, profile := range businessDue {
+		decision, err := a.sanctionsScreener.Screen(ctx, ports.ScreeningRequest{LegalName: profile.MerchantName})
+		if err != nil {
+			a.logger.WarnContext(ctx, "business rescreen provider error", "merchant_id", profile.MerchantID.String(), "error", err)
+			continue
+		}
+		if err := a.store.RecordKYBScreening(ctx, profile.MerchantID, decision.Decision, decision.MatchedNames, a.cfg.KYCRescreenPeriod); err != nil {
+			a.logger.WarnContext(ctx, "business rescreen record failed", "merchant_id", profile.MerchantID.String(), "error", err)
+			continue
+		}
+		businessScreened++
+		if kyc.BlockedByScreening(decision.Decision) {
+			businessBlocked++
+			if _, err := a.store.DowngradeKYBTier(ctx, profile.MerchantID, kyc.TierB0, "rescreen "+decision.Decision, nil); err != nil {
+				a.logger.WarnContext(ctx, "business rescreen downgrade failed", "merchant_id", profile.MerchantID.String(), "error", err)
+			}
+		}
+	}
+	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked,
+		"business_due", len(businessDue), "business_screened", businessScreened, "business_blocked", businessBlocked)
 	return nil
 }
 

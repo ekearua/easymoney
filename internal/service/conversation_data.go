@@ -91,9 +91,9 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 	session.Data["data_order_id"] = order.ID.String()
 	switch input {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderPaystack, channel, recipient)
+		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderInterswitch, channel, recipient)
 		if err != nil {
-			return err
+			return friendlyAllowanceErr(err)
 		}
 		session.Data["payment_id"] = payment.ID.String()
 		session.State, session.Data = "menu", map[string]string{}
@@ -107,7 +107,7 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 	default:
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
-			return err
+			return friendlyAllowanceErr(err)
 		}
 		session.State = "select_data_transfer_bank"
 		session.Data["payment_id"] = payment.ID.String()
@@ -126,9 +126,9 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 	}
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderPaystack, channel, recipient)
+		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderInterswitch, channel, recipient)
 		if err != nil {
-			return err
+			return friendlyAllowanceErr(err)
 		}
 		session.Data["payment_id"] = payment.ID.String()
 		session.State, session.Data = "menu", map[string]string{}
@@ -142,7 +142,7 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
-			return err
+			return friendlyAllowanceErr(err)
 		}
 		session.State = "select_data_transfer_bank"
 		session.Data["payment_id"] = payment.ID.String()

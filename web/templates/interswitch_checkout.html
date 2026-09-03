@@ -1,0 +1,25 @@
+{{define "interswitch_checkout.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure payment - {{.Payment.MerchantName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <h1>{{.Payment.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  <p class="muted">You are being redirected to Interswitch to complete this payment securely.</p>
+  <form id="interswitch-form" method="post" action="{{.Page.Action}}">
+    <input type="hidden" name="merchant_code" value="{{.Page.MerchantCode}}">
+    <input type="hidden" name="pay_item_id" value="{{.Page.PayItemID}}">
+    <input type="hidden" name="txn_ref" value="{{.Page.TxnRef}}">
+    <input type="hidden" name="amount" value="{{.Page.Amount}}">
+    <input type="hidden" name="currency" value="{{.Page.Currency}}">
+    <input type="hidden" name="cust_email" value="{{.Page.CustomerEmail}}">
+    <input type="hidden" name="site_redirect_url" value="{{.Page.SiteRedirectURL}}">
+    <input type="hidden" name="mode" value="{{.Page.Mode}}">
+    <button type="submit">Continue to Interswitch</button>
+  </form>
+  <noscript><p class="muted">JavaScript is disabled. Use the button above to continue.</p></noscript>
+  <script>window.addEventListener('load', function () { document.getElementById('interswitch-form').submit(); });</script>
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+</main></body></html>
+{{end}}

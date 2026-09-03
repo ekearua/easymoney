@@ -277,8 +277,9 @@ func (s *DataService) handleParsedSMS(ctx context.Context, sender string, comman
 			return "", "", err
 		}
 		if user.Email == "" {
-			// Paystack requires an email. SMS-only customers get a deterministic placeholder
-			// that keeps card collection out of chat and can be replaced after onboarding.
+			// Card checkout requires an email for the redirect form. SMS-only
+			// customers get a deterministic placeholder that keeps card collection
+			// out of chat and can be replaced after onboarding.
 			if err := s.store.UpdateUserEmail(ctx, user.ID, "sms+"+strings.TrimPrefix(user.WhatsAppNumber, "+")+"@xego.local"); err != nil {
 				return "", "", err
 			}
@@ -288,7 +289,7 @@ func (s *DataService) handleParsedSMS(ctx context.Context, sender string, comman
 		if err != nil {
 			return "", "", err
 		}
-		payment, _, err := s.CreatePaymentForOrder(ctx, user, order, ProviderPaystack, "sms", user.WhatsAppNumber)
+		payment, _, err := s.CreatePaymentForOrder(ctx, user, order, ProviderInterswitch, "sms", user.WhatsAppNumber)
 		if err != nil {
 			return "", order.RequestCode, err
 		}

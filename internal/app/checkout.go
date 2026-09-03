@@ -16,13 +16,25 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
+// paymentReturn is the customer's return landing page after completing a
+// card checkout. Interswitch Web Checkout returns here with the transaction
+// reference either in the query (GET) or in the form body (POST); the outcome
+// is always confirmed with an authoritative server-side requery.
 func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
 	reference := strings.TrimSpace(r.URL.Query().Get("reference"))
+	if reference == "" {
+		_ = r.ParseForm()
+		if ref := strings.TrimSpace(r.FormValue("txnref")); ref != "" {
+			reference = ref
+		} else {
+			reference = strings.TrimSpace(r.FormValue("txn_ref"))
+		}
+	}
 	if reference == "" {
 		http.Error(w, "missing reference", http.StatusBadRequest)
 		return
 	}
-	payment, _, err := a.payments.VerifyAndApply(r.Context(), reference, "paystack.callback")
+	payment, _, err := a.payments.VerifyAndApply(r.Context(), reference, "interswitch.callback")
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "callback verification failed", "reference", reference, "error", err)
 		http.Error(w, "Payment is still being verified. Return to WhatsApp or refresh your receipt shortly.", http.StatusAccepted)
@@ -61,7 +73,7 @@ func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if payment.Provider != service.ProviderPaystack {
+	if payment.Provider != service.ProviderInterswitch {
 		a.renderHostedCheckout(w, r, payment, http.StatusOK)
 		return
 	}
@@ -72,6 +84,32 @@ func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, updated.CheckoutURL, http.StatusSeeOther)
+}
+
+// interswitchCheckout renders the page that forwards the browser to the
+// Interswitch Web Checkout hosted payment page. Web Checkout is initiated with
+// a client-side form POST, so this page auto-submits the redirect form carrying
+// the merchant, amount, and transaction reference fields.
+func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
+	reference := strings.TrimSpace(chi.URLParam(r, "reference"))
+	payment, err := a.store.PaymentByReference(r.Context(), reference)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if payment.Provider != service.ProviderInterswitch {
+		a.renderHostedCheckout(w, r, payment, http.StatusOK)
+		return
+	}
+	page := a.interswitch.NewPayPage(
+		payment.ProviderReference,
+		payment.UserEmail,
+		payment.AmountKobo,
+		a.cfg.BaseURL+"/payments/return",
+	)
+	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
+	}, http.StatusOK)
 }
 
 func (a *App) paymentByCheckoutToken(w http.ResponseWriter, r *http.Request) (store.PaymentView, bool) {
@@ -142,6 +180,7 @@ func (a *App) checkoutLink(w http.ResponseWriter, r *http.Request) {
 	}
 	a.render(w, "link.html", map[string]any{
 		"AppName": a.cfg.AppName, "Checkout": checkout, "BaseURL": a.cfg.BaseURL,
+		"CollectionFee": service.XegoCollectionFee(a.cfg, "card", checkout.AmountKobo).FeeKobo,
 	})
 }
 

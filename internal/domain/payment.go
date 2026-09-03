@@ -91,7 +91,7 @@ func FormatNGN(kobo int64) string {
 	return fmt.Sprintf("₦%s.%02d", grouped, fraction)
 }
 
-// NewProviderReference returns an opaque, unique reference suitable for Paystack.
+// NewProviderReference returns an opaque, unique reference suitable for a payment gateway.
 func NewProviderReference() string {
 	return "wpd_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 }

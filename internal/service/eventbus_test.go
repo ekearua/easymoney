@@ -183,7 +183,7 @@ func TestComplianceConsumerRaisesAlertEventDriven(t *testing.T) {
 		UserID:     user.ID.String(),
 		MerchantID: merchant.ID.String(),
 		Reference:  "ref",
-		Provider:   "paystack",
+		Provider: "interswitch",
 		Currency:   "NGN",
 		AmountKobo: 200_000_000,
 		PaidAt:     time.Now(),
@@ -215,7 +215,7 @@ func createSettledPayment(ctx context.Context, t *testing.T, repository *store.S
 	}
 	payment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 200_000_000,
-		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "interswitch",
 		ProviderReference: domain.NewProviderReference(), ReceiptToken: token,
 	})
 	if err != nil {

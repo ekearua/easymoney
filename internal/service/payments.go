@@ -17,6 +17,7 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
@@ -31,10 +32,8 @@ type PaymentService struct {
 }
 
 const (
-	// ProviderPaystack identifies card checkout attempts handled by Paystack.
-	ProviderPaystack = "paystack"
-	// ProviderFlutterwave identifies card checkout attempts handled by Flutterwave.
-	ProviderFlutterwave = "flutterwave"
+	// ProviderInterswitch identifies card checkout attempts handled by Interswitch Web Checkout.
+	ProviderInterswitch = "interswitch"
 	// ProviderBankTransfer identifies the in-app simulated bank-transfer rail.
 	ProviderBankTransfer = "bank_transfer"
 	// ProviderAuto selects the best gateway via the router.
@@ -46,17 +45,38 @@ func NewPaymentService(cfg config.Config, repository *store.Store, gateways map[
 	return &PaymentService{cfg: cfg, store: repository, gateways: gateways, router: router, logger: logger}
 }
 
-// CreateDraft creates a payment capability and moves it to customer confirmation.
-func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64) (store.PaymentView, error) {
-	return s.CreateDraftForProvider(ctx, user, merchant, amountKobo, ProviderPaystack, ChannelWhatsApp, user.WhatsAppNumber)
+// CreateDraft creates a plain merchant collection payment (collection fee added
+// to the customer's charge) and moves it to customer confirmation.
+func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64) (store.PaymentView, error) {
+	return s.CreateCollectionDraft(ctx, user, merchant, baseKobo, ProviderInterswitch, ChannelWhatsApp, user.WhatsAppNumber)
 }
 
-// CreateDraftForProvider creates a payment attempt for the selected rail.
+// CreateDraftForProvider creates a payment attempt for the selected rail
+// charging exactly the given amount. It is used by flows with their own
+// payment semantics (invoice contributions, thrift, data orders) that do not
+// add the collection surcharge.
 func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
+	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, nil)
+}
+
+// CreateCollectionDraft creates a plain merchant collection where the Xego
+// collection fee is added on top of the merchant's base amount. The customer
+// pays base+fee; the merchant receives the full base amount. The base and fee
+// are carried in payment metadata so the split posting can credit the merchant
+// the full base and book the fee to Xego.
+func (s *PaymentService) CreateCollectionDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
+	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider(provider), baseKobo).FeeKobo
+	return s.createDraftCore(ctx, user, merchant, baseKobo+fee, provider, channel, recipient, map[string]any{
+		"base_amount_kobo":    baseKobo,
+		"collection_fee_kobo": fee,
+	})
+}
+
+func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string, meta map[string]any) (store.PaymentView, error) {
 	if provider == ProviderAuto {
 		provider = s.router.PickProvider()
 	}
-	if provider != ProviderPaystack && provider != ProviderFlutterwave && provider != ProviderBankTransfer {
+	if provider != ProviderInterswitch && provider != ProviderBankTransfer {
 		return store.PaymentView{}, fmt.Errorf("unsupported payment provider %q", provider)
 	}
 	if channel == "" {
@@ -73,6 +93,14 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 	if err != nil {
 		return store.PaymentView{}, err
 	}
+	var metadata json.RawMessage
+	if len(meta) > 0 {
+		raw, err := json.Marshal(meta)
+		if err != nil {
+			return store.PaymentView{}, err
+		}
+		metadata = raw
+	}
 	payment := domain.Payment{
 		ID:                uuid.New(),
 		UserID:            user.ID,
@@ -86,6 +114,29 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 		Recipient:         recipient,
 		ReceiptToken:      token,
 		CheckoutToken:     checkoutToken,
+		Metadata:          metadata,
+	}
+	// C9-tiers: money-in allowance. The payer's tier ceiling (single/daily/
+	// monthly) is validated and the movement reserved in the same step, keyed by
+	// the provider reference so replay never double-counts. A rejection here
+	// stops creation entirely; the reservation is released again if the attempt
+	// later fails, is abandoned, expires, or is refunded (transitionPayment).
+	profile, err := s.store.KYCProfileByUser(ctx, user.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		profile, err = s.store.EnsureKYCProfile(ctx, user.ID)
+	}
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+		AccountType: store.AccountIndividual,
+		SubjectID:   user.ID,
+		Direction:   kyc.DirIn,
+		Tier:        profile.Tier,
+		AmountKobo:  amountKobo,
+		Ref:         payment.ProviderReference,
+	}); err != nil {
+		return store.PaymentView{}, err
 	}
 	if _, err := s.store.CreatePayment(ctx, payment); err != nil {
 		return store.PaymentView{}, err
@@ -131,7 +182,7 @@ func (s *PaymentService) ResolveCheckout(ctx context.Context, checkout store.Che
 	if err != nil {
 		return store.PaymentView{}, err
 	}
-	payment, err := s.CreateDraftForProvider(ctx, user, payee, checkout.AmountKobo, ProviderPaystack, ChannelCheckout, phone)
+	payment, err := s.CreateCollectionDraft(ctx, user, payee, checkout.AmountKobo, ProviderInterswitch, ChannelCheckout, phone)
 	if err != nil {
 		return store.PaymentView{}, err
 	}
@@ -270,7 +321,7 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	if err := validateVerification(payment, verification); err != nil {
 		return payment, false, err
 	}
-	target := mapGatewayStatus(payment.Provider, verification.Status)
+	target := mapGatewayStatus(verification.Status)
 	if target == "" {
 		return payment, false, nil
 	}
@@ -317,7 +368,9 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 // applyCollectionSplits computes the Xego platform fee and records the split
 // rows (fee + merchant receivable) for a plain merchant collection payment.
 // Invoice, thrift, and data payments skip splits: their ledger flows are
-// handled by their own hooks.
+// handled by their own hooks. For collection payments created via
+// CreateCollectionDraft, the customer is charged base+fee and the merchant
+// receives the full base amount (both carried in payment metadata).
 func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment store.PaymentView) error {
 	isLinked, err := s.store.IsInvoiceThriftOrData(ctx, payment.ID)
 	if err != nil {
@@ -327,15 +380,14 @@ func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment stor
 		return nil
 	}
 
-	fee := XegoCollectionFee(s.cfg, payment.Channel, payment.AmountKobo)
-	merchantRecv := MerchantReceivable(payment.AmountKobo, fee.FeeKobo)
+	feeKobo, merchantRecv := s.collectionSplitAmounts(payment)
 
 	var splits []store.SplitSpec
-	if fee.FeeKobo > 0 {
+	if feeKobo > 0 {
 		splits = append(splits, store.SplitSpec{
 			SplitType:   "xego_fee",
 			Account:     store.LedgerAccountXegoPayable,
-			AmountKobo:  fee.FeeKobo,
+			AmountKobo:  feeKobo,
 			Currency:    "NGN",
 			Description: "Xego collection fee",
 		})
@@ -353,6 +405,27 @@ func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment stor
 		return nil
 	}
 	return s.store.ApplyPaymentSplits(ctx, payment.ID, payment.MerchantID, splits)
+}
+
+// collectionSplitAmounts derives the fee owed to Xego and the merchant's
+// receivable for a succeeded plain collection. For a collection created via
+// CreateCollectionDraft, the metadata carries base_amount_kobo and
+// collection_fee_kobo, so the merchant receives the full base and the customer
+// pays base+fee. Legacy/unknown payments fall back to the historical model
+// (fee deducted from the paid amount).
+func (s *PaymentService) collectionSplitAmounts(payment store.PaymentView) (feeKobo, merchantRecv int64) {
+	var meta struct {
+		BaseAmountKobo   int64 `json:"base_amount_kobo"`
+		CollectionFeeKobo int64 `json:"collection_fee_kobo"`
+	}
+	if len(payment.Metadata) > 0 {
+		_ = json.Unmarshal(payment.Metadata, &meta)
+	}
+	if meta.BaseAmountKobo > 0 && meta.CollectionFeeKobo > 0 && meta.BaseAmountKobo+meta.CollectionFeeKobo == payment.AmountKobo {
+		return meta.CollectionFeeKobo, meta.BaseAmountKobo
+	}
+	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider(payment.Provider), payment.AmountKobo)
+	return fee.FeeKobo, MerchantReceivable(payment.AmountKobo, fee.FeeKobo)
 }
 
 func (s *PaymentService) createReceiptScanToken(ctx context.Context, payment store.PaymentView) error {
@@ -434,12 +507,9 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 		return errors.New("verified currency does not match payment")
 	}
 	// Per-provider validation hooks.
-	if payment.Provider == ProviderPaystack {
+	if payment.Provider == ProviderInterswitch {
 		if verification.Domain != "test" {
-			return errors.New("non-test Paystack transaction rejected by demo")
-		}
-		if verification.Status == "success" && verification.Channel != "card" {
-			return errors.New("non-card Paystack transaction rejected by demo")
+			return errors.New("non-test Interswitch transaction rejected by demo")
 		}
 	}
 	if value := verification.Metadata["payment_id"]; value != "" && value != payment.ID.String() {
@@ -451,13 +521,8 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 	return nil
 }
 
-func mapGatewayStatus(provider, status string) domain.PaymentStatus {
-	normalized := status
-	switch provider {
-	case ProviderFlutterwave:
-		normalized = flutterwaveNormalize(status)
-	}
-	switch normalized {
+func mapGatewayStatus(status string) domain.PaymentStatus {
+	switch status {
 	case "success":
 		return domain.StatusSucceeded
 	case "failed", "reversed":
@@ -468,19 +533,6 @@ func mapGatewayStatus(provider, status string) domain.PaymentStatus {
 		return domain.StatusPending
 	default:
 		return ""
-	}
-}
-
-// flutterwaveNormalize maps Flutterwave-specific gateway statuses to the
-// common set that mapGatewayStatus switches on.
-func flutterwaveNormalize(status string) string {
-	switch strings.ToLower(status) {
-	case "successful", "success":
-		return "success"
-	case "cancelled":
-		return "failed"
-	default:
-		return status
 	}
 }
 
@@ -561,13 +613,13 @@ func (s *PaymentService) ProviderList() []string {
 }
 
 // IsGatewaySuccessEvent reports whether the given event name is the terminal
-// success event for the provider.
+// success event for the provider. For Interswitch the terminal event is
+// TRANSACTION.COMPLETED; a completed transaction may still have failed, so the
+// caller must confirm with an authoritative requery before delivering value.
 func (s *PaymentService) IsGatewaySuccessEvent(provider, event string) bool {
 	switch provider {
-	case ProviderPaystack:
-		return event == "charge.success"
-	case ProviderFlutterwave:
-		return event == "charge.completed"
+	case ProviderInterswitch:
+		return event == "TRANSACTION.COMPLETED"
 	default:
 		return false
 	}

@@ -189,14 +189,14 @@ type PayoutResult struct {
 var ErrPayoutPending = errors.New("payout outcome pending")
 
 // PayoutProvider isolates outbound settlements from a specific bank rail
-// (Paystack Transfers, Flutterwave Transfers, Providus, ...). Implementations
+// (Interswitch, NIBSS, Providus, ...). Implementations
 // must be safe for concurrent use.
 type PayoutProvider interface {
 	Payout(context.Context, PayoutRequest) (PayoutResult, error)
 }
 
 // RefundRequest contains the neutral refund instruction sent to a payment
-// provider (Paystack, etc.).
+// provider (Interswitch, etc.).
 type RefundRequest struct {
 	PaymentID  string // provider reference of the original payment
 	AmountKobo int64

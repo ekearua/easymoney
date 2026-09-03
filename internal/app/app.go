@@ -36,8 +36,7 @@ import (
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
-	flutterwaveprovider "whatsapp-payment-demo/internal/providers/flutterwave"
-	"whatsapp-payment-demo/internal/providers/paystack"
+	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -56,8 +55,7 @@ type App struct {
 	cfg               config.Config
 	logger            *slog.Logger
 	store             *store.Store
-	paystack          *paystack.Client
-	flutterwave       *flutterwaveprovider.Client
+	interswitch       *interswitchprovider.Client
 	telegram          *telegram.Client
 	whatsapp          *whatsapp.Client
 	payments          *service.PaymentService
@@ -91,20 +89,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, err
 	}
 	repository.SetDataKey(cfg.DataEncryptionKey)
-	paystackClient := paystack.New(cfg.PaystackSecretKey, cfg.PaystackBaseURL)
-	// Build the payment gateway registry.
-	gateways := map[string]ports.PaymentGateway{}
-	if cfg.PaystackSecretKey != "" {
-		gateways[service.ProviderPaystack] = paystackClient
-	}
-	var flutterwaveClient *flutterwaveprovider.Client
-	if cfg.FlutterwaveSecretKey != "" {
-		flutterwaveClient = flutterwaveprovider.New(cfg.FlutterwaveSecretKey, cfg.FlutterwavePublicKey, cfg.FlutterwaveBaseURL, cfg.FlutterwaveWebhookSecret)
-		gateways[service.ProviderFlutterwave] = flutterwaveClient
-	}
-	if len(gateways) == 0 {
-		// Always have at least the paystack client for backwards compat.
-		gateways[service.ProviderPaystack] = paystackClient
+	// Interswitch Web Checkout is the sole card payment gateway.
+	interswitchClient := interswitchprovider.New(interswitchprovider.Options{
+		ClientID:     cfg.InterswitchClientID,
+		ClientSecret: cfg.InterswitchClientSecret,
+		WebhookSecret: cfg.InterswitchWebhookSecret,
+		MerchantCode: cfg.InterswitchMerchantCode,
+		PayItemID:    cfg.InterswitchPayItemID,
+		BaseURL:      cfg.InterswitchBaseURL,
+		Mode:         cfg.InterswitchCheckoutMode,
+	})
+	// Build the payment gateway registry. Interswitch is always registered so
+	// card checkout resolves even in the backlog demo where no secret is set.
+	gateways := map[string]ports.PaymentGateway{
+		service.ProviderInterswitch: interswitchClient,
 	}
 	router := service.NewProviderRouter(gateways, logger)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
@@ -178,8 +176,18 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"maskPII":     maskPII,
 		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
-		"sub":         func(a, b int64) int64 { return a - b },
-		"inc":         func(i int) int { return i + 1 },
+		"sub":                func(a, b int64) int64 { return a - b },
+		"add":                func(a, b int64) int64 { return a + b },
+		"inc":                func(i int) int { return i + 1 },
+		"collectionFeeKobo": func(p store.PaymentView) int64 {
+			var meta struct {
+				CollectionFeeKobo int64 `json:"collection_fee_kobo"`
+			}
+			if len(p.Metadata) > 0 {
+				_ = json.Unmarshal(p.Metadata, &meta)
+			}
+			return meta.CollectionFeeKobo
+		},
 		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
 		"date": func(t any) string {
 			switch v := t.(type) {
@@ -234,8 +242,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	convo := service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener, identityProviderName)
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
 	return &App{
-		cfg: cfg, logger: logger, store: repository, paystack: paystackClient,
-		flutterwave: flutterwaveClient, telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
+		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
+		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
@@ -368,12 +376,13 @@ func (a *App) routes() http.Handler {
 	router.With(webhookLimit).Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
 	router.With(webhookLimit).Post("/webhooks/telegram", a.receiveTelegramWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
-	router.With(webhookLimit).Post("/webhooks/paystack", a.receivePaystackWebhook)
-	router.With(webhookLimit).Post("/webhooks/flutterwave", a.receiveFlutterwaveWebhook)
+	router.With(webhookLimit).Post("/webhooks/interswitch", a.receiveInterswitchWebhook)
 	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.With(publicLimit).Get("/payments/return", a.paymentReturn)
+	router.With(publicLimit).Post("/payments/return", a.paymentReturn)
 	router.With(publicLimit).Get("/checkout/{token}", a.hostedCheckout)
 	router.With(publicLimit).Post("/checkout/{token}/pay", a.hostedCheckoutPay)
+	router.With(publicLimit).Get("/checkout/interswitch/{reference}", a.interswitchCheckout)
 	router.With(publicLimit).Get("/link/{token}", a.checkoutLink)
 	router.With(publicLimit).Post("/link/{token}/resolve", a.checkoutLinkResolve)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
@@ -458,6 +467,12 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/chat-guard", a.adminChatGuard)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyb", a.adminKYB)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance", a.adminKYBAdvance)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance-request/approve", a.adminKYBAdvanceRequestApprove)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance-request/clear", a.adminKYBAdvanceRequestClear)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/review", a.adminKYBReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/tier-limits/{id}", a.adminTierLimitUpdate)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/admins", a.adminCreateAdmin)

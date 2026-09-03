@@ -41,7 +41,7 @@ func TestRefundServiceRefund(t *testing.T) {
 	}
 	payment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 200_000,
-		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "interswitch",
 		ProviderReference: "refund-svc-ref", ReceiptToken: "tok-refund-svc",
 	})
 	if err != nil {
@@ -124,7 +124,7 @@ func TestRefundServiceIdempotent(t *testing.T) {
 	}
 	payment, err := repository.CreatePayment(ctx, domain.Payment{
 		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 100_000,
-		Currency: "NGN", Status: domain.StatusDraft, Provider: "paystack",
+		Currency: "NGN", Status: domain.StatusDraft, Provider: "interswitch",
 		ProviderReference: "refund-idemp-ref", ReceiptToken: "tok-refund-idemp",
 	})
 	if err != nil {

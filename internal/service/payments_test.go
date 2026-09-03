@@ -20,7 +20,7 @@ func TestValidateVerification(t *testing.T) {
 	merchantID := uuid.New()
 	payment := store.PaymentView{Payment: domain.Payment{
 		ID: paymentID, MerchantID: merchantID, AmountKobo: 50_000, Currency: "NGN",
-		Provider: ProviderPaystack, ProviderReference: "wpd_ref",
+		Provider: ProviderInterswitch, ProviderReference: "wpd_ref",
 	}}
 	valid := ports.Verification{
 		Reference: "wpd_ref", Status: "success", AmountKobo: 50_000,
@@ -39,7 +39,6 @@ func TestValidateVerification(t *testing.T) {
 		{name: "amount", change: func(v *ports.Verification) { v.AmountKobo++ }},
 		{name: "currency", change: func(v *ports.Verification) { v.Currency = "USD" }},
 		{name: "live domain", change: func(v *ports.Verification) { v.Domain = "live" }},
-		{name: "channel", change: func(v *ports.Verification) { v.Channel = "bank" }},
 		{name: "payment metadata", change: func(v *ports.Verification) { v.Metadata["payment_id"] = uuid.NewString() }},
 		{name: "merchant metadata", change: func(v *ports.Verification) { v.Metadata["merchant_id"] = uuid.NewString() }},
 	}
@@ -132,20 +131,36 @@ func TestResultOutboxSkipsAPIChannel(t *testing.T) {
 
 func TestGatewayStatusMapping(t *testing.T) {
 	t.Parallel()
-	if got := mapGatewayStatus(ProviderPaystack, "success"); got != domain.StatusSucceeded {
+	if got := mapGatewayStatus("success"); got != domain.StatusSucceeded {
 		t.Fatalf("success maps to %q", got)
 	}
-	if got := mapGatewayStatus(ProviderPaystack, "pending"); got != domain.StatusPending {
+	if got := mapGatewayStatus("pending"); got != domain.StatusPending {
 		t.Fatalf("pending maps to %q", got)
 	}
-	if got := mapGatewayStatus(ProviderPaystack, "mystery"); got != "" {
+	if got := mapGatewayStatus("failed"); got != domain.StatusFailed {
+		t.Fatalf("failed maps to %q", got)
+	}
+	if got := mapGatewayStatus("mystery"); got != "" {
 		t.Fatalf("unknown maps to %q", got)
 	}
-	// Flutterwave: "successful" normalizes to "success".
-	if got := mapGatewayStatus(ProviderFlutterwave, "successful"); got != domain.StatusSucceeded {
-		t.Fatalf("flutterwave successful maps to %q", got)
+}
+
+func TestIsGatewaySuccessEvent(t *testing.T) {
+	t.Parallel()
+	payments := &PaymentService{}
+	if !payments.IsGatewaySuccessEvent(ProviderInterswitch, "TRANSACTION.COMPLETED") {
+		t.Fatal("expected TRANSACTION.COMPLETED to be a terminal interswitch event")
 	}
-	if got := mapGatewayStatus(ProviderFlutterwave, "cancelled"); got != domain.StatusFailed {
-		t.Fatalf("flutterwave cancelled maps to %q", got)
+	if payments.IsGatewaySuccessEvent(ProviderInterswitch, "TRANSACTION.CREATED") {
+		t.Fatal("TRANSACTION.CREATED must not be terminal")
+	}
+	if payments.IsGatewaySuccessEvent(ProviderInterswitch, "TRANSACTION.UPDATED") {
+		t.Fatal("TRANSACTION.UPDATED must not be terminal")
+	}
+	if payments.IsGatewaySuccessEvent(ProviderInterswitch, "charge.notification") {
+		t.Fatal("legacy redirect event must not be terminal")
+	}
+	if payments.IsGatewaySuccessEvent("unknown", "TRANSACTION.COMPLETED") {
+		t.Fatal("unknown provider must return false")
 	}
 }

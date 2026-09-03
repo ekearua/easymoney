@@ -703,7 +703,7 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 	}
 	switch strings.ToLower(input) {
 	case "method_card", "card", "paystack", "card checkout":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderPaystack, channel, recipient)
+		payment, err := s.createPaymentDraft(ctx, user, merchant, amount, ProviderInterswitch, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -720,7 +720,7 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
 			s.payments.HostedCheckoutURL(payment))
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
-		payment, err := s.payments.CreateDraftForProvider(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
+		payment, err := s.createPaymentDraft(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 		if err != nil {
 			return err
 		}

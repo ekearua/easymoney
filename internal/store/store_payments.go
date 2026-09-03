@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/redact"
 )
 
@@ -88,7 +89,7 @@ type InboundMessage struct {
 	Attempts    int
 }
 
-// GatewayEvent is one durable normalized Paystack webhook.
+// GatewayEvent is one durable normalized payment-provider notification.
 type GatewayEvent struct {
 	ID        int64  `json:"-"`
 	Event     string `json:"event"`
@@ -315,6 +316,19 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		VALUES($1,$2,$3,$4,$5)`, paymentID, from, to, source, raw); err != nil {
 		return false, err
 	}
+	// C9-tiers: terminal non-success states release the money-in allowance
+	// reservation taken at draft creation, so an abandoned, failed, expired, or
+	// refunded attempt does not consume the payer's daily/monthly budget. The
+	// reservation key is the provider reference (unique per attempt).
+	if to == domain.StatusFailed || to == domain.StatusAbandoned ||
+		to == domain.StatusExpired || to == domain.StatusRefunded {
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM allowance_usage
+			WHERE transaction_ref=$1 AND account_type=$2 AND direction=$3`,
+			reference, AccountIndividual, kyc.DirIn); err != nil {
+			return false, err
+		}
+	}
 	// Phase 3: emit the terminal domain fact into the transactional outbox.
 	// Events are drained onto the event bus by the publisher, so consumers
 	// (notifications, compliance) no longer run inline in this transaction.
@@ -359,7 +373,7 @@ func (s *Store) SetCheckout(ctx context.Context, paymentID uuid.UUID, checkoutUR
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO payment_events(payment_id,from_status,to_status,source)
-		VALUES($1,$2,$3,'paystack.initialize')`, paymentID, from, domain.StatusInitialized); err != nil {
+		VALUES($1,$2,$3,'interswitch.initialize')`, paymentID, from, domain.StatusInitialized); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -488,7 +502,7 @@ func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uui
 	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, paid_at=COALESCE(paid_at, now()), updated_at=now() WHERE id=$1`, paymentID, domain.StatusSucceeded); err != nil {
 		return false, err
 	}
-	// C16: money-in posting, mirroring the Paystack success path. Thrift and
+	// C16: money-in posting, mirroring the card-gateway success path. Thrift and
 	// data-order payments stay untagged platform movements; plain merchant
 	// collections are tagged and accrue the merchant payable.
 	var isInvoice, isThrift, isData bool
@@ -620,7 +634,7 @@ func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([
 // UnresolvedPayments returns initialized attempts that need provider reconciliation.
 func (s *Store) UnresolvedPayments(ctx context.Context, olderThan time.Time, limit int) ([]PaymentView, error) {
 	return s.listPayments(ctx, `
-		WHERE p.provider='paystack' AND p.status IN ('initialized','pending') AND p.updated_at < $1
+		WHERE p.provider='interswitch' AND p.status IN ('initialized','pending') AND p.updated_at < $1
 		ORDER BY p.updated_at LIMIT $2`, olderThan, limit)
 }
 

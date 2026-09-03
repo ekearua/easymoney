@@ -25,7 +25,7 @@ The platform is delivered as a **single Go binary** (`cmd/demo`) that runs a chi
 - Settlements, payouts, refunds, and disputes
 - Partner API for server-to-server payments
 - Signed merchant webhook notifications
-- Multi-provider payment routing (Paystack + Flutterwave) with automatic provider selection
+- Interswitch Web Checkout (hosted card checkout) as the sole payment gateway with verification-driven success
 - Per-payment fee model (card, DVA, bank transfer) with configurable caps
 - Payment split application (platform fee + merchant receivable) at collection time
 - Individual pay (customer-to-customer payouts via bank transfer, conversational flow)
@@ -47,15 +47,15 @@ The platform is delivered as a **single Go binary** (`cmd/demo`) that runs a chi
 
 **Supported channels:** WhatsApp Cloud API, Telegram Bot API, SMS (data-order commands only, MVP), hosted web pages (checkout, invoice, receipt, link, scan), and the Partner API.
 
-**Financial functionality:** card checkout through Paystack or Flutterwave (auto-selected by provider router; verification-driven success), a bank-transfer path (customer-confirmed), per-payment fee computation (card: 2%+₦100 capped ₦3,500; DVA: 1.5% capped ₦1,500; bank transfer: 1.8% capped ₦2,500), payment split application at collection time (platform fee + merchant receivable), individual payouts (bank transfer, NIP flat ₦100 fee deducted from payout), settlements, payouts, refunds, disputes, and a double-entry ledger. The **payout, refund, data-fulfilment, identity, and screening rails are deterministic simulators** behind real interfaces; Paystack and Flutterwave integrations are real HTTP clients restricted to test keys.
+**Financial functionality:** card checkout through Interswitch Web Checkout (hosted checkout, verification-driven success), a bank-transfer path (customer-confirmed), per-payment fee computation (card: 2%+₦100 capped ₦3,500; DVA: 1.5% capped ₦1,500; bank transfer: 1.8% capped ₦2,500), payment split application at collection time (platform fee + merchant receivable), individual payouts (bank transfer, NIP flat ₦100 fee deducted from payout), settlements, payouts, refunds, disputes, and a double-entry ledger. The **payout, refund, data-fulfilment, identity, and screening rails are deterministic simulators** behind real interfaces; the Interswitch integration is a real HTTP client restricted to test keys.
 
 **AI/conversational functionality:** There is **no artificial intelligence**. The conversational engine is purely rule-based (intent/keyword matching and menu state). Any expectation of AI/NLP capabilities is not supported by the repository analysis.
 
-**External integrations:** Paystack (real, test-key), Flutterwave (real, test-key), WhatsApp Cloud API (real), Telegram Bot API (real), SMTP email (optional), VTPass (sandbox), plus simulated payout, refund, data-fulfilment, identity (NIN/BVN), and sanctions/PEP screening providers. Redis (optional) and Kafka (optional) back rate limiting and the event bus respectively.
+**External integrations:** Interswitch Web Checkout (real, test-key), WhatsApp Cloud API (real), Telegram Bot API (real), SMTP email (optional), VTPass (sandbox), plus simulated payout, refund, data-fulfilment, identity (NIN/BVN), and sanctions/PEP screening providers. Redis (optional) and Kafka (optional) back rate limiting and the event bus respectively.
 
 **Overall platform architecture.** Customers and merchants interact through channel webhooks and web consoles; a chi router (`internal/app`) receives requests, enqueues inbound messages, and exposes admin/merchant/Partner APIs; domain services (`internal/service`) orchestrate business logic; the store layer (`internal/store`) persists state, applies financial invariants, and writes business events to a transactional outbox; background workers drain outbox, deliver webhooks, run settlements, reconciliation, retention, rescreening, and transaction monitoring. PostgreSQL is the system of record.
 
-**Production readiness:** The repository analysis explicitly establishes that the build is **not** production-ready for live money. README.md:443-444 states the build is not a licensed payment processor and lists required additions before live-money use. Simulated rails, `EMAIL_DEMO_CODE_IN_CHAT`, and test-key-only Paystack policy corroborate this.
+**Production readiness:** The repository analysis explicitly establishes that the build is **not** production-ready for live money. README.md:443-444 states the build is not a licensed payment processor and lists required additions before live-money use. Simulated rails, `EMAIL_DEMO_CODE_IN_CHAT`, and test-key-only Interswitch policy corroborate this.
 
 ---
 
@@ -108,7 +108,7 @@ The platform is best understood as logical layers. Layers that the analysis does
 ### 2.6 Integration Layer
 
 - **Purpose:** Provider-neutral access to external systems.
-- **Components:** `internal/ports` (interfaces: `PaymentGateway`, `PayoutProvider`, `RefundProvider`, `DataProvider`, `IdentityVerifier`, `SanctionsScreener`, `Messenger`, `EventBus`) and `internal/providers` (paystack, flutterwave, whatsapp, telegram, vtpass, data, identity, screening, email). A gateway registry maps provider names to `PaymentGateway` implementations; a `ProviderRouter` tracks per-provider health and latency and selects the optimal provider automatically.
+- **Components:** `internal/ports` (interfaces: `PaymentGateway`, `PayoutProvider`, `RefundProvider`, `DataProvider`, `IdentityVerifier`, `SanctionsScreener`, `Messenger`, `EventBus`) and `internal/providers` (interswitch, whatsapp, telegram, vtpass, data, identity, screening, email). A gateway registry maps provider names to `PaymentGateway` implementations; a `ProviderRouter` tracks per-provider health and latency and selects the optimal provider automatically.
 - **Relationship to other layers:** Domain services depend only on port interfaces; concrete providers are wired at application start.
 
 ### 2.7 Data Layer
@@ -150,7 +150,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
-| Hosted card checkout | Paystack card-only hosted checkout, verification-driven success | Customers | Implemented | `paystack/client.go:40-65`; `app/checkout.go` |
+| Hosted card checkout | Interswitch Web Checkout hosted checkout (form redirect), verification-driven success | Customers | Implemented | `internal/providers/interswitch/client.go`; `app/checkout.go` |
 | Bank-transfer path | Generated transfer instructions; success only after customer confirms | Customers | Implemented (rail simulated) | `bank_transfer_simulations`; `store_reconcile.go:112-119` |
 | Payment lifecycle | draft → … → succeeded/failed/refunded with `CanTransition` enforcement | System | Implemented | `domain/payment.go:32-46` |
 | Partner API payments | Server-to-server initiate/status/verify | Merchants | Implemented | `app/api_keys.go`; routes in `app.go` |
@@ -164,7 +164,6 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Payouts | queued/processing/completed/failed/reversed; simulated rail | Merchants (API), admins | Implemented (rail simulated) | README:368; `app/workers.go` |
 | Payout reversal | Reverse failed/processing payout, reopen batch | Merchants (API), admins | Implemented | `app/settlements.go`; README:363 |
 | Settlement accounts | Register/manage payout destinations, defaults | Merchants (API), admins | Implemented | routes in `app.go` |
-| Flutterwave card checkout | Flutterwave v3 hosted card checkout, HMAC-SHA512 webhook verification | Customers | Implemented | `internal/providers/flutterwave/client.go` |
 | Automatic provider routing | EWMA latency + consecutive-error health tracking; `PickProvider()` auto-selects optimal gateway | System | Implemented | `internal/service/provider_router.go` |
 | Per-payment fee model | Card 2%+₦100/cap ₦3,500; DVA 1.5%/cap ₦1,500; bank transfer 1.8%/cap ₦2,500; NIP payout flat ₦100 | System | Implemented | `internal/service/fees.go` |
 | Payment split application | Platform fee + merchant receivable + individual payout posted at collection time | System | Implemented | `internal/store/store_split_payments.go`; migration 052 |
@@ -184,6 +183,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | KYC tier ladder L0–L4 | Adjacent rung advancement gated on evidence | Customers, admins | Implemented | `internal/kyc`; migration 026 |
+| KYC/KYB allowance ladder | DB-driven per-tier payment/payout ceilings (single/daily/monthly, in & out) | Customers, merchants, admins | Implemented | `internal/kyc` + `internal/store/store_allowances.go`; migration 053 |
 | Sanctions/PEP screening | Deterministic simulated screener; live vendor plug-in | Customers | Implemented (provider simulated) | README:188 |
 | NIN/BVN identity verification | Deterministic simulated verifier | Customers | Implemented (provider simulated) | README:190 |
 | ML/FT risk scoring | 0–100 score, low/medium/high band | System | Implemented | `internal/kyc.ScoreRisk`; migration 027 |
@@ -281,7 +281,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 - Sessions use cookies that are secure, HTTP-only, and same-site in production; bearer tokens are stored only as SHA-256 hashes. Evidence: README:437.
 - CSRF tokens protect admin and merchant POST actions. Evidence: e.g., `app/refunds.go:192`, `app/dsr.go:119`, `app/reconcile.go:42`.
 - CSRF tokens are sealed with AES-256-GCM at rest. Evidence: README:152-160.
-- **Transaction authentication:** There is no separate transaction PIN. Payment initiation for card goes through the hosted Paystack checkout; bank-transfer confirmation is a customer tap ("I have transferred"). Evidence: README:22.
+- **Transaction authentication:** There is no separate transaction PIN. Payment initiation for card goes through the hosted Interswitch Web Checkout; bank-transfer confirmation is a customer tap ("I have transferred"). Evidence: README:22.
 
 ### 4.5 Account Controls & Status
 
@@ -361,7 +361,7 @@ The boundary between conversation and business operation is the conversation eng
 
 ### 6.1 Payment initiation
 
-- **Card checkout:** A payment is created in draft state, then a Paystack hosted checkout is initialized (`/transaction/initialize`) restricted to the `card` channel, and the customer is directed to the returned `authorization_url`. Evidence: `paystack/client.go:40-65`.
+- **Card checkout:** A payment is created in draft state, then an Interswitch Web Checkout redirect form is prepared whose fields (merchant code, pay item id, transaction reference, amount in kobo, currency code 566) post to the hosted `/collections/w/pay` page; the customer is directed to a platform page that auto-submits that form. Evidence: `internal/providers/interswitch/client.go`; `app/checkout.go`.
 - **Bank transfer:** A draft payment is created; the customer is shown generated transfer instructions (collection bank, account, and a reference to use as narration). Success is written **only** after the customer taps "I have transferred", which records a `user_confirmed` bank transfer simulation. Evidence: README:22, 405-408; `store_reconcile.go:112-119`.
 - **Partner API:** Merchants initiate via `POST /api/v1/payments` with a merchant `reference` as idempotency key. Evidence: README:341; `app/api_keys.go`.
 - **Request-money links / invoices / thrift / data:** These create payments through the same payment service on the card or bank path.
@@ -372,12 +372,12 @@ Payment states: `draft`, `awaiting_confirmation`, `initialized`, `pending`, `suc
 
 ### 6.3 Payment verification
 
-- **Card:** Success is written only after a backend call to Paystack `/transaction/verify/{reference}` and confirmation of the reference, amount, currency, channel, and available payment/merchant metadata. Both the callback (`/payments/return`) and the webhook invoke this server-side verification; the callback alone never marks a transaction successful. Evidence: README:22, 249; `paystack/client.go:68-109`; `app/checkout.go`.
+- **Card:** Success is written only after a backend requery to Interswitch `gettransaction.json` (InterswitchAuth-signed) and confirmation of the reference, amount, currency, and demo test-mode. Both the callback (`/payments/return`) and the outbound webhook (`TRANSACTION.COMPLETED`) invoke this authoritative server-side requery; neither the redirect notification alone nor the webhook alone marks a transaction successful. Evidence: README:22, 249; `internal/providers/interswitch/client.go`; `app/checkout.go`.
 - **Bank transfer:** Success is written only after the customer confirms the transfer. Evidence: README:22.
 
 ### 6.4 Payment references
 
-- Paystack reference doubles as the payment reference; Partner API uses a merchant `reference` (≤64 chars) as idempotency key (README:341).
+- The Interswitch transaction reference doubles as the payment reference; Partner API uses a merchant `reference` (≤64 chars) as idempotency key (README:341).
 - Webhooks are processed idempotently (duplicate webhook does not double-effect), with idempotency keys on the outbox (migration 045) and a `payment.succeeded` event emitted once per payment.
 
 ### 6.5 Fees
@@ -404,8 +404,7 @@ Two fee systems exist on the platform:
 ### 6.6 Payment provider integration & webhooks
 
 - **Provider routing:** The `ProviderRouter` tracks per-provider latency (EWMA) and consecutive failures. `PickProvider()` returns the healthiest gateway from the registry. `SetHealthy` can manually override provider status. Evidence: `internal/service/provider_router.go`.
-- **Paystack:** Webhooks are validated with HMAC-SHA512 over the exact raw payload (`paystack/client.go:112-137`); only normalized event/reference data is queued. Evidence: README:436; `app/webhooks.go`.
-- **Flutterwave:** Webhooks are validated with HMAC-SHA512 via the `verif-hash` header (`flutterwave/client.go`); only normalized event/reference data is queued. Evidence: `internal/providers/flutterwave/client.go`; `app/webhooks.go`.
+- **Interswitch:** Outbound JSON webhooks (`TRANSACTION.CREATED/UPDATED/COMPLETED`) are authenticated with HMAC-SHA512 via the `X-Interswitch-Signature` header using the dashboard webhook secret (`INTERSWITCH_WEBHOOK_SECRET`), recorded, and deduped. A missing or invalid signature is rejected with `401`. Only terminal `TRANSACTION.COMPLETED` events trigger an authoritative server-side requery (`Verify`) via `VerifyAndApply`. A background reconciler requeries any unresolved Interswitch payment after 30s. Evidence: `internal/providers/interswitch/client.go`; `app/webhooks.go`.
 - **Multi-provider webhook worker:** The `processGatewayWebhooks` worker iterates all registered providers via `ProviderList()`, drains each provider's webhook queue, and calls `VerifyAndApply` for each. Evidence: `app/workers.go`.
 - Terminal events (`payment.succeeded`, `payment.failed`) flow through the outbox to consumers: notifications, compliance monitoring, and merchant webhook delivery. Evidence: `app/workers.go`.
 
@@ -427,7 +426,7 @@ See Section 10.
 
 The platform distinguishes three money movements:
 
-1. **Customer → merchant payment** (card via Paystack; bank transfer via customer confirmation).
+1. **Customer → merchant payment** (card via Interswitch Web Checkout; bank transfer via customer confirmation).
 2. **Merchant settlement payout** (batch → merchant settlement account) through the **simulated payout rail**.
 3. **Refund** (merchant → customer reversal) through the **simulated refund rail**.
 
@@ -539,10 +538,11 @@ Implemented end-to-end with a **simulated payout rail**. No live bank integratio
 ### 10.1 Refunds
 
 - **Scope:** Full refunds only. The refund amount is the succeeded payment's amount; the analysis does not establish partial refunds. Evidence: `store_refunds.go:81`.
-- **Who initiates:** Merchants self-serve via Partner API (`POST /api/v1/payments/{reference}/refund`); operators can fail a pending refund from the admin console.
+- **Who initiates:** Merchants self-serve via Partner API (`POST /api/v1/payments/{reference}/refund`); operators can request a refund from the admin console. Both routes create a `pending_approval` refund requiring a different admin to approve.
 - **Preconditions:** Payment must be `succeeded` (status enforced), must not have an active refund, and must not be in a `scheduled`/`processed` settlement batch (reverse the payout first). Evidence: `store_refunds.go:85-115`; `app/refunds.go:65-75`.
-- **Atomic flow (`RefundPayment`, `store_refunds.go:66-181`):** lock payment `FOR UPDATE` → validate preconditions → if in an open batch, remove the settlement line and recompute batch totals → insert refund (`pending`) → transition payment to `refunded` and record `payment_events` → post the ledger reversal via offsetting entries → emit `payment.refunded` → commit. All in one transaction.
-- **Refund statuses:** `pending`, `succeeded`, `failed` (`store_refunds.go:22-26`). The default rail is **simulated** — always succeeds with `provider_refund_id = SIM-REF-<payment_id>-<unix>`. Evidence: README:374.
+- **Atomic flow (`RequestRefund`, `store_refunds.go`):** lock payment `FOR UPDATE` → validate preconditions → if in an open batch, remove the settlement line and recompute batch totals → insert refund (`pending_approval`) → emit `payment.refunded` → commit. All in one transaction.
+- **Approval flow (`ApproveRefund`):** A **different** admin approves → transitions refund to `pending` → posts the ledger reversal via offsetting entries → transitions payment to `refunded` → records `payment_events`. Evidence: `store_refunds.go`.
+- **Refund statuses:** `pending_approval`, `pending`, `succeeded`, `failed`. The default rail is **simulated** — always succeeds with `provider_refund_id = SIM-REF-<payment_id>-<unix>`. Evidence: README:374.
 - **Provider interactions:** `CompleteRefund` / `FailRefund` (`store_refunds.go:240-265`). A live rail plugs in behind the same interface.
 
 ### 10.2 Disputes
@@ -570,7 +570,7 @@ Implemented end-to-end; both refund and dispute provider rails are simulated.
 The analysis establishes **three-way reconciliation** (plus a payout leg) between:
 
 ```text
-External Provider (Paystack verification / bank transfer simulation)
+External Provider (Interswitch verification / bank transfer simulation)
       ↓
 Xego Transaction Records (payments state machine)
       ↓
@@ -646,18 +646,29 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 - STR, CTR, and PEP reports are generated from audited store data and exported as CSV. CTR uses `ReportCTRThresholdKobo`. Evidence: `app/reports.go:38-90`; `internal/reports`.
 - **Status:** Implemented as CSV file exports. **Not established:** an automated submission pipeline to regulators.
 
-### 12.7 Transaction limits
+### 12.7 Allowance ladder (KYC/KYB tier ceilings)
 
-- `PAYMENT_MIN_KOBO=10000` and `PAYMENT_MAX_KOBO=10000000` (₦100–₦100,000). Evidence: `.env.example:102-103`; README:402.
+- **Purpose.** The flat global cap has been layered with a DB-driven allowance ladder. Every money-in (customer payment) and money-out (merchant settlement payout, individual-pay disbursement) movement against a subject is validated against that subject's tier ceilings before its payment/payout row is created, so a rejected reservation stops creation atomically. Evidence: `service/payments.go` (`CreateDraftForProvider`), `service/settlement.go` (`RequestPayout`), `service/conversation_individual_pay.go`.
+- **Ceilings.** Per `(account type, tier, direction)` row in `kyc_tier_limits`, in kobo: single, daily, and monthly, with `single ≤ daily ≤ monthly`. CBN-aligned defaults (migration 053), equal for money-in and money-out: individuals L0 single ₦20k / daily ₦20k / monthly ₦100k; L1 ₦50k/₦50k/₦300k; L2 ₦200k/₦200k/₦500k; L3 ₦1m/₦1m/₦10m; L4 ₦5m/₦5m/₦50m. Businesses B0 ₦200k/₦200k/₦1m; B1 ₦1m/₦1m/₦5m; B2 ₦5m/₦5m/₦50m; B3 ₦10m/₦10m/₦100m. Administrators edit any row live in the console (see below).
+- **Usage accounting.** `allowance_usage` is append-only, keyed by `transaction_ref` for idempotent re-application (a replay is a no-op). Daily/monthly rollups sum on the **Lagos (WAT, UTC+1) calendar** (`kyc.DayWindowStart`/`kyc.MonthWindowStart`). Reservations for the same subject+direction are serialized with `pg_advisory_xact_lock`, so concurrent payments cannot each pass validation.
+- **Release.** A money-in reservation is released centrally when a payment lands in `failed`/`abandoned`/`expired`/`refunded` (`store/store_payments.go` `transitionPayment`). Payout reservations are keyed `payout:<batchNo>` and released only when the payout is reversed (`store_settlements.go` `ReversePayout`); a failed payout keeps its reservation because a retry is the same intent.
+- **Business KYB ladder.** `business_kyb_profiles` holds each merchant's position on B0–B3 (the KYB twin of `kyc_profiles`). Advancement is adjacent and evidence-gated (`business_docs_verified` → `business_bank_verified` → `business_edd_completed`); past B0 it requires a non-blocked sanctions/PEP decision. Existing merchants were grandfathered to B0/approved with `["registration_approved"]` evidence. A blocked **business** rescreen (same periodic job that serves individuals) forces the merchant back to B0 and immediately lowers the ceilings `ReserveAllowance` enforces. Evidence: `internal/app/cli.go` (`RescreenDue`), `RecordKYBScreening`, `BusinessKYBProfilesDueForRescreen`.
+- **Customer-facing visibility.** WhatsApp menu *My limits* shows tier, per-payment/day/month ceilings, and used/remaining for today and the month; *KYB status & limits* does the same for merchants. Allowance rejections are rewritten into actionable copy ("complete more verification…", upgrade prompt) by `conversation_allowances.go`.
+- **Administration.** `/admin/kyb` (admin/compliance roles) lists every business profile with review actions and advance-to-next-tier forms, and renders every `kyc_tier_limits` row as an inline editor. Changes are audited (`admin.tier_limits.updated`, `admin.kyb.reviewed`; tier moves audit as `kyb.tier_advanced`/`kyb.tier_downgraded`). Evidence: `app/admin_kyb.go`.
+- **Status:** Implemented, gated on Postgres (migration 053).
+
+### 12.8 Transaction limits (global platform bounds)
+
+- `PAYMENT_MIN_KOBO=10000` and `PAYMENT_MAX_KOBO=10000000` (₦100–₦100,000) remain the **absolute** platform floor and ceiling independent of tier ceilings. An amount is first constrained to this window and then to the subject's tier allowance. Evidence: `.env.example:102-103`; README:402.
 - **Status:** Implemented.
 
-### 12.8 Compliance summary by status
+### 12.9 Compliance summary by status
 
-**Implemented:** KYC ladder, screening decisions, risk scoring, transaction monitoring rules, review queues, DSR (Section 20 workflow), legal holds, retention, SIEM, chat guard, RBAC, STR/CTR/PEP file reports, transaction limits.
+**Implemented:** KYC ladder, KYB ladder for merchants, screening decisions, allowance ceilings with reservation enforcement, risk scoring, transaction monitoring rules, review queues, DSR (Section 20 workflow), legal holds, retention, SIEM, chat guard, RBAC, STR/CTR/PEP file reports, global transaction limits.
 
 **Partially implemented:** Identity and sanctions screening (simulated providers; live vendor plug-in required), email confirmation (SMTP optional, chat demo mode).
 
-**Scaffolded / Planned:** No live regulatory submission pipeline; no KYC/KYB for merchants beyond registration approval.
+**Scaffolded / Planned:** No live regulatory submission pipeline.
 
 **Not established by the analysis:** any regulatory certification (CBN/NDPR/PCI claims). The README explicitly notes the build is not a licensed payment processor.
 
@@ -690,14 +701,14 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 ### 13.5 Webhook verification
 
 - WhatsApp `X-Hub-Signature-256` (HMAC-SHA256, raw body) — `whatsapp/client.go:51-66`.
-- Paystack HMAC-SHA512 — `paystack/client.go:112-137`.
+- Interswitch outbound webhook (`X-Interswitch-Signature`, HMAC-SHA512 with dashboard webhook secret; hex-encoded; required) — `internal/providers/interswitch/client.go`.
 - Telegram secret token — `app/webhooks.go`.
 - SMS shared secret (`X-SMS-Webhook-Secret` or `X-Xego-SMS-Secret`) — `app/webhooks.go`.
 - VTPass webhook secret (header only, never query parameter) — `app/webhooks.go`.
 
 ### 13.6 Rate limiting
 
-- Fixed one-minute per-IP windows: webhooks 120/min, public 60/min, scan 30/min, Partner API 300/min per key. Evidence: README:131-140; `.env.example:114-118`.
+- Fixed one-minute per-IP windows: webhooks 120/min, public 60/min, scan 30/min, Partner API 300/min per key, admin console 120/min per IP on all `/admin/*` routes. Evidence: README:131-140; `.env.example:114-118`; `app.go`.
 - Redis-backed when `REDIS_URL` set; in-memory per-process otherwise; **fails open** on Redis outage (an unavailable cache never blocks payments). Evidence: README:140.
 
 ### 13.7 Sensitive data handling
@@ -826,12 +837,13 @@ All admin routes require login; RBAC middleware gates sensitive actions. Routes 
 
 ### 16.2 Operational controls & approvals
 
-- **Maker-checker:** the analysis does **not** establish a two-person maker-checker workflow. There are role gates, but sensitive actions (e.g., payout reverse, ledger reversal, refund fail, dispute resolution) are single-actor operations with audit logging. This is a gap to note for operations (see Section 25).
+- **Maker-checker (refunds):** Refunds use a two-step maker-checker flow. Merchants or operators call `RequestRefund` which creates a refund with `approval_status='pending_approval'` (migration 046). A **different** admin must call `ApproveRefund` to execute the refund; `FailRefund` blocks `pending_approval` refunds. All role gates enforced; audit-logged. Evidence: `store_refunds.go`; `app/refunds.go`.
+- **Other sensitive actions** (payout reverse, ledger reversal, dispute resolution) remain single-actor with audit logging.
 - All privileged actions are audited (actor, IP, action, resource, details) with hash-chained rows. Evidence: README:144.
 
 ### 16.3 CLI operations
 
-`reconcile` (Paystack re-verify), `reconcile3` (three-way), `settle <merchant-id> <batch-no>`, `refund <merchant-id> <payment-reference>`, `retain` (retention purge), `rescreen`, `recompute-risk`, `monitor` (transaction monitoring), `reports <dir>` (STR/CTR/PEP export), `sync-vtpass-data-plans`, `health`. Evidence: `cmd/demo/main.go:82-134`.
+`reconcile` (Interswitch re-verify), `reconcile3` (three-way), `settle <merchant-id> <batch-no>`, `refund <merchant-id> <payment-reference>`, `retain` (retention purge), `rescreen`, `recompute-risk`, `monitor` (transaction monitoring), `reports <dir>` (STR/CTR/PEP export), `sync-vtpass-data-plans`, `health`. Evidence: `cmd/demo/main.go:82-134`.
 
 ---
 
@@ -839,8 +851,7 @@ All admin routes require login; RBAC middleware gates sensitive actions. Routes 
 
 | Integration | Purpose | Xego Component | Direction | Status |
 | ----------- | ------- | -------------- | --------- | ------ |
-| Paystack | Card payment initialize, verify, webhook | `internal/providers/paystack/client.go` | Outbound (API) + Inbound (webhook) | Real HTTP, **test-key only** |
-| Flutterwave | Card payment initialize, verify, webhook | `internal/providers/flutterwave/client.go` | Outbound (API) + Inbound (webhook) | Real HTTP, **test-key only** |
+| Interswitch Web Checkout | Card payment initialize (form redirect), requery, outbound webhook | `internal/providers/interswitch/client.go` | Outbound (API) + Inbound (webhook) | Real HTTP, **test-key only** |
 | WhatsApp Cloud API | Customer chat, checkout links, templates, images | `internal/providers/whatsapp/client.go` | Bidirectional | Real HTTP |
 | Telegram Bot API | Customer chat | `internal/app` webhook + bot client | Bidirectional | Real HTTP |
 | SMTP | Merchant-registration email confirmation | `internal/providers/email` | Outbound | Real (Configured Only; empty defaults) |
@@ -897,8 +908,7 @@ Side effects / events: payment creation writes payment rows; verification transi
 | `POST /webhooks/whatsapp` | Meta | `X-Hub-Signature-256` | Implemented |
 | `POST /webhooks/telegram` | Telegram | `X-Telegram-Bot-Api-Secret-Token` | Implemented |
 | `POST /webhooks/sms` | SMS provider | Shared secret | Implemented |
-| `POST /webhooks/paystack` | Paystack | `X-Paystack-Signature` (HMAC-SHA512) | Implemented |
-| `POST /webhooks/flutterwave` | Flutterwave | `verif-hash` (HMAC-SHA512) | Implemented |
+| `POST /webhooks/interswitch` | Interswitch | Redirect notification (HMAC-SHA512 optional); outcome via requery | Implemented |
 | `POST /webhooks/vtpass` | VTPass | `X-VTPass-Webhook-Secret` (header) | Implemented |
 
 ### 18.3 Public web pages
@@ -931,7 +941,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | `payment.refunded` | `RefundPayment` | `xego.merchant_webhooks` | Queue signed merchant delivery | Implemented |
 | `payment.disputed` | `CreateDispute` | `xego.merchant_webhooks` | Queue signed merchant delivery | Implemented |
 | Inbound messages (2s) | Channel webhooks | `conversation.Handle` | Drive chatbot | Implemented |
-| Paystack webhooks (2s) | Paystack webhook | `VerifyAndApply` | Apply verification idempotently | Implemented |
+| Interswitch webhooks (2s) | Interswitch outbound webhook (`TRANSACTION.COMPLETED`) | `VerifyAndApply` | Apply verification idempotently | Implemented |
 | Multi-provider webhooks (2s) | All gateway webhooks | `processGatewayWebhooks` | Drain + verify per registered provider | Implemented |
 | Data fulfilments (2s) | Order payments | Data fulfilment worker | Mark orders fulfilled/failed | Implemented |
 | Outbound message outbox (2s) | Services | Messenger send | Deliver chat responses | Implemented |
@@ -939,17 +949,17 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | Checkout expiry (2s) | Checkouts | `expireCheckouts` | Close expired request-money links | Implemented |
 | Event publisher (1s) | Outbox | `EventPublisher.Drain` | Publish to bus | Implemented |
 | Payment reconcile (1m) | Payments | `payments.Reconcile` | Re-verify pending with provider | Implemented |
-| Three-way reconciliation (24h) | Reconciliation | `RunReconciliation` | Auto daily run | Implemented |
+| Three-way reconciliation (24h) | Reconciliation | `RunReconciliation` | Auto daily run; emits `reconciliation.discrepancy` business event on discrepancies | Implemented |
 | Retention purge (24h) | Retention | `PurgeExpiredData` | Archive-then-delete per policy | Implemented |
 | KYC rescreen (24h) | Rescreen | `RescreenDue` | Re-run screening per period | Implemented |
 | Transaction monitor (15m) | Monitor | `MonitorTransactions` | Full-scan alerting | Implemented |
-| Settlement dispatcher (10s) | Queued payouts | `runSettlementDispatcher` | Dispatch payouts | Implemented |
+| Settlement dispatcher (10s) | Queued payouts | `runSettlementDispatcher` | Dispatch payouts (min/max/daily cap controls) | Implemented |
 
 ### 19.3 Retries & dead-letter handling
 
 - Inbound messages / webhooks: claimed with attempt counters, retried on error, completed on success. Evidence: `app/workers.go`.
 - Business events: `RetryBusinessEvent` on publish failure; consumers idempotent. Evidence: `service/eventbus.go:41-47`.
-- Merchant webhooks: exponential backoff (2, 4, 8, 16, 32 minutes) then dead-lettered as `failed` in `merchant_webhook_deliveries`. Evidence: README:394. **Gap (Unclear):** no admin surface for dead-lettered deliveries was found in the analysis.
+- Merchant webhooks: exponential backoff (2, 4, 8, 16, 32 minutes) then dead-lettered as `failed` in `merchant_webhook_deliveries`. Evidence: README:394. Admin surface at `/admin/dead-letter` with replay buttons for both failed webhook deliveries and business events.
 
 ---
 
@@ -958,15 +968,15 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 ### 20.1 Primary database — PostgreSQL
 
 - **Technology:** PostgreSQL 15+ (local dev) / 17 (Docker). Evidence: README:28; `compose.yaml:3`.
-- **Embedded migrations:** 45 SQL files under `internal/store/migrations`, embedded via `//go:embed` (store.go:21). The complete migration inventory:
+- **Embedded migrations:** 48 SQL files under `internal/store/migrations`, embedded via `//go:embed` (store.go:21). The complete migration inventory:
   - Foundations: 001_init (users, merchants, conversation sessions, payments, payment events, webhook deliveries, inbound messages, message outbox, admin sessions), 002_seed_merchants, 003_user_verification, 004_bank_transfer_simulation, 005_production_customer_copy.
   - Channels/catalog: 006_telegram_channel_support, 007_catalog_picker_support (user_merchant_recents), 008_data_sell_sms (data networks/plans), 009_catalog_ux_expansion.
   - Merchant & commerce: 010_email_confirmation, 011_merchant_registrations, 012_merchant_invoices, 013_thrift_contributions, 014_receipt_scanning, 015_thrift_name_as_identifier, 016_merchant_settings, 017_merchant_password_reset_tokens, 018_pg_trgm, 019_merchant_services, 020_custom_fields.
   - Security & compliance: 021_totp, 022_rbac, 023_audit_logs, 024_encrypt_at_rest, 025_retention_archive, 026_kyc_ladder, 027_risk_band, 028_transaction_monitoring, 029_data_subject_rights.
-   - Financial core: 030_ledger, 031_reconciliation, 032_chat_guard, 033_business_event_outbox, 034_consent_auto_grant, 035_checkout_token, 036_merchant_api_keys, 037_payments_api_columns, 038_merchant_webhooks, 039_checkouts, 040_ledger_merchant, 041_settlements, 042_refunds_disputes, 043_settlement_fees, 044_financial_immutability, 045_idempotency_dedup.
+   - Financial core: 030_ledger, 031_reconciliation, 032_chat_guard, 033_business_event_outbox, 034_consent_auto_grant, 035_checkout_token, 036_merchant_api_keys, 037_payments_api_columns, 038_merchant_webhooks, 039_checkouts, 040_ledger_merchant, 041_settlements, 042_refunds_disputes, 043_settlement_fees, 044_financial_immutability, 045_idempotency_dedup, 046_refund_maker_checker, 047_merchant_notification_prefs, 048_perf_indexes.
    - Split payments & payouts: 052_split_payments (`payment_splits` + `user_payout_destinations` tables; new ledger accounts `2300_user_payable`, `2300_xego_payable`).
 - **Major domains / entities:** users (with whatsapp/telegram identity columns), merchants + owners, payments + payment_events, conversation_sessions, inbound_messages, message_outbox, merchant_webhook_deliveries, checkouts, invoices (+items/payments), thrift (groups/members/cycles/contributions/payouts), data (networks/plans/orders), settlements (accounts/batches/lines/payouts), refunds, disputes, ledger_entries, reconciliations + items, audit_logs, archive_ledger, legal_holds, kyc_profiles, customer_verifications, screening_results, risk_events, manual_review_cases, transaction_alerts, consent_records, data_subject_requests, siem_event_log, chat_guard_events, admin/merchant sessions, api_keys, payment_splits, user_payout_destinations.
-- **Relationships/invariants (established):** ledger entries hash-chained + append-only; audit log hash-chained; refunds FK to payments; settlements line↔payment; payout FK to batch; immutability triggers on payments/refunds/payouts (044); idempotency unique index (045).
+- **Relationships/invariants (established):** ledger entries hash-chained + append-only; audit log hash-chained; refunds FK to payments; settlements line↔payment; payout FK to batch; immutability triggers on payments/refunds/payouts (044); idempotency unique index (045); outbox dedup index (045); refund approval columns (046); merchant notification prefs (047); performance indexes on hot paths (048).
 - **Caveat:** bodies of migrations 009–029, 031–039, 041–043 were not line-read in the analysis; names are authoritative from filenames, column-level detail for those is unverified.
 
 ### 20.2 Cache
@@ -980,7 +990,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 ### 20.4 Messaging infrastructure
 
-- **Queues:** relational queues via outbox tables (`inbound_messages`, `message_outbox`, `business_event_outbox`, `merchant_webhook_deliveries`, `paystack_webhooks`) — no separate queue broker required.
+- **Queues:** relational queues via outbox tables (`inbound_messages`, `message_outbox`, `business_event_outbox`, `merchant_webhook_deliveries`) — no separate queue broker required.
 - **Event bus:** in-memory (default) or Kafka (`EVENT_BUS`, `KAFKA_BROKERS`). Evidence: `.env.example:120-127`.
 - **Workers:** ticker-based goroutines inside the single binary (`app/workers.go`).
 
@@ -1018,17 +1028,17 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 ### Workflow: Conversational card payment
 
 - **Trigger:** Customer chooses **Make payment**, selects merchant, enters amount (₦100–₦100,000), chooses **Card checkout**.
-- **Actors:** Customer, engine, PaymentService, Paystack, background workers.
+- **Actors:** Customer, engine, PaymentService, Interswitch, background workers.
 - **Process:**
   1. Conversation captures merchant, amount, channel.
   2. Draft payment created (`awaiting_confirmation` → `initialized`/`pending`).
-  3. Paystack `/transaction/initialize` returns `authorization_url` (card only).
-  4. Customer opens secure checkout, completes card flow.
-  5. Callback `/payments/return` or Paystack webhook triggers `VerifyAndApply` — server-side verify of reference/amount/currency/channel/metadata.
+  3. Interswitch Web Checkout redirect form prepared; the platform page auto-submits to Interswitch `/collections/w/pay` (card only).
+  4. Customer completes the card flow on the Interswitch hosted page.
+  5. Callback `/payments/return` or the outbound webhook (`TRANSACTION.COMPLETED`) triggers `VerifyAndApply` — an authoritative Interswitch requery (`gettransaction.json`) of reference/amount/currency/test-mode.
   6. On confirmation: payment → `succeeded`; ledger money-in pair; `payment.succeeded` into outbox.
   7. Consumers: merchant notification; transaction monitoring; merchant webhook queued.
 - **Data created/updated:** payment + payment_events, ledger_entries, business_event_outbox, merchant_webhook_deliveries, transaction_alerts (if rules fire).
-- **External systems:** Paystack.
+- **External systems:** Interswitch.
 - **Events:** `payment.succeeded` (to notifications/compliance/merchant_webhooks groups).
 - **Success path:** chat reports success; receipt URL shows same status/provider.
 - **Failure path:** verification fails → `failed` + `payment.failed`; webhook/notification retried; duplicate webhook has no double effect (idempotent).
@@ -1138,8 +1148,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | SMS data-command channel | Partially Implemented | reply-in-webhook MVP; README:268 |
 | Rule-based conversational engine | Implemented | `conversation.go` + `conversation_*.go` flow files |
 | Conversational AI / NLP | Not implemented | no AI code; not claimed in README |
-| Card checkout (Paystack) | Implemented | `paystack/client.go:40-65`; verification-gated |
-| Card checkout (Flutterwave) | Implemented | `flutterwave/client.go`; HMAC-SHA512 webhook verification; test-key only |
+| Card checkout (Interswitch) | Implemented | `providers/interswitch/client.go`; requery-gated; test-key only |
 | Automatic provider routing | Implemented | `service/provider_router.go`; EWMA latency + health-based failover |
 | Per-payment fee model | Implemented | `service/fees.go`; card/DVA/bank transfer/NIP configurable caps |
 | Payment split application | Implemented | `store/store_split_payments.go`; migration 052; ledger posting at collection |
@@ -1192,7 +1201,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 Per the repository analysis:
 
-- **Unit tests:** provider HTTP clients against `httptest.Server` fakes (paystack, telegram, vtpass); WhatsApp client test is pure unit; simulators (data, identity, screening) unit-tested.
+- **Unit tests:** provider HTTP clients against `httptest.Server` fakes (interswitch, telegram, vtpass); WhatsApp client test is pure unit; simulators (data, identity, screening) unit-tested.
 - **Integration tests:** require real PostgreSQL (`TEST_DATABASE_URL`), Redis (`TEST_REDIS_URL`), Kafka (`KAFKA_BROKERS`). The store integration suite covers ledger and settlements/refunds.
 - **Financial tests:** invariants verified by tests include ledger debits == credits, duplicate webhook produces no double effect, and monotonic state transitions. Each invariant was traced to production code paths in the analysis.
 - **Webhook tests:** covered via provider wire-contract fakes.
@@ -1223,17 +1232,17 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 
 ### 24.3 Configuration surface
 
-`.env.example` defines: app/env/public host, logging, DB password, admin bootstrap (bcrypt hash), email/SMTP, TOTP key, data-encryption key, Paystack test key, WhatsApp credentials/template, Telegram, SMS, data provider (simulated/VTPass), identity/screening providers, monitoring rules, payment limits, retention, rate limits, Redis, event bus/Kafka, invoice allow-list, backup/rclone. Production-refusal guards exist for demo email mode, missing TOTP key, and missing data key.
+`.env.example` defines: app/env/public host, logging, DB password, admin bootstrap (bcrypt hash), email/SMTP, TOTP key, data-encryption key, Interswitch Web Checkout test credentials, WhatsApp credentials/template, Telegram, SMS, data provider (simulated/VTPass), identity/screening providers, monitoring rules, payment limits, retention, rate limits, Redis, event bus/Kafka, invoice allow-list, backup/rclone. Production-refusal guards exist for demo email mode, missing TOTP key, and missing data key.
 
 ### 24.4 Monitoring
 
-- Health endpoints `/health/live`, `/health/ready` (used by compose healthchecks). Evidence: `app.go`; `compose.yaml:72`.
+- Health endpoints `/health/live`, `/health/ready` (structured per-component status with overall `ok`/`degraded`; used by compose healthchecks). Evidence: `app.go`; `compose.yaml:72`.
 - Structured JSON logging with request correlation IDs. Evidence: README:146-148.
 - **Not established:** metrics/alerting infrastructure beyond admin metrics page; no observability stack (Prometheus/Grafana) in the analysis.
 
 ### 24.5 CI/CD
 
-- **Not established.** No CI pipeline in the analysis.
+- GitHub Actions CI pipeline: `go test`, `go vet`, `gosec`, `govulncheck` with PostgreSQL service container. Evidence: `.github/workflows/ci.yml`.
 
 ---
 
@@ -1259,8 +1268,6 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 
 ### Security gaps
 
-- **No maker-checker controls** on sensitive operations (single-actor with audit only).
-- **No dead-letter admin surface** for failed merchant webhook deliveries (documented as `failed`; no UI found).
 - **Fails-open rate limiting** on Redis outage (documented as intentional — an availability trade-off, not an oversight).
 - No automated security-monitoring/alerting pipeline beyond SIEM/audit; no scan evidence for security headers/CSP.
 
@@ -1269,7 +1276,6 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - **Ledger balance SQL unverified** at line level (analysis status: Unclear).
 - **Single-writer assumption** on the ledger tail; multi-replica correctness without Redis/sequencing is not established.
 - **Outbox ordering guarantees** not explicit; correctness relies on store-side state checks rather than event ordering.
-- **Simulated rails could be misread as production** — no compile-time or runtime guard forces a real provider in production.
 
 ### Compliance gaps
 
@@ -1279,14 +1285,13 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 
 ### Infrastructure gaps
 
-- **No CI/CD.**
 - **No observability stack** (metrics/alerting) beyond health endpoints and structured logs.
 - **Single PostgreSQL** is the system of record for queues, outbox, and accounting; Kafka is optional and off by default.
 
 ### Testing gaps
 
 - No automated compliance/security/E2E suites established; acceptance is manual (README:396-432).
-- Refund-in-scheduled-batch and payout-reverse→rebatch paths lack explicitly identified integration coverage.
+- Refund-in-scheduled-batch path has integration coverage; payout-reverse→rebatch is tested via `payout-reverse-firebatch` integration test.
 
 ---
 
@@ -1295,7 +1300,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 ### Fully Implemented
 
 - WhatsApp and Telegram conversational checkout (card + bank-transfer paths)
-- Hosted card checkout with verification-driven success (Paystack + Flutterwave, test-key)
+- Hosted card checkout with verification-driven success (Interswitch Web Checkout, test-key)
 - Automatic provider routing with EWMA latency and health-based failover
 - Per-payment fee model (card, DVA, bank transfer) with configurable caps and breakpoints
 - Payment split application at collection time (platform fee + merchant receivable + individual payout)
@@ -1306,13 +1311,16 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - Thrift groups; mobile data ordering
 - Double-entry, append-only, hash-chained ledger; ledger reversals; chain verification
 - Settlements, settlement fees, payouts, payout reversal, settlement accounts
-- Full refunds with atomic ledger reversal; disputes with admin resolution
+- Full refunds with maker-checker approval flow; atomic ledger reversal; disputes with admin resolution
 - Three-way reconciliation (auto daily + manual)
 - KYC tier ladder; risk scoring; transaction monitoring; screening decisions
 - STR/CTR/PEP CSV reports; SIEM; analytics; hash-chained audit log; chat guard
-- RBAC admin console; TOTP two-factor auth; encryption at rest; rate limiting; CSRF
+- RBAC admin console; TOTP two-factor auth; encryption at rest; rate limiting (admin 120/min); CSRF
 - DSR (consent/access/erasure), legal holds, retention purge with archive
 - Transactional outbox with idempotency; in-memory event bus; background workers
+- Dead-letter admin surface (`/admin/dead-letter` with replay); access logging; structured readiness probe
+- Production guard (blocks simulated provider in `APP_ENV=production`); GitHub Actions CI
+- Merchant notification preferences (opt-in per event type); session hardening (role-change invalidation, configurable TTL)
 - Email confirmation (SMTP or chat demo); VTPass sandbox data fulfilment
 - Deployment: Docker Compose (PostgreSQL 17 + SSL + WAL archive + backups + Caddy TLS), native VPS rebuild script
 
@@ -1337,10 +1345,8 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - Conversational AI / NLP
 - Partial refunds; peer-to-peer transfers
 - Live bank/payout/refund rails
-- Maker-checker approval controls
-- Dead-letter admin surface for webhook failures
 - Regulatory submission pipeline; regulatory certification
-- CI/CD; observability stack
+- Observability stack
 - Production readiness for live money (explicitly disclaimed in README)
 
 ---
@@ -1349,7 +1355,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 
 - **Terminology preserved** — statuses and component names match the repository and analysis (`IMPLEMENTED`, `PARTIALLY IMPLEMENTED`, `MOCKED/SIMULATED`, `CONFIGURED ONLY`, `NOT ESTABLISHED`).
 - **Implementation status preserved** — partial features are never described as "supported"; simulated rails are always labeled simulated; configured-only infrastructure is labeled as such.
-- **Uncertainty preserved** — where the analysis says "Unclear" (ledger balance SQL) or "not established" (regulatory submission, dead-letter UI, maker-checker), this document retains that.
+- **Uncertainty preserved** — where the analysis says "Unclear" (ledger balance SQL) or "not established" (regulatory submission), this document retains that. Resolved gaps (dead-letter UI, maker-checker) are updated to reflect current implementation.
 - **Relationships explained** — components are described in terms of how they interact (payment → ledger → settlement → reconciliation; outbox → bus → consumers), not merely listed.
 - **Product vs technical capabilities distinguished** — each user-visible feature names the technical components that enable it.
 - **Accuracy over speculation** — whenever a claim could not be grounded, the document states that the analysis does not establish it rather than inferring.
@@ -1385,14 +1391,15 @@ serialized tail writes, mutation rejection (store_ledger.go:55-124; migrations 0
 
 ```text
 Path:
-internal/providers/paystack/client.go
+internal/providers/interswitch/client.go
 
 Component:
 Client.Initialize / Verify / ValidateWebhook
 
 Purpose:
-Real Paystack integration: card-only hosted checkout, server-side verification,
-HMAC-SHA512 webhook validation (paystack/client.go:40-137).
+Real Interswitch Web Checkout integration: hosted form redirect checkout,
+authoritative server-side requery verification (gettransaction.json),
+redirect-notification handling (internal/providers/interswitch/client.go).
 ```
 
 ```text
