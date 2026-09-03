@@ -72,6 +72,29 @@ func (s *Store) IsInvoiceThriftOrData(ctx context.Context, paymentID uuid.UUID) 
 	return isInvoice || isThrift || isData, err
 }
 
+// RecordIndividualPaySplits books the money-in side of an individual bank
+// transfer so the legs reconcile with the total the sender paid:
+// totalPay = collection fee + NIP fee + payout to the recipient. It debits the
+// customer float and credits each split leg, keyed by the provided reference.
+func (s *Store) RecordIndividualPaySplits(ctx context.Context, ref string, splits []SplitSpec) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	for _, sp := range splits {
+		if sp.AmountKobo <= 0 {
+			continue
+		}
+		if err := s.postLedgerPair(ctx, tx, ref, "individual_pay", ref,
+			LedgerAccountCustomerFloat, sp.Account, sp.Currency,
+			sp.Description, "system", sp.AmountKobo, nil); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 // UserPayoutDestination is a saved bank account for sending money to a user.
 type UserPayoutDestination struct {
 	ID            uuid.UUID

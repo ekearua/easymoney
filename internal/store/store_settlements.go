@@ -608,12 +608,23 @@ func (s *Store) ReversePayout(ctx context.Context, payoutID uuid.UUID, reason st
 	if p.Status != PayoutFailed && p.Status != PayoutProcessing {
 		return fmt.Errorf("only a failed or processing payout can be reversed, payout %s is %s", payoutID, p.Status)
 	}
+	var batchNo string
+	if err := tx.QueryRow(ctx, `SELECT batch_no FROM settlement_batches WHERE id=$1`, p.BatchID).Scan(&batchNo); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE payouts SET status='reversed',last_error=$2 WHERE id=$1`, payoutID, reason); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE settlement_batches SET status='open' WHERE id=$1 AND status='scheduled'`, p.BatchID); err != nil {
+		return err
+	}
+	// C9-tiers: a reversed payout is a cancelled intent, so release the
+	// money-out reservation taken under the batch number. The next payout for
+	// this batch is a fresh intent that re-reserves under the same key.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM allowance_usage WHERE transaction_ref=$1`, "payout:"+batchNo); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/payout"
 	"whatsapp-payment-demo/internal/store"
@@ -128,6 +129,23 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 	}
 	if s.payoutDailyCapKobo > 0 && dailyTotal+payoutAmount > s.payoutDailyCapKobo {
 		return store.Payout{}, fmt.Errorf("merchant would exceed daily payout cap (%d+%d > %d kobo)", dailyTotal, payoutAmount, s.payoutDailyCapKobo)
+	}
+	// C9-tiers: money-out allowance for the merchant's KYB tier, keyed by the
+	// batch number so retries and replays never double-count. A rejection here
+	// stops the payout dispatch entirely.
+	kybProfile, err := s.store.EnsureKYBProfile(ctx, batch.MerchantID)
+	if err != nil {
+		return store.Payout{}, err
+	}
+	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+		AccountType: store.AccountBusiness,
+		SubjectID:   batch.MerchantID,
+		Direction:   kyc.DirOut,
+		Tier:        kybProfile.Tier,
+		AmountKobo:  payoutAmount,
+		Ref:         "payout:" + batch.BatchNo,
+	}); err != nil {
+		return store.Payout{}, err
 	}
 	return s.dispatch(ctx, payout)
 }

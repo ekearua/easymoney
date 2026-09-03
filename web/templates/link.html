@@ -9,6 +9,13 @@
   <h1>{{.Checkout.PayeeName}}</h1>
   {{if .Checkout.Note}}<p class="muted">{{.Checkout.Note}}</p>{{end}}
   <p class="receipt-amount">{{money .Checkout.AmountKobo}}</p>
+  {{if gt .CollectionFee 0}}
+  <dl class="fee-breakdown">
+    <div><dt>Merchant amount</dt><dd>{{money .Checkout.AmountKobo}}</dd></div>
+    <div><dt>Collection fee</dt><dd>{{money .CollectionFee}}</dd></div>
+    <div><dt>Total to pay</dt><dd>{{money (add .Checkout.AmountKobo .CollectionFee)}}</dd></div>
+  </dl>
+  {{end}}
   <dl>
     {{if .Checkout.Reference}}<div><dt>Reference</dt><dd class="mono">{{.Checkout.Reference}}</dd></div>{{end}}
     <div><dt>Status</dt><dd>{{.Checkout.Status}}</dd></div>
