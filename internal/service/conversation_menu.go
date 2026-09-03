@@ -106,12 +106,18 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.startThriftEdit(ctx, channel, recipient, user, session)
 	case "generate invoice", "menu_generate_invoice", "invoice":
 		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
+	case "kyb status", "menu_kyb_status":
+		return s.handleMerchantKYBStatus(ctx, channel, recipient, user)
+	case "request kyb upgrade", "menu_kyb_request", "request upgrade":
+		return s.startKYBUpgradeRequest(ctx, channel, recipient, user, session)
 	case "merchant dashboard", "menu_merchant_dashboard":
 		return s.sendMerchantDashboard(ctx, channel, recipient, user)
 	case "status", "menu_status", "check payment status":
 		return s.sendLatestStatus(ctx, channel, recipient, user)
 	case "history", "menu_history", "recent transactions":
 		return s.sendHistory(ctx, channel, recipient, user)
+	case "my limits", "menu_my_limits", "limits":
+		return s.handleMyLimits(ctx, channel, recipient, user)
 	case "help", "menu_help":
 		return s.sendHelp(ctx, channel, recipient)
 	case "ask xego", "menu_ai", "ai", "assistant":
@@ -173,6 +179,7 @@ func mainMenuRows() []ports.InteractiveRow {
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
 		{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
 		{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
+		{ID: "menu_my_limits", Title: "My limits", Description: "Tier and remaining allowance"},
 		{ID: "menu_ai", Title: "Ask Xego", Description: "Chat with our AI assistant"},
 		{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
 	}
@@ -183,6 +190,8 @@ func merchantServicesRows() []ports.InteractiveRow {
 		{ID: "menu_register_merchant", Title: "Register merchant", Description: "Submit a business for review"},
 		{ID: "menu_generate_invoice", Title: "Generate invoice", Description: "Approved merchants only"},
 		{ID: "menu_merchant_dashboard", Title: "Merchant dashboard", Description: "Invoice status summary"},
+		{ID: "menu_kyb_status", Title: "KYB status & limits", Description: "Tier and payout limits"},
+		{ID: "menu_kyb_request", Title: "Request KYB upgrade", Description: "Submit evidence for the next tier"},
 		{ID: "menu_main", Title: "Back to main menu", Description: "Return to Xego menu"},
 	}
 }

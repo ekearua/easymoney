@@ -1,0 +1,100 @@
+{{define "admin_kyb.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Business KYB ladder &amp; tier limits</h1></div></header>
+
+{{if .Error}}<div class="alert">{{.Error}}</div>{{end}}
+{{if .Saved}}<div class="alert alert-ok">Saved: {{.Saved}}.</div>{{end}}
+
+<section class="panel">
+  <h2>Allowance ceilings</h2>
+  <p class="muted">Per-account ceilings in kobo. Single must not exceed daily; daily must not exceed monthly. Editing a ceiling applies immediately to new transactions.</p>
+  <div class="table-wrap"><table><thead><tr><th>Account</th><th>Tier</th><th>Direction</th><th>Single</th><th>Daily</th><th>Monthly</th><th>Actions</th></tr></thead><tbody>
+  {{range .Limits}}<tr>
+    <td>{{.AccountType}}</td>
+    <td><strong>{{.Tier}}</strong></td>
+    <td>{{.Direction}}</td>
+    <td>{{money .SingleLimitKobo}}</td>
+    <td>{{money .DailyLimitKobo}}</td>
+    <td>{{money .MonthlyLimitKobo}}</td>
+    <td>
+      <form method="post" action="/admin/tier-limits/{{.ID}}" style="display:flex;gap:4px;flex-wrap:wrap">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input class="num" name="single_kobo" value="{{.SingleLimitKobo}}" title="Single (kobo)" size="9">
+        <input class="num" name="daily_kobo" value="{{.DailyLimitKobo}}" title="Daily (kobo)" size="9">
+        <input class="num" name="monthly_kobo" value="{{.MonthlyLimitKobo}}" title="Monthly (kobo)" size="9">
+        <button class="btn btn-small" type="submit">Save</button>
+      </form>
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="7">No tier ceilings configured. Run migration 053 before enforcing allowances.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Business identity ladder</h2>
+  <p class="muted">Advancement is adjacency- and evidence-gated. Moving past B0 requires a non-blocked screening decision. Tiers above B0 lift monthly payout ceilings and require operator review.</p>
+  <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Tier</th><th>Review</th><th>Screening</th><th>Evidence</th><th>Upgrade request</th><th>Updated</th><th>Advance</th><th>Review action</th></tr></thead><tbody>
+  {{range .Profiles}}<tr>
+    <td>{{if .MerchantName}}{{.MerchantName}}{{else}}<span class="mono">{{.MerchantID}}</span>{{end}}</td>
+    <td><strong>{{.Tier}}</strong></td>
+    <td><span class="status {{if eq .ReviewStatus "approved"}}ok{{else if eq .ReviewStatus "rejected"}}failed{{else}}pending{{end}}">{{.ReviewStatus}}</span></td>
+    <td>{{.Screening}}</td>
+    <td class="mono">{{printf "%v" .Evidence}}</td>
+    <td>
+      {{if .HasAdvanceRequest}}
+      <div class="request-box">
+        <p><strong>Requested:</strong> {{.Tier}} → {{.AdvanceTier}}</p>
+        {{if .AdvanceEvidence}}<p class="mono">{{printf "%v" .AdvanceEvidence}}</p>{{end}}
+        {{if .AdvanceNote}}<p class="muted">{{.AdvanceNote}}</p>{{end}}
+        {{if .AdvanceRequested}}<p class="muted">At {{.AdvanceRequested}}</p>{{end}}
+        <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+          <form method="post" action="/admin/kyb/{{.MerchantID}}/advance-request/approve">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button class="btn btn-small" type="submit">Approve upgrade</button>
+          </form>
+          <form method="post" action="/admin/kyb/{{.MerchantID}}/advance-request/clear">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button class="btn btn-small btn-danger" type="submit">Clear</button>
+          </form>
+        </div>
+      </div>
+      {{else}}<span class="muted">—</span>{{end}}
+    </td>
+    <td style="white-space:nowrap">{{.UpdatedAt | date}}</td>
+    <td>
+      {{if .NextTier}}
+      <form method="post" action="/admin/kyb/{{.MerchantID}}/advance">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="target_tier" value="{{.NextTier}}">
+        <p>To {{.NextTier}}:</p>
+        {{range .Options}}
+        <label style="display:block"><input type="checkbox" name="evidence" value="{{.Key}}"{{if .IsRequired}} checked{{end}}> {{.Label}}{{if .IsRequired}} <em>(required)</em>{{end}}</label>
+        {{end}}
+        <button class="btn btn-small" type="submit">Advance → {{.NextTier}}</button>
+      </form>
+      {{else}}
+      <span class="muted">Top of ladder</span>
+      {{end}}
+    </td>
+    <td>
+      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="approve">
+        <button class="btn btn-small" type="submit">Approve</button>
+      </form>
+      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" style="display:inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="reject">
+        <button class="btn btn-small btn-danger" type="submit">Reject</button>
+      </form>
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="9">No business KYB profiles yet. They are created when a merchant first applies a payout or views KYB status.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

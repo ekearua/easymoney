@@ -248,6 +248,10 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleIndividualOccupation(ctx, message.Channel, recipient, user, session, input)
 	case "individual_id_number":
 		return s.handleIndividualIDNumber(ctx, message.Channel, recipient, user, session, input)
+	case "kyb_request_select_merchant":
+		return s.handleKYBRequestSelectMerchant(ctx, message.Channel, recipient, user, session, input)
+	case "kyb_request_confirm":
+		return s.handleKYBRequestConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_name":
 		return s.handleThriftName(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_amount":
