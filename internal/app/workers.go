@@ -45,6 +45,7 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.deliverOutbox(ctx)
 			a.processMerchantWebhooks(ctx)
 			a.expireCheckouts(ctx)
+			a.processPendingPaymentHooks(ctx)
 			a.workerWg.Done()
 		case <-eventTicker.C:
 			a.workerWg.Add(1)
@@ -185,6 +186,15 @@ func (a *App) processMerchantWebhooks(ctx context.Context) {
 func (a *App) expireCheckouts(ctx context.Context) {
 	if err := a.store.ExpireCheckouts(ctx, time.Now()); err != nil {
 		a.logger.WarnContext(ctx, "expire checkouts", "error", err)
+	}
+}
+
+// processPendingPaymentHooks retries post-success payment hooks (invoice,
+// thrift, service, event, splits, receipt scan) that failed inline, so a
+// succeeded payment is never left with its purpose un-applied.
+func (a *App) processPendingPaymentHooks(ctx context.Context) {
+	if err := a.payments.ApplyPendingPaymentHooks(ctx); err != nil {
+		a.logger.WarnContext(ctx, "process pending payment hooks", "error", err)
 	}
 }
 

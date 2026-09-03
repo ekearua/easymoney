@@ -135,6 +135,7 @@ func (s *ConversationService) handleAwaitIndividualBankTransfer(ctx context.Cont
 
 	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
 	recipientGets := amountKobo - XegoPayoutFee(s.cfg, amountKobo)
+	recipientPhone := session.Data["recipient_phone"]
 
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
@@ -142,7 +143,7 @@ func (s *ConversationService) handleAwaitIndividualBankTransfer(ctx context.Cont
 	}
 	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("Payment confirmed!\n\nRecipient %s will receive %s within 24 hours.\nSend *menu* for more options.",
-			session.Data["recipient_phone"], domain.FormatNGN(recipientGets)))
+			recipientPhone, domain.FormatNGN(recipientGets)))
 }
 
 func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
@@ -216,13 +217,14 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not load recipient KYC: %s. Send *menu* to try again.", err))
 	}
+	payoutReservationRef := "individual-payout:" + uuid.New().String()
 	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
 		AccountType: store.AccountIndividual,
 		SubjectID:   recipientUser.ID,
 		Direction:   kyc.DirOut,
 		Tier:        recipientKYC.Tier,
 		AmountKobo:  recipientGets,
-		Ref:         "individual-payout:" + uuid.New().String(),
+		Ref:         payoutReservationRef,
 	}); err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not reserve payout: %s. Send *menu* to try again.", err))
@@ -232,10 +234,12 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 	if _, err := s.store.RecordPayout(ctx, recipientUser.ID, recipientGets,
 		store.UserPayoutDestination{BankCode: session.Data["bank_code"], AccountNumber: session.Data["account_number"], BankName: ""},
 		fmt.Sprintf("Individual payout from %s", user.WhatsAppNumber)); err != nil {
+		_ = s.store.ReleaseAllowance(ctx, payoutReservationRef)
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not record payout: %s. Send *menu* to try again.", err))
 	}
 	if err := s.store.RecordIndividualPaySplits(ctx, splitRef, splits); err != nil {
+		_ = s.store.ReleaseAllowance(ctx, payoutReservationRef)
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not record payment splits: %s. Send *menu* to try again.", err))
 	}

@@ -26,16 +26,16 @@ type MerchantEvent struct {
 
 // EventTicketTier is a purchasable ticket tier within an event.
 type EventTicketTier struct {
-	ID         uuid.UUID
-	EventID    uuid.UUID
-	Name       string
-	PriceKobo  int64
-	Capacity   int
-	Sold       int
-	SortOrder  int
-	IsActive   bool
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	Name      string
+	PriceKobo int64
+	Capacity  int
+	Sold      int
+	SortOrder int
+	IsActive  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // EventTicketPurchaseView links a ticket purchase to a payment with customer info.
@@ -280,13 +280,29 @@ func (s *Store) CreateEventTicketPurchase(ctx context.Context, tierID, paymentID
 
 // ConfirmEventTicketPurchase increments sold count with capacity check, idempotent per payment.
 func (s *Store) ConfirmEventTicketPurchase(ctx context.Context, paymentID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// The applied flag (added in 056) makes the hook idempotent: a retried
+	// hook cannot increment tier sales a second time for the same purchase.
+	if _, err := tx.Exec(ctx, `
 		UPDATE event_ticket_tiers t
 		SET sold = t.sold + etp.quantity, updated_at=now()
 		FROM event_ticket_purchases etp
 		WHERE etp.payment_id=$1 AND t.id=etp.tier_id
-		  AND (t.capacity < 0 OR t.capacity >= t.sold + etp.quantity)`, paymentID)
-	return err
+		  AND NOT etp.applied
+		  AND (t.capacity < 0 OR t.capacity >= t.sold + etp.quantity)`, paymentID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE event_ticket_purchases
+		SET applied = true
+		WHERE payment_id=$1 AND NOT applied`, paymentID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) EventTicketPurchaseQuantityByPaymentID(ctx context.Context, paymentID uuid.UUID) (int, error) {

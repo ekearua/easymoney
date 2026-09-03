@@ -904,14 +904,29 @@ func (s *Store) CreateServicePurchase(ctx context.Context, serviceID, paymentID 
 
 // ConfirmServicePurchase decrements inventory when a service payment succeeds.
 func (s *Store) ConfirmServicePurchase(ctx context.Context, paymentID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	// The applied flag (added in 056) makes the hook idempotent: a retried
+	// hook cannot decrement inventory a second time for the same purchase.
+	if _, err := tx.Exec(ctx, `
 		UPDATE merchant_services ms
 		SET quantity_available = ms.quantity_available - sp.quantity, updated_at=now()
 		FROM service_purchases sp
 		WHERE sp.payment_id=$1 AND ms.id=sp.service_id
-		  AND ms.quantity_available >= 0
-		  AND ms.quantity_available >= sp.quantity`, paymentID)
-	return err
+		  AND NOT sp.applied
+		  AND ms.quantity_available >= sp.quantity`, paymentID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE service_purchases
+		SET applied = true
+		WHERE payment_id=$1 AND NOT applied`, paymentID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ServicePurchasesByMerchantID returns all purchases for a merchant's services.

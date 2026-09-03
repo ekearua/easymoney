@@ -139,9 +139,14 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 		return store.PaymentView{}, err
 	}
 	if _, err := s.store.CreatePayment(ctx, payment); err != nil {
+		// The reservation is keyed by the provider reference and is otherwise
+		// only released by transitionPayment on a successful terminal-state
+		// transition; a failed creation would orphan it permanently.
+		_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
 		return store.PaymentView{}, err
 	}
 	if _, err := s.store.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "conversation", map[string]any{"merchant": merchant.Slug}); err != nil {
+		_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
 		return store.PaymentView{}, err
 	}
 	return s.store.PaymentByID(ctx, payment.ID)
@@ -279,24 +284,7 @@ func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, paym
 		return payment, changed, err
 	}
 	if changed {
-		if _, _, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.applyCollectionSplits(ctx, updated); err != nil {
-			return payment, changed, err
-		}
-		if err := s.createReceiptScanToken(ctx, updated); err != nil {
-			return payment, changed, err
-		}
+		s.applyPaymentSuccessHooks(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -343,26 +331,103 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		return payment, changed, err
 	}
 	if changed && target == domain.StatusSucceeded {
-		if _, _, err := s.store.ApplyInvoicePaymentSuccess(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if _, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.store.ConfirmServicePurchase(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.store.ConfirmEventTicketPurchase(ctx, updated.ID); err != nil {
-			return payment, changed, err
-		}
-		if err := s.applyCollectionSplits(ctx, updated); err != nil {
-			return payment, changed, err
-		}
-		if err := s.createReceiptScanToken(ctx, updated); err != nil {
-			return payment, changed, err
-		}
+		s.applyPaymentSuccessHooks(ctx, updated)
 	}
 	return updated, changed, nil
+}
+
+// Post-success purpose application (invoice, thrift, service stock, event
+// tickets, collection splits, receipt scan) runs after the payment transition
+// commits. Each hook is idempotent and tracked in payment_hooks, so a failure
+// is logged and retried by ApplyPendingPaymentHooks instead of failing the
+// customer-facing flow or silently leaving the purpose un-applied.
+const maxPaymentHookAttempts = 8
+
+func (s *PaymentService) applyPaymentSuccessHooks(ctx context.Context, payment store.PaymentView) {
+	if err := s.store.EnsurePaymentHooks(ctx, payment.ID, store.PaymentHookOrder); err != nil {
+		s.logger.Error("ensure payment hooks failed", "payment_id", payment.ID, "error", err)
+		return
+	}
+	for _, hook := range store.PaymentHookOrder {
+		if err := s.runPaymentHook(ctx, payment, hook); err != nil {
+			next := paymentHookBackoff(0)
+			_ = s.store.MarkPaymentHookFailed(ctx, payment.ID, hook, err.Error(), next, false)
+			s.logger.Error("payment hook failed; retry scheduled", "payment_id", payment.ID, "hook", hook, "error", err, "next_retry_at", next)
+			continue
+		}
+		if err := s.store.MarkPaymentHookDone(ctx, payment.ID, hook); err != nil {
+			s.logger.Error("mark payment hook done failed", "payment_id", payment.ID, "hook", hook, "error", err)
+		}
+	}
+}
+
+// runPaymentHook applies a single post-success hook for a payment.
+func (s *PaymentService) runPaymentHook(ctx context.Context, payment store.PaymentView, hook string) error {
+	switch hook {
+	case store.PaymentHookInvoice:
+		_, _, err := s.store.ApplyInvoicePaymentSuccess(ctx, payment.ID)
+		return err
+	case store.PaymentHookThrift:
+		_, _, err := s.store.ApplyThriftContributionPaymentSuccess(ctx, payment.ID)
+		return err
+	case store.PaymentHookService:
+		return s.store.ConfirmServicePurchase(ctx, payment.ID)
+	case store.PaymentHookEvent:
+		return s.store.ConfirmEventTicketPurchase(ctx, payment.ID)
+	case store.PaymentHookSplits:
+		return s.applyCollectionSplits(ctx, payment)
+	case store.PaymentHookReceiptScan:
+		return s.createReceiptScanToken(ctx, payment)
+	default:
+		return fmt.Errorf("unknown payment hook %q", hook)
+	}
+}
+
+// ApplyPendingPaymentHooks drains payment_hooks rows due for retry. It is the
+// worker entry point that guarantees a succeeded payment's purpose application
+// eventually completes even when an inline hook attempt fails.
+func (s *PaymentService) ApplyPendingPaymentHooks(ctx context.Context) error {
+	pending, err := s.store.PendingPaymentHooks(ctx, 50)
+	if err != nil {
+		return err
+	}
+	for _, h := range pending {
+		payment, err := s.store.PaymentByID(ctx, h.PaymentID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// The payment is gone; nothing left to apply.
+				_ = s.store.MarkPaymentHookDone(ctx, h.PaymentID, h.Hook)
+				continue
+			}
+			s.logger.Error("load payment for hook retry failed", "payment_id", h.PaymentID, "hook", h.Hook, "error", err)
+			continue
+		}
+		if err := s.runPaymentHook(ctx, payment, h.Hook); err != nil {
+			next := paymentHookBackoff(h.Attempts)
+			final := h.Attempts+1 >= maxPaymentHookAttempts
+			_ = s.store.MarkPaymentHookFailed(ctx, h.PaymentID, h.Hook, err.Error(), next, final)
+			if final {
+				s.logger.Error("payment hook permanently failed; manual review required", "payment_id", h.PaymentID, "hook", h.Hook, "error", err)
+			} else {
+				s.logger.Warn("payment hook retry failed", "payment_id", h.PaymentID, "hook", h.Hook, "attempts", h.Attempts+1, "error", err, "next_retry_at", next)
+			}
+			continue
+		}
+		if err := s.store.MarkPaymentHookDone(ctx, h.PaymentID, h.Hook); err != nil {
+			s.logger.Error("mark payment hook done failed", "payment_id", h.PaymentID, "hook", h.Hook, "error", err)
+		}
+	}
+	return nil
+}
+
+// paymentHookBackoff returns when the next retry is due, doubling from 1s up
+// to a 15-minute ceiling based on the number of prior failures.
+func paymentHookBackoff(attempts int) time.Time {
+	delay := time.Duration(1<<min(attempts, 14)) * time.Second
+	if delay > 15*time.Minute {
+		delay = 15 * time.Minute
+	}
+	return time.Now().Add(delay)
 }
 
 // applyCollectionSplits computes the Xego platform fee and records the split
@@ -415,7 +480,7 @@ func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment stor
 // (fee deducted from the paid amount).
 func (s *PaymentService) collectionSplitAmounts(payment store.PaymentView) (feeKobo, merchantRecv int64) {
 	var meta struct {
-		BaseAmountKobo   int64 `json:"base_amount_kobo"`
+		BaseAmountKobo    int64 `json:"base_amount_kobo"`
 		CollectionFeeKobo int64 `json:"collection_fee_kobo"`
 	}
 	if len(payment.Metadata) > 0 {

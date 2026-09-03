@@ -281,18 +281,22 @@ func (s *Store) ApplyInvoicePaymentSuccess(ctx context.Context, paymentID uuid.U
 	if err != nil {
 		return InvoiceView{}, false, err
 	}
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE invoice_payments
 		SET status='succeeded',updated_at=now()
-		WHERE payment_id=$1 AND status <> 'succeeded'`, paymentID); err != nil {
+		WHERE payment_id=$1 AND status <> 'succeeded'`, paymentID)
+	if err != nil {
 		return InvoiceView{}, false, err
 	}
 	// C16: allocate the customer float to the merchant payable once a payment
-	// is confirmed against an invoice. Reversing the payment journal reference
-	// unwinds both the money-in and this allocation.
-	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "invoice_payment", paymentID.String(),
-		LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Invoice payment allocation", "system", paidKobo, &invoiceMerchantID); err != nil {
-		return InvoiceView{}, false, err
+	// is confirmed against an invoice. Gated on the status change so a retried
+	// hook cannot post the allocation twice. Reversing the payment journal
+	// reference unwinds both the money-in and this allocation.
+	if tag.RowsAffected() == 1 {
+		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "invoice_payment", paymentID.String(),
+			LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Invoice payment allocation", "system", paidKobo, &invoiceMerchantID); err != nil {
+			return InvoiceView{}, false, err
+		}
 	}
 	var total, paid int64
 	if err := tx.QueryRow(ctx, `
