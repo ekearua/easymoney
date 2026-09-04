@@ -36,20 +36,20 @@ type TierLimitRow struct {
 
 // KYBProfile is a merchant's position on the B0-B3 business identity ladder.
 type KYBProfile struct {
-	MerchantID            uuid.UUID
-	Tier                  string
-	TierUpdatedAt         time.Time
-	Evidence              []string
-	LastScreeningDecision string
-	LastScreenAt          *time.Time
-	RescreenDue           *time.Time
-	ReviewStatus          string
-	ReviewedBy            *uuid.UUID
-	ReviewedAt            *time.Time
-	AdvancementRequest    *KYBAdvancementRequest
+	MerchantID             uuid.UUID
+	Tier                   string
+	TierUpdatedAt          time.Time
+	Evidence               []string
+	LastScreeningDecision  string
+	LastScreenAt           *time.Time
+	RescreenDue            *time.Time
+	ReviewStatus           string
+	ReviewedBy             *uuid.UUID
+	ReviewedAt             *time.Time
+	AdvancementRequest     *KYBAdvancementRequest
 	AdvancementRequestedAt *time.Time
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // KYBAdvancementRequest is the self-service record a merchant holds of which
@@ -555,6 +555,12 @@ func (s *Store) AdvanceKYBTier(ctx context.Context, merchantID uuid.UUID, to str
 	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
 		return KYBProfile{}, fmt.Errorf("audit kyb advance: %w", err)
 	}
+	// W1: KYB verification (any tier advancement past the B0 baseline) is the
+	// business-account milestone — the merchant's business wallet is created
+	// (or returned) active in the same transaction.
+	if _, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive); err != nil {
+		return KYBProfile{}, fmt.Errorf("ensure business wallet: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return KYBProfile{}, fmt.Errorf("commit kyb advance: %w", err)
 	}
@@ -633,6 +639,13 @@ func (s *Store) ReviewKYBProfile(ctx context.Context, merchantID uuid.UUID, appr
 	}
 	if tag.RowsAffected() == 0 {
 		return errors.New("kyb profile not found")
+	}
+	// W1: approving the merchant's KYB position integrates their business
+	// wallet (created active), mirroring AdvanceKYBTier.
+	if approve {
+		if _, err := s.EnsureBusinessWallet(ctx, merchantID, ""); err != nil {
+			return fmt.Errorf("ensure business wallet: %w", err)
+		}
 	}
 	_ = note
 	return nil

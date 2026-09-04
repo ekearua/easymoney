@@ -32,7 +32,7 @@
     <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
   </dl>
   {{if eq .Payment.Status "awaiting_confirmation"}}
-    {{if eq .Payment.Provider "interswitch"}}
+    {{if or (eq .Payment.Provider "interswitch") (eq .Payment.Provider "bank_transfer")}}
     <form method="post" action="/checkout/{{.Payment.CheckoutToken}}/pay">
       <p class="muted">You will be taken to a secure payment page to complete this {{if .Invoice}}invoice payment{{else if .Thrift}}contribution{{else}}payment{{end}}.</p>
       <button type="submit">Pay securely</button>

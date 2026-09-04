@@ -73,7 +73,7 @@ func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if payment.Provider != service.ProviderInterswitch {
+	if payment.Provider != service.ProviderInterswitch && payment.Provider != service.ProviderBankTransfer {
 		a.renderHostedCheckout(w, r, payment, http.StatusOK)
 		return
 	}
@@ -97,7 +97,7 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if payment.Provider != service.ProviderInterswitch {
+	if payment.Provider != service.ProviderInterswitch && payment.Provider != service.ProviderBankTransfer {
 		a.renderHostedCheckout(w, r, payment, http.StatusOK)
 		return
 	}

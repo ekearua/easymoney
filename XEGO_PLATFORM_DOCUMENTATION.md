@@ -47,7 +47,7 @@ The platform is delivered as a **single Go binary** (`cmd/demo`) that runs a chi
 
 **Supported channels:** WhatsApp Cloud API, Telegram Bot API, SMS (data-order commands only, MVP), hosted web pages (checkout, invoice, receipt, link, scan), and the Partner API.
 
-**Financial functionality:** card checkout through Interswitch Web Checkout (hosted checkout, verification-driven success), a bank-transfer path (customer-confirmed), per-payment fee computation (card: 2%+₦100 capped ₦3,500; DVA: 1.5% capped ₦1,500; bank transfer: 1.8% capped ₦2,500), payment split application at collection time (platform fee + merchant receivable), individual payouts (bank transfer, NIP flat ₦100 fee deducted from payout), settlements, payouts, refunds, disputes, and a double-entry ledger. The **payout, refund, data-fulfilment, identity, and screening rails are deterministic simulators** behind real interfaces; the Interswitch integration is a real HTTP client restricted to test keys.
+**Financial functionality:** card checkout through Interswitch Web Checkout (hosted checkout, verification-driven success), a bank-transfer path (routed through the Interswitch gateway, verification-driven success like cards), per-payment fee computation (card: 2%+₦100 capped ₦3,500; DVA: 1.5% capped ₦1,500; bank transfer: 1.8% capped ₦2,500), payment split application at collection time (platform fee + merchant receivable), individual payouts (bank transfer, NIP flat ₦100 fee deducted from payout), settlements, payouts, refunds, disputes, and a double-entry ledger. The **payout, refund, data-fulfilment, identity, and screening rails are deterministic simulators** behind real interfaces; the Interswitch integration is a real HTTP client restricted to test keys.
 
 **AI/conversational functionality:** There is **no artificial intelligence**. The conversational engine is purely rule-based (intent/keyword matching and menu state). Any expectation of AI/NLP capabilities is not supported by the repository analysis.
 
@@ -91,13 +91,14 @@ The platform is best understood as logical layers. Layers that the analysis does
 
 ### 2.4 Financial Layer
 
-- **Purpose:** Double-entry accounting, settlements, payouts, refunds.
+- **Purpose:** Double-entry accounting, per-entity wallets, settlements, payouts, refunds.
 - **Components:**
   - `internal/store/store_ledger.go` — hash-chained ledger, chart of accounts, balanced debit/credit pairs.
-  - `internal/store/store_settlements.go` — settlement batches, payouts.
-  - `internal/store/store_refunds.go` — refunds and disputes.
+  - `internal/store/store_wallets.go` — per-entity wallet accounts (individual pending→active on L0→L1, business active on KYB verification; credit/withdraw primitives; migration 058).
+  - `internal/store/store_settlements.go` — settlement batches, payouts (cut credits the business wallet; payout discharges it).
+  - `internal/store/store_refunds.go` — refunds and disputes (refunds credit the customer wallet).
   - Simulated payout/refund providers under `internal/providers/payout` and `internal/providers/refund`.
-- **Relationship to other layers:** Payments post ledger entries; settlements move money between ledger accounts; reconciliation verifies payment state against the ledger and bank rail.
+- **Relationship to other layers:** Payments post ledger entries; settlements move money between ledger accounts (including the merchant's business wallet); reconciliation verifies payment state against the ledger and bank rail.
 
 ### 2.5 Compliance / Risk Layer
 
@@ -126,7 +127,7 @@ The platform is best understood as logical layers. Layers that the analysis does
 ### 2.9 Administration / Operations Layer
 
 - **Purpose:** Operator-facing control.
-- **Components:** Admin console routes (metrics, users, merchants, payments, thrift, KYC, settlements, refunds, disputes, ledger, reconciliation, SIEM, analytics, reports, DSR, legal holds, archive, chat guard, webhooks, admins, audit) with RBAC middleware; CLI commands (`reconcile`, `reconcile3`, `settle`, `refund`, `retain`, `rescreen`, `recompute-risk`, `monitor`, `reports`, `sync-vtpass-data-plans`, `health`).
+- **Components:** Admin console routes (metrics, users, merchants, payments, thrift, KYC, settlements, refunds, disputes, ledger, reconciliation, SIEM, analytics, reports, DSR, legal holds, archive, chat guard, webhooks, admins, audit) with RBAC middleware; CLI commands (`reconcile`, `reconcile3`, `settle`, `refund`, `wallet-balance`, `wallet-withdraw`, `retain`, `rescreen`, `recompute-risk`, `monitor`, `reports`, `sync-vtpass-data-plans`, `health`).
 - **Relationship to other layers:** Administrators invoke the same store/services as other actors, with role gates.
 
 ---
@@ -168,13 +169,15 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Per-payment fee model | Card 2%+₦100/cap ₦3,500; DVA 1.5%/cap ₦1,500; bank transfer 1.8%/cap ₦2,500; NIP payout flat ₦100 | System | Implemented | `internal/service/fees.go` |
 | Payment split application | Platform fee + merchant receivable + individual payout posted at collection time | System | Implemented | `internal/store/store_split_payments.go`; migration 052 |
 | Individual pay | Conversational customer-to-customer payout via bank transfer (8-step WhatsApp flow, KYC L2 required) | Customers | Implemented | `internal/service/conversation_individual_pay.go` |
+| Wallet funding (top-up) | "Fund wallet" conversational flow (main menu keyword, or *fund wallet*/*top up*) mints a payment against the inactive `xego-wallet-topup` system merchant (card or bank transfer on the secure checkout); a `wallet_topup` post-success hook credits the payer's wallet from the customer float, replay-safe on the payment's journal ref | Customers | Implemented | `internal/service/conversation_wallet.go`; migration 059 |
 
 ### 3.3 Ledger & Accounting Features
 
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | Double-entry append-only ledger | Debit/credit entries, hash-chained, mutation-rejected | System, admins | Implemented | `store_ledger.go:55-124`; migrations 030, 040 |
-| Chart of accounts | Operating bank, customer float, settlement suspense, merchant payable, settlement payable, sales revenue, provider cost, settlement fees, thrift pool | System | Implemented | `store_ledger.go:22-32` |
+| Chart of accounts | Operating bank, customer float, settlement suspense, merchant payable, settlement payable, sales revenue, provider cost, settlement fees, thrift pool, user wallet, business wallet | System | Implemented | `store_ledger.go:22-32` |
+| Per-entity wallets (W1) | Individual wallet opened pending at L0 creation, activated at L1; business wallet active on KYB verification; credit on refunds/individual-pay/wallet top-up, debit on payouts/withdrawals; "pay from wallet" collection method and "fund wallet" top-up (migration 059 system merchant) debit/credit the wallet atomically with the payment transition; balance derived from the ledger | Customers, merchants, admins | Implemented | `store_wallets.go`; migration 058 |
 | Ledger reversals | Offsetting entries for a journal reference | Admins | Implemented | `store_refunds.go:185-237`; `app/ledger.go:55-80` |
 | Ledger chain verification | Verify hash-chain integrity from admin console | Admins | Implemented | `app/ledger.go:29-34` |
 
@@ -281,7 +284,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 - Sessions use cookies that are secure, HTTP-only, and same-site in production; bearer tokens are stored only as SHA-256 hashes. Evidence: README:437.
 - CSRF tokens protect admin and merchant POST actions. Evidence: e.g., `app/refunds.go:192`, `app/dsr.go:119`, `app/reconcile.go:42`.
 - CSRF tokens are sealed with AES-256-GCM at rest. Evidence: README:152-160.
-- **Transaction authentication:** There is no separate transaction PIN. Payment initiation for card goes through the hosted Interswitch Web Checkout; bank-transfer confirmation is a customer tap ("I have transferred"). Evidence: README:22.
+- **Transaction authentication:** There is no separate transaction PIN. Payment initiation for card goes through the hosted Interswitch Web Checkout; bank-transfer payments are created as Interswitch gateway transactions and verified through the same server-side requery. Evidence: `internal/app/app.go`, `internal/service/payments.go`.
 
 ### 4.5 Account Controls & Status
 
@@ -362,7 +365,7 @@ The boundary between conversation and business operation is the conversation eng
 ### 6.1 Payment initiation
 
 - **Card checkout:** A payment is created in draft state, then an Interswitch Web Checkout redirect form is prepared whose fields (merchant code, pay item id, transaction reference, amount in kobo, currency code 566) post to the hosted `/collections/w/pay` page; the customer is directed to a platform page that auto-submits that form. Evidence: `internal/providers/interswitch/client.go`; `app/checkout.go`.
-- **Bank transfer:** A draft payment is created; the customer is shown generated transfer instructions (collection bank, account, and a reference to use as narration). Success is written **only** after the customer taps "I have transferred", which records a `user_confirmed` bank transfer simulation. Evidence: README:22, 405-408; `store_reconcile.go:112-119`.
+- **Bank transfer:** A draft payment is created on the bank-transfer rail, which is backed by the Interswitch gateway (registered for both `interswitch` and `bank_transfer`). The customer completes the payment on the Interswitch hosted checkout and success is written **only** after the server-side requery verification confirms it. Evidence: `internal/app/app.go`, `internal/service/payments.go`.
 - **Partner API:** Merchants initiate via `POST /api/v1/payments` with a merchant `reference` as idempotency key. Evidence: README:341; `app/api_keys.go`.
 - **Request-money links / invoices / thrift / data:** These create payments through the same payment service on the card or bank path.
 
@@ -426,7 +429,7 @@ See Section 10.
 
 The platform distinguishes three money movements:
 
-1. **Customer → merchant payment** (card via Interswitch Web Checkout; bank transfer via customer confirmation).
+1. **Customer → merchant payment** (card and bank transfer both via Interswitch Web Checkout; verification-driven success).
 2. **Merchant settlement payout** (batch → merchant settlement account) through the **simulated payout rail**.
 3. **Refund** (merchant → customer reversal) through the **simulated refund rail**.
 
@@ -435,11 +438,11 @@ There is **no peer-to-peer transfer or general money-transfer product**. "Transf
 ### 7.2 Bank-transfer payments (customer side)
 
 - **Initiation:** In chat, the customer selects **Bank transfer** and chooses a collection bank (browsable/searchable list).
-- **Beneficiary handling / validation:** Review of generated account details; the customer enters the payment reference in their bank app narration/remark/reference field, then taps **I have transferred**.
+- **Beneficiary handling / validation:** Bank-transfer payments are completed on the Interswitch hosted checkout; the recipient payout for individual pay is booked by the post-success settlement hook.
 - **Provider interaction:** The bank rail is a **simulation** (`bank_transfer_simulations`), with status `user_confirmed`.
 - **Status:** The payment transitions to succeeded only after confirmation.
 - **Ledger implications:** On success, the money-in posting is debited to `1100_operating_bank` with `source_type='payment'`. Evidence: `store_reconcile.go:84-87`.
-- **Reconciliation:** Confirmed bank transfers must correspond to succeeded payments (three-way reconciliation leg 3). Evidence: `store_reconcile.go:174-196`.
+- **Reconciliation:** Bank-transfer payments reconcile through the internal-vs-ledger legs like every other gateway payment (the simulated bank rail leg was retired with the rail). Evidence: `store_reconcile.go`.
 - **Implementation status:** Implemented end-to-end with a simulated bank rail.
 
 ### 7.3 Settlement payouts (merchant side)
@@ -570,7 +573,7 @@ Implemented end-to-end; both refund and dispute provider rails are simulated.
 The analysis establishes **three-way reconciliation** (plus a payout leg) between:
 
 ```text
-External Provider (Interswitch verification / bank transfer simulation)
+External Provider (Interswitch verification for card and bank transfer)
       ↓
 Xego Transaction Records (payments state machine)
       ↓
@@ -587,7 +590,7 @@ Discrepancies → Admin review (reconciliation_items persisted)
 
 - **Leg 1 — Internal:** succeeded payments (reference, amount, currency, provider).
 - **Leg 2 — Ledger:** money-in postings (`debit`, account `1100_operating_bank`, `source_type='payment'`, unreversed), summed per journal ref.
-- **Leg 3 — Bank rail:** confirmed bank-transfer simulations joined to payments.
+- **Leg 3 — Bank rail:** retired with the simulated bank rail; bank-transfer payments reconcile through the internal-vs-ledger legs.
 - **Leg 4 — Payouts:** completed payouts must have matching money-out postings on `3200` with `source_type='payout'`.
 
 Checks produce categorized discrepancies such as `internal_without_ledger`, `amount_mismatch`, `ledger_without_internal`, `bank_without_internal`, `bank_amount_mismatch`, `internal_without_bank`, `payout_without_ledger`, `payout_amount_mismatch`, `ledger_without_payout`.
@@ -1048,7 +1051,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** Customer chooses **Bank transfer**.
 - **Actors:** Customer, engine, store.
-- **Process:** 1) bank list (paged/searchable); 2) generated transfer instructions incl. reference for narration; 3) customer transfers and taps **I have transferred**; 4) payment → `succeeded` only then.
+- **Process:** 1) payment method selected; 2) review with DVA fee; 3) customer completes the payment on the Interswitch hosted checkout; 4) payment → `succeeded` only after server-side verification.
 - **Data:** payment, bank_transfer_simulations (`user_confirmed`), ledger pair, events.
 - **Status:** Implemented (rail simulated).
 
@@ -1111,7 +1114,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** Daily ticker (`auto`) or manual `/admin/reconciliation/run` (`manual`).
 - **Actors:** System, compliance officer.
-- **Process:** compare succeeded payments vs ledger money-in vs confirmed bank transfers (+ payout money-out leg); persist every discrepancy with amounts; run recorded.
+- **Process:** compare succeeded payments vs ledger money-in (+ payout money-out leg); persist every discrepancy with amounts; run recorded.
 - **Status:** Implemented.
 
 ### Workflow: Individual pay (customer-to-customer payout)
@@ -1126,7 +1129,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
   4. Enter recipient account number; system validates via bank API.
   5. Review summary (recipient name, bank, account, amount, ₦100 NIP fee, total).
   6. Confirm — draft payment created.
-  7. Customer pays via bank transfer (transfer instructions shown with reference).
+  7. Customer pays via bank transfer (completed on the Interswitch checkout).
   8. On confirmation: payment → `succeeded`; split posting applies (`CustomerFloat → UserPayable` + `CustomerFloat → XegoPayable`); payout record created in `user_payout_destinations`.
 - **Fee model:** Collection fee deducted from sender (sender pays amount + collection fee). NIP flat fee ₦100 deducted from payout amount (recipient receives amount − ₦100). Bank transfer only (no card option for individual pay).
 - **Data created/updated:** payment + payment_events, ledger_entries (split posting), business_event_outbox, user_payout_destinations, payout record.

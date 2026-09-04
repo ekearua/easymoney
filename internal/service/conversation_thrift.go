@@ -582,13 +582,14 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 		if err := s.store.LinkThriftContributionPayment(ctx, contribution.ID, payment.ID); err != nil {
 			return err
 		}
-		session.State = "thrift_pay_bank"
-		session.Data["payment_id"] = payment.ID.String()
-		delete(session.Data, "bank_query")
+		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your thrift checkout is ready.\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nXego credits the contribution only after payment is verified.",
+				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
+			s.payments.HostedCheckoutURL(payment))
 	default:
 		return s.startThriftContribution(ctx, channel, recipient, user, session, session.Data["thrift_name"])
 	}

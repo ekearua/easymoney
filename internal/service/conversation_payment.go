@@ -459,15 +459,45 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		}
 		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
-		session.State = "select_transfer_bank"
-		session.Data["service_id"] = serviceIDStr
-		session.Data["service_quantity"] = serviceQtyStr
-		session.Data["event_tier_id"] = eventTierIDStr
-		delete(session.Data, "bank_query")
+		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if eventTierIDStr != "" {
+			if err := s.recordEventTicketPurchase(ctx, payment.ID, eventTierIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
+		} else {
+			if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
+		}
+		session.State = "confirm_payment"
+		session.Data["payment_id"] = payment.ID.String()
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+		return s.sendBankTransferReview(ctx, channel, recipient, merchant, amount)
+	case "method_wallet", "wallet", "pay from wallet":
+		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderWallet, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if eventTierIDStr != "" {
+			if err := s.recordEventTicketPurchase(ctx, payment.ID, eventTierIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
+		} else {
+			if err := s.recordServicePurchase(ctx, payment.ID, serviceIDStr, serviceQtyStr, session.Data["custom_data_json"]); err != nil {
+				return err
+			}
+		}
+		session.State = "confirm_payment"
+		session.Data["payment_id"] = payment.ID.String()
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendWalletReview(ctx, channel, recipient, user, merchant, amount)
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
@@ -613,6 +643,54 @@ func (s *ConversationService) sendCardReview(ctx context.Context, channel, recip
 	})
 }
 
+// sendBankTransferReview mirrors sendCardReview for the bank-transfer rail
+// (billed under the DVA fee channel and completed on the Interswitch checkout).
+func (s *ConversationService) sendBankTransferReview(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
+	fee := XegoCollectionFee(s.cfg, "dva", amount).FeeKobo
+	charge := amount + fee
+	var feeLine string
+	if fee > 0 {
+		feeLine = fmt.Sprintf("\nCollection fee: %s\nTotal to pay: %s", domain.FormatNGN(fee), domain.FormatNGN(charge))
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure checkout with Interswitch?", merchant.Name, domain.FormatNGN(amount), feeLine),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Continue"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+// sendWalletReview mirrors sendCardReview for wallet-funded payments: the
+// amount is paid instantly from the payer's Xego wallet (billed under the card
+// fee channel), and the current wallet balance is shown so the customer can
+// see whether it covers the charge before confirming.
+func (s *ConversationService) sendWalletReview(ctx context.Context, channel, recipient string, user store.User, merchant store.Merchant, amount int64) error {
+	fee := XegoCollectionFee(s.cfg, "card", amount).FeeKobo
+	charge := amount + fee
+	var feeLine string
+	if fee > 0 {
+		feeLine = fmt.Sprintf("\nCollection fee: %s\nTotal to pay: %s", domain.FormatNGN(fee), domain.FormatNGN(charge))
+	}
+	balance := int64(0)
+	if wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID); err == nil {
+		balance, _ = s.store.WalletBalance(ctx, wallet.ID)
+	}
+	balanceLine := fmt.Sprintf("\nWallet balance: %s", domain.FormatNGN(balance))
+	if balance < charge {
+		balanceLine += "\n⚠️ Not enough in your wallet — top up or choose another payment method."
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:   recipient,
+		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s%s\n\nPay instantly from your Xego wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Pay from wallet"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
 func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
 		payment, err := s.paymentFromSession(ctx, user, session)
@@ -642,9 +720,10 @@ func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context
 func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("How would you like to pay %s to %s?\n\nFor bank transfer, Xego will give you collection account details and a unique reference to enter in your bank app.", domain.FormatNGN(amount), merchant.Name),
+		Body: fmt.Sprintf("How would you like to pay %s to %s?\n\nWallet payments are instant from your Xego balance. Bank transfers are completed securely on the Interswitch checkout, and Xego verifies the result before issuing your receipt.", domain.FormatNGN(amount), merchant.Name),
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 		},
 	})

@@ -9,10 +9,10 @@ import (
 
 // SplitSpec describes one leg of a payment split to record.
 type SplitSpec struct {
-	SplitType  string
-	Account    string
-	AmountKobo int64
-	Currency   string
+	SplitType   string
+	Account     string
+	AmountKobo  int64
+	Currency    string
 	Description string
 }
 
@@ -178,4 +178,76 @@ func (s *Store) RecordPayout(ctx context.Context, userID uuid.UUID, amountKobo i
 	}
 
 	return ref, tx.Commit(ctx)
+}
+
+// IndividualPaySystemMerchant returns the inactive internal merchant used only
+// for individual-pay sender payment records (mirrors ThriftSystemMerchant).
+func (s *Store) IndividualPaySystemMerchant(ctx context.Context) (Merchant, error) {
+	var merchant Merchant
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+		       min_installment_percent, max_installments, allow_full_pay_always
+		FROM merchants WHERE slug='xego-individual-pay'`).Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
+		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
+		&merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
+	)
+	return merchant, err
+}
+
+// RecordIndividualPaySettlement books the money-in splits and the recipient
+// payout for an individual pay in one transaction, keyed by the payment id so
+// a retried post-success hook can never double-post. The sender's money-in is
+// posted by the payment transition (OperatingBank → CustomerFloat); this
+// allocates the customer float to the split legs (collection fee, NIP fee,
+// payout liability) and discharges the payout liability to the operating bank.
+// The splits must reconcile with the sender's payment amount:
+// totalPay = collection fee + NIP fee + recipientGets.
+func (s *Store) RecordIndividualPaySettlement(ctx context.Context, paymentID uuid.UUID, recipientGets int64, dest UserPayoutDestination, splits []SplitSpec) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	ref := fmt.Sprintf("individual-pay:%s", paymentID.String())
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE journal_ref=$1)`, ref).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return tx.Commit(ctx)
+	}
+	for _, sp := range splits {
+		if sp.AmountKobo <= 0 {
+			continue
+		}
+		if err := s.postLedgerPair(ctx, tx, ref, "individual_pay", paymentID.String(),
+			LedgerAccountCustomerFloat, sp.Account, sp.Currency,
+			sp.Description, "system", sp.AmountKobo, nil); err != nil {
+			return err
+		}
+	}
+	if recipientGets > 0 {
+		description := "Individual payout"
+		if dest.AccountNumber != "" {
+			description = fmt.Sprintf("Individual payout to account %s (%s)", dest.AccountNumber, dest.BankName)
+		}
+		// W1: the recipient's share lands in their wallet (dr 2300_user_payable
+		// / cr 2301_user_wallet:<recipient>) instead of a direct external bank
+		// credit; the recipient withdraws from the wallet through the payout
+		// rail, which is where the money-out allowance is enforced. The wallet
+		// is ensured (created pending) inside this transaction. The wallet leg
+		// uses its own journal ref ("<settlement>:wallet") so its idempotency
+		// check does not collide with the split legs posted under the
+		// settlement ref above.
+		if err := s.creditWalletTx(ctx, tx, dest.UserID, LedgerAccountUserPayable, recipientGets, ref+":wallet", description); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

@@ -31,6 +31,11 @@ const (
 	LedgerAccountSettlementFees     = "5200_settlement_fees"
 	LedgerAccountProviderCost       = "5100_provider_cost"
 	LedgerAccountThriftPool         = "6100_thrift_pool"
+	// W1: wallet accounts. The account code on a ledger row is the base code
+	// plus the owner id ("2301_user_wallet:<user-id>",
+	// "3101_business_wallet:<merchant-id>"), so each wallet is its own balance.
+	LedgerAccountUserWallet     = "2301_user_wallet"
+	LedgerAccountBusinessWallet = "3101_business_wallet"
 )
 
 // validLedgerAccounts is the set of allowed account codes. Every posting must
@@ -47,6 +52,29 @@ var validLedgerAccounts = map[string]bool{
 	LedgerAccountSettlementFees:     true,
 	LedgerAccountProviderCost:       true,
 	LedgerAccountThriftPool:         true,
+}
+
+// validLedgerAccountPrefixes accepts per-wallet account codes in addition to
+// the fixed chart above. Codes are minted by the wallet store from real
+// wallet_accounts rows ("2301_user_wallet:<uuid>", "3101_business_wallet:<uuid>"),
+// so prefix matching is sufficient: a typo cannot reference an unknown chart.
+var validLedgerAccountPrefixes = []string{
+	LedgerAccountUserWallet + ":",
+	LedgerAccountBusinessWallet + ":",
+}
+
+// isKnownLedgerAccount reports whether an account code is in the fixed chart
+// or is a wallet-scoped code derived from a wallet row.
+func isKnownLedgerAccount(account string) bool {
+	if validLedgerAccounts[account] {
+		return true
+	}
+	for _, prefix := range validLedgerAccountPrefixes {
+		if strings.HasPrefix(account, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // LedgerEntry is one side of a double-entry posting.
@@ -124,10 +152,10 @@ func (s *Store) postLedgerPair(ctx context.Context, tx pgx.Tx, journalRef, sourc
 	if debitAccount == creditAccount {
 		return fmt.Errorf("ledger posting debits and credits the same account %q", debitAccount)
 	}
-	if !validLedgerAccounts[debitAccount] {
+	if !isKnownLedgerAccount(debitAccount) {
 		return fmt.Errorf("ledger posting references unknown debit account %q", debitAccount)
 	}
-	if !validLedgerAccounts[creditAccount] {
+	if !isKnownLedgerAccount(creditAccount) {
 		return fmt.Errorf("ledger posting references unknown credit account %q", creditAccount)
 	}
 	if currency == "" {

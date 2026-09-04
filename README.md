@@ -1,6 +1,6 @@
 # Xego
 
-Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API and Telegram Bot API as customer interfaces, hosted card checkout, and a bank-transfer payment path. It does not store card data in chat.
+Xego is a Nigeria-focused merchant checkout experience that uses WhatsApp Cloud API and Telegram Bot API as customer interfaces, hosted card checkout, and a bank-transfer payment path. Bank-transfer payments are completed on the Interswitch checkout like cards, and Xego verifies the result before marking the payment successful. It does not store card data in chat.
 It also supports a mobile data purchase flow for MTN, Airtel, Glo, and 9mobile using a simulated fulfilment provider.
 
 ## Architecture
@@ -22,7 +22,7 @@ app/ (HTTP handlers, admin panel)
               `- idempotent payout outbox
 ```
 
-Card payment success is written only after the backend calls provider verification and confirms the reference, amount, currency, channel, and available payment/merchant metadata. Bank-transfer success is written only after the customer taps **I have transferred** against generated transfer instructions.
+Payment success is written only after the backend calls provider verification and confirms the reference, amount, currency, channel, and available payment/merchant metadata. Both card and bank-transfer payments are routed through the Interswitch gateway (hosted checkout, server-side requery verification).
 
 ## Local development
 
@@ -195,6 +195,18 @@ In the demo flow, an individual profile upgrade confirms the channel and submits
 ML/FT risk scoring (`internal/kyc.ScoreRisk`) aggregates scored risk observations (the `risk_events` table) with the tier and last screening decision into a 0-100 score and a `low`/`medium`/`high` band (CBN risk-based approach): unverified identities and strong/possible sanctions matches add weight, completed EDD subtracts it, and the band persists on the KYC profile (`risk_band`/`risk_score`). Any `RecordRiskEvent` call recomputes the band transactionally and audits `kyc.risk_scored`; the rescreen worker and `go run ./cmd/demo recompute-risk` refresh it too. The band is shown on the `/admin/kyc` profiles table.
 
 Transaction monitoring (`internal/kyc.RunTransactionMonitor`) evaluates settled payments every 15 minutes against behaviour rules — velocity (more than `MONITOR_VELOCITY_LIMIT` payments per `MONITOR_VELOCITY_WINDOW`), structuring (several payments just under a threshold), round amounts, and high-risk counterparty categories (`MONITOR_HIGH_RISK_CATEGORIES`) — and records each finding in `transaction_alerts`. Medium/high alerts open a `monitoring` manual review case and feed the ML/FT risk score; the compliance queue at `/admin/kyc` shows every alert with Ack/Escalate/Resolve actions. `go run ./cmd/demo monitor` runs a manual pass.
+
+### Wallets (individual & business)
+
+Every customer has a wallet, and every merchant a business wallet — each a dedicated balance on the double-entry ledger (`2301_user_wallet:<user-id>` / `3101_business_wallet:<merchant-id>`, migration `058_wallet_accounts.sql`, `internal/store/store_wallets.go`). Wallet rows carry metadata and status; every movement is a balanced ledger posting, so a wallet can never diverge from the append-only journal.
+
+- **Individual wallet lifecycle (L0 → L1).** The wallet is opened **pending** at the user-creation milestone — the moment the L0 KYC profile is created (`EnsureKYCProfile`) — and **activated** when the identity ladder reaches L1 (`AdvanceKYCTier`), which unlocks money-out. Money-in is never blocked by activation state: a refund or individual-pay recipient credit lands in the wallet even while pending.
+- **Business wallet on KYB verification.** The business wallet is created **active** when KYB verification approves the merchant (`AdvanceKYBTier`, `ReviewKYBProfile`), and settlement defensively ensures one for every merchant at cut time.
+- **Receiving.** Refunds credit the customer's wallet (`dr 2100 / cr 2301_user_wallet:<user>`), and an individual-pay recipient's share is credited to their wallet (`dr 2300 / cr 2301_user_wallet:<recipient>`) instead of a direct external payout — the recipient cashes out from the wallet.
+- **Outbound.** A settlement cut credits the merchant's business wallet (`dr 3200 / cr 3101_business_wallet:<m>`, net of the settlement fee); the payout then discharges the wallet (`dr 3101_business_wallet:<m> / cr 1100`) when the provider confirms. Individual money-out is a wallet withdrawal (`dr 2301_user_wallet:<user> / cr 1100`) that reserves the money-out allowance and enforces the active-wallet and balance checks.
+- **Fund wallet (send money to wallet).** The main menu's "Fund wallet" flow (also triggered by *fund wallet* / *top up*) takes an amount and a rail — card or bank transfer, both completed on the secure checkout — and mints a payment against the inactive `xego-wallet-topup` system merchant (migration 059), so the money-in allowance and gateway verification apply exactly like any other collection. Once verified, a `wallet_topup` post-success hook credits the payer's wallet from the customer float (`dr 2100 / cr 2301_user_wallet:<user>`) for the full amount. The credit shares the payment's journal ref, so it is replay-safe and a refund unwinds it with the money-in reversal — the wallet is never double-credited.
+- **Pay from wallet.** "Pay from wallet" is a payment method in the collection picker (alongside card and bank transfer). It is billed under the card fee channel, confirmed inline with no hosted checkout, and the money-in posting debits the payer's wallet (`dr 2301_user_wallet:<user> / cr 2100`) atomically with the success transition — the wallet must be active (L1+) and hold the full charge, or the confirmation fails cleanly. Wallet payments skip the money-in reservation at draft time (the funds are already in the platform); the money-out ceiling is enforced at confirmation (`ConfirmWalletPayment`). Refunds of wallet-funded payments return the money via the ledger reversal alone, so the wallet is never double-credited.
+- **CLI.** `go run ./cmd/demo wallet-balance <phone>` prints a wallet's status and balance; `go run ./cmd/demo wallet-withdraw <phone> <amount-kobo>` moves money out through the payout rail (idempotent by journal ref, allowance released on failure). Reconciliation counts a wallet debit as the money-in posting for wallet-funded payments and unwinds wallet top-ups on refund like any other payment.
 
 ### Backups & point-in-time recovery
 
@@ -406,7 +418,7 @@ Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret,
 5. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
 6. Choose **Card checkout** or **Bank transfer**.
 7. For card checkout, confirm the payment summary, open secure checkout, and complete the provider flow.
-8. For bank transfer, choose a collection bank from the bank list. You can browse pages or type a bank name to search. Review the account details, enter the reference in your bank app narration/remark/reference field, then tap **I have transferred**.
+8. For bank transfer, review the fee and continue to the secure Interswitch checkout to complete the payment. Xego verifies the result before issuing your receipt.
 9. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.
 10. Sign into `/admin/login` and inspect metrics, payments, masked users, merchants, and webhook processing.
 11. Replay the Interswitch webhook (signed `TRANSACTION.COMPLETED`) and confirm the payment and notification are not duplicated.

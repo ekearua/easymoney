@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -104,6 +105,20 @@ func run() error {
 			return fmt.Errorf("usage: refund <merchant-id> <payment-reference>")
 		}
 		return application.Refund(ctx, os.Args[2], os.Args[3])
+	case "wallet-balance":
+		if len(os.Args) < 3 {
+			return fmt.Errorf("usage: wallet-balance <phone>")
+		}
+		return application.WalletBalance(ctx, os.Args[2])
+	case "wallet-withdraw":
+		if len(os.Args) < 4 {
+			return fmt.Errorf("usage: wallet-withdraw <phone> <amount-kobo>")
+		}
+		amountKobo, err := strconv.ParseInt(os.Args[3], 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid amount: %w", err)
+		}
+		return application.WalletWithdraw(ctx, os.Args[2], amountKobo)
 	case "retain":
 		return application.PurgeExpiredData(ctx)
 	case "rescreen":
@@ -131,6 +146,6 @@ func run() error {
 	case "health":
 		return application.Health(ctx)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, wallet-balance, wallet-withdraw, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

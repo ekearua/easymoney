@@ -312,6 +312,22 @@ func (s *Store) CutSettlement(ctx context.Context, merchantID uuid.UUID, batchNo
 			return SettlementBatch{}, err
 		}
 	}
+	// W1: the merchant's collected funds, net of the settlement fee, are
+	// credited to the business wallet (dr 3200 / cr 3101_business_wallet:<m>).
+	// The payout then discharges the wallet when the provider confirms
+	// (CompletePayout), so the wallet is the merchant's spendable balance.
+	wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive)
+	if err != nil {
+		return SettlementBatch{}, fmt.Errorf("ensure business wallet: %w", err)
+	}
+	netKobo := total - feeKobo
+	if netKobo > 0 {
+		if err := s.postLedgerPair(ctx, tx, "STL:"+batchNo+":WALLET", "settlement", batch.ID.String(),
+			LedgerAccountSettlementPayable, wallet.AccountCode, "NGN",
+			"Business wallet credit "+batchNo, "system", netKobo, &merchantID); err != nil {
+			return SettlementBatch{}, err
+		}
+	}
 	if err := s.emitSettlementBatchCreatedTx(ctx, tx, batch); err != nil {
 		return SettlementBatch{}, err
 	}
@@ -531,8 +547,14 @@ func (s *Store) CompletePayout(ctx context.Context, payoutID uuid.UUID, external
 		return err
 	}
 	merchantID := p.MerchantID
+	// W1: the payout discharges the business wallet credited at the cut
+	// (dr 3101_business_wallet:<m> / cr 1100) rather than 3200 directly.
+	wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive)
+	if err != nil {
+		return fmt.Errorf("ensure business wallet for payout: %w", err)
+	}
 	if err := s.postLedgerPair(ctx, tx, "PAY:"+batchNo, "payout", p.ID.String(),
-		LedgerAccountSettlementPayable, LedgerAccountOperatingBank, "NGN",
+		wallet.AccountCode, LedgerAccountOperatingBank, "NGN",
 		"Payout "+batchNo+" "+externalRef, "system", p.AmountKobo, &merchantID); err != nil {
 		return err
 	}

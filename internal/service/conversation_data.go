@@ -109,13 +109,15 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 		if err != nil {
 			return friendlyAllowanceErr(err)
 		}
-		session.State = "select_data_transfer_bank"
 		session.Data["payment_id"] = payment.ID.String()
-		delete(session.Data, "bank_query")
+		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
+				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
+			s.payments.HostedCheckoutURL(payment))
 	}
 }
 
@@ -144,13 +146,15 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 		if err != nil {
 			return friendlyAllowanceErr(err)
 		}
-		session.State = "select_data_transfer_bank"
 		session.Data["payment_id"] = payment.ID.String()
-		delete(session.Data, "bank_query")
+		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
+				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
+			s.payments.HostedCheckoutURL(payment))
 	default:
 		return s.sendDataPaymentMethods(ctx, channel, recipient, order)
 	}

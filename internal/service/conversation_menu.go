@@ -60,6 +60,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
 	case "pay individual", "menu_pay_individual", "send money":
 		return s.startPayIndividual(ctx, channel, recipient, user, session)
+	case "fund wallet", "menu_fund_wallet", "top up", "wallet top up", "add money":
+		return s.startWalletTopup(ctx, channel, recipient, user, session)
 	case "data", "menu_buy_data", "buy data":
 		session.State = "select_data_network"
 		session.Data = map[string]string{}
@@ -174,10 +176,10 @@ func mainMenuRows() []ports.InteractiveRow {
 	return []ports.InteractiveRow{
 		{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
 		{ID: "menu_pay_individual", Title: "Pay an individual", Description: "Send money to someone's bank"},
+		{ID: "menu_fund_wallet", Title: "Fund wallet", Description: "Add money to your Xego wallet"},
 		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
 		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
-		{ID: "menu_status", Title: "Payment status", Description: "Check your latest payment"},
 		{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
 		{ID: "menu_my_limits", Title: "My limits", Description: "Tier and remaining allowance"},
 		{ID: "menu_ai", Title: "Ask Xego", Description: "Chat with our AI assistant"},

@@ -74,15 +74,16 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 	defer tx.Rollback(ctx)
 
 	// 1. Lock and validate the payment.
+	var userID uuid.UUID
 	var merchantID uuid.UUID
 	var amountKobo int64
 	var currency, providerRef, reference string
 	var status string
 	if err := tx.QueryRow(ctx, `
-		SELECT merchant_id, amount_kobo, currency, provider_reference,
+		SELECT user_id, merchant_id, amount_kobo, currency, provider_reference,
 		       COALESCE(merchant_reference,''), status
 		FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(
-		&merchantID, &amountKobo, &currency, &providerRef, &reference, &status); err != nil {
+		&userID, &merchantID, &amountKobo, &currency, &providerRef, &reference, &status); err != nil {
 		return Refund{}, fmt.Errorf("load payment: %w", err)
 	}
 	if status != "succeeded" {
@@ -163,6 +164,26 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 	reversalJournal := paymentID.String()
 	if _, err := s.postLedgerReversalTx(ctx, tx, reversalJournal, "Refund: "+reason, postedBy); err != nil {
 		return Refund{}, fmt.Errorf("ledger reversal: %w", err)
+	}
+
+	// 6b. W1: the refunded amount is credited to the customer's wallet. The
+	// reversal unwound the money-in and splits back into the customer float;
+	// this moves the customer's share out of the float into their wallet
+	// (dr 2100 / cr 2301_user_wallet:<user>) instead of returning it to the
+	// operating bank. Keyed by a dedicated journal ref so the wallet credit is
+	// independent of the reversal and replay-safe. Payments whose ledger moves
+	// through the payer's wallet (wallet-funded payments or wallet top-ups)
+	// are the exception: their reversal already restores the wallet, so an
+	// extra credit would double-pay the customer.
+	walletTouched, err := s.paymentTouchesWalletTx(ctx, tx, paymentID)
+	if err != nil {
+		return Refund{}, fmt.Errorf("check wallet-touching payment: %w", err)
+	}
+	if !walletTouched {
+		if err := s.creditWalletTx(ctx, tx, userID, LedgerAccountCustomerFloat, amountKobo,
+			paymentID.String()+":refund-wallet", "Refund to customer wallet"); err != nil {
+			return Refund{}, fmt.Errorf("refund wallet credit: %w", err)
+		}
 	}
 
 	// 7. Emit the payment.refunded event.
@@ -303,10 +324,11 @@ func (s *Store) ApproveRefund(ctx context.Context, refundID, approvedBy uuid.UUI
 	// 2. Lock the payment to prevent concurrent approve from double-reversing.
 	var paymentStatus string
 	var currency, reference string
+	var userID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		SELECT status, currency, COALESCE(merchant_reference,'')
+		SELECT status, currency, COALESCE(merchant_reference,''), user_id
 		FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(
-		&paymentStatus, &currency, &reference); err != nil {
+		&paymentStatus, &currency, &reference, &userID); err != nil {
 		return Refund{}, fmt.Errorf("lock payment: %w", err)
 	}
 	if paymentStatus != "succeeded" {
@@ -335,6 +357,22 @@ func (s *Store) ApproveRefund(ctx context.Context, refundID, approvedBy uuid.UUI
 	reversalJournal := paymentID.String()
 	if _, err := s.postLedgerReversalTx(ctx, tx, reversalJournal, "Refund: "+reason, postedBy); err != nil {
 		return Refund{}, fmt.Errorf("ledger reversal: %w", err)
+	}
+
+	// 5b. W1: credit the refunded amount to the customer's wallet (dr 2100 /
+	// cr 2301_user_wallet:<user>), replay-safe via its own journal ref.
+	// Payments whose ledger moves through the payer's wallet (wallet-funded
+	// payments or wallet top-ups) are skipped: their reversal (step 5) already
+	// restored the wallet.
+	walletTouched, err := s.paymentTouchesWalletTx(ctx, tx, paymentID)
+	if err != nil {
+		return Refund{}, fmt.Errorf("check wallet-touching payment: %w", err)
+	}
+	if !walletTouched {
+		if err := s.creditWalletTx(ctx, tx, userID, LedgerAccountCustomerFloat, amountKobo,
+			paymentID.String()+":refund-wallet", "Refund to customer wallet"); err != nil {
+			return Refund{}, fmt.Errorf("refund wallet credit: %w", err)
+		}
 	}
 
 	// 6. Emit the payment.refunded event.

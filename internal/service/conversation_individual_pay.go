@@ -2,16 +2,11 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-
 	"whatsapp-payment-demo/internal/domain"
-	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -148,110 +143,58 @@ func (s *ConversationService) handleAwaitIndividualBankTransfer(ctx context.Cont
 
 func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
 	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
-	collectionFee := XegoCollectionFee(s.cfg, "transfer", amountKobo)
+	collectionFee := XegoCollectionFee(s.cfg, FeeChannelForProvider("transfer"), amountKobo)
 	totalPay := amountKobo + collectionFee.FeeKobo
 	recipientGets := amountKobo - XegoPayoutFee(s.cfg, amountKobo)
-
-	// Record the money-in split for the total the sender pays. The legs must
-	// reconcile with totalPay quoted at review:
-	//   totalPay = amountKobo + collection fee
-	//           = collection fee + NIP fee + recipientGets
-	// The NIP fee is a separate leg (deducted from the recipient's payout) so
-	// the sum of credited legs exactly equals what the sender pays.
-	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider("transfer"), amountKobo)
 	nipFee := XegoPayoutFee(s.cfg, amountKobo)
-	var splits []store.SplitSpec
-	if fee.FeeKobo > 0 {
-		splits = append(splits, store.SplitSpec{
-			SplitType:   "xego_collection_fee",
-			Account:     store.LedgerAccountXegoPayable,
-			AmountKobo:  fee.FeeKobo,
-			Currency:    "NGN",
-			Description: "Xego collection fee (individual pay)",
-		})
-	}
-	if nipFee > 0 {
-		splits = append(splits, store.SplitSpec{
-			SplitType:   "nip_fee",
-			Account:     store.LedgerAccountXegoPayable,
-			AmountKobo:  nipFee,
-			Currency:    "NGN",
-			Description: "NIP payout fee (individual pay)",
-		})
-	}
-	if recipientGets > 0 {
-		splits = append(splits, store.SplitSpec{
-			SplitType:   "individual_payout",
-			Account:     store.LedgerAccountUserPayable,
-			AmountKobo:  recipientGets,
-			Currency:    "NGN",
-			Description: "Individual payout liability",
-		})
-	}
-	splitRef := fmt.Sprintf("individual-pay-%s", uuid.New().String())
 
-	// Resolve or create the recipient user and save their bank details.
 	recipientPhone := session.Data["recipient_phone"]
+	bankCode := session.Data["bank_code"]
+	accountNumber := session.Data["account_number"]
+
+	// Resolve or create the recipient user and save their bank details up
+	// front so the post-success hook can settle the payout without session
+	// data.
 	recipientUser, err := s.store.GetOrCreateUser(ctx, recipientPhone)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not resolve recipient: %s. Send *menu* to try again.", err))
 	}
-	_, err = s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID,
-		session.Data["bank_code"], "", session.Data["account_number"], "")
-	if err != nil {
+	if _, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, bankCode, "", accountNumber, ""); err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not save recipient details: %s. Send *menu* to try again.", err))
 	}
 
-	// C9-tiers: individual pay is a money-out movement for the recipient. Their
-	// tier ceiling gates how much can be disbursed to their account, and the
-	// reservation is keyed by a unique reference so replays never double-count.
-	// It is taken before the payout ledger entry so a rejected reservation
-	// stops the payout from being recorded at all.
-	recipientKYC, err := s.store.KYCProfileByUser(ctx, recipientUser.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		recipientKYC, err = s.store.EnsureKYCProfile(ctx, recipientUser.ID)
-	}
+	// The sender's payment is a plain collection against the Xego system
+	// merchant, routed through the Interswitch gateway like any other
+	// checkout. Its money-in allowance is reserved at draft creation; once
+	// the gateway verifies the payment, the post-success hook books the
+	// splits (collection fee + NIP fee + payout liability) and disburses the
+	// recipient's payout.
+	payment, err := s.payments.CreateIndividualPayDraft(ctx, user, channel, recipient, totalPay, map[string]any{
+		"individual_pay": map[string]any{
+			"recipient_phone":     recipientPhone,
+			"bank_code":           bankCode,
+			"account_number":      accountNumber,
+			"amount_kobo":         amountKobo,
+			"collection_fee_kobo": collectionFee.FeeKobo,
+			"nip_fee_kobo":        nipFee,
+			"recipient_gets":      recipientGets,
+		},
+	})
 	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session,
-			fmt.Sprintf("Could not load recipient KYC: %s. Send *menu* to try again.", err))
+		return friendlyAllowanceErr(err)
 	}
-	payoutReservationRef := "individual-payout:" + uuid.New().String()
-	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-		AccountType: store.AccountIndividual,
-		SubjectID:   recipientUser.ID,
-		Direction:   kyc.DirOut,
-		Tier:        recipientKYC.Tier,
-		AmountKobo:  recipientGets,
-		Ref:         payoutReservationRef,
-	}); err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session,
-			fmt.Sprintf("Could not reserve payout: %s. Send *menu* to try again.", err))
-	}
-
-	// Record the payout ledger entry.
-	if _, err := s.store.RecordPayout(ctx, recipientUser.ID, recipientGets,
-		store.UserPayoutDestination{BankCode: session.Data["bank_code"], AccountNumber: session.Data["account_number"], BankName: ""},
-		fmt.Sprintf("Individual payout from %s", user.WhatsAppNumber)); err != nil {
-		_ = s.store.ReleaseAllowance(ctx, payoutReservationRef)
-		return s.resetWithMessage(ctx, channel, recipient, user, session,
-			fmt.Sprintf("Could not record payout: %s. Send *menu* to try again.", err))
-	}
-	if err := s.store.RecordIndividualPaySplits(ctx, splitRef, splits); err != nil {
-		_ = s.store.ReleaseAllowance(ctx, payoutReservationRef)
-		return s.resetWithMessage(ctx, channel, recipient, user, session,
-			fmt.Sprintf("Could not record payment splits: %s. Send *menu* to try again.", err))
-	}
-
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Transfer initiated!\n\nTotal to pay: %s (amount + collection fee)\n\nTransfer this amount to Xego's bank account. Once received, %s will be sent to %s (account %s, bank %s) within 24 hours.\n\nSend *menu* for more options.",
-			domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets),
-			recipientPhone, session.Data["account_number"], session.Data["bank_code"]))
+	return s.sendCheckout(ctx, channel, recipient,
+		fmt.Sprintf("Your secure checkout is ready.\n\nRecipient: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nXego verifies the payment with Interswitch before disbursing to the recipient's account.",
+			recipientPhone, bankCode, accountNumber,
+			domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee.FeeKobo),
+			domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets)),
+		s.payments.HostedCheckoutURL(payment))
 }
 
 // parseAmountKobo safely converts a kobo string to int64.

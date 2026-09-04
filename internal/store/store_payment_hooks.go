@@ -11,12 +11,14 @@ import (
 // payment_hooks so a failure can be retried by a worker instead of silently
 // leaving a succeeded payment with its purpose un-applied.
 const (
-	PaymentHookInvoice     = "invoice"
-	PaymentHookThrift      = "thrift"
-	PaymentHookService     = "service"
-	PaymentHookEvent       = "event"
-	PaymentHookSplits      = "splits"
-	PaymentHookReceiptScan = "receipt_scan"
+	PaymentHookInvoice       = "invoice"
+	PaymentHookThrift        = "thrift"
+	PaymentHookService       = "service"
+	PaymentHookEvent         = "event"
+	PaymentHookSplits        = "splits"
+	PaymentHookReceiptScan   = "receipt_scan"
+	PaymentHookIndividualPay = "individual_pay"
+	PaymentHookWalletTopup   = "wallet_topup"
 )
 
 // PaymentHookOrder is the order in which post-success hooks run.

@@ -153,13 +153,18 @@ func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (
 }
 
 // EnsureKYCProfile creates an L0 profile row for the user if none exists and
-// returns the current profile.
+// returns the current profile. The L0 row is the user-creation milestone:
+// W1 opens a pending individual wallet alongside it, so every user has a
+// wallet from first contact (activated when the ladder reaches L1).
 func (s *Store) EnsureKYCProfile(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO kyc_profiles(user_id)
 		VALUES($1)
 		ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return KYCProfile{}, fmt.Errorf("ensure kyc profile: %w", err)
+	}
+	if _, err := s.EnsureUserWallet(ctx, userID, ""); err != nil {
+		return KYCProfile{}, fmt.Errorf("ensure user wallet: %w", err)
 	}
 	return s.KYCProfileByUser(ctx, userID)
 }
@@ -315,6 +320,15 @@ func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string,
 	}
 	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
 		return KYCProfile{}, fmt.Errorf("audit kyc advance: %w", err)
+	}
+	// W1: reaching L1 (channel confirmed) activates the pending wallet opened
+	// at user creation, enabling money-out.
+	if to == kyc.TierL1 {
+		if _, err := tx.Exec(ctx, `
+			UPDATE wallet_accounts SET status='active', updated_at=now()
+			WHERE owner_type='user' AND owner_id=$1 AND status='pending'`, userID); err != nil {
+			return KYCProfile{}, fmt.Errorf("activate user wallet: %w", err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return KYCProfile{}, fmt.Errorf("commit kyc advance: %w", err)

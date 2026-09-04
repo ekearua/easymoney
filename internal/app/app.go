@@ -91,18 +91,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	repository.SetDataKey(cfg.DataEncryptionKey)
 	// Interswitch Web Checkout is the sole card payment gateway.
 	interswitchClient := interswitchprovider.New(interswitchprovider.Options{
-		ClientID:     cfg.InterswitchClientID,
-		ClientSecret: cfg.InterswitchClientSecret,
+		ClientID:      cfg.InterswitchClientID,
+		ClientSecret:  cfg.InterswitchClientSecret,
 		WebhookSecret: cfg.InterswitchWebhookSecret,
-		MerchantCode: cfg.InterswitchMerchantCode,
-		PayItemID:    cfg.InterswitchPayItemID,
-		BaseURL:      cfg.InterswitchBaseURL,
-		Mode:         cfg.InterswitchCheckoutMode,
+		MerchantCode:  cfg.InterswitchMerchantCode,
+		PayItemID:     cfg.InterswitchPayItemID,
+		BaseURL:       cfg.InterswitchBaseURL,
+		Mode:          cfg.InterswitchCheckoutMode,
 	})
 	// Build the payment gateway registry. Interswitch is always registered so
 	// card checkout resolves even in the backlog demo where no secret is set.
+	// Interswitch is registered for both the card checkout rail and the
+	// bank-transfer rail: bank-transfer payments are created as Interswitch
+	// gateway transactions and verified through the same requery path.
 	gateways := map[string]ports.PaymentGateway{
-		service.ProviderInterswitch: interswitchClient,
+		service.ProviderInterswitch:  interswitchClient,
+		service.ProviderBankTransfer: interswitchClient,
 	}
 	router := service.NewProviderRouter(gateways, logger)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
@@ -176,9 +180,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"maskPII":     maskPII,
 		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
-		"sub":                func(a, b int64) int64 { return a - b },
-		"add":                func(a, b int64) int64 { return a + b },
-		"inc":                func(i int) int { return i + 1 },
+		"sub":         func(a, b int64) int64 { return a - b },
+		"add":         func(a, b int64) int64 { return a + b },
+		"inc":         func(i int) int { return i + 1 },
 		"collectionFeeKobo": func(p store.PaymentView) int64 {
 			var meta struct {
 				CollectionFeeKobo int64 `json:"collection_fee_kobo"`
@@ -188,7 +192,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			}
 			return meta.CollectionFeeKobo
 		},
-		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
 		"date": func(t any) string {
 			switch v := t.(type) {
 			case time.Time:

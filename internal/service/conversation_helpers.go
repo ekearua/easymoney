@@ -5,7 +5,9 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strconv"
 	"strings"
@@ -79,12 +81,39 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
 	}
+	// W1: wallet-funded payments are confirmed inline — the wallet is debited
+	// and the payment succeeds immediately, with no hosted checkout. On a
+	// failure the session is kept so the customer can retry or choose another
+	// method from the menu.
+	if payment.Provider == ProviderWallet {
+		_, changed, err := s.payments.ConfirmWalletPayment(ctx, payment)
+		if err != nil {
+			if errors.Is(err, store.ErrInsufficientWalletBalance) {
+				return s.sendText(ctx, channel, recipient,
+					fmt.Sprintf("Your wallet balance is too low for this payment (%s).\n\nTop up your wallet, then tap Continue to try again - or type MENU to choose another payment method.", domain.FormatNGN(payment.AmountKobo)))
+			}
+			if errors.Is(err, store.ErrWalletNotActive) {
+				return s.sendText(ctx, channel, recipient,
+					"Wallet payments need an active wallet. Confirm your account to reach level L1 and activate your wallet - or type MENU to choose another payment method.")
+			}
+			slog.Error("wallet payment confirmation failed", "payment_id", payment.ID, "error", err)
+			return s.sendText(ctx, channel, recipient, "The wallet payment couldn't be completed. Tap Continue to retry, or type MENU to return to the menu.")
+		}
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		_ = changed
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("✅ Paid from your Xego wallet.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s/receipts/%s",
+				payment.MerchantName, domain.FormatNGN(payment.AmountKobo), s.cfg.BaseURL, payment.ReceiptToken))
+	}
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendCheckout(ctx, channel, recipient,
-		fmt.Sprintf("Your secure card checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
+		fmt.Sprintf("Your secure checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
 		s.payments.HostedCheckoutURL(payment))
 }
 
@@ -308,7 +337,8 @@ func isInterruptibleState(state string) bool {
 		"invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer",
 		"thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer",
 		"select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer",
-		"pay_individual_method", "await_individual_bank_transfer", "await_individual_payment":
+		"pay_individual_method", "await_individual_bank_transfer", "await_individual_payment",
+		"wallet_topup_amount", "wallet_topup_method":
 		return true
 	default:
 		return false
@@ -389,6 +419,8 @@ func describeCurrentFlow(session store.Session) string {
 			return fmt.Sprintf("sending money to %s", phone)
 		}
 		return "sending money to an individual"
+	case "wallet_topup_amount", "wallet_topup_method":
+		return "funding the Xego wallet"
 	default:
 		return "in a payment flow"
 	}
@@ -481,6 +513,14 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		return s.sendText(ctx, channel, recipient, "Waiting for your bank transfer confirmation. Send *confirm* when done.")
 	case "await_individual_payment":
 		return s.sendText(ctx, channel, recipient, "Your payment is being processed. We'll notify you when it's complete.")
+	case "wallet_topup_amount":
+		return s.startWalletTopup(ctx, channel, recipient, user, session)
+	case "wallet_topup_method":
+		amount, err := strconv.ParseInt(session.Data["amount_kobo"], 10, 64)
+		if err != nil || amount <= 0 {
+			return s.sendText(ctx, channel, recipient, "That top-up session expired. Please start again.")
+		}
+		return s.sendWalletTopupMethods(ctx, channel, recipient, amount)
 	default:
 		return s.sendText(ctx, channel, recipient, "That session expired. Please start again.")
 	}

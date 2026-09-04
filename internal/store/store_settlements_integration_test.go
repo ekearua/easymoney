@@ -37,7 +37,8 @@ func TestSettlementLifecycle(t *testing.T) {
 	repository.SetDataKey(key[:])
 	if _, err := repository.pool.Exec(ctx, `
 		TRUNCATE merchant_settlement_accounts,settlement_batches,settlement_lines,payouts,
-		         business_event_outbox,merchant_webhook_deliveries,payments,users,merchants
+		         business_event_outbox,merchant_webhook_deliveries,payments,users,merchants,
+		         wallet_accounts
 		RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +113,18 @@ func TestSettlementLifecycle(t *testing.T) {
 	if got := merchantNet(ctx, t, repository, merchant.ID, LedgerAccountMerchantPayable); got != 0 {
 		t.Fatalf("merchant payable after cut = %d, want 0", got)
 	}
-	if got := merchantNet(ctx, t, repository, merchant.ID, LedgerAccountSettlementPayable); got != -200_000 {
-		t.Fatalf("settlement payable after cut = %d, want -200000", got)
+	// W1: the cut moves the merchant's funds from the settlement payable into
+	// the business wallet (dr 3200 / cr 3101_business_wallet:<m>), so 3200 is
+	// back at zero and the wallet holds the merchant's spendable balance.
+	if got := merchantNet(ctx, t, repository, merchant.ID, LedgerAccountSettlementPayable); got != 0 {
+		t.Fatalf("settlement payable after cut = %d, want 0 (funds moved to business wallet)", got)
+	}
+	businessWallet, err := repository.EnsureBusinessWallet(ctx, merchant.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := merchantNet(ctx, t, repository, merchant.ID, businessWallet.AccountCode); got != -200_000 {
+		t.Fatalf("business wallet after cut = %d, want -200000", got)
 	}
 
 	// Replaying the batch is a no-op.
@@ -170,9 +181,13 @@ func TestSettlementLifecycle(t *testing.T) {
 	if finalBatch.Status != SettlementBatchProcessed {
 		t.Fatalf("batch should be processed after payout: %+v", finalBatch)
 	}
-	// Ledger: 3200 and 1100 both return to zero; merchant is fully settled.
+	// Ledger: 3200, the business wallet, and 1100 all return to zero; the
+	// merchant is fully settled.
 	if got := merchantNet(ctx, t, repository, merchant.ID, LedgerAccountSettlementPayable); got != 0 {
 		t.Fatalf("settlement payable after payout = %d, want 0", got)
+	}
+	if got := merchantNet(ctx, t, repository, merchant.ID, businessWallet.AccountCode); got != 0 {
+		t.Fatalf("business wallet after payout = %d, want 0 (discharged by the payout)", got)
 	}
 	platformNet := func(account string) int64 {
 		t.Helper()

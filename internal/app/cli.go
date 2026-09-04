@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -75,6 +78,70 @@ func (a *App) Refund(ctx context.Context, merchantSlug, paymentReference string)
 	a.logger.InfoContext(ctx, "refund complete",
 		"refund_id", refund.ID.String(), "payment_id", payment.ID.String(),
 		"amount_kobo", refund.AmountKobo, "status", refund.Status)
+	return nil
+}
+
+// WalletBalance prints an individual wallet's balance and status for the CLI.
+func (a *App) WalletBalance(ctx context.Context, phone string) error {
+	user, err := a.store.FindUserByPhone(ctx, phone)
+	if err != nil {
+		return fmt.Errorf("user %q: %w", phone, err)
+	}
+	wallet, err := a.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		a.logger.InfoContext(ctx, "no wallet yet for user (created on first KYC touch)", "phone", phone)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("wallet for %s: %w", phone, err)
+	}
+	balance, err := a.store.WalletBalance(ctx, wallet.ID)
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "wallet balance",
+		"phone", phone, "user_id", user.ID.String(), "wallet_id", wallet.ID.String(),
+		"status", wallet.Status, "balance_kobo", balance, "balance", domain.FormatNGN(balance))
+	return nil
+}
+
+// WalletWithdraw moves money from an individual wallet to the external payout
+// rail. The money-out allowance is reserved first (keyed by a fresh ref) and
+// released if the withdrawal fails, mirroring the payment draft pattern.
+func (a *App) WalletWithdraw(ctx context.Context, phone string, amountKobo int64) error {
+	if amountKobo <= 0 {
+		return errors.New("withdrawal amount must be positive")
+	}
+	user, err := a.store.FindUserByPhone(ctx, phone)
+	if err != nil {
+		return fmt.Errorf("user %q: %w", phone, err)
+	}
+	profile, err := a.store.KYCProfileByUser(ctx, user.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		profile, err = a.store.EnsureKYCProfile(ctx, user.ID)
+	}
+	if err != nil {
+		return err
+	}
+	reservationRef := "wallet-withdraw:" + uuid.New().String()
+	if err := a.store.ReserveAllowance(ctx, store.AllowanceReservation{
+		AccountType: store.AccountIndividual,
+		SubjectID:   user.ID,
+		Direction:   kyc.DirOut,
+		Tier:        profile.Tier,
+		AmountKobo:  amountKobo,
+		Ref:         reservationRef,
+	}); err != nil {
+		return err
+	}
+	if err := a.store.WithdrawFromUserWallet(ctx, user.ID, amountKobo, reservationRef,
+		"Wallet withdrawal "+phone); err != nil {
+		_ = a.store.ReleaseAllowance(ctx, reservationRef)
+		return err
+	}
+	a.logger.InfoContext(ctx, "wallet withdrawal completed",
+		"phone", phone, "user_id", user.ID.String(), "amount_kobo", amountKobo,
+		"amount", domain.FormatNGN(amountKobo), "ref", reservationRef)
 	return nil
 }
 

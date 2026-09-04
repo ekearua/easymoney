@@ -306,8 +306,34 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		if !isThrift && !isData {
 			tag = &merchantID
 		}
+		// W1: wallet-funded payments (provider 'wallet') debit the payer's
+		// wallet instead of the operating bank. The debit is atomic with the
+		// transition: the wallet must be active (L1+) and hold at least the
+		// payment amount, otherwise the whole confirmation fails and no money
+		// moves. The rest of the pipeline (splits, settlement) is unchanged —
+		// the funds land in the customer float exactly like a gateway payment.
+		debitAccount := LedgerAccountOperatingBank
+		description := "Payment received"
+		if provider == ProviderWallet {
+			wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerUser, userID, "", WalletStatusPending)
+			if err != nil {
+				return false, err
+			}
+			if wallet.Status != WalletStatusActive {
+				return false, fmt.Errorf("%w: wallet is %s (reach L1 to pay from wallet)", ErrWalletNotActive, wallet.Status)
+			}
+			balance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
+			if err != nil {
+				return false, err
+			}
+			if balance < amountKobo {
+				return false, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amountKobo)
+			}
+			debitAccount = wallet.AccountCode
+			description = "Payment from wallet"
+		}
 		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-			LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received", "system", amountKobo, tag); err != nil {
+			debitAccount, LedgerAccountCustomerFloat, currency, description, "system", amountKobo, tag); err != nil {
 			return false, err
 		}
 	}

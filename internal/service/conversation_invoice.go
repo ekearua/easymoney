@@ -727,13 +727,15 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 		if err := s.store.CreateInvoicePayment(ctx, invoice.ID, payment.ID, user.ID, amount); err != nil {
 			return err
 		}
-		session.State = "invoice_pay_bank"
 		session.Data["payment_id"] = payment.ID.String()
-		delete(session.Data, "bank_query")
+		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
+		return s.sendCheckout(ctx, channel, recipient,
+			fmt.Sprintf("Your secure checkout is ready.\n\nInvoice: %s\nMerchant: %s\nAmount: %s\n\nXego will update the invoice only after payment is verified.",
+				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
+			s.payments.HostedCheckoutURL(payment))
 	default:
 		session.State = "invoice_pay_amount"
 		_ = s.saveSession(ctx, session)

@@ -36,6 +36,10 @@ const (
 	ProviderInterswitch = "interswitch"
 	// ProviderBankTransfer identifies the in-app simulated bank-transfer rail.
 	ProviderBankTransfer = "bank_transfer"
+	// ProviderWallet identifies payments funded from the payer's Xego wallet.
+	// The customer confirms inline (no hosted checkout) and the wallet is
+	// debited atomically with the success transition.
+	ProviderWallet = "wallet"
 	// ProviderAuto selects the best gateway via the router.
 	ProviderAuto = "auto"
 )
@@ -76,7 +80,7 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 	if provider == ProviderAuto {
 		provider = s.router.PickProvider()
 	}
-	if provider != ProviderInterswitch && provider != ProviderBankTransfer {
+	if provider != ProviderInterswitch && provider != ProviderBankTransfer && provider != ProviderWallet {
 		return store.PaymentView{}, fmt.Errorf("unsupported payment provider %q", provider)
 	}
 	if channel == "" {
@@ -121,22 +125,27 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 	// the provider reference so replay never double-counts. A rejection here
 	// stops creation entirely; the reservation is released again if the attempt
 	// later fails, is abandoned, expires, or is refunded (transitionPayment).
-	profile, err := s.store.KYCProfileByUser(ctx, user.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		profile, err = s.store.EnsureKYCProfile(ctx, user.ID)
-	}
-	if err != nil {
-		return store.PaymentView{}, err
-	}
-	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-		AccountType: store.AccountIndividual,
-		SubjectID:   user.ID,
-		Direction:   kyc.DirIn,
-		Tier:        profile.Tier,
-		AmountKobo:  amountKobo,
-		Ref:         payment.ProviderReference,
-	}); err != nil {
-		return store.PaymentView{}, err
+	// Wallet payments skip this reservation: the money is not coming into the
+	// platform (it is already in the payer's wallet) — the money-out ceiling is
+	// enforced at confirmation instead (ConfirmWalletPayment).
+	if provider != ProviderWallet {
+		profile, err := s.store.KYCProfileByUser(ctx, user.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			profile, err = s.store.EnsureKYCProfile(ctx, user.ID)
+		}
+		if err != nil {
+			return store.PaymentView{}, err
+		}
+		if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+			AccountType: store.AccountIndividual,
+			SubjectID:   user.ID,
+			Direction:   kyc.DirIn,
+			Tier:        profile.Tier,
+			AmountKobo:  amountKobo,
+			Ref:         payment.ProviderReference,
+		}); err != nil {
+			return store.PaymentView{}, err
+		}
 	}
 	if _, err := s.store.CreatePayment(ctx, payment); err != nil {
 		// The reservation is keyed by the provider reference and is otherwise
@@ -150,6 +159,84 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 		return store.PaymentView{}, err
 	}
 	return s.store.PaymentByID(ctx, payment.ID)
+}
+
+// ConfirmWalletPayment completes a wallet-funded payment: it reserves the
+// payer's money-out allowance and transitions the payment to succeeded, which
+// debits the wallet atomically with the transition (transitionPayment). The
+// money-out reservation is released if the confirmation fails. A replay
+// (already-succeeded payment) is a no-op: the ref-keyed reservation and the
+// status check in the transition both short-circuit.
+func (s *PaymentService) ConfirmWalletPayment(ctx context.Context, payment store.PaymentView) (store.PaymentView, bool, error) {
+	if payment.Provider != ProviderWallet {
+		return payment, false, fmt.Errorf("payment provider %q is not a wallet payment", payment.Provider)
+	}
+	if payment.Status != domain.StatusAwaitingConfirmation && payment.Status != domain.StatusSucceeded {
+		return payment, false, fmt.Errorf("payment is not awaiting confirmation (status %s)", payment.Status)
+	}
+	if payment.Status == domain.StatusSucceeded {
+		return payment, false, nil // replay
+	}
+	profile, err := s.store.KYCProfileByUser(ctx, payment.UserID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		profile, err = s.store.EnsureKYCProfile(ctx, payment.UserID)
+	}
+	if err != nil {
+		return payment, false, err
+	}
+	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+		AccountType: store.AccountIndividual,
+		SubjectID:   payment.UserID,
+		Direction:   kyc.DirOut,
+		Tier:        profile.Tier,
+		AmountKobo:  payment.AmountKobo,
+		Ref:         payment.ProviderReference,
+	}); err != nil {
+		return payment, false, err
+	}
+	changed, err := s.store.TransitionPaymentWithOutbox(ctx, payment.ID, domain.StatusSucceeded, "wallet",
+		map[string]any{"wallet_payment": true}, s.resultOutbox(payment, domain.StatusSucceeded))
+	if err != nil {
+		_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
+		return payment, false, err
+	}
+	updated, err := s.store.PaymentByID(ctx, payment.ID)
+	if err != nil {
+		return payment, changed, err
+	}
+	if changed {
+		s.applyPaymentSuccessHooks(ctx, updated)
+	}
+	return updated, changed, nil
+}
+
+// CreateWalletTopupDraft creates the payer's wallet top-up payment against the
+// Xego system merchant, charged exactly the given amount and routed through
+// the gateway like any other checkout. The wallet_topup metadata routes the
+// post-success hook to credit the payer's wallet from the customer float, so
+// the wallet lands the full amount once the gateway verifies the payment.
+func (s *PaymentService) CreateWalletTopupDraft(ctx context.Context, user store.User, channel, recipient string, amountKobo int64, provider string) (store.PaymentView, error) {
+	merchant, err := s.store.WalletTopupSystemMerchant(ctx)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, map[string]any{
+		"wallet_topup": map[string]any{
+			"amount_kobo": amountKobo,
+		},
+	})
+}
+
+// isWalletTopup reports whether the payment is a wallet top-up (identified by
+// its metadata).
+func (s *PaymentService) isWalletTopup(payment store.PaymentView) bool {
+	var wrapped struct {
+		WalletTopup json.RawMessage `json:"wallet_topup"`
+	}
+	if len(payment.Metadata) > 0 {
+		_ = json.Unmarshal(payment.Metadata, &wrapped)
+	}
+	return len(wrapped.WalletTopup) > 0
 }
 
 // CreateCheckout mints a general request-money link for a payee. No customer is
@@ -215,9 +302,7 @@ func (s *PaymentService) HostedCheckoutURL(payment store.PaymentView) string {
 
 // InitializeCheckout calls the gateway after explicit customer confirmation.
 func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.PaymentView) (store.PaymentView, error) {
-	if payment.Provider == ProviderBankTransfer {
-		return store.PaymentView{}, fmt.Errorf("payment provider %q cannot use gateway checkout", payment.Provider)
-	}
+	// Bank-transfer payments are routed through the Interswitch gateway too.
 	if payment.Status != domain.StatusAwaitingConfirmation {
 		return store.PaymentView{}, fmt.Errorf("payment is not awaiting confirmation")
 	}
@@ -295,9 +380,6 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	if err != nil {
 		return store.PaymentView{}, false, err
 	}
-	if payment.Provider == ProviderBankTransfer {
-		return payment, false, fmt.Errorf("provider %q does not use gateway verification", payment.Provider)
-	}
 	gateway := s.gateways[payment.Provider]
 	if gateway == nil {
 		return payment, false, fmt.Errorf("no gateway configured for provider %q", payment.Provider)
@@ -344,11 +426,21 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 const maxPaymentHookAttempts = 8
 
 func (s *PaymentService) applyPaymentSuccessHooks(ctx context.Context, payment store.PaymentView) {
-	if err := s.store.EnsurePaymentHooks(ctx, payment.ID, store.PaymentHookOrder); err != nil {
+	hooks := store.PaymentHookOrder
+	if s.isWalletTopup(payment) {
+		// A wallet top-up credits the payer's wallet from the customer float;
+		// no collection-purpose hooks apply.
+		hooks = []string{store.PaymentHookWalletTopup}
+	} else if s.isIndividualPay(payment) {
+		// Individual pay skips the collection-purpose hooks and settles the
+		// recipient payout instead.
+		hooks = []string{store.PaymentHookIndividualPay}
+	}
+	if err := s.store.EnsurePaymentHooks(ctx, payment.ID, hooks); err != nil {
 		s.logger.Error("ensure payment hooks failed", "payment_id", payment.ID, "error", err)
 		return
 	}
-	for _, hook := range store.PaymentHookOrder {
+	for _, hook := range hooks {
 		if err := s.runPaymentHook(ctx, payment, hook); err != nil {
 			next := paymentHookBackoff(0)
 			_ = s.store.MarkPaymentHookFailed(ctx, payment.ID, hook, err.Error(), next, false)
@@ -378,6 +470,10 @@ func (s *PaymentService) runPaymentHook(ctx context.Context, payment store.Payme
 		return s.applyCollectionSplits(ctx, payment)
 	case store.PaymentHookReceiptScan:
 		return s.createReceiptScanToken(ctx, payment)
+	case store.PaymentHookIndividualPay:
+		return s.applyIndividualPaySettlement(ctx, payment)
+	case store.PaymentHookWalletTopup:
+		return s.store.ApplyWalletTopup(ctx, payment.ID, payment.UserID, payment.AmountKobo)
 	default:
 		return fmt.Errorf("unknown payment hook %q", hook)
 	}
@@ -428,6 +524,110 @@ func paymentHookBackoff(attempts int) time.Time {
 		delay = 15 * time.Minute
 	}
 	return time.Now().Add(delay)
+}
+
+// individualPayMeta carries the recipient and split details for an
+// individual-pay sender payment. It is stored in payment metadata at draft
+// creation so the post-success hook can settle the payout without any session.
+type individualPayMeta struct {
+	RecipientPhone string `json:"recipient_phone"`
+	BankCode       string `json:"bank_code"`
+	AccountNumber  string `json:"account_number"`
+	AmountKobo     int64  `json:"amount_kobo"`
+	CollectionFee  int64  `json:"collection_fee_kobo"`
+	NIPFee         int64  `json:"nip_fee_kobo"`
+	RecipientGets  int64  `json:"recipient_gets"`
+}
+
+// CreateIndividualPayDraft creates the sender's payment for an individual
+// transfer. The payment is a plain collection against the Xego system
+// merchant, routed through the Interswitch gateway like any other checkout;
+// the recipient payout is settled by the post-success hook.
+func (s *PaymentService) CreateIndividualPayDraft(ctx context.Context, user store.User, channel, recipient string, totalPay int64, meta map[string]any) (store.PaymentView, error) {
+	merchant, err := s.store.IndividualPaySystemMerchant(ctx)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	return s.createDraftCore(ctx, user, merchant, totalPay, ProviderBankTransfer, channel, recipient, meta)
+}
+
+// isIndividualPay reports whether the payment is an individual-pay sender
+// payment (identified by its metadata).
+func (s *PaymentService) isIndividualPay(payment store.PaymentView) bool {
+	var wrapped struct {
+		IndividualPay json.RawMessage `json:"individual_pay"`
+	}
+	if len(payment.Metadata) > 0 {
+		_ = json.Unmarshal(payment.Metadata, &wrapped)
+	}
+	return len(wrapped.IndividualPay) > 0
+}
+
+// applyIndividualPaySettlement settles the recipient's share once the
+// sender's payment is verified. It books the splits (collection fee + NIP
+// fee) and credits the recipient's wallet (UserPayable → user wallet) in one
+// idempotent transaction, so the retry worker can safely re-run it. The
+// recipient's money-out allowance is enforced at withdrawal time, not here:
+// the money stays inside the platform until the recipient cashes out.
+func (s *PaymentService) applyIndividualPaySettlement(ctx context.Context, payment store.PaymentView) error {
+	var wrapped struct {
+		IndividualPay json.RawMessage `json:"individual_pay"`
+	}
+	if len(payment.Metadata) > 0 {
+		if err := json.Unmarshal(payment.Metadata, &wrapped); err != nil {
+			return err
+		}
+	}
+	var meta individualPayMeta
+	if len(wrapped.IndividualPay) > 0 {
+		if err := json.Unmarshal(wrapped.IndividualPay, &meta); err != nil {
+			return err
+		}
+	}
+	if meta.RecipientPhone == "" || meta.AmountKobo <= 0 {
+		return fmt.Errorf("individual pay metadata missing for payment %s", payment.ID)
+	}
+	if meta.RecipientGets <= 0 {
+		return nil // the payout fee consumed the whole amount; nothing to disburse
+	}
+	recipientUser, err := s.store.GetOrCreateUser(ctx, meta.RecipientPhone)
+	if err != nil {
+		return err
+	}
+	dest, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, meta.BankCode, "", meta.AccountNumber, "")
+	if err != nil {
+		return err
+	}
+	// W1: the recipient's share lands in their wallet rather than leaving the
+	// platform, so no money-out allowance is reserved here — the money-out
+	// ceiling is enforced when the recipient actually withdraws from the
+	// wallet (WalletWithdraw reserves and releases on failure).
+	if _, err := s.store.EnsureKYCProfile(ctx, recipientUser.ID); err != nil {
+		return err
+	}
+	var splits []store.SplitSpec
+	if meta.CollectionFee > 0 {
+		splits = append(splits, store.SplitSpec{
+			SplitType:   "xego_collection_fee",
+			Account:     store.LedgerAccountXegoPayable,
+			AmountKobo:  meta.CollectionFee,
+			Currency:    "NGN",
+			Description: "Xego collection fee (individual pay)",
+		})
+	}
+	if meta.NIPFee > 0 {
+		splits = append(splits, store.SplitSpec{
+			SplitType:   "nip_fee",
+			Account:     store.LedgerAccountXegoPayable,
+			AmountKobo:  meta.NIPFee,
+			Currency:    "NGN",
+			Description: "NIP payout fee (individual pay)",
+		})
+	}
+	if err := s.store.RecordIndividualPaySettlement(ctx, payment.ID, meta.RecipientGets, dest, splits); err != nil {
+		return err
+	}
+	return nil
 }
 
 // applyCollectionSplits computes the Xego platform fee and records the split
