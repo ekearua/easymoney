@@ -110,7 +110,10 @@ func (s *Store) ReserveAllowance(ctx context.Context, r AllowanceReservation) er
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`,
+	// pg_advisory_xact_lock takes a bigint; the key string is hashed so the
+	// advisory lock still serializes per (subject, direction) without the
+	// text->bigint cast error that plain text arguments raise on Postgres.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
 		allowanceLockKey(r.AccountType, r.SubjectID, r.Direction)); err != nil {
 		return fmt.Errorf("lock allowance subject: %w", err)
 	}
