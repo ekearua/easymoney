@@ -384,7 +384,7 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 	if gateway == nil {
 		return payment, false, fmt.Errorf("no gateway configured for provider %q", payment.Provider)
 	}
-	verification, err := gateway.Verify(ctx, reference)
+	verification, err := gateway.Verify(ctx, reference, payment.AmountKobo)
 	if err != nil {
 		return payment, false, err
 	}

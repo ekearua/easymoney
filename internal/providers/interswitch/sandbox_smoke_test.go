@@ -78,7 +78,7 @@ func TestSandboxRequerySmoke(t *testing.T) {
 	// This reference is generated fresh and never initialized, so Interswitch
 	// must answer transaction-not-found rather than a duplicate/approval.
 	reference := fmt.Sprintf("wpd_smoke_missing_%d", time.Now().UnixNano())
-	verification, err := client.Verify(context.Background(), reference)
+	verification, err := client.Verify(context.Background(), reference, 50_000)
 	if err != nil {
 		t.Fatalf("requery rejected: %v (check INTERSWITCH_CLIENT_ID/SECRET and the InterswitchAuth signature)", err)
 	}

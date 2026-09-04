@@ -149,12 +149,16 @@ type requeryResponse struct {
 
 // Verify confirms the status of a transaction using the Interswitch
 // gettransaction requery endpoint, authenticated with the legacy
-// InterswitchAuth signature.
-func (c *Client) Verify(ctx context.Context, reference string) (ports.Verification, error) {
+// InterswitchAuth signature. amountKobo is the amount the merchant expected
+// to collect and is echoed to the gateway as the amount query parameter:
+// Interswitch's gettransaction.json rejects requeries without it (response
+// code 20031, "Amount not supplied or amount not in minor format"), so the
+// expected amount is mandatory for a requery to return the transaction.
+func (c *Client) Verify(ctx context.Context, reference string, amountKobo int64) (ports.Verification, error) {
 	if c.merchantCode == "" {
 		return ports.Verification{}, errors.New("interswitch: merchant code is required for requery")
 	}
-	req, err := c.newRequeryRequest(ctx, reference)
+	req, err := c.newRequeryRequest(ctx, reference, amountKobo)
 	if err != nil {
 		return ports.Verification{}, err
 	}
@@ -189,10 +193,11 @@ func (c *Client) Verify(ctx context.Context, reference string) (ports.Verificati
 	}, nil
 }
 
-func (c *Client) newRequeryRequest(ctx context.Context, reference string) (*http.Request, error) {
+func (c *Client) newRequeryRequest(ctx context.Context, reference string, amountKobo int64) (*http.Request, error) {
 	query := url.Values{}
 	query.Set("merchantcode", c.merchantCode)
 	query.Set("transactionreference", reference)
+	query.Set("amount", strconv.FormatInt(amountKobo, 10))
 	endpoint := getTransactionPath + "?" + query.Encode()
 	now := time.Now().Unix()
 	nonce, _ := randomNonce()

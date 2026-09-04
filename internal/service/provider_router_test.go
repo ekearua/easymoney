@@ -11,7 +11,7 @@ import (
 )
 
 type stubGateway struct {
-	initErr  error
+	initErr   error
 	verifyErr error
 }
 
@@ -19,7 +19,7 @@ func (g *stubGateway) Initialize(_ context.Context, _ ports.InitializePayment) (
 	return ports.Checkout{Reference: "ref", URL: "https://checkout.test"}, g.initErr
 }
 
-func (g *stubGateway) Verify(_ context.Context, _ string) (ports.Verification, error) {
+func (g *stubGateway) Verify(_ context.Context, _ string, _ int64) (ports.Verification, error) {
 	return ports.Verification{Status: "success"}, g.verifyErr
 }
 

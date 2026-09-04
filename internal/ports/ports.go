@@ -47,7 +47,7 @@ type GatewayWebhook struct {
 // PaymentGateway isolates the domain from a specific payment provider.
 type PaymentGateway interface {
 	Initialize(context.Context, InitializePayment) (Checkout, error)
-	Verify(context.Context, string) (Verification, error)
+	Verify(context.Context, string, int64) (Verification, error)
 	ValidateWebhook(body []byte, signature string) (GatewayWebhook, error)
 }
 

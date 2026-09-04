@@ -124,7 +124,7 @@ func (g *simGateway) Initialize(_ context.Context, in ports.InitializePayment) (
 	return ports.Checkout{Reference: in.Reference, URL: "https://checkout.sim.example/x/" + in.Reference}, nil
 }
 
-func (g *simGateway) Verify(ctx context.Context, reference string) (ports.Verification, error) {
+func (g *simGateway) Verify(ctx context.Context, reference string, _ int64) (ports.Verification, error) {
 	payment, err := g.store.PaymentByReference(ctx, reference)
 	if err != nil {
 		return ports.Verification{}, err

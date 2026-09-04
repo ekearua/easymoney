@@ -61,7 +61,7 @@ func TestVerifySendsInterswitchAuthAndNormalizesRequery(t *testing.T) {
 		if r.URL.Path != "/collections/api/v1/gettransaction.json" || r.Method != http.MethodGet {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if err := r.ParseForm(); err != nil || r.Form.Get("merchantcode") != "M1000" || r.Form.Get("transactionreference") != "wpd_ref" {
+		if err := r.ParseForm(); err != nil || r.Form.Get("merchantcode") != "M1000" || r.Form.Get("transactionreference") != "wpd_ref" || r.Form.Get("amount") != "50000" {
 			t.Fatalf("unexpected query: %v", r.URL.RawQuery)
 		}
 		if r.Header.Get("Authorization") == "" || r.Header.Get("Timestamp") == "" || r.Header.Get("Nonce") == "" || r.Header.Get("Signature") == "" {
@@ -72,7 +72,7 @@ func TestVerifySendsInterswitchAuthAndNormalizesRequery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	verification, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref")
+	verification, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref", 50_000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestVerifyRejectsNon2xx(t *testing.T) {
 		_, _ = w.Write([]byte(`{"ResponseCode":"91","ResponseDescription":"Invalid credentials"}`))
 	}))
 	defer server.Close()
-	if _, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref"); err == nil {
+	if _, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref", 50_000); err == nil {
 		t.Fatal("expected error on non-2xx requery")
 	}
 }
@@ -100,7 +100,7 @@ func TestVerifyRejectsEmptyResponse(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
-	if _, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref"); err == nil {
+	if _, err := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: server.URL, Mode: "TEST"}).Verify(context.Background(), "wpd_ref", 50_000); err == nil {
 		t.Fatal("expected error on empty requery response")
 	}
 }
