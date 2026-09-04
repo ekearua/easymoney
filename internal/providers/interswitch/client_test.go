@@ -15,7 +15,7 @@ import (
 
 func TestInitializeReturnsPlatformFormPageURL(t *testing.T) {
 	t.Parallel()
-	client := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", PayItemID: "pi", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"})
+	client := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", PayItemID: "pi", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
 	checkout, err := client.Initialize(context.Background(), ports.InitializePayment{
 		Reference:   "wpd_ref",
 		Email:       "demo@example.com",
@@ -34,7 +34,7 @@ func TestInitializeReturnsPlatformFormPageURL(t *testing.T) {
 
 func TestInitializeRequiresMerchantConfig(t *testing.T) {
 	t.Parallel()
-	client := New(Options{BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"})
+	client := New(Options{BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
 	if _, err := client.Initialize(context.Background(), ports.InitializePayment{Reference: "r", CallbackURL: "https://xego.test/payments/return"}); err == nil {
 		t.Fatal("expected error when merchant config missing")
 	}
@@ -42,9 +42,9 @@ func TestInitializeRequiresMerchantConfig(t *testing.T) {
 
 func TestNewPayPageBuildsRedirectForm(t *testing.T) {
 	t.Parallel()
-	client := New(Options{MerchantCode: "M1000", PayItemID: "pi", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"})
+	client := New(Options{MerchantCode: "M1000", PayItemID: "pi", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
 	page := client.NewPayPage("wpd_ref", "demo@example.com", 50_000, "https://xego.test/payments/return")
-	if page.Action != "https://webpay.sandbox.interswitchng.com/collections/w/pay" {
+	if page.Action != "https://sandbox.interswitchng.com/collections/w/pay" {
 		t.Fatalf("unexpected action %q", page.Action)
 	}
 	if page.MerchantCode != "M1000" || page.PayItemID != "pi" || page.TxnRef != "wpd_ref" || page.Amount != 50_000 {
@@ -109,7 +109,7 @@ func TestValidateWebhookParsesNotification(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"event":"TRANSACTION.COMPLETED","uuid":"ref-123","timestamp":1594646111460,"data":{"merchantReference":"wpd_ref","responseCode":"00","responseDescription":"Approved by Financial Institution","amount":50000,"currencyCode":"566"}}`)
 	mac := webhookSignature("whsec", body)
-	event, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, mac)
+	event, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, mac)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestValidateWebhookParsesNotification(t *testing.T) {
 func TestValidateWebhookRejectsInvalidSignature(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"event":"TRANSACTION.COMPLETED","uuid":"ref-123","timestamp":1,"data":{"merchantReference":"wpd_ref","responseCode":"00"}}`)
-	if _, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, "deadbeef"); err == nil {
+	if _, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, "deadbeef"); err == nil {
 		t.Fatal("invalid signature should be rejected")
 	}
 }
@@ -129,14 +129,14 @@ func TestValidateWebhookRejectsInvalidSignature(t *testing.T) {
 func TestValidateWebhookRejectsMissingSignature(t *testing.T) {
 	t.Parallel()
 	body := []byte(`{"event":"TRANSACTION.COMPLETED","uuid":"ref-123","timestamp":1,"data":{"merchantReference":"wpd_ref","responseCode":"00"}}`)
-	if _, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, ""); err == nil {
+	if _, err := New(Options{ClientID: "cid", WebhookSecret: "whsec", MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"}).ValidateWebhook(body, ""); err == nil {
 		t.Fatal("unsigned webhook should be rejected")
 	}
 }
 
 func TestValidateWebhookRejectsMissingSecret(t *testing.T) {
 	t.Parallel()
-	client := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: "https://webpay.sandbox.interswitchng.com", Mode: "TEST"})
+	client := New(Options{ClientID: "cid", ClientSecret: "secret", MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
 	body := []byte(`{"event":"TRANSACTION.COMPLETED","uuid":"ref-123","timestamp":1,"data":{"merchantReference":"wpd_ref","responseCode":"00"}}`)
 	if _, err := client.ValidateWebhook(body, "whatever"); err == nil {
 		t.Fatal("missing webhook secret should be rejected")
