@@ -42,16 +42,37 @@ func TestInitializeRequiresMerchantConfig(t *testing.T) {
 
 func TestNewPayPageBuildsRedirectForm(t *testing.T) {
 	t.Parallel()
+	// The form action targets the documented checkout host (the legacy sandbox
+	// host serves its page scripts empty to browsers), while the requery/API
+	// host stays on BaseURL.
 	client := New(Options{MerchantCode: "M1000", PayItemID: "pi", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
 	page := client.NewPayPage("wpd_ref", "demo@example.com", 50_000, "https://xego.test/payments/return")
-	if page.Action != "https://sandbox.interswitchng.com/collections/w/pay" {
-		t.Fatalf("unexpected action %q", page.Action)
+	if page.Action != testCheckoutHost+"/collections/w/pay" {
+		t.Fatalf("unexpected action %q, want the documented TEST checkout host", page.Action)
 	}
 	if page.MerchantCode != "M1000" || page.PayItemID != "pi" || page.TxnRef != "wpd_ref" || page.Amount != 50_000 {
 		t.Fatalf("unexpected page: %#v", page)
 	}
 	if page.Currency != NGN || page.Mode != "TEST" {
 		t.Fatalf("unexpected currency/mode: %#v", page)
+	}
+}
+
+func TestNewPayPageCheckoutHostPerMode(t *testing.T) {
+	t.Parallel()
+	// LIVE defaults to the live newwebpay host; an explicit CheckoutBaseURL
+	// wins over the per-mode default in either mode.
+	testClient := New(Options{MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
+	if got := testClient.NewPayPage("r", "e@example.com", 100, "https://x.test/return").Action; got != testCheckoutHost+payPath {
+		t.Fatalf("TEST action %q, want %q", got, testCheckoutHost+payPath)
+	}
+	liveClient := New(Options{MerchantCode: "M1000", BaseURL: "https://webpay.interswitchng.com", Mode: "LIVE"})
+	if got := liveClient.NewPayPage("r", "e@example.com", 100, "https://x.test/return").Action; got != liveCheckoutHost+payPath {
+		t.Fatalf("LIVE action %q, want %q", got, liveCheckoutHost+payPath)
+	}
+	override := New(Options{MerchantCode: "M1000", BaseURL: "https://sandbox.interswitchng.com", CheckoutBaseURL: "https://checkout.example.com", Mode: "TEST"})
+	if got := override.NewPayPage("r", "e@example.com", 100, "https://x.test/return").Action; got != "https://checkout.example.com"+payPath {
+		t.Fatalf("override action %q", got)
 	}
 }
 

@@ -91,13 +91,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	repository.SetDataKey(cfg.DataEncryptionKey)
 	// Interswitch Web Checkout is the sole card payment gateway.
 	interswitchClient := interswitchprovider.New(interswitchprovider.Options{
-		ClientID:      cfg.InterswitchClientID,
-		ClientSecret:  cfg.InterswitchClientSecret,
-		WebhookSecret: cfg.InterswitchWebhookSecret,
-		MerchantCode:  cfg.InterswitchMerchantCode,
-		PayItemID:     cfg.InterswitchPayItemID,
-		BaseURL:       cfg.InterswitchBaseURL,
-		Mode:          cfg.InterswitchCheckoutMode,
+		ClientID:        cfg.InterswitchClientID,
+		ClientSecret:    cfg.InterswitchClientSecret,
+		WebhookSecret:   cfg.InterswitchWebhookSecret,
+		MerchantCode:    cfg.InterswitchMerchantCode,
+		PayItemID:       cfg.InterswitchPayItemID,
+		BaseURL:         cfg.InterswitchBaseURL,
+		CheckoutBaseURL: cfg.InterswitchCheckoutBaseURL,
+		Mode:            cfg.InterswitchCheckoutMode,
 	})
 	// Build the payment gateway registry. Interswitch is always registered so
 	// card checkout resolves even in the backlog demo where no secret is set.

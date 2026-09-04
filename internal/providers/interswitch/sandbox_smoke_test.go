@@ -113,19 +113,24 @@ func TestSandboxCheckoutPageSmoke(t *testing.T) {
 	if baseURL == "" {
 		baseURL = "https://sandbox.interswitchng.com"
 	}
+	checkoutBase := strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/")
+	if checkoutBase == "" {
+		checkoutBase = testCheckoutHost
+	}
 
 	client := New(Options{
-		MerchantCode: merchantCode,
-		PayItemID:    payItemID,
-		BaseURL:      baseURL,
-		Mode:         mode,
+		MerchantCode:    merchantCode,
+		PayItemID:       payItemID,
+		BaseURL:         baseURL,
+		CheckoutBaseURL: checkoutBase,
+		Mode:            mode,
 	})
 	// A unique reference per run so a stale row can never trip Z5.
 	reference := fmt.Sprintf("wpd_smoke_%d", time.Now().UnixNano())
 	redirect := "https://example.invalid/payments/return"
 	page := client.NewPayPage(reference, "smoke@example.com", 50_000, redirect)
-	if page.Action != baseURL+payPath {
-		t.Fatalf("form action %q, want %q", page.Action, baseURL+payPath)
+	if page.Action != checkoutBase+payPath {
+		t.Fatalf("form action %q, want %q", page.Action, checkoutBase+payPath)
 	}
 
 	// Mirror interswitch_checkout.html field-for-field: merchant_code,

@@ -38,28 +38,41 @@ const (
 	getTransactionPath = "/collections/api/v1/gettransaction.json"
 )
 
+// Hosts that render the hosted Web Checkout page. The legacy sandbox host
+// (sandbox.interswitchng.com) still answers the form POST with an HTML shell
+// but serves its JavaScript assets empty to browsers, so the payment page
+// never mounts there; the newwebpay hosts are the documented, working form
+// targets. The requery/API host (Options.BaseURL) is separate and must stay
+// on the host that answers signed gettransaction.json calls.
+const (
+	testCheckoutHost = "https://newwebpay-sandbox.interswitchng.com"
+	liveCheckoutHost = "https://newwebpay.interswitchng.com"
+)
+
 // Client integrates with Interswitch Web Checkout hosted checkout, server
 // requery verification, and redirect-notification handling.
 type Client struct {
-	clientID       string
-	clientSecret   string
-	webhookSecret  string
-	merchantCode   string
-	payItemID      string
-	baseURL        string
-	mode           string
-	http           *http.Client
+	clientID        string
+	clientSecret    string
+	webhookSecret   string
+	merchantCode    string
+	payItemID       string
+	baseURL         string
+	checkoutBaseURL string
+	mode            string
+	http            *http.Client
 }
 
 // Options configures an Interswitch Web Checkout client.
 type Options struct {
-	ClientID       string
-	ClientSecret   string
-	WebhookSecret  string
-	MerchantCode   string
-	PayItemID      string
-	BaseURL        string
-	Mode           string // "TEST" or "LIVE"
+	ClientID        string
+	ClientSecret    string
+	WebhookSecret   string
+	MerchantCode    string
+	PayItemID       string
+	BaseURL         string // API/requery host (gettransaction.json)
+	CheckoutBaseURL string // optional; host that renders the payment page
+	Mode            string // "TEST" or "LIVE"
 }
 
 // New creates an Interswitch Web Checkout client with strict request timeouts.
@@ -69,15 +82,26 @@ func New(o Options) *Client {
 	if mode == "" {
 		mode = "TEST"
 	}
+	checkoutBase := strings.TrimRight(o.CheckoutBaseURL, "/")
+	if checkoutBase == "" {
+		// The documented per-mode host that renders the Web Checkout page.
+		switch mode {
+		case "LIVE":
+			checkoutBase = liveCheckoutHost
+		default:
+			checkoutBase = testCheckoutHost
+		}
+	}
 	return &Client{
-		clientID:       o.ClientID,
-		clientSecret:   o.ClientSecret,
-		webhookSecret:  o.WebhookSecret,
-		merchantCode:   o.MerchantCode,
-		payItemID:      o.PayItemID,
-		baseURL:        strings.TrimRight(o.BaseURL, "/"),
-		mode:         mode,
-		http:         &http.Client{Timeout: 15 * time.Second},
+		clientID:        o.ClientID,
+		clientSecret:    o.ClientSecret,
+		webhookSecret:   o.WebhookSecret,
+		merchantCode:    o.MerchantCode,
+		payItemID:       o.PayItemID,
+		baseURL:         strings.TrimRight(o.BaseURL, "/"),
+		checkoutBaseURL: checkoutBase,
+		mode:            mode,
+		http:            &http.Client{Timeout: 15 * time.Second},
 	}
 }
 
@@ -104,10 +128,12 @@ func (c *Client) PayPageURL(callbackURL, reference string) string {
 }
 
 // NewPayPage builds the fields for the Interswitch Web Checkout redirect form
-// for a concrete payment. siteRedirectURL is where the customer returns.
+// for a concrete payment. siteRedirectURL is where the customer returns. The
+// form action targets the checkout host (the host that renders the payment
+// page), distinct from the requery/API host in Options.BaseURL.
 func (c *Client) NewPayPage(reference, email string, amountKobo int64, siteRedirectURL string) PayPage {
 	return PayPage{
-		Action:          c.baseURL + payPath,
+		Action:          c.checkoutBaseURL + payPath,
 		MerchantCode:    c.merchantCode,
 		PayItemID:       c.payItemID,
 		TxnRef:          reference,

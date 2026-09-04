@@ -47,13 +47,14 @@ type Config struct {
 	SMTPPassword             string
 	SMTPFrom                 string
 
-	InterswitchClientID      string
-	InterswitchClientSecret  string
-	InterswitchMerchantCode  string
-	InterswitchPayItemID     string
-	InterswitchBaseURL       string
-	InterswitchCheckoutMode  string
-	InterswitchWebhookSecret string
+	InterswitchClientID        string
+	InterswitchClientSecret    string
+	InterswitchMerchantCode    string
+	InterswitchPayItemID       string
+	InterswitchBaseURL         string // API/requery host (gettransaction.json)
+	InterswitchCheckoutBaseURL string // optional; hosted payment-page host (defaults per mode)
+	InterswitchCheckoutMode    string
+	InterswitchWebhookSecret   string
 
 	// Fee configuration (kobo). These control the Xego platform fee
 	// applied as a split on merchant collection payments.
@@ -202,6 +203,7 @@ func Load() (Config, error) {
 		InterswitchMerchantCode:    strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE")),
 		InterswitchPayItemID:       strings.TrimSpace(os.Getenv("INTERSWITCH_PAY_ITEM_ID")),
 		InterswitchBaseURL:         strings.TrimRight(env("INTERSWITCH_BASE_URL", "https://sandbox.interswitchng.com"), "/"),
+		InterswitchCheckoutBaseURL: strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
 		InterswitchCheckoutMode:    strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
 		InterswitchWebhookSecret:   os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
 		FeeCardBPS:                 envInt64("XEGO_FEE_CARD_BPS", 200),
