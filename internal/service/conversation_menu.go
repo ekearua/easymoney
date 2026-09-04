@@ -10,21 +10,35 @@ import (
 
 func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if ref, ok := invoiceReferenceFromPAY(input); ok {
+		if s.WebFlowEnabled(channel, WebFlowPayInvoice) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowPayInvoice, "", "", map[string]string{"invoice_reference": ref})
+		}
 		return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
 	}
 	if strings.HasPrefix(strings.ToLower(input), "pay_invoice:") {
 		ref := strings.TrimSpace(input[len("pay_invoice:"):])
 		if ref != "" {
+			if s.WebFlowEnabled(channel, WebFlowPayInvoice) {
+				return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowPayInvoice, "", "", map[string]string{"invoice_reference": ref})
+			}
 			return s.startInvoicePayment(ctx, channel, recipient, user, session, ref)
 		}
 	}
 	if code, ok := thriftJoinNameFromInput(input); ok {
+		if s.WebFlowEnabled(channel, WebFlowThriftJoin) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowThriftJoin, "", "", map[string]string{"thrift_name": code})
+		}
 		return s.startThriftJoin(ctx, channel, recipient, user, session, code)
 	}
 	if code, ok := thriftActivateNameFromInput(input); ok {
+		// Choosing the payout rotation needs coordination, not a form: it stays
+		// in chat on all channels.
 		return s.startThriftActivation(ctx, channel, recipient, user, session, code)
 	}
 	if code, ok := thriftContributeNameFromInput(input); ok {
+		if s.WebFlowEnabled(channel, WebFlowThriftContribute) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowThriftContribute, "", "", map[string]string{"thrift_name": code})
+		}
 		return s.startThriftContribution(ctx, channel, recipient, user, session, code)
 	}
 	if strings.HasPrefix(strings.ToLower(input), "thrift_select:") {
@@ -52,6 +66,9 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	case "menu_main", "main menu", "back":
 		return s.sendMenu(ctx, channel, recipient)
 	case "pay", "menu_pay", "make payment":
+		if s.WebFlowEnabled(channel, WebFlowPay) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowPay, "", "", nil)
+		}
 		session.State = "select_merchant"
 		session.Data = map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
@@ -59,10 +76,25 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		}
 		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
 	case "pay individual", "menu_pay_individual", "send money":
+		if s.WebFlowEnabled(channel, WebFlowIndividualPay) {
+			if !s.userIsApprovedIndividual(ctx, user) {
+				// Level 2 is required to send money to individuals: offer the
+				// verification flow instead of a dead-end message.
+				return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
+					"Complete individual verification (Level 2) before sending money to other individuals.", "Verify profile", nil)
+			}
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualPay, "", "", nil)
+		}
 		return s.startPayIndividual(ctx, channel, recipient, user, session)
 	case "fund wallet", "menu_fund_wallet", "top up", "wallet top up", "add money":
+		if s.WebFlowEnabled(channel, WebFlowTopup) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowTopup, "", "", nil)
+		}
 		return s.startWalletTopup(ctx, channel, recipient, user, session)
 	case "data", "menu_buy_data", "buy data":
+		if s.WebFlowEnabled(channel, WebFlowData) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowData, "", "", nil)
+		}
 		session.State = "select_data_network"
 		session.Data = map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
@@ -72,6 +104,9 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	case "register merchant", "merchant registration", "menu_register_merchant":
 		if !s.cfg.EmailConfirmationEnabled {
 			return s.sendText(ctx, channel, recipient, "Merchant registration is not accepting email-verified requests right now. Please try again later.")
+		}
+		if s.WebFlowEnabled(channel, WebFlowMerchantRegister) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowMerchantRegister, "", "", nil)
 		}
 		session.Data = map[string]string{}
 		email := strings.TrimSpace(user.Email)
@@ -91,10 +126,19 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	case "merchant services", "menu_merchant_services":
 		return s.sendMerchantServicesMenu(ctx, channel, recipient)
 	case "become individual", "individual", "menu_become_individual":
+		if s.WebFlowEnabled(channel, WebFlowIndividualUpgrade) && user.AccountLevel != "merchant" {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade, "", "", nil)
+		}
 		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
 	case "create thrift", "menu_create_thrift", "thrift":
+		if s.WebFlowEnabled(channel, WebFlowThriftCreate) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowThriftCreate, "", "", nil)
+		}
 		return s.startThriftCreation(ctx, channel, recipient, user, session)
 	case "join thrift", "menu_join_thrift":
+		if s.WebFlowEnabled(channel, WebFlowThriftJoin) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowThriftJoin, "", "", nil)
+		}
 		session.State, session.Data = "thrift_join_code", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -107,10 +151,16 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	case "edit thrift", "menu_edit_thrift":
 		return s.startThriftEdit(ctx, channel, recipient, user, session)
 	case "generate invoice", "menu_generate_invoice", "invoice":
+		if s.WebFlowEnabled(channel, WebFlowInvoiceCreate) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowInvoiceCreate, "", "", nil)
+		}
 		return s.startInvoiceGeneration(ctx, channel, recipient, user, session)
 	case "kyb status", "menu_kyb_status":
 		return s.handleMerchantKYBStatus(ctx, channel, recipient, user)
 	case "request kyb upgrade", "menu_kyb_request", "request upgrade":
+		if s.WebFlowEnabled(channel, WebFlowKYBRequest) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowKYBRequest, "", "", nil)
+		}
 		return s.startKYBUpgradeRequest(ctx, channel, recipient, user, session)
 	case "merchant dashboard", "menu_merchant_dashboard":
 		return s.sendMerchantDashboard(ctx, channel, recipient, user)

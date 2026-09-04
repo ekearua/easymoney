@@ -209,11 +209,16 @@ func (c *Client) SendInteractive(ctx context.Context, message ports.InteractiveM
 
 // SendCheckout sends a Telegram message with a URL button for hosted checkout.
 func (c *Client) SendCheckout(ctx context.Context, to, body, url string) error {
+	return c.SendLink(ctx, to, body, url, "Pay securely")
+}
+
+// SendLink sends a Telegram message with a URL button using the given label.
+func (c *Client) SendLink(ctx context.Context, to, body, url, label string) error {
 	return c.send(ctx, "sendMessage", map[string]any{
 		"chat_id": to,
 		"text":    body,
 		"reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{{
-			{"text": "Pay securely", "url": url},
+			{"text": label, "url": url},
 		}}},
 	})
 }

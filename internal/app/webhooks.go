@@ -205,6 +205,9 @@ func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.logger.InfoContext(r.Context(), "interswitch webhook verified", "reference", event.Reference, "status", payment.Status)
+	// Complete any browser web flow that created this payment (guarded, so a
+	// race with the return-page callback cannot double-send).
+	a.maybeCompleteWebFlowForPayment(r.Context(), payment)
 }
 
 // vtpassWebhookSecretValid reports whether the VTPass callback is authorized.

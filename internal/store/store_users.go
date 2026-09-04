@@ -104,6 +104,27 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 	return user, err
 }
 
+// UserByID returns a customer by id without creating or touching the row
+// (used by web flows and async completion paths).
+func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
+	const query = `
+		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			last_inbound_at, created_at, updated_at
+		FROM users WHERE id=$1`
+	var user User
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt, &user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	return user, err
+}
+
 // UpdateUserName stores the first onboarding field.
 func (s *Store) UpdateUserName(ctx context.Context, id uuid.UUID, name string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE users SET display_name=$2, updated_at=now() WHERE id=$1`, id, name)

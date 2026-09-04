@@ -47,26 +47,26 @@ type Config struct {
 	SMTPPassword             string
 	SMTPFrom                 string
 
-	InterswitchClientID     string
-	InterswitchClientSecret string
-	InterswitchMerchantCode string
-	InterswitchPayItemID    string
-	InterswitchBaseURL      string
-	InterswitchCheckoutMode string
+	InterswitchClientID      string
+	InterswitchClientSecret  string
+	InterswitchMerchantCode  string
+	InterswitchPayItemID     string
+	InterswitchBaseURL       string
+	InterswitchCheckoutMode  string
 	InterswitchWebhookSecret string
 
 	// Fee configuration (kobo). These control the Xego platform fee
 	// applied as a split on merchant collection payments.
-	FeeCardBPS              int64
-	FeeCardFixedKobo        int64
-	FeeCardCapKobo          int64
-	FeeDVABPS               int64
-	FeeDVAFixedKobo         int64
-	FeeDVACapKobo           int64
-	FeeTransferBPS          int64
-	FeeTransferFixedKobo    int64
-	FeeTransferCapKobo      int64
-	FeeNIPPayoutFlatKobo    int64
+	FeeCardBPS           int64
+	FeeCardFixedKobo     int64
+	FeeCardCapKobo       int64
+	FeeDVABPS            int64
+	FeeDVAFixedKobo      int64
+	FeeDVACapKobo        int64
+	FeeTransferBPS       int64
+	FeeTransferFixedKobo int64
+	FeeTransferCapKobo   int64
+	FeeNIPPayoutFlatKobo int64
 
 	WhatsAppVerifyToken    string
 	WhatsAppAppSecret      string
@@ -97,12 +97,12 @@ type Config struct {
 	VTPassWebhookSecret string
 	VTPassTimeout       time.Duration
 
-	IdentityProvider  string
-	NINBVNPortalKey   string
-	NINBVNPortalURL   string
+	IdentityProvider    string
+	NINBVNPortalKey     string
+	NINBVNPortalURL     string
 	NINBVNPortalTimeout time.Duration
-	ScreeningProvider string
-	KYCRescreenPeriod time.Duration
+	ScreeningProvider   string
+	KYCRescreenPeriod   time.Duration
 
 	// AI / OCR / STT configuration (Phase 3-5).
 	AIEnabled  bool
@@ -132,6 +132,23 @@ type Config struct {
 	RetentionPeriod time.Duration
 	SessionTTL      time.Duration
 	ReceiptTTL      time.Duration
+
+	// WebFlowsEnabled moves transactional flows from WhatsApp chat into the
+	// browser (migration 060): chat sends only the link message and the
+	// completion confirmation, so a transaction costs at most two service
+	// messages. WebFlowsDisabledFlows lists flow types that keep the chat FSM
+	// (rollout override). Telegram and SMS always keep the chat FSM.
+	WebFlowsEnabled       bool
+	WebFlowsDisabledFlows []string
+
+	// Message-cost metering: every outbound customer message is recorded in
+	// message_log, and the admin messaging view prices it with these
+	// configurable Meta Nigeria estimates (naira per message). Meta's USD rate
+	// card is the source of truth; these values drive the display estimate
+	// only, so they stay configurable rather than hard-coded.
+	MessageLogEnabled       bool
+	MessageCostServiceNGN   int64
+	MessageCostMarketingNGN int64
 
 	RedisURL string
 
@@ -248,6 +265,10 @@ func Load() (Config, error) {
 		ReportCTRThresholdKobo:     envInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		WebFlowsEnabled:            envBool("WEB_FLOWS_ENABLED", true),
+		MessageLogEnabled:          envBool("MESSAGE_LOG_ENABLED", true),
+		MessageCostServiceNGN:      envInt64("MESSAGE_COST_SERVICE_NGN", 14),
+		MessageCostMarketingNGN:    envInt64("MESSAGE_COST_MARKETING_NGN", 84),
 		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
 		EventBus:                   strings.ToLower(env("EVENT_BUS", "memory")),
 		EventBusPartitions:         int(envInt64("EVENT_BUS_PARTITIONS", 4)),
@@ -286,6 +307,13 @@ func Load() (Config, error) {
 		for _, s := range strings.Split(raw, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				cfg.KafkaBrokers = append(cfg.KafkaBrokers, s)
+			}
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("WEB_FLOWS_DISABLED_FLOWS")); raw != "" {
+		for _, s := range strings.Split(raw, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				cfg.WebFlowsDisabledFlows = append(cfg.WebFlowsDisabledFlows, s)
 			}
 		}
 	}

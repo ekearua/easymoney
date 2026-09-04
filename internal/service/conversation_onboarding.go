@@ -31,6 +31,12 @@ func (s *ConversationService) blockPaymentCredentialMessage(ctx context.Context,
 }
 
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if session.State == "web_flow_active" {
+		// The customer is finishing onboarding in the browser; do not yank
+		// them into the chat flow mid-way.
+		return s.sendText(ctx, channel, recipient,
+			"You're completing your profile in your browser — tap the link we sent to continue, or type MENU to cancel.")
+	}
 	if session.State == "onboard_confirm_account" {
 		return s.handleAccountConfirmation(ctx, channel, recipient, user, session, input)
 	}
@@ -41,6 +47,13 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 			return err
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
+	}
+	// Two-message onboarding: a fresh WhatsApp user gets the browser profile
+	// link (message 1); completing it confirms the account and the welcome
+	// message follows (message 2). Users already mid-chat in onboarding keep
+	// the chat flow.
+	if !user.OnboardingComplete && s.WebFlowEnabled(channel, WebFlowOnboard) && (session.State == "" || session.State == "menu") {
+		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowOnboard, "", "", nil)
 	}
 	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" && session.State != "onboard_confirm_account" {
 		session.State = "onboard_name"

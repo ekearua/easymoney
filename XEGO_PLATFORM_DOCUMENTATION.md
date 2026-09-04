@@ -210,6 +210,8 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Merchant webhooks | Signed HMAC-SHA256 deliveries on terminal events, retried | Merchants | Implemented | `service/merchant_webhooks.go:218-291` |
 | Merchant notification | Chat notification of payment result | Merchants | Implemented | `service/eventbus.go:66-92` |
 | Email confirmation | 6-digit OTP for merchant registration | Merchants | Implemented (SMTP optional; chat demo mode) | migration 010; `.env.example:20-27` |
+| Two-message web flows | Transactional flows (pay, invoices, thrift, data, individual pay, top-up, onboarding, KYC upgrade, merchant registration, KYB request) send one link message (`/w/<token>` CTA URL), complete in the browser on capability tokens, and send one confirmation with receipt + `wa.me` return link — cutting service messages per transaction to 2 | Customers | Implemented | migration 060; `app/webflow*.go`; `service/webflow.go`; `web/templates/webflow.html` |
+| Messaging cost meter | `message_log` per-flow counts, average messages per transaction, estimated Meta cost at configurable naira-per-message rates; admin */admin/messaging* page | Admins | Implemented | migration 060; `store_webflows.go:MessageStats`; `app/admin_messaging.go`; `MESSAGE_COST_*` config |
 | Outbound SMS | — | — | Not implemented (explicitly future work) | README:268 |
 
 ### 3.6 Merchant & Partner Features

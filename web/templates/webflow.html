@@ -1,0 +1,72 @@
+{{define "webflow.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title>
+<link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Xego · {{.FlowType}}</p>
+  {{if .Done}}
+    <h1>{{.DoneTitle}}</h1>
+    {{if .DoneBody}}<p>{{.DoneBody}}</p>{{end}}
+    {{if .DoneAction.URL}}<p><a class="button" href="{{.DoneAction.URL}}">{{.DoneAction.Label}}</a></p>{{end}}
+  {{else if .Expired}}
+    <h1>{{.Title}}</h1>
+    <p>{{.Intro}}</p>
+  {{else}}
+    <h1>{{.Title}}</h1>
+    {{if .Intro}}<p class="muted">{{.Intro}}</p>{{end}}
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    {{if .Review}}
+      <dl class="fee-breakdown">
+        {{range .Review}}<div><dt>{{.Term}}</dt><dd>{{.Desc}}</dd></div>{{end}}
+      </dl>
+    {{end}}
+    <form method="post" action="/w/{{.Token}}">
+      {{range .Fields}}
+        {{if eq .Type "hidden"}}
+          <input type="hidden" name="{{.Name}}" value="{{.Value}}">
+        {{else if eq .Type "select"}}
+          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+          <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}>
+            <option value="" selected disabled hidden>Choose…</option>
+            {{range .Options}}<option value="{{.Value}}">{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
+          </select>
+        {{else if eq .Type "radio"}}
+          {{$field := .}}
+          <fieldset class="radio-group">
+            <legend>{{.Label}}{{if .Required}} *{{end}}</legend>
+            {{range .Options}}
+            <label class="radio"><input type="radio" name="{{$field.Name}}" value="{{.Value}}" {{if eq .Value $field.Value}}checked{{end}} required><span><strong>{{.Label}}</strong>{{if .Description}}<small class="muted">{{.Description}}</small>{{end}}</span></label>
+            {{end}}
+          </fieldset>
+        {{else if eq .Type "textarea"}}
+          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+          <textarea id="{{.Name}}" name="{{.Name}}" rows="3" {{if .Required}}required{{end}}>{{.Value}}</textarea>
+        {{else}}
+          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+          {{if eq .Type "amount"}}
+            <input id="{{.Name}}" name="{{.Name}}" type="text" inputmode="decimal" autocomplete="off" value="{{.Value}}" {{if .Required}}required{{end}} placeholder="e.g. 5000">
+          {{else}}
+            <input id="{{.Name}}" name="{{.Name}}" type="{{.Type}}" value="{{.Value}}" {{if .Required}}required{{end}}>
+          {{end}}
+          {{if .Hint}}<p class="muted">{{.Hint}}</p>{{end}}
+        {{end}}
+      {{end}}
+      {{if .Actions}}
+        <div class="actions">
+          {{range .Actions}}
+            {{if eq .Kind "link"}}
+              <a class="button" href="{{.URL}}">{{.Label}}</a>
+            {{else}}
+              <button type="submit" name="action" value="{{.Name}}">{{.Label}}</button>
+            {{end}}
+          {{end}}
+        </div>
+      {{end}}
+    </form>
+  {{end}}
+  {{if .WhatsAppLink}}<p class="muted">Open <a href="{{.WhatsAppLink}}">WhatsApp</a> to return to your Xego chat.</p>{{end}}
+  <p class="muted">Xego completes every payment only after it is verified on our side.</p>
+</main></body></html>
+{{end}}

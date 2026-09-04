@@ -114,6 +114,9 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	if err != nil {
 		return err
 	}
+	// Tag this request with the messaging-cost flow name so outbound messages
+	// are attributed to the right flow in message_log.
+	ctx = withMessageFlow(ctx, flowForState(session.State))
 	input := strings.TrimSpace(message.Text)
 	if message.Interactive != "" {
 		input = message.Interactive
@@ -339,6 +342,12 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleWalletTopupAmount(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_method":
 		return s.handleWalletTopupMethod(ctx, message.Channel, recipient, user, session, input)
+	case "web_flow_active":
+		// The customer is completing a flow in the browser; acknowledge chat
+		// input without restarting anything. Completing (or abandoning) the
+		// web flow resets the session itself.
+		return s.sendText(ctx, message.Channel, recipient,
+			"You're completing this in your browser — tap the link we sent to continue, or type MENU to cancel.")
 	case "confirm_session_switch":
 		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "ai_assistant":
@@ -387,7 +396,11 @@ func (s *ConversationService) sendText(ctx context.Context, channel, recipient, 
 	if err != nil {
 		return err
 	}
-	return messenger.SendText(ctx, recipient, body)
+	if err := messenger.SendText(ctx, recipient, body); err != nil {
+		return err
+	}
+	s.recordMessage(ctx, channel, recipient, "text")
+	return nil
 }
 
 func (s *ConversationService) sendImage(ctx context.Context, channel, recipient string, imageData []byte, caption string) error {
@@ -395,7 +408,11 @@ func (s *ConversationService) sendImage(ctx context.Context, channel, recipient 
 	if err != nil {
 		return err
 	}
-	return messenger.SendImage(ctx, recipient, imageData, caption)
+	if err := messenger.SendImage(ctx, recipient, imageData, caption); err != nil {
+		return err
+	}
+	s.recordMessage(ctx, channel, recipient, "image")
+	return nil
 }
 
 func (s *ConversationService) sendInteractive(ctx context.Context, channel string, message ports.InteractiveMessage) error {
@@ -403,7 +420,11 @@ func (s *ConversationService) sendInteractive(ctx context.Context, channel strin
 	if err != nil {
 		return err
 	}
-	return messenger.SendInteractive(ctx, message)
+	if err := messenger.SendInteractive(ctx, message); err != nil {
+		return err
+	}
+	s.recordMessage(ctx, channel, message.To, "interactive")
+	return nil
 }
 
 func (s *ConversationService) sendCheckout(ctx context.Context, channel, recipient, body, url string) error {
@@ -411,7 +432,25 @@ func (s *ConversationService) sendCheckout(ctx context.Context, channel, recipie
 	if err != nil {
 		return err
 	}
-	return messenger.SendCheckout(ctx, recipient, body, url)
+	if err := messenger.SendCheckout(ctx, recipient, body, url); err != nil {
+		return err
+	}
+	s.recordMessage(ctx, channel, recipient, "checkout")
+	return nil
+}
+
+// sendLink sends the single message-1 link of a web flow (custom button
+// label) and records it against the messaging cost meter.
+func (s *ConversationService) sendLink(ctx context.Context, channel, recipient, body, url, label string) error {
+	messenger, err := s.messengerFor(channel)
+	if err != nil {
+		return err
+	}
+	if err := messenger.SendLink(ctx, recipient, body, url, label); err != nil {
+		return err
+	}
+	s.recordMessage(ctx, channel, recipient, "link")
+	return nil
 }
 
 func (s *ConversationService) messengerFor(channel string) (ports.Messenger, error) {

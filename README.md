@@ -238,6 +238,24 @@ Configure the rclone remote once (`rclone --config /etc/xego-backup/rclone.conf 
 
 The service validates `X-Hub-Signature-256` against the unmodified request body.
 
+### Web flows & WhatsApp messaging cost (2 messages per transaction)
+
+Every transaction started from WhatsApp runs in the **two-message model** (migration `060_web_flows.sql`): the chat sends one link message (a CTA URL button to `/w/<token>`), the customer completes the flow in the browser on a signed capability-token page, and the chat receives one confirmation message with the receipt and a `wa.me` return link. Multi-step detail — merchant/service/event pickers, invoice line items, thrift setup, data plans, KYC identity fields, payment-method review — happens on the web page, never in paid chat messages.
+
+- **Flows converted to the browser:** merchant payment, invoice generation and invoice payment, thrift create/join/contribute, mobile data, individual pay, wallet top-up, onboarding, individual (KYC) upgrade, merchant registration, and KYB upgrade requests. The chat FSM is unchanged underneath (`WEB_FLOWS_ENABLED` plus per-flow `WEB_FLOWS_DISABLED_FLOWS`, e.g. `pay,topup`). Telegram and SMS always keep the chat flow; rollback is a flag flip.
+- **Capability tokens, no login.** Each `/w/<token>` flow is minted only in response to a user-initiated chat message; the token is an opaque, expiring capability bound to the user (like checkout tokens), so no separate web login exists. Money paths reuse the same `PaymentService`/`Store` calls the chat flow uses — the browser never creates a new ledger or payment path. Wallet payments confirm inline on the page; card/bank-transfer payments redirect to the existing hosted checkout, and gateway verification completes the flow and sends the confirmation (guarded, so the return page and the webhook can never double-send).
+- **Message cost meter.** Every outbound customer message is recorded in `message_log` with a flow tag, and the admin console (`/admin/messaging` → *Messaging*) shows per-flow message counts, transactions, the **average messages per transaction**, and the estimated Meta cost priced with configurable naira-per-message rates:
+
+```env
+WEB_FLOWS_ENABLED=true
+WEB_FLOWS_DISABLED_FLOWS=        # comma list, e.g. topup,pay
+MESSAGE_LOG_ENABLED=true
+MESSAGE_COST_SERVICE_NGN=14      # Nigeria estimate @ $0.0101/msg, Oct 2026 rate card
+MESSAGE_COST_MARKETING_NGN=84    # Nigeria estimate @ $0.0620/msg
+```
+
+Meta's USD rate card is the source of truth; the naira figures are display estimates only and stay configurable rather than hard-coded.
+
 ### Telegram Bot API
 
 - Create a bot with BotFather and set `TELEGRAM_ENABLED=true`.

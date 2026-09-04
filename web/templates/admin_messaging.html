@@ -1,0 +1,31 @@
+{{define "admin_messaging.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Operations</p><h1>WhatsApp messaging cost</h1>
+<p>Outbound customer messages since {{.Summary.Since.Format "02 Jan 2006 15:04"}}, priced with the configurable Meta Nigeria estimates (service ₦{{.Summary.MessageCostService}}/message). The 2-message-per-transaction model moves flow details to the browser: one link message in, one confirmation out.</p></div></header>
+<section class="metrics">
+  <article><span>Messages</span><strong>{{.Summary.TotalMessages}}</strong></article>
+  <article><span>Service messages</span><strong>{{.Summary.ServiceMessages}}</strong></article>
+  <article><span>Est. cost</span><strong>₦{{.Summary.EstimatedCostNGN}}</strong></article>
+  <article><span>Est. USD</span><strong>${{.Summary.EstimatedCostUSDC}}¢</strong></article>
+  <article><span>Web transactions</span><strong>{{.Summary.TotalTransactions}}</strong></article>
+  <article><span>Avg per transaction</span><strong>{{printf "%.2f" .Summary.AveragePerTxn}}</strong></article>
+</section>
+<section class="panel">
+  <div class="table-wrap"><table><thead><tr><th>Flow</th><th>Channel</th><th>Messages</th><th>Transactions</th><th>Avg / txn</th><th>Est. cost</th></tr></thead><tbody>
+  {{range .Summary.PerFlow}}
+    <tr>
+      <td><strong>{{.Flow}}</strong></td><td>{{.Channel}}</td><td>{{.Messages}}</td>
+      <td>{{.Transactions}}</td><td>{{printf "%.2f" .AveragePerTxn}}</td><td>₦{{.EstimatedCostNGN}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="muted">No outbound messages recorded yet in this window.</td></tr>
+  {{end}}
+  </tbody></table></div>
+  <p class="muted">Meta's USD rate card is the source of truth; these figures use MESSAGE_COST_SERVICE_NGN / MESSAGE_COST_MARKETING_NGN config estimates and are guidance only.</p>
+</section>
+</main></body></html>
+{{end}}

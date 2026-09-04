@@ -15,16 +15,16 @@ import (
 // executes with the shared function map.
 func TestTemplatesParse(t *testing.T) {
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"money":       func(k int64) string { return "NGN" },
-		"maskPII":     func(s string) string { return s },
-		"statusClass": func(any) string { return "" },
-		"percent":     func(float64) string { return "" },
-		"sub":         func(a, b int64) int64 { return a - b },
-		"add":         func(a, b int64) int64 { return a + b },
-		"inc":         func(i int) int { return i + 1 },
-		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"money":             func(k int64) string { return "NGN" },
+		"maskPII":           func(s string) string { return s },
+		"statusClass":       func(any) string { return "" },
+		"percent":           func(float64) string { return "" },
+		"sub":               func(a, b int64) int64 { return a - b },
+		"add":               func(a, b int64) int64 { return a + b },
+		"inc":               func(i int) int { return i + 1 },
+		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
-		"date":        func(any) string { return "" },
+		"date":              func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/*.html")
 	if err != nil {
 		t.Fatalf("parse templates: %v", err)
@@ -115,5 +115,45 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_chat_guard.html", execGuard); err != nil {
 		t.Fatalf("execute admin_chat_guard.html: %v", err)
+	}
+
+	buf.Reset()
+	execMsg := map[string]any{
+		"AppName":   "Xego",
+		"Title":     "Messaging cost",
+		"CSRF":      "x",
+		"AdminRole": "admin",
+		"Summary": store.MessageLogSummary{
+			Since: time.Now(), TotalMessages: 10, ServiceMessages: 10,
+			EstimatedCostNGN: 140, EstimatedCostUSDC: 10, TotalTransactions: 5,
+			AveragePerTxn: 2, MessageCostService: 14,
+			PerFlow: []store.MessageFlowStat{{Flow: "pay", Channel: "whatsapp", Messages: 4, Transactions: 2, AveragePerTxn: 2, EstimatedCostNGN: 56}},
+		},
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_messaging.html", execMsg); err != nil {
+		t.Fatalf("execute admin_messaging.html: %v", err)
+	}
+
+	buf.Reset()
+	flowPage := webFlowPage{
+		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",
+		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",
+		Review: []webFlowLine{{Term: "Merchant", Desc: "Ade's Kitchen"}},
+		Error:  "Choose a payment method.",
+		Fields: []webFlowField{
+			{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: []webFlowOption{{Value: "interswitch", Label: "Card checkout"}, {Value: "bank_transfer", Label: "Bank transfer"}}},
+			{Name: "note", Label: "Note", Type: "textarea"},
+			{Name: "merchant_slug", Label: "Merchant", Type: "select", Options: []webFlowOption{{Value: "ade-kitchen", Label: "Ade's Kitchen"}}},
+			{Name: "amount_kobo", Label: "Amount", Type: "amount"},
+			{Name: "due_date", Label: "Due", Type: "date"},
+			{Name: "ok", Label: "Hidden", Type: "hidden"},
+		},
+		Actions: []webFlowAction{{Kind: "submit", Name: "pay", Label: "Pay now"}},
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", flowPage); err != nil {
+		t.Fatalf("execute webflow.html: %v", err)
+	}
+	if !strings.Contains(buf.String(), "name=\"method\"") {
+		t.Fatal("webflow.html must render grouped radio inputs with the field name")
 	}
 }

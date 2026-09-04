@@ -40,6 +40,9 @@ func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Payment is still being verified. Return to WhatsApp or refresh your receipt shortly.", http.StatusAccepted)
 		return
 	}
+	// A payment started from a browser web flow gets its WhatsApp confirmation
+	// (message 2) here; the guarded flow claim prevents double sends.
+	a.maybeCompleteWebFlowForPayment(r.Context(), payment)
 	http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
 }
 

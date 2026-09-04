@@ -148,6 +148,13 @@ func friendlyAllowanceErr(err error) error {
 	return err
 }
 
+// AllowanceMessage converts a kyc.LimitError into customer-facing copy and
+// reports whether the error was an allowance rejection at all. Exported for
+// web flow handlers so browser forms show the same copy as chat.
+func AllowanceMessage(err error) (string, bool) {
+	return allowanceRejectionMessage(err)
+}
+
 // allowanceRejectionMessage converts a kyc.LimitError into customer-facing copy
 // and reports whether the error was an allowance rejection at all.
 func allowanceRejectionMessage(err error) (string, bool) {

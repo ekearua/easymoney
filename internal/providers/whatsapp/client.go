@@ -185,6 +185,14 @@ func (c *Client) SendText(ctx context.Context, to, body string) error {
 
 // SendCheckout sends a call-to-action URL message for hosted payment.
 func (c *Client) SendCheckout(ctx context.Context, to, body, url string) error {
+	return c.SendLink(ctx, to, body, url, "Pay securely")
+}
+
+// SendLink sends a call-to-action URL message with a custom button label.
+// Web flows use it for the single link message that moves a flow to the
+// browser, so the button reads like the action itself ("Open in browser",
+// "Complete profile", ...).
+func (c *Client) SendLink(ctx context.Context, to, body, url, label string) error {
 	return c.send(ctx, map[string]any{
 		"messaging_product": "whatsapp",
 		"recipient_type":    "individual",
@@ -195,7 +203,7 @@ func (c *Client) SendCheckout(ctx context.Context, to, body, url string) error {
 			"body": map[string]any{"text": body},
 			"action": map[string]any{
 				"name":       "cta_url",
-				"parameters": map[string]any{"display_text": "Pay securely", "url": url},
+				"parameters": map[string]any{"display_text": label, "url": url},
 			},
 		},
 	})

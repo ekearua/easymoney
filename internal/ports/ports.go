@@ -84,6 +84,9 @@ type Messenger interface {
 	SendText(context.Context, string, string) error
 	SendInteractive(context.Context, InteractiveMessage) error
 	SendCheckout(context.Context, string, string, string) error
+	// SendLink sends a call-to-action URL message with a custom button label.
+	// Web flows use it for the single link message that starts a browser flow.
+	SendLink(context.Context, string, string, string, string) error
 	SendTemplate(context.Context, string, string, []string) error
 	SendImage(ctx context.Context, to string, imageData []byte, caption string) error
 }
