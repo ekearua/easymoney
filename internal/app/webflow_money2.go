@@ -471,6 +471,11 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(false)}}
 		page.Actions = []webFlowAction{{Name: "pay", Label: "Send " + domain.FormatNGN(amount+collectionFee.FeeKobo)}}
 		return page, nil
+	case "checkout", "done":
+		page.Title = "Checkout started"
+		page.Intro = "Complete the payment on the secure page. Xego disburses to the recipient only after the payment is verified."
+		page.Done = true
+		return page, nil
 	}
 	return page, fmt.Errorf("unknown individual_pay step %q", flow.Step)
 }

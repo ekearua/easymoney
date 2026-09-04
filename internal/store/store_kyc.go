@@ -142,6 +142,16 @@ func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, l
 	return profile, nil
 }
 
+// HealIndividualAccountLevel repairs the denormalized account label for a
+// user whose KYC ladder already vouches L2+. Tier paths outside
+// UpsertIndividualProfile (e.g. admin advancement) can leave account_level
+// behind, which gates P2P and thrift even though the profile page reports
+// "already verified". Idempotent: only a mismatched label is touched.
+func (s *Store) HealIndividualAccountLevel(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE users SET account_level='individual',updated_at=now() WHERE id=$1 AND account_level<>'individual'`, userID)
+	return err
+}
+
 // IndividualProfileByUser resolves the profile used to gate thrift creation.
 func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (IndividualProfile, error) {
 	var profile IndividualProfile

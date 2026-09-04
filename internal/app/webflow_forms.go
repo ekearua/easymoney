@@ -598,8 +598,17 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 	tier, _ := a.wfKYCProfileTier(r, user)
 	if kyc.Order(tier) >= kyc.Order(kyc.TierL2) && flow.Step == "" {
 		page.Title = "Already verified"
-		page.Intro = "Your Xego individual profile is already approved at level " + tier + "."
 		page.Done = true
+		page.DoneTitle = "Already verified"
+		if user.AccountLevel == "individual" {
+			page.DoneBody = "Your Xego individual profile is already approved at level " + tier + ". Return to WhatsApp and send MENU to continue."
+		} else {
+			// Tier vouches L2+ but the account label gates P2P/thrift: offer
+			// a one-tap repair instead of a dead end.
+			page.Done = false
+			page.Intro = "Your profile is already approved at level " + tier + ", but your account label was left behind and still blocks sending money. Tap below to fix it."
+			page.Actions = []webFlowAction{{Name: "heal_account", Label: "Fix my account"}}
+		}
 		return page, nil
 	}
 	switch flow.Step {
@@ -675,6 +684,23 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "email":
+		if action == "heal_account" {
+			// One-tap repair for L2+ users whose account label was left
+			// behind: re-check the ladder, then align the label. The tier
+			// already vouches identity, so this only heals the gate.
+			tierNow, _ := a.wfKYCProfileTier(r, user)
+			if kyc.Order(tierNow) < kyc.Order(kyc.TierL2) {
+				return a.wfPageWithError(flow, page, "Your profile is no longer at Level 2. Complete verification below."), nil
+			}
+			if err := a.store.HealIndividualAccountLevel(r.Context(), user.ID); err != nil {
+				return a.wfPageWithError(flow, page, "Could not fix your account. Please try again or contact support."), nil
+			}
+			done := a.wfPage(flow)
+			done.Done = true
+			done.DoneTitle = "Account fixed"
+			done.DoneBody = "Your account is now marked as an approved individual. Return to WhatsApp, send MENU, and retry Send money."
+			return &done, nil
+		}
 		address, ok := validWebEmail(r.FormValue("email"))
 		if !ok {
 			return a.wfPageWithError(flow, page, "That email doesn't look valid."), nil
