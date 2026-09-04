@@ -23,6 +23,7 @@ package interswitch
 // when no credentials are configured, so the harness itself can be verified.
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +33,62 @@ import (
 	"testing"
 	"time"
 )
+
+// TestSandboxRequerySmoke drives the server-side requery (gettransaction.json)
+// against the sandbox with the configured INTERSWITCH_CLIENT_ID/SECRET and
+// asserts the InterswitchAuth signature is accepted. It requeries a reference
+// that cannot exist, so a healthy integration gets Interswitch's
+// transaction-not-found JSON back — never an auth/401 rejection. The
+// requery is the call that actually confirms a payment server-side, so a
+// broken signature here means every checkout would render yet never confirm.
+//
+//	INTERSWITCH_SANDBOX_SMOKE=1 \
+//	INTERSWITCH_CLIENT_ID=... INTERSWITCH_CLIENT_SECRET=... \
+//	INTERSWITCH_MERCHANT_CODE=MX... \
+//	go test ./internal/providers/interswitch/ -run TestSandboxRequerySmoke -v
+func TestSandboxRequerySmoke(t *testing.T) {
+	if os.Getenv("INTERSWITCH_SANDBOX_SMOKE") != "1" {
+		t.Skip("set INTERSWITCH_SANDBOX_SMOKE=1 to requery the Interswitch sandbox")
+	}
+	clientID := strings.TrimSpace(os.Getenv("INTERSWITCH_CLIENT_ID"))
+	clientSecret := strings.TrimSpace(os.Getenv("INTERSWITCH_CLIENT_SECRET"))
+	merchantCode := strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE"))
+	if clientID == "" || clientSecret == "" || merchantCode == "" {
+		t.Skip("set INTERSWITCH_CLIENT_ID, INTERSWITCH_CLIENT_SECRET, and INTERSWITCH_MERCHANT_CODE to requery the sandbox")
+	}
+	mode := strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE")))
+	if mode == "" {
+		mode = "TEST"
+	}
+	if mode != "TEST" {
+		t.Skipf("smoke is for the sandbox; INTERSWITCH_CHECKOUT_MODE=%s refuses to run", mode)
+	}
+	baseURL := strings.TrimRight(os.Getenv("INTERSWITCH_BASE_URL"), "/")
+	if baseURL == "" {
+		baseURL = "https://sandbox.interswitchng.com"
+	}
+
+	client := New(Options{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		MerchantCode: merchantCode,
+		BaseURL:      baseURL,
+		Mode:         mode,
+	})
+	// This reference is generated fresh and never initialized, so Interswitch
+	// must answer transaction-not-found rather than a duplicate/approval.
+	reference := fmt.Sprintf("wpd_smoke_missing_%d", time.Now().UnixNano())
+	verification, err := client.Verify(context.Background(), reference)
+	if err != nil {
+		t.Fatalf("requery rejected: %v (check INTERSWITCH_CLIENT_ID/SECRET and the InterswitchAuth signature)", err)
+	}
+	// A missing transaction returns a non-empty JSON verdict; only a wrong
+	// signature or a dead credential pair surfaces as an error above.
+	if verification.Status == "" {
+		t.Fatalf("requery returned an empty verdict for reference %s", reference)
+	}
+	t.Logf("PASS: requery accepted the InterswitchAuth signature (ref %s… → status %q)", shortRef(reference), verification.Status)
+}
 
 func TestSandboxCheckoutPageSmoke(t *testing.T) {
 	if os.Getenv("INTERSWITCH_SANDBOX_SMOKE") != "1" {
