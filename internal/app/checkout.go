@@ -110,6 +110,12 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 		payment.AmountKobo,
 		a.cfg.BaseURL+"/payments/return",
 	)
+	// The global CSP only allows form posts to 'self', which would block the
+	// browser from posting this form to the Interswitch gateway. Scope this
+	// page's policy to also allow the configured gateway origin.
+	if gatewayURL, err := url.Parse(page.Action); err == nil && gatewayURL.Scheme != "" && gatewayURL.Host != "" {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: blob:; form-action 'self' "+gatewayURL.Scheme+"://"+gatewayURL.Host)
+	}
 	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
 	}, http.StatusOK)
