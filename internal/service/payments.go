@@ -532,6 +532,7 @@ func paymentHookBackoff(attempts int) time.Time {
 type individualPayMeta struct {
 	RecipientPhone string `json:"recipient_phone"`
 	BankCode       string `json:"bank_code"`
+	BankName       string `json:"bank_name"`
 	AccountNumber  string `json:"account_number"`
 	AmountKobo     int64  `json:"amount_kobo"`
 	CollectionFee  int64  `json:"collection_fee_kobo"`
@@ -594,7 +595,7 @@ func (s *PaymentService) applyIndividualPaySettlement(ctx context.Context, payme
 	if err != nil {
 		return err
 	}
-	dest, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, meta.BankCode, "", meta.AccountNumber, "")
+	dest, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, meta.BankCode, meta.BankName, meta.AccountNumber, "")
 	if err != nil {
 		return err
 	}

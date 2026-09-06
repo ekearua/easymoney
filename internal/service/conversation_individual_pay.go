@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode"
 
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -59,21 +61,132 @@ func (s *ConversationService) handlePayIndividualAmount(ctx context.Context, cha
 		return err
 	}
 	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Amount: %s\n\nEnter the recipient's bank code (e.g. 044 for Access, 058 for GTBank, 011 for First Bank):", domain.FormatNGN(amountKobo)))
+		fmt.Sprintf("Amount: %s\n\nEnter the recipient's bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044):", domain.FormatNGN(amountKobo)))
 }
 
 func (s *ConversationService) handlePayIndividualBankCode(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	code := strings.TrimSpace(input)
-	if len(code) < 3 || len(code) > 10 {
-		return s.sendText(ctx, channel, recipient, "Bank code should be 3-10 characters. Try again.")
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "paybank_page:") {
+		page := parsePickerPage(strings.TrimPrefix(input, "paybank_page:"))
+		return s.sendPayBankNamePicker(ctx, channel, recipient, session.Data["bank_query"], page)
 	}
-	session.Data["bank_code"] = code
+	if strings.HasPrefix(input, "bk:") {
+		return s.selectPayIndividualBank(ctx, channel, recipient, user, session, strings.TrimPrefix(input, "bk:"))
+	}
+	if input == "" {
+		return s.sendText(ctx, channel, recipient, "Enter the recipient's bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044):")
+	}
+	resolution, err := ResolveBank(ctx, s.store, input)
+	if errors.Is(err, ErrBankAmbiguous) {
+		session.Data["bank_query"] = input
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendPayBankNamePicker(ctx, channel, recipient, input, 0)
+	}
+	if errors.Is(err, ErrBankNotFound) {
+		return s.sendText(ctx, channel, recipient,
+			"I couldn't find that bank. Type the full bank name (e.g. Guaranty Trust Bank) or a bank code (e.g. 044), or send *menu* to cancel.")
+	}
+	if err != nil {
+		return err
+	}
+	session.Data["bank_code"] = resolution.Code
+	session.Data["bank_name"] = resolution.Name
 	session.State = "pay_individual_account"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendText(ctx, channel, recipient,
-		"Enter the recipient's 10-digit bank account number:")
+		fmt.Sprintf("Bank: %s (%s)\n\nEnter the recipient's 10-digit bank account number:", resolution.Name, resolution.Code))
+}
+
+// handlePayIndividualBankPick handles the reply to the bank-name picker shown
+// when ResolveBank could not narrow the input to a single bank.
+func (s *ConversationService) handlePayIndividualBankPick(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "bk:") {
+		return s.selectPayIndividualBank(ctx, channel, recipient, user, session, strings.TrimPrefix(input, "bk:"))
+	}
+	if strings.HasPrefix(input, "paybank_page:") {
+		page := parsePickerPage(strings.TrimPrefix(input, "paybank_page:"))
+		return s.sendPayBankNamePicker(ctx, channel, recipient, session.Data["bank_query"], page)
+	}
+	if input == "bank_choose_other" {
+		session.Data["bank_query"] = ""
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendPayBankNamePicker(ctx, channel, recipient, "", 0)
+	}
+	if input == "" {
+		return s.sendText(ctx, channel, recipient, "Choose a bank from the list, or type the bank name to search again (or send *menu* to cancel).")
+	}
+	return s.handlePayIndividualBankCode(ctx, channel, recipient, user, session, input)
+}
+
+// selectPayIndividualBank persists a picked directory entry and moves to the
+// account-number step.
+func (s *ConversationService) selectPayIndividualBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, code string) error {
+	bank, err := s.store.BankByCode(ctx, code)
+	if errors.Is(err, store.ErrBankNotFound) {
+		return s.sendText(ctx, channel, recipient, "That bank is no longer available. Choose again from the list.")
+	}
+	if err != nil {
+		return err
+	}
+	session.Data["bank_code"] = bank.Code
+	session.Data["bank_name"] = bank.Name
+	session.State = "pay_individual_account"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient,
+		fmt.Sprintf("Bank: %s (%s)\n\nEnter the recipient's 10-digit bank account number:", bank.Name, bank.Code))
+}
+
+// sendPayBankNamePicker renders the bank directory as an interactive list,
+// paged like the other chat pickers. Row IDs use the bank code ("bk:044").
+func (s *ConversationService) sendPayBankNamePicker(ctx context.Context, channel, recipient, query string, page int) error {
+	page = normalizePickerPage(page)
+	query = strings.TrimSpace(query)
+	banks, err := s.store.SearchBanks(ctx, query, 100)
+	if err != nil {
+		return err
+	}
+	if len(banks) == 0 {
+		if query == "" {
+			return s.sendText(ctx, channel, recipient, "Please type the recipient's bank name (e.g. Access, GTBank, Zenith) or code (e.g. 044).")
+		}
+		return s.sendText(ctx, channel, recipient, "I couldn't find that bank. Try the full bank name (e.g. Guaranty Trust Bank), or send *menu* to cancel.")
+	}
+	start := page * pickerPageSize
+	if start >= len(banks) {
+		start = 0
+	}
+	end := start + pickerPageSize
+	if end > len(banks) {
+		end = len(banks)
+	}
+	rows := make([]ports.InteractiveRow, 0, end-start+2)
+	for _, bank := range banks[start:end] {
+		rows = append(rows, ports.InteractiveRow{
+			ID:          "bk:" + bank.Code,
+			Title:       bank.Name,
+			Description: "Bank code " + bank.Code,
+		})
+	}
+	rows = appendPickerNavigation(rows, "paybank_page:", page, end < len(banks))
+	body := "Choose the recipient's bank, or type another bank name to search again."
+	if query != "" {
+		body = fmt.Sprintf("Bank search results for %q.\n\nChoose one or type another bank name to search again.", query)
+	}
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To:          recipient,
+		Body:        body,
+		ButtonLabel: "Choose bank",
+		Sections:    []ports.InteractiveSection{{Title: "Banks", Rows: rows}},
+	})
 }
 
 func (s *ConversationService) handlePayIndividualAccount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -92,11 +205,11 @@ func (s *ConversationService) handlePayIndividualAccount(ctx context.Context, ch
 	nipFee := XegoPayoutFee(s.cfg, amountKobo)
 	totalPay := amountKobo + collectionFee.FeeKobo
 	recipientGets := amountKobo - nipFee
-	bankCode := session.Data["bank_code"]
+	bankLabel := sessionBankLabel(session.Data)
 
 	return s.sendText(ctx, channel, recipient,
 		fmt.Sprintf("*Review your transfer*\n\nRecipient phone: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nSend *1* to confirm or *cancel* to abort.",
-			session.Data["recipient_phone"], bankCode, account,
+			session.Data["recipient_phone"], bankLabel, account,
 			domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee.FeeKobo),
 			domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets)))
 }
@@ -150,6 +263,7 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 
 	recipientPhone := session.Data["recipient_phone"]
 	bankCode := session.Data["bank_code"]
+	bankName := session.Data["bank_name"]
 	accountNumber := session.Data["account_number"]
 
 	// Resolve or create the recipient user and save their bank details up
@@ -160,7 +274,7 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not resolve recipient: %s. Send *menu* to try again.", err))
 	}
-	if _, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, bankCode, "", accountNumber, ""); err != nil {
+	if _, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, bankCode, bankName, accountNumber, ""); err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session,
 			fmt.Sprintf("Could not save recipient details: %s. Send *menu* to try again.", err))
 	}
@@ -175,6 +289,7 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 		"individual_pay": map[string]any{
 			"recipient_phone":     recipientPhone,
 			"bank_code":           bankCode,
+			"bank_name":           bankName,
 			"account_number":      accountNumber,
 			"amount_kobo":         amountKobo,
 			"collection_fee_kobo": collectionFee.FeeKobo,
@@ -185,16 +300,30 @@ func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context,
 	if err != nil {
 		return friendlyAllowanceErr(err)
 	}
+	bankLabel := sessionBankLabel(session.Data)
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
 	return s.sendCheckout(ctx, channel, recipient,
 		fmt.Sprintf("Your secure checkout is ready.\n\nRecipient: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nXego verifies the payment with Interswitch before disbursing to the recipient's account.",
-			recipientPhone, bankCode, accountNumber,
+			recipientPhone, bankLabel, accountNumber,
 			domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee.FeeKobo),
 			domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets)),
 		s.payments.HostedCheckoutURL(payment))
+}
+
+// sessionBankLabel renders the bank part of a review line, preferring the
+// resolved bank name with its code in parentheses.
+func sessionBankLabel(data map[string]string) string {
+	code := data["bank_code"]
+	if name := data["bank_name"]; name != "" && code != "" {
+		return name + " (" + code + ")"
+	}
+	if code != "" {
+		return code
+	}
+	return "unknown"
 }
 
 // parseAmountKobo safely converts a kobo string to int64.

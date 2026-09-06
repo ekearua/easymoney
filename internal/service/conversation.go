@@ -327,6 +327,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handlePayIndividualAmount(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_bank_code":
 		return s.handlePayIndividualBankCode(ctx, message.Channel, recipient, user, session, input)
+	case "pay_individual_bank_pick":
+		return s.handlePayIndividualBankPick(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_account":
 		return s.handlePayIndividualAccount(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_confirm":

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -445,8 +446,24 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 		return page, nil
 	case "bank":
 		page.Title = "Recipient's bank"
-		page.Intro = "Enter the recipient's bank code, e.g. 044 for Access, 058 for GTBank, 011 for First Bank."
-		page.Fields = []webFlowField{{Name: "bank_code", Label: "Bank code", Type: "text", Required: true}}
+		page.Intro = "Type the recipient's bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044)."
+		page.Fields = []webFlowField{{Name: "bank_code", Label: "Bank name or code", Type: "text", Required: true, Hint: "e.g. GTBank or 058"}}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
+		return page, nil
+	case "bank_pick":
+		query := flow.Payload["bank_query"]
+		opts, err := a.wfBankOptions(r, query)
+		if err != nil {
+			return page, err
+		}
+		page.Title = "Recipient's bank"
+		if len(opts) == 0 {
+			page.Intro = "No banks matched that search. Go back and type the bank name again."
+			page.Actions = []webFlowAction{{Name: "back", Label: "Back"}}
+			return page, nil
+		}
+		page.Intro = "That name matched several banks. Choose the one you mean."
+		page.Fields = []webFlowField{{Name: "bank_pick", Label: "Bank", Type: "select", Required: true, Options: opts}}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "account":
@@ -462,7 +479,7 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 		page.Title = "Review your transfer"
 		page.Review = []webFlowLine{
 			{Term: "Recipient", Desc: flow.Payload["recipient_phone"]},
-			{Term: "Bank", Desc: flow.Payload["bank_code"] + " · " + flow.Payload["account_number"]},
+			{Term: "Bank", Desc: wfBankLabel(flow.Payload) + " · " + flow.Payload["account_number"]},
 			{Term: "Amount", Desc: domain.FormatNGN(amount)},
 			{Term: "Collection fee", Desc: domain.FormatNGN(collectionFee.FeeKobo)},
 			{Term: "Total you pay", Desc: domain.FormatNGN(amount + collectionFee.FeeKobo)},
@@ -506,12 +523,39 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		a.wfAdvance(w, r, flow, "bank", payload)
 		return nil, nil
 	case "bank":
-		code := strings.TrimSpace(r.FormValue("bank_code"))
-		if len(code) < 3 || len(code) > 10 {
-			return a.wfPageWithError(flow, page, "Bank code should be 3-10 characters."), nil
+		raw := strings.TrimSpace(r.FormValue("bank_code"))
+		resolution, err := service.ResolveBank(r.Context(), a.store, raw)
+		if errors.Is(err, service.ErrBankAmbiguous) {
+			payload := clonePayload(flow.Payload)
+			payload["bank_query"] = raw
+			a.wfAdvance(w, r, flow, "bank_pick", payload)
+			return nil, nil
+		}
+		if errors.Is(err, service.ErrBankNotFound) {
+			return a.wfPageWithError(flow, page, "We couldn't find that bank. Type the bank name (e.g. Access, GTBank, Zenith) or code (e.g. 044)."), nil
+		}
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not resolve the bank. Try again."), nil
 		}
 		payload := clonePayload(flow.Payload)
-		payload["bank_code"] = code
+		payload["bank_code"] = resolution.Code
+		payload["bank_name"] = resolution.Name
+		delete(payload, "bank_query")
+		a.wfAdvance(w, r, flow, "account", payload)
+		return nil, nil
+	case "bank_pick":
+		code := strings.TrimSpace(r.FormValue("bank_pick"))
+		bank, err := a.store.BankByCode(r.Context(), code)
+		if errors.Is(err, store.ErrBankNotFound) {
+			return a.wfPageWithError(flow, page, "That bank is no longer available. Go back and choose again."), nil
+		}
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not resolve the bank. Try again."), nil
+		}
+		payload := clonePayload(flow.Payload)
+		payload["bank_code"] = bank.Code
+		payload["bank_name"] = bank.Name
+		delete(payload, "bank_query")
 		a.wfAdvance(w, r, flow, "account", payload)
 		return nil, nil
 	case "account":
@@ -538,6 +582,7 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		recipientGets := amount - nipFee
 		recipientPhone := flow.Payload["recipient_phone"]
 		bankCode := flow.Payload["bank_code"]
+		bankName := flow.Payload["bank_name"]
 		accountNumber := flow.Payload["account_number"]
 		// Resolve the recipient user + destination so the post-success hook
 		// can settle without any session state, exactly like the chat flow.
@@ -545,12 +590,12 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not resolve the recipient. Please go back and try again."), nil
 		}
-		if _, err := a.store.GetOrCreateUserPayoutDestination(r.Context(), recipientUser.ID, bankCode, "", accountNumber, ""); err != nil {
+		if _, err := a.store.GetOrCreateUserPayoutDestination(r.Context(), recipientUser.ID, bankCode, bankName, accountNumber, ""); err != nil {
 			return a.wfPageWithError(flow, page, "Could not save the recipient's bank details."), nil
 		}
 		payment, err := a.payments.CreateIndividualPayDraft(r.Context(), user, flow.Channel, user.WhatsAppNumber, totalPay, map[string]any{
 			"individual_pay": map[string]any{
-				"recipient_phone": recipientPhone, "bank_code": bankCode, "account_number": accountNumber,
+				"recipient_phone": recipientPhone, "bank_code": bankCode, "bank_name": bankName, "account_number": accountNumber,
 				"amount_kobo": amount, "collection_fee_kobo": collectionFee.FeeKobo,
 				"nip_fee_kobo": nipFee, "recipient_gets": recipientGets,
 			},
@@ -564,6 +609,33 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
+}
+
+// wfBankOptions renders the bank directory as web-flow select options from a
+// search query, for the ambiguous-name picker step.
+func (a *App) wfBankOptions(r *http.Request, query string) ([]webFlowOption, error) {
+	banks, err := a.store.SearchBanks(r.Context(), query, 15)
+	if err != nil {
+		return nil, err
+	}
+	opts := make([]webFlowOption, 0, len(banks))
+	for _, bank := range banks {
+		code := bank.Code
+		opts = append(opts, webFlowOption{Value: code, Label: bank.Name + " (" + code + ")"})
+	}
+	return opts, nil
+}
+
+// wfBankLabel renders the bank part of a review line, preferring the resolved
+// name with its code in parentheses.
+func wfBankLabel(payload map[string]string) string {
+	if name := payload["bank_name"]; name != "" {
+		if code := payload["bank_code"]; code != "" {
+			return name + " (" + code + ")"
+		}
+		return name
+	}
+	return payload["bank_code"]
 }
 
 // wfActiveContributionOptions lists the user's thrift groups that have an
