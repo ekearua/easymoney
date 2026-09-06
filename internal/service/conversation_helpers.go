@@ -492,6 +492,7 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 			Buttons: []ports.InteractiveButton{
 				{ID: "method_card", Title: "Card checkout"},
 				{ID: "method_bank_transfer", Title: "Bank transfer"},
+				{ID: "method_wallet", Title: "Pay from wallet"},
 				{ID: "cancel_payment", Title: "Cancel"},
 			},
 		})
@@ -508,7 +509,7 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		}
 		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 	case "pay_individual_method":
-		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer. Send *bank transfer* to proceed.")
+		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer or your wallet. Send *bank transfer* or *wallet* to proceed.")
 	case "await_individual_bank_transfer":
 		return s.sendText(ctx, channel, recipient, "Waiting for your bank transfer confirmation. Send *confirm* when done.")
 	case "await_individual_payment":

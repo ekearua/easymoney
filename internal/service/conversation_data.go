@@ -81,7 +81,8 @@ func (s *ConversationService) handleDataPhone(ctx context.Context, channel, reci
 func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	input = strings.ToLower(input)
 	if input != "method_card" && input != "card" && input != "paystack" && input != "card checkout" &&
-		input != "method_bank_transfer" && input != "bank" && input != "bank transfer" && input != "transfer" {
+		input != "method_bank_transfer" && input != "bank" && input != "bank transfer" && input != "transfer" &&
+		input != "method_wallet" && input != "wallet" && input != "pay from wallet" {
 		return s.sendDataReviewFromSession(ctx, channel, recipient, user, session)
 	}
 	order, err := s.data.CreateOrder(ctx, user, channel, recipient, session.Data["data_plan"], session.Data["data_phone"])
@@ -104,6 +105,15 @@ func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, c
 			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
 				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
 			s.payments.HostedCheckoutURL(payment))
+	case "method_wallet", "wallet", "pay from wallet":
+		payment, order, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderWallet, channel, recipient)
+		if err != nil {
+			return friendlyAllowanceErr(err)
+		}
+		if err := s.beginWalletConfirm(ctx, channel, recipient, user, session, payment); err != nil {
+			return err
+		}
+		return s.sendDataWalletReview(ctx, channel, recipient, user, order)
 	default:
 		payment, _, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -155,6 +165,15 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 			fmt.Sprintf("Your secure checkout is ready.\n\nData: %s %s\nPhone: %s\nAmount: %s\nRequest code: %s\n\nXego will activate the data order after payment is verified.",
 				order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(order.AmountKobo), order.RequestCode),
 			s.payments.HostedCheckoutURL(payment))
+	case "method_wallet", "wallet", "pay from wallet":
+		payment, order, err := s.data.CreatePaymentForOrder(ctx, user, order, ProviderWallet, channel, recipient)
+		if err != nil {
+			return friendlyAllowanceErr(err)
+		}
+		if err := s.beginWalletConfirm(ctx, channel, recipient, user, session, payment); err != nil {
+			return err
+		}
+		return s.sendDataWalletReview(ctx, channel, recipient, user, order)
 	default:
 		return s.sendDataPaymentMethods(ctx, channel, recipient, order)
 	}
@@ -292,6 +311,7 @@ func (s *ConversationService) sendDataReview(ctx context.Context, channel, recip
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
@@ -313,6 +333,23 @@ func (s *ConversationService) sendDataPaymentMethods(ctx context.Context, channe
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
+		},
+	})
+}
+
+// sendDataWalletReview confirms an instant wallet-funded data order. The order
+// charges exactly its amount (no collection surcharge), so the balance line is
+// compared against the order amount rather than a fee-inflated charge.
+func (s *ConversationService) sendDataWalletReview(ctx context.Context, channel, recipient string, user store.User, order store.DataOrderView) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay for your data order from your Xego wallet:\n\nData: %s %s\nPhone: %s\nRequest code: %s\nAmount: %s%s\n\nPay instantly from your Xego wallet?",
+			order.NetworkName, order.PlanName, order.BeneficiaryPhone, order.RequestCode,
+			domain.FormatNGN(order.AmountKobo), s.walletBalanceLine(ctx, user, order.AmountKobo)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Pay from wallet"},
+			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
 }

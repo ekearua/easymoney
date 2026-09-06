@@ -541,15 +541,26 @@ type individualPayMeta struct {
 }
 
 // CreateIndividualPayDraft creates the sender's payment for an individual
-// transfer. The payment is a plain collection against the Xego system
-// merchant, routed through the Interswitch gateway like any other checkout;
-// the recipient payout is settled by the post-success hook.
+// transfer on the bank-transfer rail. The payment is a plain collection
+// against the Xego system merchant, routed through the Interswitch gateway
+// like any other checkout; the recipient payout is settled by the post-success
+// hook.
 func (s *PaymentService) CreateIndividualPayDraft(ctx context.Context, user store.User, channel, recipient string, totalPay int64, meta map[string]any) (store.PaymentView, error) {
+	return s.createIndividualPayDraft(ctx, user, channel, recipient, totalPay, ProviderBankTransfer, meta)
+}
+
+// CreateIndividualPayDraftWithProvider is CreateIndividualPayDraft for an
+// explicitly chosen rail, so a sender can fund the transfer from their wallet.
+func (s *PaymentService) CreateIndividualPayDraftWithProvider(ctx context.Context, user store.User, channel, recipient string, totalPay int64, provider string, meta map[string]any) (store.PaymentView, error) {
+	return s.createIndividualPayDraft(ctx, user, channel, recipient, totalPay, provider, meta)
+}
+
+func (s *PaymentService) createIndividualPayDraft(ctx context.Context, user store.User, channel, recipient string, totalPay int64, provider string, meta map[string]any) (store.PaymentView, error) {
 	merchant, err := s.store.IndividualPaySystemMerchant(ctx)
 	if err != nil {
 		return store.PaymentView{}, err
 	}
-	return s.createDraftCore(ctx, user, merchant, totalPay, ProviderBankTransfer, channel, recipient, meta)
+	return s.createDraftCore(ctx, user, merchant, totalPay, provider, channel, recipient, meta)
 }
 
 // isIndividualPay reports whether the payment is an individual-pay sender

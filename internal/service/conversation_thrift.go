@@ -543,6 +543,7 @@ func (s *ConversationService) startThriftContribution(ctx context.Context, chann
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
@@ -590,9 +591,37 @@ func (s *ConversationService) handleThriftPayMethod(ctx context.Context, channel
 			fmt.Sprintf("Your thrift checkout is ready.\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nXego credits the contribution only after payment is verified.",
 				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
 			s.payments.HostedCheckoutURL(payment))
+	case "method_wallet", "wallet", "pay from wallet":
+		payment, err := s.createPaymentDraft(ctx, user, merchant, contribution.AmountKobo, ProviderWallet, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.LinkThriftContributionPayment(ctx, contribution.ID, payment.ID); err != nil {
+			return err
+		}
+		if err := s.beginWalletConfirm(ctx, channel, recipient, user, session, payment); err != nil {
+			return err
+		}
+		return s.sendThriftWalletReview(ctx, channel, recipient, user, contribution, payment)
 	default:
 		return s.startThriftContribution(ctx, channel, recipient, user, session, session.Data["thrift_name"])
 	}
+}
+
+// sendThriftWalletReview confirms an instant wallet-funded thrift
+// contribution. Contributions charge exactly the contribution amount, so the
+// wallet balance line is compared against that amount.
+func (s *ConversationService) sendThriftWalletReview(ctx context.Context, channel, recipient string, user store.User, contribution store.ThriftContributionView, payment store.PaymentView) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay your thrift contribution from your Xego wallet:\n\nGroup: %s\nCycle: %d\nAmount: %s%s\n\nPay instantly from your Xego wallet?",
+			contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo),
+			s.walletBalanceLine(ctx, user, contribution.AmountKobo)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Pay from wallet"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
 }
 
 func (s *ConversationService) handleThriftPayBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {

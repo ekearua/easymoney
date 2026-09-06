@@ -691,6 +691,33 @@ func (s *ConversationService) sendWalletReview(ctx context.Context, channel, rec
 	})
 }
 
+// beginWalletConfirm records the wallet-funded payment as the session's active
+// confirmation and re-renders the review; the generic confirm_payment handler
+// then debits the wallet inline. Used by flows that already linked the payment
+// to its purpose (data, thrift, invoice, individual pay).
+func (s *ConversationService) beginWalletConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, payment store.PaymentView) error {
+	session.Data["payment_id"] = payment.ID.String()
+	session.State = "confirm_payment"
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return nil
+}
+
+// walletBalanceLine returns the "Wallet balance: N" review line for a charge,
+// warning when the balance does not cover it.
+func (s *ConversationService) walletBalanceLine(ctx context.Context, user store.User, charge int64) string {
+	balance := int64(0)
+	if wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID); err == nil {
+		balance, _ = s.store.WalletBalance(ctx, wallet.ID)
+	}
+	line := fmt.Sprintf("\nWallet balance: %s", domain.FormatNGN(balance))
+	if balance < charge {
+		line += "\nNot enough in your wallet - top up or choose another payment method."
+	}
+	return line
+}
+
 func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
 		payment, err := s.paymentFromSession(ctx, user, session)

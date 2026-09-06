@@ -687,6 +687,7 @@ func (s *ConversationService) handleInvoicePayAmount(ctx context.Context, channe
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
@@ -736,6 +737,18 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 			fmt.Sprintf("Your secure checkout is ready.\n\nInvoice: %s\nMerchant: %s\nAmount: %s\n\nXego will update the invoice only after payment is verified.",
 				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
 			s.payments.HostedCheckoutURL(payment))
+	case "method_wallet", "wallet", "pay from wallet":
+		payment, err := s.createPaymentDraft(ctx, user, merchant, amount, ProviderWallet, channel, recipient)
+		if err != nil {
+			return err
+		}
+		if err := s.store.CreateInvoicePayment(ctx, invoice.ID, payment.ID, user.ID, amount); err != nil {
+			return err
+		}
+		if err := s.beginWalletConfirm(ctx, channel, recipient, user, session, payment); err != nil {
+			return err
+		}
+		return s.sendInvoiceWalletReview(ctx, channel, recipient, user, invoice, amount)
 	default:
 		session.State = "invoice_pay_amount"
 		_ = s.saveSession(ctx, session)
@@ -799,6 +812,22 @@ func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel
 		Buttons: []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
+			{ID: "method_wallet", Title: "Pay from wallet"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
+}
+
+// sendInvoiceWalletReview confirms an instant wallet-funded invoice payment
+// of the given partial/full amount (invoices add no collection surcharge).
+func (s *ConversationService) sendInvoiceWalletReview(ctx context.Context, channel, recipient string, user store.User, invoice store.InvoiceView, amount int64) error {
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("Pay invoice %s from your Xego wallet:\n\nMerchant: %s\nAmount: %s%s\n\nPay instantly from your Xego wallet?",
+			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount),
+			s.walletBalanceLine(ctx, user, amount)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})

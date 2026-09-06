@@ -208,20 +208,22 @@ func (s *ConversationService) handlePayIndividualAccount(ctx context.Context, ch
 	bankLabel := sessionBankLabel(session.Data)
 
 	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("*Review your transfer*\n\nRecipient phone: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nSend *1* to confirm or *cancel* to abort.",
+		fmt.Sprintf("*Review your transfer*\n\nRecipient phone: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nSend *1* to pay by bank transfer, *2* to pay from your wallet, or *cancel* to abort.",
 			session.Data["recipient_phone"], bankLabel, account,
 			domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee.FeeKobo),
 			domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets)))
 }
 
 func (s *ConversationService) handlePayIndividualConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if strings.TrimSpace(input) == "1" {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "1":
 		return s.initPayIndividualBankTransfer(ctx, channel, recipient, user, session)
-	}
-	if strings.EqualFold(strings.TrimSpace(input), "cancel") {
+	case "2", "wallet", "pay from wallet":
+		return s.initPayIndividualWallet(ctx, channel, recipient, user, session)
+	case "cancel":
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "Transfer cancelled. Send *menu* to start over.")
 	}
-	return s.sendText(ctx, channel, recipient, "Send *1* to confirm or *cancel* to abort.")
+	return s.sendText(ctx, channel, recipient, "Send *1* to pay by bank transfer, *2* to pay from your wallet, or *cancel* to abort.")
 }
 
 func (s *ConversationService) handlePayIndividualMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -324,6 +326,73 @@ func sessionBankLabel(data map[string]string) string {
 		return code
 	}
 	return "unknown"
+}
+
+// initPayIndividualWallet is initPayIndividualBankTransfer on the wallet rail:
+// the recipient settlement is identical, but the sender's payment is funded
+// instantly from their wallet instead of the Interswitch checkout (billed
+// under the transfer fee parameters, matching the review shown up front).
+func (s *ConversationService) initPayIndividualWallet(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
+	collectionFee := XegoCollectionFee(s.cfg, "transfer", amountKobo)
+	totalPay := amountKobo + collectionFee.FeeKobo
+	recipientGets := amountKobo - XegoPayoutFee(s.cfg, amountKobo)
+	nipFee := XegoPayoutFee(s.cfg, amountKobo)
+
+	recipientPhone := session.Data["recipient_phone"]
+	bankCode := session.Data["bank_code"]
+	bankName := session.Data["bank_name"]
+	accountNumber := session.Data["account_number"]
+
+	recipientUser, err := s.store.GetOrCreateUser(ctx, recipientPhone)
+	if err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session,
+			fmt.Sprintf("Could not resolve recipient: %s. Send *menu* to try again.", err))
+	}
+	if _, err := s.store.GetOrCreateUserPayoutDestination(ctx, recipientUser.ID, bankCode, bankName, accountNumber, ""); err != nil {
+		return s.resetWithMessage(ctx, channel, recipient, user, session,
+			fmt.Sprintf("Could not save recipient details: %s. Send *menu* to try again.", err))
+	}
+
+	payment, err := s.payments.CreateIndividualPayDraftWithProvider(ctx, user, channel, recipient, totalPay, ProviderWallet, map[string]any{
+		"individual_pay": map[string]any{
+			"recipient_phone":     recipientPhone,
+			"bank_code":           bankCode,
+			"bank_name":           bankName,
+			"account_number":      accountNumber,
+			"amount_kobo":         amountKobo,
+			"collection_fee_kobo": collectionFee.FeeKobo,
+			"nip_fee_kobo":        nipFee,
+			"recipient_gets":      recipientGets,
+		},
+	})
+	if err != nil {
+		return friendlyAllowanceErr(err)
+	}
+	if err := s.beginWalletConfirm(ctx, channel, recipient, user, session, payment); err != nil {
+		return err
+	}
+	return s.sendIndividualPayWalletReview(ctx, channel, recipient, user, session)
+}
+
+// sendIndividualPayWalletReview confirms an instant wallet-funded individual
+// transfer showing the same numbers as the review step that preceded it.
+func (s *ConversationService) sendIndividualPayWalletReview(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
+	collectionFee := XegoCollectionFee(s.cfg, "transfer", amountKobo).FeeKobo
+	totalPay := amountKobo + collectionFee
+	recipientGets := amountKobo - XegoPayoutFee(s.cfg, amountKobo)
+	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+		To: recipient,
+		Body: fmt.Sprintf("*Pay from wallet*\n\nRecipient: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)%s\n\nPay instantly from your Xego wallet?",
+			session.Data["recipient_phone"], sessionBankLabel(session.Data), session.Data["account_number"],
+			domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee), domain.FormatNGN(totalPay),
+			domain.FormatNGN(recipientGets), s.walletBalanceLine(ctx, user, totalPay)),
+		Buttons: []ports.InteractiveButton{
+			{ID: "confirm_payment", Title: "Pay from wallet"},
+			{ID: "cancel_payment", Title: "Cancel"},
+		},
+	})
 }
 
 // parseAmountKobo safely converts a kobo string to int64.
