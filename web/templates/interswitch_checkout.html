@@ -21,5 +21,6 @@
   <noscript><p class="muted">JavaScript is disabled. Use the button above to continue.</p></noscript>
   <script src="/static/interswitch.js" defer></script>
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+  {{if .WhatsAppDeepLink}}<p class="muted">Changed your mind? <a href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a>.</p>{{end}}
 </main></body></html>
 {{end}}

@@ -48,5 +48,6 @@
     <p class="muted">This payment is {{.Payment.Status}}. If it never completed, start a fresh payment on WhatsApp.</p>
   {{end}}
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+  {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
 </main></body></html>
 {{end}}

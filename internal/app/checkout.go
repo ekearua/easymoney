@@ -118,6 +118,7 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
+		"WhatsAppDeepLink": a.whatsappDeepLink(),
 	}, http.StatusOK)
 }
 
@@ -151,6 +152,7 @@ func (a *App) renderHostedCheckout(w http.ResponseWriter, r *http.Request, payme
 	a.renderStatus(w, "checkout.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Invoice": invoice,
 		"DataOrder": dataOrder, "Thrift": thrift, "BaseURL": a.cfg.BaseURL,
+		"WhatsAppDeepLink": a.whatsappDeepLink(),
 	}, status)
 }
 
@@ -265,6 +267,7 @@ func (a *App) receipt(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "receipt.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "DataOrder": dataOrder,
 		"Invoice": invoice, "Thrift": thrift, "ScanToken": scanToken, "BaseURL": a.cfg.BaseURL,
+		"WhatsAppDeepLink": a.whatsappDeepLink(),
 	})
 }
 

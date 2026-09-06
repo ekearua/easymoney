@@ -8,6 +8,7 @@
   <p class="eyebrow">{{if .Thrift}}Thrift contribution{{else if .Invoice}}Invoice payment{{else if .DataOrder}}Data order{{else if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
   <h1>{{if .Thrift}}Contribution {{.Thrift.Status}}{{else if .Invoice}}Payment {{.Payment.Status}}{{else if .DataOrder}}Data {{.DataOrder.Status}}{{else}}Payment {{.Payment.Status}}{{end}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
   <dl>
     <div><dt>Merchant</dt><dd>{{.Payment.MerchantName}}</dd></div>
     {{if .Thrift}}
@@ -45,5 +46,6 @@
   </section>
   {{end}}
   <p class="muted">{{if eq .Payment.Provider "bank_transfer"}}Payment status is shown after transfer confirmation is recorded.{{else}}Payment status is shown only after server-side card checkout verification.{{end}}</p>
+  {{if .WhatsAppDeepLink}}<p class="muted">Done? <a href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a> anytime.</p>{{end}}
 </main></body></html>
 {{end}}
