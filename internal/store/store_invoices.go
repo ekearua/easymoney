@@ -335,6 +335,22 @@ func (s *Store) InvoiceByID(ctx context.Context, id uuid.UUID) (InvoiceView, err
 	return s.InvoiceByReference(ctx, reference)
 }
 
+// LatestSuccessPaymentForInvoice returns the most recent succeeded payment for
+// an invoice, so a fully paid public page can link straight to its receipt.
+func (s *Store) LatestSuccessPaymentForInvoice(ctx context.Context, invoiceID uuid.UUID) (PaymentView, error) {
+	var paymentID uuid.UUID
+	if err := s.pool.QueryRow(ctx, `
+		SELECT ip.payment_id
+		FROM invoice_payments ip
+		JOIN payments p ON p.id=ip.payment_id
+		WHERE ip.invoice_id=$1 AND p.status='succeeded'
+		ORDER BY p.updated_at DESC, p.id DESC
+		LIMIT 1`, invoiceID).Scan(&paymentID); err != nil {
+		return PaymentView{}, err
+	}
+	return s.PaymentByID(ctx, paymentID)
+}
+
 // InvoiceByPaymentID resolves invoice context for a receipt contribution.
 func (s *Store) InvoiceByPaymentID(ctx context.Context, paymentID uuid.UUID) (InvoiceView, error) {
 	var reference string

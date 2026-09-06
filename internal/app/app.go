@@ -395,6 +395,7 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
+	router.With(publicLimit).Post("/invoices/{reference}/pay", a.invoicePay)
 	router.With(publicLimit).Get("/thrift/{name}", a.thriftGroup)
 	router.With(publicLimit).Get("/scan/{token}", a.scanLanding)
 	router.With(scanLimit).Post("/api/readers/scan", a.readerScan)

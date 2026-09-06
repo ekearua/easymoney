@@ -294,6 +294,33 @@ func paymentAttemptTerminal(status domain.PaymentStatus) bool {
 	return false
 }
 
+// ResolveInvoicePayment creates the linked payment attempt for a public
+// fill-in payer identified by their WhatsApp number, mirroring how
+// ResolveCheckout resolves a request-money link. The amount is charged exactly
+// (invoices add no collection surcharge) and the attempt is linked so the
+// post-success hook marks the invoice paid.
+func (s *PaymentService) ResolveInvoicePayment(ctx context.Context, invoice store.InvoiceView, merchant store.Merchant, payerPhone string, amountKobo int64, provider string) (store.PaymentView, error) {
+	phone := domain.CanonicalE164Phone(payerPhone)
+	if len(strings.TrimPrefix(phone, "+")) < 10 {
+		return store.PaymentView{}, errors.New("payer phone must be a valid E.164 number")
+	}
+	if provider != ProviderInterswitch && provider != ProviderBankTransfer {
+		return store.PaymentView{}, fmt.Errorf("unsupported provider %q for a public invoice payment", provider)
+	}
+	user, err := s.store.GetOrCreateUser(ctx, phone)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	payment, err := s.CreateDraftForProvider(ctx, user, merchant, amountKobo, provider, ChannelCheckout, phone)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	if err := s.store.CreateInvoicePayment(ctx, invoice.ID, payment.ID, user.ID, amountKobo); err != nil {
+		return store.PaymentView{}, err
+	}
+	return payment, nil
+}
+
 // HostedCheckoutURL returns the branded page where the customer reviews and
 // confirms the payment before the secure gateway is initialized.
 func (s *PaymentService) HostedCheckoutURL(payment store.PaymentView) string {

@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -344,6 +345,18 @@ func (a *App) readerScan(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
+func (a *App) renderInvoicePage(w http.ResponseWriter, r *http.Request, invoice store.InvoiceView, errMsg, phone, amount, method string) {
+	whatsappPayLink := ""
+	if a.cfg.WhatsAppPhoneNumber != "" {
+		whatsappPayLink = "https://wa.me/" + a.cfg.WhatsAppPhoneNumber + "?text=" + url.QueryEscape("PAY "+invoice.Reference)
+	}
+	a.render(w, "invoice.html", map[string]any{
+		"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL,
+		"WhatsAppPayLink": whatsappPayLink,
+		"Error": errMsg, "Phone": phone, "Amount": amount, "Method": method,
+	})
+}
+
 func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
 	reference := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "reference")))
 	if !strings.HasPrefix(reference, "XG-INV-") {
@@ -355,11 +368,69 @@ func (a *App) invoice(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	whatsappPayLink := ""
-	if a.cfg.WhatsAppPhoneNumber != "" {
-		whatsappPayLink = "https://wa.me/" + a.cfg.WhatsAppPhoneNumber + "?text=" + url.QueryEscape("PAY "+invoice.Reference)
+	if invoice.TotalKobo-invoice.AmountPaidKobo <= 0 {
+		if payment, err := a.store.LatestSuccessPaymentForInvoice(r.Context(), invoice.ID); err == nil {
+			http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+			return
+		}
 	}
-	a.render(w, "invoice.html", map[string]any{"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL, "WhatsAppPayLink": whatsappPayLink})
+	a.renderInvoicePage(w, r, invoice, "", "", "", service.ProviderInterswitch)
+}
+
+// invoicePay is the public invoice fill-in page's POST: it collects the payer's
+// WhatsApp number, amount, and rail, then creates the linked invoice payment
+// and hands off to the branded hosted checkout — the same anonymous pattern as
+// a request-money link (checkoutLinkResolve).
+func (a *App) invoicePay(w http.ResponseWriter, r *http.Request) {
+	reference := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "reference")))
+	if !strings.HasPrefix(reference, "XG-INV-") {
+		http.NotFound(w, r)
+		return
+	}
+	invoice, err := a.store.InvoiceByReference(r.Context(), reference)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+	if remaining <= 0 {
+		http.Redirect(w, r, "/invoices/"+reference, http.StatusSeeOther)
+		return
+	}
+	phone := strings.TrimSpace(r.FormValue("phone"))
+	method := strings.TrimSpace(r.FormValue("method"))
+	amountRaw := strings.TrimSpace(r.FormValue("amount"))
+	prefill := func(errMsg, amount string) {
+		a.renderInvoicePage(w, r, invoice, errMsg, phone, amount, method)
+	}
+	merchant, err := a.store.MerchantByID(r.Context(), invoice.MerchantID)
+	if err != nil {
+		prefill("The merchant for this invoice is no longer available.", amountRaw)
+		return
+	}
+	if method != service.ProviderInterswitch && method != service.ProviderBankTransfer {
+		prefill("Choose a payment method.", amountRaw)
+		return
+	}
+	amount := remaining
+	if merchant.AllowPartialPayments && amountRaw != "" && !strings.EqualFold(amountRaw, "full") {
+		amount, err = domain.ParseNGNAmount(amountRaw, a.cfg.PaymentMinKobo, remaining)
+		if err != nil {
+			prefill(fmt.Sprintf("Enter an amount between %s and %s, or leave it blank to pay the full balance.", domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(remaining)), amountRaw)
+			return
+		}
+	}
+	if msg := a.wfInvoicePayRuleCheck(r, merchant, invoice, amount); msg != "" {
+		prefill(msg, amountRaw)
+		return
+	}
+	payment, err := a.payments.ResolveInvoicePayment(r.Context(), invoice, merchant, phone, amount, method)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "invoice pay resolve failed", "invoice_id", invoice.ID, "error", err)
+		prefill("Enter the WhatsApp number where you want to receive the receipt, then continue.", amountRaw)
+		return
+	}
+	http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
 }
 
 func (a *App) thriftGroup(w http.ResponseWriter, r *http.Request) {

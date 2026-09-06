@@ -10,21 +10,41 @@
   <dl>
     <div><dt>Status</dt><dd>{{.Invoice.Status}}</dd></div>
     <div><dt>Reference</dt><dd class="mono">{{.Invoice.Reference}}</dd></div>
-    <div><dt>Customer WhatsApp</dt><dd>{{maskPII .Invoice.CustomerWhatsAppNumber}}</dd></div>
+    {{if .Invoice.CustomerWhatsAppNumber}}<div><dt>Customer WhatsApp</dt><dd>{{maskPII .Invoice.CustomerWhatsAppNumber}}</dd></div>{{end}}
     <div><dt>Paid so far</dt><dd>{{money .Invoice.AmountPaidKobo}}</dd></div>
     <div><dt>Balance</dt><dd>{{money (sub .Invoice.TotalKobo .Invoice.AmountPaidKobo)}}</dd></div>
     {{if .Invoice.DueAt}}<div><dt>Due</dt><dd>{{.Invoice.DueAt.Format "02 Jan 2006"}}</dd></div>{{end}}
   </dl>
+  {{if .Invoice.Items}}
   <h2>Items</h2>
   <dl>
     {{range .Invoice.Items}}<div><dt>{{.Description}} × {{.Quantity}}</dt><dd>{{money .LineTotalKobo}}</dd></div>{{end}}
-    <div><dt>Delivery fee</dt><dd>{{money .Invoice.DeliveryFeeKobo}}</dd></div>
+    {{if .Invoice.DeliveryFeeKobo}}<div><dt>Delivery fee</dt><dd>{{money .Invoice.DeliveryFeeKobo}}</dd></div>{{end}}
   </dl>
-  {{if .WhatsAppPayLink}}<p>To pay, open Xego on WhatsApp with the message pre-filled:</p>
-  <p><a class="mono" href="{{.WhatsAppPayLink}}" target="_blank" rel="noopener">PAY {{.Invoice.Reference}}</a></p>
-  <p class="muted">If the link does not open WhatsApp, send the message above to Xego manually.</p>
-  {{else}}<p>To pay, send this exact message to Xego on WhatsApp:</p>
-  <p class="mono">PAY {{.Invoice.Reference}}</p>{{end}}
-  <p class="muted">The payer can choose card checkout or bank transfer, and may pay the full balance or a partial amount. Xego marks the invoice paid only when total collected equals the invoice total.</p>
+  {{end}}
+  {{$remaining := sub .Invoice.TotalKobo .Invoice.AmountPaidKobo}}
+  {{if gt $remaining 0}}
+  <form method="post" action="/invoices/{{.Invoice.Reference}}/pay">
+    <label for="phone">Your WhatsApp number</label>
+    <input id="phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" value="{{.Phone}}" placeholder="+234 801 234 5678" required>
+    <p class="muted">We will send your receipt to this number after you pay.</p>
+    <label for="amount">Amount to pay (naira)</label>
+    <input id="amount" name="amount" type="text" inputmode="decimal" value="{{.Amount}}" placeholder="Full balance {{money $remaining}}">
+    <p class="muted">Leave blank to pay the full balance of {{money $remaining}}.</p>
+    <fieldset>
+      <legend>Payment method</legend>
+      <label class="radio"><input type="radio" name="method" value="interswitch" {{if or (eq .Method "interswitch") (eq .Method "")}}checked{{end}}> Card checkout</label>
+      <label class="radio"><input type="radio" name="method" value="bank_transfer" {{if eq .Method "bank_transfer"}}checked{{end}}> Bank transfer</label>
+    </fieldset>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <button type="submit">Continue to pay</button>
+  </form>
+  {{if .WhatsAppPayLink}}<p class="muted">Prefer WhatsApp? Open the chat with the message pre-filled:</p>
+  <p><a class="mono" href="{{.WhatsAppPayLink}}" target="_blank" rel="noopener">PAY {{.Invoice.Reference}}</a></p>{{end}}
+  {{else}}
+  <p class="ok">This invoice has been paid in full.</p>
+  <p class="muted">Send <span class="mono">PAY {{.Invoice.Reference}}</span> to Xego on WhatsApp to review it.</p>
+  {{end}}
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
 </main></body></html>
 {{end}}
