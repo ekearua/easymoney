@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,7 +46,7 @@ func (s *Store) MintWebFlow(ctx context.Context, userID uuid.UUID, channel, flow
 	if err != nil {
 		return WebFlow{}, err
 	}
-	raw, err := json.Marshal(payload)
+	sealed, paymentID, err := s.sealWebFlowPayload(payload)
 	if err != nil {
 		return WebFlow{}, err
 	}
@@ -55,13 +56,35 @@ func (s *Store) MintWebFlow(ctx context.Context, userID uuid.UUID, channel, flow
 		ExpiresAt: time.Now().Add(ttl),
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO web_flows (id, token, user_id, channel, flow_type, payload, step, status, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		flow.ID, flow.Token, userID, channel, flowType, raw, step, WebFlowOpen, flow.ExpiresAt)
+		INSERT INTO web_flows (id, token, user_id, channel, flow_type, payload, payment_id, step, status, expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		flow.ID, flow.Token, userID, channel, flowType, sealed, paymentID, step, WebFlowOpen, flow.ExpiresAt)
 	if err != nil {
 		return WebFlow{}, fmt.Errorf("mint web flow: %w", err)
 	}
 	return flow, nil
+}
+
+// sealWebFlowPayload marshals the flow payload, seals it at rest, and returns
+// the stored text plus any payment_id carried in the payload (promoted to its
+// own indexable column so gateway callbacks can resolve the flow without
+// decrypting every open flow).
+func (s *Store) sealWebFlowPayload(payload map[string]string) (string, *uuid.UUID, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", nil, err
+	}
+	sealed, err := s.sealValue(raw)
+	if err != nil {
+		return "", nil, err
+	}
+	var paymentID *uuid.UUID
+	if rawID := strings.TrimSpace(payload["payment_id"]); rawID != "" {
+		if id, err := uuid.Parse(rawID); err == nil {
+			paymentID = &id
+		}
+	}
+	return sealed, paymentID, nil
 }
 
 // OpenWebFlowForUser returns an unexpired open flow of the given type for the
@@ -101,7 +124,7 @@ func (s *Store) WebFlowByToken(ctx context.Context, token string) (WebFlow, erro
 
 func (s *Store) webFlowByQuery(ctx context.Context, query string, args ...any) (WebFlow, error) {
 	var flow WebFlow
-	var raw []byte
+	var raw string
 	err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&flow.ID, &flow.Token, &flow.UserID, &flow.Channel, &flow.FlowType,
 		&raw, &flow.Step, &flow.Status, &flow.CreatedAt, &flow.ExpiresAt, &flow.CompletedAt)
@@ -109,21 +132,27 @@ func (s *Store) webFlowByQuery(ctx context.Context, query string, args ...any) (
 		return WebFlow{}, err
 	}
 	flow.Payload = map[string]string{}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &flow.Payload)
+	plain, err := s.openValue(raw)
+	if err != nil {
+		return WebFlow{}, err
+	}
+	if len(plain) > 0 {
+		_ = json.Unmarshal(plain, &flow.Payload)
 	}
 	return flow, nil
 }
 
 // OpenWebFlowByPayment finds the open web flow whose payload references the
-// payment (payload->>'payment_id'). Gateway callbacks use it to complete the
-// flow and send the confirmation message once a payment verifies.
+// payment (payment_id column). Gateway callbacks use it to complete the flow
+// and send the confirmation message once a payment verifies. The payment_id
+// is promoted to a plaintext column so this lookup stays indexable even
+// though the payload blob itself is sealed at rest.
 func (s *Store) OpenWebFlowByPayment(ctx context.Context, paymentID uuid.UUID) (WebFlow, error) {
 	flow, err := s.webFlowByQuery(ctx, `
 		SELECT id, token, user_id, channel, flow_type, payload, step, status, created_at, expires_at, completed_at
 		FROM web_flows
-		WHERE status='open' AND expires_at > now() AND payload->>'payment_id' = $1
-		LIMIT 1`, paymentID.String())
+		WHERE status='open' AND expires_at > now() AND payment_id = $1
+		LIMIT 1`, paymentID)
 	if err != nil {
 		return WebFlow{}, err
 	}
@@ -131,12 +160,14 @@ func (s *Store) OpenWebFlowByPayment(ctx context.Context, paymentID uuid.UUID) (
 }
 
 // SaveWebFlowProgress persists a step and payload change for an open flow.
+// The payload is sealed at rest, and any payment_id it carries is promoted to
+// the indexable payment_id column for gateway lookups.
 func (s *Store) SaveWebFlowProgress(ctx context.Context, token, step string, payload map[string]string) error {
-	raw, err := json.Marshal(payload)
+	sealed, paymentID, err := s.sealWebFlowPayload(payload)
 	if err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx, `UPDATE web_flows SET step=$2, payload=$3 WHERE token=$1 AND status='open'`, token, step, raw)
+	tag, err := s.pool.Exec(ctx, `UPDATE web_flows SET step=$2, payload=$3, payment_id=COALESCE($4, payment_id) WHERE token=$1 AND status='open'`, token, step, sealed, paymentID)
 	if err != nil {
 		return err
 	}
@@ -151,7 +182,7 @@ func (s *Store) SaveWebFlowProgress(ctx context.Context, token, step string, pay
 // the confirmation message, so double submissions can never double-notify.
 func (s *Store) CompleteWebFlow(ctx context.Context, token string) (WebFlow, bool, error) {
 	var flow WebFlow
-	var raw []byte
+	var raw string
 	err := s.pool.QueryRow(ctx, `
 		UPDATE web_flows SET status='complete', completed_at=now()
 		WHERE token=$1 AND status='open'
@@ -171,8 +202,12 @@ func (s *Store) CompleteWebFlow(ctx context.Context, token string) (WebFlow, boo
 		return WebFlow{}, false, err
 	}
 	flow.Payload = map[string]string{}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &flow.Payload)
+	plain, err := s.openValue(raw)
+	if err != nil {
+		return WebFlow{}, false, err
+	}
+	if len(plain) > 0 {
+		_ = json.Unmarshal(plain, &flow.Payload)
 	}
 	return flow, true, nil
 }

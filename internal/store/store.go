@@ -144,6 +144,46 @@ func (s *Store) EncryptLegacyAtRest(ctx context.Context) (int, error) {
 		}
 		idCursor = keys[len(keys)-1]
 	}
+
+	// Web-flow payloads (KYC profile details, OCR'd identity text) are sealed
+	// on write; rows created before the key was configured stay plaintext until
+	// this pass re-seals them.
+	var flowCursor uuid.UUID
+	for {
+		rows, err := s.pool.Query(ctx, `
+			SELECT id, payload FROM web_flows
+			WHERE payload NOT LIKE 'enc:v1:%' AND id > $1
+			ORDER BY id LIMIT 500`, flowCursor)
+		if err != nil {
+			return encrypted, err
+		}
+		var keys []uuid.UUID
+		var payloads []string
+		for rows.Next() {
+			var key uuid.UUID
+			var payload string
+			if err := rows.Scan(&key, &payload); err != nil {
+				rows.Close()
+				return encrypted, err
+			}
+			keys = append(keys, key)
+			payloads = append(payloads, payload)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return encrypted, err
+		}
+		if len(keys) == 0 {
+			break
+		}
+		for i := range keys {
+			if err := seal(keys[i], "web_flows", "id", payloads[i]); err != nil {
+				return encrypted, err
+			}
+			encrypted++
+		}
+		flowCursor = keys[len(keys)-1]
+	}
 	return encrypted, nil
 }
 
