@@ -18,3 +18,9 @@ whatsapp-payment-demo
 *.xlsx
 *.png
 *.docx
+# Cloudflare tunnel debugging scratch
+*.ps1
+*.vbs
+cloudflared.bin
+tunnel-help.txt
+.cloudflared/
