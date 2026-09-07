@@ -164,17 +164,22 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		}
 		return s.sendMenu(ctx, message.Channel, recipient, user)
 	}
-	if isInterruptibleState(session.State) {
-		if interruptType, interruptArg := isPaymentInterrupt(input); interruptType != "" {
+	// A brand-new service request while another session is already active
+	// asks the customer whether to switch (abandoning the current one) or
+	// stay. Both free-text commands and interactive menu row selections are
+	// recognized so the duplicate-session confusion stays impossible.
+	if sessionSwitchable(session.State) {
+		if interruptType, interruptArg := serviceSwitchIntent(input); interruptType != "" {
 			flowDesc := describeCurrentFlow(session)
 			prevData, _ := json.Marshal(session.Data)
 			prevState := session.State
 			session.State = "confirm_session_switch"
 			session.Data = map[string]string{
-				"pending_type": interruptType,
-				"pending_arg":  interruptArg,
-				"prev_state":   prevState,
-				"prev_data":    string(prevData),
+				"pending_type":    interruptType,
+				"pending_arg":     interruptArg,
+				"pending_command": input,
+				"prev_state":      prevState,
+				"prev_data":       string(prevData),
 			}
 			if err := s.saveSession(ctx, session); err != nil {
 				return err

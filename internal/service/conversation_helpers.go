@@ -23,8 +23,8 @@ import (
 func (s *ConversationService) handleSessionSwitchConfirm(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "switch_yes", "yes", "switch", "confirm":
-		interruptType := session.Data["pending_type"]
-		interruptArg := session.Data["pending_arg"]
+		pendingType := session.Data["pending_type"]
+		pendingCommand := session.Data["pending_command"]
 		prevState := session.Data["prev_state"]
 		prevDataRaw := session.Data["prev_data"]
 		var prevData map[string]string
@@ -35,16 +35,24 @@ func (s *ConversationService) handleSessionSwitchConfirm(ctx context.Context, ch
 			oldSession := store.Session{UserID: user.ID, State: prevState, Data: prevData}
 			s.abandonSessionPayment(ctx, user, oldSession)
 		}
-		switch interruptType {
-		case "invoice_payment":
-			session.Data = map[string]string{"invoice_reference": interruptArg}
-			return s.startInvoicePayment(ctx, channel, recipient, user, session, interruptArg)
-		case "thrift_contribution":
-			session.Data = map[string]string{}
-			return s.startThriftContribution(ctx, channel, recipient, user, session, interruptArg)
-		default:
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That session expired. Please start again.")
+		// "Back to main menu" means cancel the active session outright.
+		if pendingType == "menu" {
+			session.State, session.Data = "menu", map[string]string{}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendMenu(ctx, channel, recipient, user)
 		}
+		// Route the chosen service through handleMenu, the single source of
+		// truth for both free-text commands and interactive row selections.
+		if strings.TrimSpace(pendingCommand) != "" {
+			session.State, session.Data = "menu", map[string]string{}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.handleMenu(ctx, channel, recipient, user, session, pendingCommand)
+		}
+		return s.resetWithMessage(ctx, channel, recipient, user, session, "That session expired. Please start again.")
 	case "switch_no", "no", "continue", "stay":
 		prevState := session.Data["prev_state"]
 		prevDataRaw := session.Data["prev_data"]
@@ -331,25 +339,77 @@ func truncateRunes(value string, limit int) string {
 	return string(runes[:limit-1]) + "\u2026"
 }
 
-func isInterruptibleState(state string) bool {
+// sessionSwitchable reports whether the current session is an active flow
+// that a new service request should ask about switching from. The menu and a
+// blank state are idle, and confirm_session_switch is already prompting.
+func sessionSwitchable(state string) bool {
 	switch state {
-	case "select_payment_method", "confirm_payment", "select_transfer_bank", "await_bank_transfer",
-		"invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer",
-		"thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer",
-		"select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer",
-		"pay_individual_method", "await_individual_bank_transfer", "await_individual_payment",
-		"wallet_topup_amount", "wallet_topup_method":
-		return true
-	default:
+	case "", "menu", "confirm_session_switch":
 		return false
+	default:
+		return true
 	}
 }
 
-func isPaymentInterrupt(input string) (string, string) {
+// serviceSwitchIntent detects an input that starts a distinct Xego service
+// while another session is active. It mirrors handleMenu's vocabulary for
+// both free-text commands and interactive row selections; the returned type
+// distinguishes "back to main menu" (a cancel) from a new service. The actual
+// routing stays in handleMenu so detection and routing can never drift.
+func serviceSwitchIntent(input string) (string, string) {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	switch lower {
+	case "pay", "make payment", "menu_pay":
+		return "pay", ""
+	case "pay individual", "send money", "menu_pay_individual":
+		return "individual_pay", ""
+	case "fund wallet", "top up", "wallet top up", "add money", "menu_fund_wallet":
+		return "topup", ""
+	case "buy data", "data", "menu_buy_data":
+		return "data", ""
+	case "register merchant", "merchant registration", "menu_register_merchant":
+		return "merchant_register", ""
+	case "generate invoice", "create invoice", "menu_generate_invoice":
+		return "invoice_create", ""
+	case "become individual", "individual", "menu_become_individual", "verify id":
+		return "individual_upgrade", ""
+	case "create thrift", "menu_create_thrift":
+		return "thrift_create", ""
+	case "join thrift", "menu_join_thrift":
+		return "thrift_join", ""
+	case "thrift dashboard", "menu_thrift_dashboard":
+		return "thrift_dashboard", ""
+	case "thrift contributions", "menu_thrift_services":
+		return "thrift_contributions", ""
+	case "edit thrift", "menu_edit_thrift":
+		return "thrift_edit", ""
+	case "merchant services", "menu_merchant_services":
+		return "merchant_services", ""
+	case "merchant dashboard", "menu_merchant_dashboard":
+		return "merchant_dashboard", ""
+	case "kyb status", "menu_kyb_status":
+		return "kyb_status", ""
+	case "request kyb upgrade", "request upgrade", "menu_kyb_request":
+		return "kyb_request", ""
+	case "history", "recent transactions", "menu_history":
+		return "history", ""
+	case "my limits", "limits", "menu_my_limits":
+		return "limits", ""
+	case "ask xego", "ai", "assistant", "menu_ai":
+		return "ai", ""
+	case "complete profile", "profile", "menu_profile":
+		return "profile", ""
+	case "status", "check payment status", "menu_status":
+		return "status", ""
+	case "help", "menu_help":
+		return "help", ""
+	case "menu_main", "main menu", "back":
+		return "menu", ""
+	}
 	if ref, ok := invoiceReferenceFromPAY(input); ok {
 		return "invoice_payment", ref
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(input)), "pay_invoice:") {
+	if strings.HasPrefix(lower, "pay_invoice:") {
 		ref := strings.TrimSpace(input[len("pay_invoice:"):])
 		if ref != "" {
 			return "invoice_payment", ref
@@ -357,6 +417,22 @@ func isPaymentInterrupt(input string) (string, string) {
 	}
 	if code, ok := thriftContributeNameFromInput(input); ok {
 		return "thrift_contribution", code
+	}
+	if code, ok := thriftJoinNameFromInput(input); ok {
+		return "thrift_join", code
+	}
+	if code, ok := thriftActivateNameFromInput(input); ok {
+		return "thrift_activate", code
+	}
+	if strings.HasPrefix(lower, "thrift_select:") {
+		if name := strings.TrimSpace(input[len("thrift_select:"):]); name != "" {
+			return "thrift_dashboard", name
+		}
+	}
+	if strings.HasPrefix(lower, "thrift_edit:") {
+		if name := strings.TrimSpace(input[len("thrift_edit:"):]); name != "" {
+			return "thrift_edit", name
+		}
 	}
 	return "", ""
 }
@@ -421,6 +497,44 @@ func describeCurrentFlow(session store.Session) string {
 		return "sending money to an individual"
 	case "wallet_topup_amount", "wallet_topup_method":
 		return "funding the Xego wallet"
+	default:
+		return flowStateLabel(session.State)
+	}
+}
+
+// flowStateLabel gives a readable, terse description of an active FSM state
+// for the session-switch prompt. It covers every dispatched state; unknown
+// states fall back to a generic phrase.
+func flowStateLabel(state string) string {
+	switch {
+	case strings.HasPrefix(state, "select_merchant"), strings.HasPrefix(state, "select_service"),
+		strings.HasPrefix(state, "select_event"), strings.HasPrefix(state, "enter_amount"),
+		strings.HasPrefix(state, "enter_service"), strings.HasPrefix(state, "collect_custom"),
+		strings.HasPrefix(state, "confirm_service"):
+		return "selecting a merchant and amount to pay"
+	case strings.HasPrefix(state, "pay_individual_"):
+		return "sending money to an individual"
+	case strings.HasPrefix(state, "onboard"):
+		return "setting up your profile"
+	case strings.HasPrefix(state, "individual_"):
+		return "verifying your individual profile"
+	case strings.HasPrefix(state, "merchant_register"):
+		return "registering your business"
+	case strings.HasPrefix(state, "thrift_"):
+		return "setting up or managing a thrift group"
+	case strings.HasPrefix(state, "invoice_"):
+		return "creating an invoice"
+	case strings.HasPrefix(state, "invoice_pay"):
+		return "paying an invoice"
+	case strings.HasPrefix(state, "select_data"), strings.HasPrefix(state, "enter_data"),
+		strings.HasPrefix(state, "confirm_data"), strings.HasPrefix(state, "await_data"):
+		return "buying mobile data"
+	case strings.HasPrefix(state, "kyb_request"):
+		return "requesting a business tier upgrade"
+	case state == "web_flow_active":
+		return "completing a request in your browser"
+	case state == "ai_assistant":
+		return "chatting with the Xego assistant"
 	default:
 		return "in a payment flow"
 	}
@@ -523,6 +637,9 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		}
 		return s.sendWalletTopupMethods(ctx, channel, recipient, amount)
 	default:
-		return s.sendText(ctx, channel, recipient, "That session expired. Please start again.")
+		// State not backed by a re-renderable screen: the prompt already told
+		// the customer what they were doing, so just confirm the session is
+		// still active rather than falsely reporting it expired.
+		return s.sendText(ctx, channel, recipient, "OK, staying on what you were doing. Type MENU to cancel it anytime.")
 	}
 }
