@@ -42,8 +42,14 @@ func (a *App) paymentReturn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A payment started from a browser web flow gets its WhatsApp confirmation
-	// (message 2) here; the guarded flow claim prevents double sends.
-	a.maybeCompleteWebFlowForPayment(r.Context(), payment)
+	// (message 2) here; the guarded flow claim prevents double sends. When the
+	// gateway attempt did not succeed (e.g. the customer cancelled on the
+	// hosted Interswitch page), the flow is reopened at its review step and the
+	// customer is sent straight back into it so they can change payment method.
+	if flowToken := a.maybeCompleteWebFlowForPayment(r.Context(), payment); flowToken != "" {
+		http.Redirect(w, r, "/w/"+flowToken, http.StatusSeeOther)
+		return
+	}
 	http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
 }
 
@@ -353,7 +359,7 @@ func (a *App) renderInvoicePage(w http.ResponseWriter, r *http.Request, invoice 
 	a.render(w, "invoice.html", map[string]any{
 		"AppName": a.cfg.AppName, "Invoice": invoice, "BaseURL": a.cfg.BaseURL,
 		"WhatsAppPayLink": whatsappPayLink,
-		"Error": errMsg, "Phone": phone, "Amount": amount, "Method": method,
+		"Error":           errMsg, "Phone": phone, "Amount": amount, "Method": method,
 	})
 }
 

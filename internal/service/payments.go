@@ -874,6 +874,13 @@ func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue dom
 	if channel == ChannelAPI {
 		return store.OutboxSpec{Channel: ChannelAPI}
 	}
+	// A payment created from a browser web flow already lands its confirmation
+	// (message 2) inside the flow; do not also queue the generic outbox status
+	// message on top of it. ChannelCheckout is written by createDraftCore for
+	// checkout-initiated payments and by the web flow handlers for /w/ flows.
+	if channel == ChannelCheckout {
+		return store.OutboxSpec{Channel: ChannelCheckout}
+	}
 	return store.OutboxSpec{UserID: payment.UserID, Channel: channel, Recipient: recipient, Kind: kind, Payload: payload}
 }
 

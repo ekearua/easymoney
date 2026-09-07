@@ -250,21 +250,81 @@ func (a *App) wfRenderDone(w http.ResponseWriter, r *http.Request, flow store.We
 	a.renderStatus(w, "webflow.html", page, http.StatusOK)
 }
 
-// maybeCompleteWebFlowForPayment completes the open web flow that created the
-// payment (identified by payload payment_id) with a generic confirmation.
-// It runs after gateway verification so the customer gets message 2 without
-// polling; the guarded claim prevents double sends with the webhook.
-func (a *App) maybeCompleteWebFlowForPayment(ctx context.Context, payment store.PaymentView) {
+// maybeCompleteWebFlowForPayment settles the open web flow that created the
+// payment (identified by its payment_id column) after a gateway verification.
+// It runs after VerifyAndApply so the customer gets message 2 without polling.
+//
+// Only a genuinely succeeded payment claims the flow and sends the
+// confirmation; a cancelled, failed, abandoned, or still-pending attempt must
+// never be reported as "Payment received". For a non-succeeded attempt the
+// flow is instead reopened at its review step (clearing the payment link) so
+// the customer can pick a different payment method and retry — the caller can
+// send them straight back into the flow. The guarded claim and the guarded
+// reopen both make the webhook racing the return page harmless.
+func (a *App) maybeCompleteWebFlowForPayment(ctx context.Context, payment store.PaymentView) string {
+	if payment.Status == domain.StatusSucceeded {
+		flow, err := a.store.OpenWebFlowByPayment(ctx, payment.ID)
+		if err != nil || flow.Status != store.WebFlowOpen {
+			return ""
+		}
+		link := a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
+		message := fmt.Sprintf("Payment received.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s\n\nOpen WhatsApp anytime and send MENU for more options.",
+			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), link)
+		if err := a.wfFinish(ctx, flow, message); err != nil {
+			a.logger.WarnContext(ctx, "web flow completion notify failed", "flow_id", flow.ID, "error", err)
+		}
+		return ""
+	}
+	return a.wfReopenForPaymentRetry(ctx, payment)
+}
+
+// wfReopenForPaymentRetry moves an open money flow that is parked on its
+// gateway "checkout" step back to the "review" step (where the payment-method
+// options render) when the gateway attempt did not succeed — the customer
+// cancelled on the hosted Interswitch page, the card was declined, or the
+// transaction was abandoned. Clearing the payment link means the abandoned
+// attempt can no longer claim the flow, so retrying creates a fresh payment
+// draft. Returns the reopened flow token, or "" when there was nothing to
+// reopen (no open flow, a non-money flow, or a flow that already moved on).
+//
+// Design note — pending-then-success after reopen. Reopening clears the payment
+// link *without* ever completing or aborting the abandoned payment, so if the
+// gateway later verifies the abandoned payment as succeeded (rare, but possible
+// with slow providers or a customer who cancels then immediately succeeds on a
+// different device), the success path in maybeCompleteWebFlowForPayment still
+// only sends message 2 when payment.Status == StatusSucceeded and only claims a
+// flow that is still open *and still references that exact payment id* (the
+// same guard as the webhook path). A reopened flow on the review step has a new
+// payment being built for the retry and no longer references the abandoned one,
+// so the abandoned payment's success cannot claim the reopened flow and cannot
+// double-notify. The user either sees the reopened flow waiting for their new
+// submit, or — if the abandoned attempt independently succeeds first — the old
+// link redirects to the receipt and the customer is told payment was already
+// confirmed; in that case they should send MENU to start a new request. Either
+// way there is exactly one receipt per attempt and no double charge.
+func (a *App) wfReopenForPaymentRetry(ctx context.Context, payment store.PaymentView) string {
 	flow, err := a.store.OpenWebFlowByPayment(ctx, payment.ID)
 	if err != nil || flow.Status != store.WebFlowOpen {
-		return
+		return ""
 	}
-	link := a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
-	message := fmt.Sprintf("Payment received.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s\n\nOpen WhatsApp anytime and send MENU for more options.",
-		payment.MerchantName, domain.FormatNGN(payment.AmountKobo), link)
-	if err := a.wfFinish(ctx, flow, message); err != nil {
-		a.logger.WarnContext(ctx, "web flow completion notify failed", "flow_id", flow.ID, "error", err)
+	switch flow.FlowType {
+	case service.WebFlowPay, service.WebFlowPayInvoice, service.WebFlowThriftContribute,
+		service.WebFlowData, service.WebFlowTopup, service.WebFlowIndividualPay:
+	default:
+		// Only money flows park on a gateway checkout step with a payment id.
+		return ""
 	}
+	if flow.Step != "checkout" && flow.Step != "done" {
+		return ""
+	}
+	payload := clonePayload(flow.Payload)
+	delete(payload, "payment_id")
+	delete(payload, "provider")
+	if _, err := a.store.ReopenWebFlowForRetry(ctx, flow.Token, payment.ID, "review", payload); err != nil {
+		a.logger.WarnContext(ctx, "web flow reopen for retry failed", "flow_id", flow.ID, "error", err)
+		return ""
+	}
+	return flow.Token
 }
 
 // --- flow registry -------------------------------------------------------

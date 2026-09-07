@@ -177,6 +177,46 @@ func (s *Store) SaveWebFlowProgress(ctx context.Context, token, step string, pay
 	return nil
 }
 
+// ReopenWebFlowForRetry rewinds an open money flow that was parked on its
+// gateway "checkout"/"done" step back to the given step (normally "review",
+// where the payment-method options render) after a gateway attempt did not
+// succeed — the customer cancelled on the hosted Interswitch page, or the
+// card was declined. The payment association is cleared so the abandoned
+// attempt can neither claim this flow later nor be looked up by payment id,
+// and the operation only acts when the flow is open and still references
+// exactly that payment: a stale webhook for an old attempt can never rewind a
+// flow a newer attempt has moved forward. Returns the reopened flow with its
+// payload decrypted.
+func (s *Store) ReopenWebFlowForRetry(ctx context.Context, token string, paymentID uuid.UUID, step string, payload map[string]string) (WebFlow, error) {
+	sealed, _, err := s.sealWebFlowPayload(payload)
+	if err != nil {
+		return WebFlow{}, err
+	}
+	var flow WebFlow
+	var raw string
+	err = s.pool.QueryRow(ctx, `
+		UPDATE web_flows SET step=$2, payload=$3, payment_id=NULL
+		WHERE token=$1 AND status='open' AND payment_id=$4
+		RETURNING id, token, user_id, channel, flow_type, payload, step, status, created_at, expires_at, completed_at`, token, step, sealed, paymentID).
+		Scan(&flow.ID, &flow.Token, &flow.UserID, &flow.Channel, &flow.FlowType,
+			&raw, &flow.Step, &flow.Status, &flow.CreatedAt, &flow.ExpiresAt, &flow.CompletedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return WebFlow{}, fmt.Errorf("web flow %q is not open on payment %s", token, paymentID)
+		}
+		return WebFlow{}, err
+	}
+	flow.Payload = map[string]string{}
+	plain, err := s.openValue(raw)
+	if err != nil {
+		return WebFlow{}, err
+	}
+	if len(plain) > 0 {
+		_ = json.Unmarshal(plain, &flow.Payload)
+	}
+	return flow, nil
+}
+
 // CompleteWebFlow atomically claims an open flow (open -> complete) and
 // reports whether this call performed the transition. Only the claimer sends
 // the confirmation message, so double submissions can never double-notify.

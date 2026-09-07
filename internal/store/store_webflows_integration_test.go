@@ -104,6 +104,47 @@ func TestPostgresWebFlowPayloadAtRest(t *testing.T) {
 		t.Fatal("unknown payment id must not resolve to a flow")
 	}
 
+	// ReopenWebFlowForRetry rewinds a flow parked on its gateway checkout step
+	// back to the review step and clears the payment link, so a customer whose
+	// gateway attempt was cancelled/declined can choose another method. The
+	// reopen is guarded: it refuses a flow not on this payment, and an already
+	// cleared flow cannot be reopened again.
+	reopened, err := repository.ReopenWebFlowForRetry(ctx, flow.Token, paymentID, "review", map[string]string{
+		"merchant": "lagos-lunchbox", "amount": "250000",
+	})
+	if err != nil {
+		t.Fatalf("reopen flow for retry: %v", err)
+	}
+	if reopened.Step != "review" || reopened.Status != WebFlowOpen {
+		t.Fatalf("reopened flow step/status = %q/%q, want review/open", reopened.Step, reopened.Status)
+	}
+	var colAfterReopen string
+	if err := repository.pool.QueryRow(ctx, `SELECT COALESCE(payment_id::text,'') FROM web_flows WHERE id=$1`, flow.ID).Scan(&colAfterReopen); err != nil {
+		t.Fatal(err)
+	}
+	if colAfterReopen != "" {
+		t.Fatalf("reopened flow should clear payment_id, got %q", colAfterReopen)
+	}
+	// A second reopen for the same (now detached) payment must be refused.
+	if _, err := repository.ReopenWebFlowForRetry(ctx, flow.Token, paymentID, "review", map[string]string{}); err == nil {
+		t.Fatal("reopening an already-detached flow must fail")
+	}
+	// And a reopen guarded by a different payment id must also be refused.
+	if _, err := repository.ReopenWebFlowForRetry(ctx, flow.Token, uuid.New(), "review", map[string]string{}); err == nil {
+		t.Fatal("reopening a flow for a mismatched payment must fail")
+	}
+
+	// Re-attach a fresh payment id so the completion below still exercises the
+	// payload round-trip after a re-open.
+	retryPaymentID := uuid.New()
+	if err := repository.SaveWebFlowProgress(ctx, flow.Token, "checkout", map[string]string{
+		"payment_id": retryPaymentID.String(),
+		"merchant":   "lagos-lunchbox",
+		"amount":     "250000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	// Completing the flow still returns the decrypted payload.
 	completed, claimed, err := repository.CompleteWebFlow(ctx, flow.Token)
 	if err != nil || !claimed {

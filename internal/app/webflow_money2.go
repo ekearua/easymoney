@@ -115,7 +115,7 @@ func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow st
 			return a.wfPageWithError(flow, page, "Could not attach this payment to the invoice."), nil
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-			return a.wfPageWithError(flow, page, "Payment could not be completed. Please go back and try again."), nil
+			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		return nil, nil
 	}
@@ -249,7 +249,7 @@ func (a *App) wfThriftContributeSubmit(w http.ResponseWriter, r *http.Request, f
 		return a.wfPageWithError(flow, page, "Could not link your contribution."), nil
 	}
 	if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-		return a.wfPageWithError(flow, page, "Payment could not be completed."), nil
+		return a.wfRoutePaymentFailed(r, flow, user, err)
 	}
 	return nil, nil
 }
@@ -362,7 +362,7 @@ func (a *App) wfDataSubmit(w http.ResponseWriter, r *http.Request, flow store.We
 			return a.wfAllowancePageError(flow, page, err), nil
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-			return a.wfPageWithError(flow, page, "Payment could not be completed."), nil
+			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		return nil, nil
 	}
@@ -418,7 +418,7 @@ func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.W
 			return a.wfAllowancePageError(flow, page, err), nil
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-			return a.wfPageWithError(flow, page, "Payment could not be completed."), nil
+			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		return nil, nil
 	}
@@ -607,7 +607,7 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 			return a.wfAllowancePageError(flow, page, err), nil
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-			return a.wfPageWithError(flow, page, "Payment could not be completed."), nil
+			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		return nil, nil
 	}

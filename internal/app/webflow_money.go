@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -254,6 +255,9 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 }
 
 func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage) (webFlowPage, error) {
+	if preview := a.wfWalletStatePreview(r, flow); preview != "" {
+		page.Error = preview
+	}
 	merchant, err := a.wfLoadMerchant(r, flow.Payload["merchant_slug"])
 	if err != nil {
 		return page, err
@@ -274,7 +278,11 @@ func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage)
 	if read := wfBillAmountKobo(wfBillCapturedText(flow.Payload)); read > 0 && read == amount {
 		page.Review = append(page.Review, webFlowLine{Term: "Read from your bill/voice", Desc: domain.FormatNGN(read)})
 	}
-	page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
+	methodField := webFlowField{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}
+	if m := flow.Payload["method"]; wfProviderValid(m, true) {
+		methodField.Value = m
+	}
+	page.Fields = []webFlowField{methodField}
 	page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(amount)}, {Name: "back", Label: "Back"}}
 	return page, nil
 }
@@ -388,6 +396,15 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		if !wfProviderValid(method, true) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
+		// Persist the chosen method so a reopened review step (after a cancelled/
+		// declined hosted checkout) can pre-select it instead of forcing the customer
+		// to pick again.
+		payPayload := clonePayload(flow.Payload)
+		payPayload["method"] = method
+		if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payPayload); err != nil {
+			return a.wfPageWithError(flow, page, err.Error()), nil
+		}
+		flow.Payload = payPayload
 		merchant, err := a.wfLoadMerchant(r, flow.Payload["merchant_slug"])
 		if err != nil {
 			return a.wfPageWithError(flow, page, "That merchant is no longer available."), nil
@@ -424,7 +441,7 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			}
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
-			return a.wfPageWithError(flow, page, "Payment could not be completed. Please go back and try again."), err
+			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		if method == service.ProviderWallet {
 			done := a.wfPage(flow)
@@ -448,4 +465,76 @@ func friendlyWebAllowanceError(err error) string {
 		return msg
 	}
 	return "Payment could not be created: " + err.Error()
+}
+
+// wfWalletStatePreview returns a short inline note shown above the pay-review
+// radio when the customer chose wallet and the wallet is not active or cannot
+// cover the amount yet. It only attaches to the pay flow (the one with a
+// method-selector radio); other payment flows keep their own review copy.
+func (a *App) wfWalletStatePreview(r *http.Request, flow store.WebFlow) string {
+	if flow.FlowType != service.WebFlowPay {
+		return ""
+	}
+	method := r.FormValue("method")
+	if !strings.EqualFold(method, service.ProviderWallet) {
+		return ""
+	}
+	if flow.UserID.String() == "" {
+		return ""
+	}
+	wallet, err := a.store.WalletByOwner(r.Context(), store.WalletOwnerUser, flow.UserID)
+	if err != nil {
+		return ""
+	}
+	amount := wfInt(flow.Payload["amount_kobo"])
+	if wallet.Status != store.WalletStatusActive {
+		return fmt.Sprintf("Your wallet isn't active yet. Verify your account to reach Level 1 and activate your wallet to pay from it here, or choose another payment method.")
+	}
+	balance, err := a.store.WalletBalance(r.Context(), wallet.ID)
+	if err != nil {
+		return ""
+	}
+	if balance < amount {
+		return fmt.Sprintf("Your wallet has %s, which is less than %s. Top it up first, or choose another payment method.",
+			domain.FormatNGN(balance), domain.FormatNGN(amount))
+	}
+	return ""
+}
+
+// friendlyWebPaymentError maps a payment routing/confirmation failure (the
+// wallet inline confirm, primarily) to customer-facing copy, mirroring the
+// copy used on the chat channel so a browser flow explains the problem
+// instead of a bare error.
+func friendlyWebPaymentError(err error) string {
+	switch {
+	case errors.Is(err, store.ErrInsufficientWalletBalance):
+		return "Your wallet balance is too low for this payment. Top up your wallet and try again, or choose another payment method."
+	case errors.Is(err, store.ErrWalletNotActive):
+		return "Wallet payments need an active wallet. Verify your account to reach Level 1 and activate your wallet, then try again, or choose another payment method."
+	}
+	if msg, ok := service.AllowanceMessage(err); ok && msg != "" {
+		return msg
+	}
+	return "Payment could not be completed. Please go back and try again."
+}
+
+// wfRoutePaymentFailed renders the flow's current step with a friendly error
+// when a payment could not be routed or confirmed (e.g. a wallet payment the
+// customer cannot afford yet). Re-rendering the step keeps the payment-method
+// options visible so the customer can switch rail and retry, and returning a
+// nil error stops webFlowSubmit from falling through to a bare 500.
+func (a *App) wfRoutePaymentFailed(r *http.Request, flow store.WebFlow, user store.User, err error) (*webFlowPage, error) {
+	msg := friendlyWebPaymentError(err)
+	page, rerr := a.wfRenderStep(r, flow, user)
+	if rerr != nil {
+		a.logger.WarnContext(r.Context(), "web flow payment failure re-render failed", "flow", flow.ID, "step", flow.Step, "error", rerr)
+		return a.wfPageWithError(flow, a.wfPage(flow), msg), nil
+	}
+	page.Error = msg
+	page.FlowType = flow.FlowType
+	page.Token = flow.Token
+	page.AppName = a.cfg.AppName
+	page.WhatsAppLink = a.whatsappDeepLink()
+	page.BaseURL = a.cfg.BaseURL
+	return &page, nil
 }
