@@ -356,8 +356,11 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleAIAssistant(ctx, message.Channel, recipient, user, session, input)
 	default:
 		// AI intent routing: when enabled and a chat AI is available,
-		// try to classify the input before falling back to keyword matching.
-		if s.chatAI != nil && s.cfg.AIEnabled {
+		// try to classify free-text input before falling back to keyword
+		// matching.  Interactive selections (list row taps, button presses)
+		// carry explicit IDs that are already handled by the state-specific
+		// cases above and by handleMenu, so they must never be classified.
+		if s.chatAI != nil && s.cfg.AIEnabled && message.Interactive == "" {
 			intent, err := s.chatAI.ClassifyIntent(ctx, input, nil)
 			if err == nil && intent.Confidence >= 0.7 && intent.Intent != "none" {
 				return s.routeAIIntent(ctx, message.Channel, recipient, user, session, intent)
@@ -583,6 +586,8 @@ func (s *ConversationService) routeAIIntent(ctx context.Context, channel, recipi
 		return s.sendMenu(ctx, channel, recipient)
 	case "help":
 		return s.sendHelp(ctx, channel, recipient)
+	case "status":
+		return s.sendLatestStatus(ctx, channel, recipient, user)
 	case "cancel":
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {

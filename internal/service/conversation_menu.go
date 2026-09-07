@@ -259,6 +259,60 @@ func thriftMenuRows() []ports.InteractiveRow {
 	}
 }
 
+// menuRowCovers reports whether the given interactive row id is matched by an
+// explicit case in handleMenu. Row ids that fall through dispatch end up in
+// the default branch, which re-sends the menu — the source of the duplicate
+// "Open menu" returning users see. Keep this list in step with the switch in
+// handleMenu.
+func menuRowCovers(id string) bool {
+	switch id {
+	case "menu_pay":
+		return true
+	case "menu_pay_individual":
+		return true
+	case "menu_fund_wallet":
+		return true
+	case "menu_buy_data":
+		return true
+	case "menu_merchant_services":
+		return true
+	case "menu_thrift_services":
+		return true
+	case "menu_history":
+		return true
+	case "menu_my_limits":
+		return true
+	case "menu_ai":
+		return true
+	case "menu_help":
+		return true
+	case "menu_main":
+		return true
+	case "menu_register_merchant":
+		return true
+	case "menu_generate_invoice":
+		return true
+	case "menu_merchant_dashboard":
+		return true
+	case "menu_kyb_status":
+		return true
+	case "menu_kyb_request":
+		return true
+	case "menu_become_individual":
+		return true
+	case "menu_create_thrift":
+		return true
+	case "menu_join_thrift":
+		return true
+	case "menu_edit_thrift":
+		return true
+	case "menu_thrift_dashboard":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *ConversationService) sendHelp(ctx context.Context, channel, recipient string) error {
 	return s.sendText(ctx, channel, recipient,
 		"Xego lets you pay merchants, buy mobile data, pay invoices, and use demo thrift contribution groups.\n\nThrift commands:\nJOIN <group name> joins an inviting group.\nSTART <group name> (or ACTIVATE) lets the creator set payout rotation.\nCONTRIBUTE <group name> starts this cycle's payment.\n\nYou can also create a thrift group in one message:\nName, Amount, Frequency, Members\nExample: Office Pool, 5000, monthly, 8\n\nFor bank transfer, enter the payment reference exactly in your bank app's narration, remark, or reference field. This helps Xego match the transfer to your payment.\n\nMerchant registration and individual thrift setup use an email confirmation code before collecting higher-trust details.\n\nInvoice items can be sent in bulk. Send one item per line:\nName, Quantity, Price\nExample: Website design, 1, 25000\n\nSMS data requests use: DATA <NETWORK> <PLAN_CODE> <PHONE>. Example: DATA MTN MTN1GB 08031234567.\n\nIf you're in the middle of a payment and need to switch to something else (like paying an invoice), just send the new payment command. Xego will ask if you want to switch or continue your current payment.\n\nWe never ask for card details, PINs, OTPs, or CVVs in chat. Type MENU anytime to return to the main menu.")
