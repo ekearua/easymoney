@@ -158,20 +158,7 @@ func TestWalletLifecycle(t *testing.T) {
 	if broken != -1 {
 		t.Fatalf("ledger hash chain broken at entry %d of %d", broken, count)
 	}
-	// A sound book nets to zero across all accounts. Individual accounts hold
-	// real balances (wallet, operating bank), so only the global sum is
-	// asserted — same convention as TestLedgerDoubleEntry.
-	balances, err := repository.LedgerBalanceSummary(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var net int64
-	for _, b := range balances {
-		net += b.NetKobo
-	}
-	if net != 0 {
-		t.Fatalf("expected zero net ledger, got %d", net)
-	}
+	assertLedgerNetsZero(t, repository, ctx)
 
 	// Frozen wallets cannot withdraw (defensive operator control).
 	if _, err := repository.pool.Exec(ctx, `
@@ -303,20 +290,7 @@ func TestWalletPaymentAndRefund(t *testing.T) {
 	if count, broken, err := repository.VerifyLedgerChain(ctx); err != nil || broken != -1 {
 		t.Fatalf("ledger chain broken at %d of %d: %v", broken, count, err)
 	}
-	// A sound book nets to zero across all accounts. Individual accounts hold
-	// real balances (wallet, operating bank), so only the global sum is
-	// asserted — same convention as TestLedgerDoubleEntry.
-	balances, err := repository.LedgerBalanceSummary(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var net int64
-	for _, b := range balances {
-		net += b.NetKobo
-	}
-	if net != 0 {
-		t.Fatalf("expected zero net ledger, got %d", net)
-	}
+	assertLedgerNetsZero(t, repository, ctx)
 
 	// Reconciliation accepts the wallet debit as the money-in posting.
 	run, items, err := repository.RunReconciliation(ctx, "auto", "test")
@@ -440,7 +414,5 @@ func TestWalletTopup(t *testing.T) {
 	if count, broken, err := repository.VerifyLedgerChain(ctx); err != nil || broken != -1 {
 		t.Fatalf("ledger chain broken at %d of %d: %v", broken, count, err)
 	}
-	if _, balanced, err := repository.VerifyDoubleEntry(ctx); err != nil || !balanced {
-		t.Fatalf("ledger must balance: balanced=%v err=%v", balanced, err)
-	}
+	assertLedgerNetsZero(t, repository, ctx)
 }

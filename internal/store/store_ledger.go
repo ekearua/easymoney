@@ -391,21 +391,3 @@ func (s *Store) VerifyLedgerChain(ctx context.Context) (int, int, error) {
 	}
 	return count, broken, nil
 }
-
-// VerifyDoubleEntry checks that the entire ledger balances to zero. A sound
-// double-entry book always has net=0 across all accounts. Returns the list of
-// account balances and whether any account has a non-zero net.
-func (s *Store) VerifyDoubleEntry(ctx context.Context) ([]LedgerAccountBalance, bool, error) {
-	balances, err := s.LedgerBalanceSummary(ctx)
-	if err != nil {
-		return nil, false, err
-	}
-	balanced := true
-	for _, b := range balances {
-		if b.NetKobo != 0 {
-			balanced = false
-			break
-		}
-	}
-	return balances, balanced, nil
-}

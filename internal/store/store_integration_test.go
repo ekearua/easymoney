@@ -1050,6 +1050,25 @@ func TestDataSubjectRights(t *testing.T) {
 	}
 }
 
+// assertLedgerNetsZero asserts the whole ledger sums to zero across all
+// accounts. Individual accounts hold real balances (wallets, operating bank),
+// so only the global double-entry invariant is checked — never per-account
+// balance.
+func assertLedgerNetsZero(t *testing.T, repository *Store, ctx context.Context) {
+	t.Helper()
+	balances, err := repository.LedgerBalanceSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var net int64
+	for _, b := range balances {
+		net += b.NetKobo
+	}
+	if net != 0 {
+		t.Fatalf("expected zero net ledger, got %d", net)
+	}
+}
+
 // TestLedgerDoubleEntry verifies C16: money-in postings land as balanced
 // debit/credit pairs, the SHA-256 chain verifies, the book sums to zero, the
 // table is append-only, and a reversal posts offsetting entries.
@@ -1169,17 +1188,7 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if count != 4 || broken != -1 {
 		t.Fatalf("expected sound chain of 4, got count=%d broken=%d", count, broken)
 	}
-	balances, err := repository.LedgerBalanceSummary(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var net int64
-	for _, b := range balances {
-		net += b.NetKobo
-	}
-	if net != 0 {
-		t.Fatalf("expected zero net book, got %d", net)
-	}
+	assertLedgerNetsZero(t, repository, ctx)
 
 	// Append-only: update/delete must be rejected.
 	if _, err := repository.pool.Exec(ctx, `UPDATE ledger_entries SET amount_kobo=1 WHERE id=$1`, entries[0].ID); err == nil {
@@ -1211,17 +1220,7 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if count != 8 || broken != -1 {
 		t.Fatalf("expected sound chain of 8 after reversal, got count=%d broken=%d", count, broken)
 	}
-	balances, err = repository.LedgerBalanceSummary(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	net = 0
-	for _, b := range balances {
-		net += b.NetKobo
-	}
-	if net != 0 {
-		t.Fatalf("expected zero net book after reversal, got %d", net)
-	}
+	assertLedgerNetsZero(t, repository, ctx)
 
 	// Reversing twice must be rejected (already reversed).
 	if _, err := repository.PostLedgerReversal(ctx, payment.ID.String(), "again", "admin@xego.test"); err == nil {
