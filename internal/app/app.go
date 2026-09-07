@@ -392,6 +392,7 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Post("/link/{token}/resolve", a.checkoutLinkResolve)
 	router.With(publicLimit).Get("/w/{token}", a.webFlowPage)
 	router.With(publicLimit).Post("/w/{token}", a.webFlowSubmit)
+	router.With(publicLimit).Post("/w/{token}/media", a.webFlowMediaUpload)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)

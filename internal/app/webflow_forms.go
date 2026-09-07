@@ -638,6 +638,9 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 			{Name: "dob", Label: "Date of birth (YYYY-MM-DD)", Type: "date", Required: true},
 			{Name: "address", Label: "Residential address", Type: "textarea", Required: true},
 			{Name: "occupation", Label: "Occupation", Type: "text", Required: true},
+			{Name: "id_slip", Label: "Photo of your NIN or BVN slip (optional)", Type: "upload",
+				MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits.",
+				Hint:        "Uploading a slip lets Xego prefill your ID number when you reach Level 3. You can also type or say it later."},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
@@ -649,6 +652,13 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 			{Term: "Address", Desc: flow.Payload["address"]},
 			{Term: "Occupation", Desc: flow.Payload["occupation"]},
 			{Term: "Email", Desc: flow.Payload["email"]},
+		}
+		if slip := flow.Payload["id_slip"]; slip != "" {
+			desc := wfIDNumberFrom(slip)
+			if desc == "" {
+				desc = truncateRunes(slip, 80)
+			}
+			page.Review = append(page.Review, webFlowLine{Term: "ID slip read", Desc: desc})
 		}
 		page.Intro = "Submitting this profile applies a compliance screening. Level 2 approval is immediate when the screen is clean."
 		page.Actions = []webFlowAction{{Name: "apply", Label: "Submit profile"}}
@@ -667,12 +677,21 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		} else {
 			page.Intro = "Your individual profile is approved at Level 2 (identity on file). Optionally add your NIN or BVN to reach Level 3 and raise your limits."
 		}
+		prefilled := wfIDNumberFrom(flow.Payload["id_slip"] + " " + flow.Payload["id_voice"])
+		idNumberHint := ""
+		if prefilled != "" {
+			idNumberHint = "We read " + prefilled + " from your upload or voice note — confirm or edit it."
+		}
 		page.Fields = []webFlowField{
 			{Name: "id_type", Label: "ID type", Type: "radio", Required: false, Options: []webFlowOption{
 				{Value: "nin", Label: "NIN"},
 				{Value: "bvn", Label: "BVN"},
 			}},
-			{Name: "id_number", Label: "11-digit number", Type: "text"},
+			{Name: "id_number", Label: "11-digit number", Type: "text", Value: prefilled, Hint: idNumberHint},
+			{Name: "id_slip", Label: "Upload your NIN or BVN slip", Type: "upload",
+				MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits."},
+			{Name: "id_voice", Label: "Or say your 11-digit number", Type: "voice",
+				Hint: "Record a short voice note saying the number clearly."},
 		}
 		page.Actions = []webFlowAction{{Name: "skip", Label: "Skip for now"}, {Name: "verify_id", Label: "Verify ID"}}
 		return page, nil
@@ -797,7 +816,24 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 			return a.wfPageWithError(flow, page, "Verify your ID or skip to stay at Level 2."), nil
 		}
 		idType := strings.ToLower(strings.TrimSpace(r.FormValue("id_type")))
-		idNumber := strings.ReplaceAll(strings.TrimSpace(r.FormValue("id_number")), " ", "")
+		// Typed input must be exactly 11 digits (a mistyped 12-digit number must
+		// error, not silently truncate into a different identity). OCR and
+		// voice extraction is noisy, so the fallback tolerates surrounding text.
+		idNumber := ""
+		typed := strings.ReplaceAll(strings.TrimSpace(r.FormValue("id_number")), " ", "")
+		switch {
+		case typed != "":
+			if len(typed) != 11 || strings.Trim(typed, "0123456789") != "" {
+				return a.wfPageWithError(flow, page, "The ID number must be exactly 11 digits."), nil
+			}
+			idNumber = typed
+		case wfIDNumberFrom(flow.Payload["id_slip"]) != "":
+			idNumber = wfIDNumberFrom(flow.Payload["id_slip"])
+		case wfIDNumberFrom(flow.Payload["id_voice"]) != "":
+			idNumber = wfIDNumberFrom(flow.Payload["id_voice"])
+		default:
+			return a.wfPageWithError(flow, page, "Send your 11-digit NIN or BVN: type it, upload a photo of your slip, or say it in a voice note."), nil
+		}
 		user, err := a.store.UserByID(r.Context(), user.ID)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not load your account."), nil

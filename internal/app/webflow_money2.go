@@ -593,7 +593,10 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		if _, err := a.store.GetOrCreateUserPayoutDestination(r.Context(), recipientUser.ID, bankCode, bankName, accountNumber, ""); err != nil {
 			return a.wfPageWithError(flow, page, "Could not save the recipient's bank details."), nil
 		}
-		payment, err := a.payments.CreateIndividualPayDraftWithProvider(r.Context(), user, flow.Channel, user.WhatsAppNumber, totalPay, service.ProviderWallet, map[string]any{
+		// The draft carries the rail the customer actually chose: wallet pays
+		// inline (wfRoutePayment), card/transfer initialize the hosted
+		// gateway, whose provider gate (hostedCheckoutPay) must match.
+		payment, err := a.payments.CreateIndividualPayDraftWithProvider(r.Context(), user, flow.Channel, user.WhatsAppNumber, totalPay, method, map[string]any{
 			"individual_pay": map[string]any{
 				"recipient_phone": recipientPhone, "bank_code": bankCode, "bank_name": bankName, "account_number": accountNumber,
 				"amount_kobo": amount, "collection_fee_kobo": collectionFee.FeeKobo,

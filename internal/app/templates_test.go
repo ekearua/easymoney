@@ -147,6 +147,8 @@ func TestTemplatesParse(t *testing.T) {
 			{Name: "amount_kobo", Label: "Amount", Type: "amount"},
 			{Name: "due_date", Label: "Due", Type: "date"},
 			{Name: "ok", Label: "Hidden", Type: "hidden"},
+			{Name: "id_slip", Label: "Photo of your NIN slip", Type: "upload", MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits.", Value: "NIN: 12345678901"},
+			{Name: "id_voice", Label: "Say your number", Type: "voice"},
 		},
 		Actions: []webFlowAction{{Kind: "submit", Name: "pay", Label: "Pay now"}},
 	}
@@ -155,5 +157,34 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "name=\"method\"") {
 		t.Fatal("webflow.html must render grouped radio inputs with the field name")
+	}
+	html := buf.String()
+	if !strings.Contains(html, "/w/"+flowPage.Token+"/media") {
+		t.Fatal("webflow.html must render the media upload action for upload/voice fields")
+	}
+	if !strings.Contains(html, "accept=\"image/*\"") || !strings.Contains(html, "accept=\"audio/*\" capture") {
+		t.Fatal("webflow.html must render image capture for upload fields and audio capture for voice fields")
+	}
+	// The camera scanner is an external, CSP-safe enhancement wired only when
+	// an upload (image) field is on the page.
+	if !strings.Contains(html, "📷 Scan with camera") || !strings.Contains(html, "data-scan=\"1\"") {
+		t.Fatal("webflow.html must render the camera-scan button for image upload fields")
+	}
+	if !strings.Contains(html, "/static/webflow-scan.js") {
+		t.Fatal("webflow.html must load the external scan script")
+	}
+	if !strings.Contains(html, "Read from your upload:") || !strings.Contains(html, "NIN: 12345678901") {
+		t.Fatal("webflow.html must show previously extracted upload text as confirmation")
+	}
+	if !strings.Contains(html, "Extract the 11-digit NIN or BVN number from this identity slip") {
+		t.Fatal("webflow.html must carry the OCR prompt as a hidden field")
+	}
+	// The upload/voice inputs must live in their own form, not inside the main
+	// POST-to-/w/{token} form (nested forms are invalid HTML). The main form
+	// is the first one to close, so the media form must start after it.
+	mainFormEnd := strings.Index(html, "</form>")
+	mediaForm := strings.Index(html, "/media")
+	if mediaForm < 0 || mediaForm < mainFormEnd {
+		t.Fatal("media upload form must render after the main flow form, not nested inside it")
 	}
 }

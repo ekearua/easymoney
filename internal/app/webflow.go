@@ -35,11 +35,14 @@ type webFlowOption struct {
 type webFlowField struct {
 	Name     string
 	Label    string
-	Type     string // text | email | tel | number | date | amount | textarea | select | radio | hidden
+	Type     string // text | email | tel | number | date | amount | textarea | select | radio | hidden | upload | voice
 	Value    string
 	Hint     string
 	Required bool
 	Options  []webFlowOption
+	// MediaPrompt is the OCR instruction sent with an upload field's image to
+	// ports.ImageReader. Voice fields always transcribe speech to text.
+	MediaPrompt string
 }
 
 type webFlowLine struct {
@@ -106,6 +109,7 @@ func (a *App) webFlowPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Something went wrong loading this page. Go back to WhatsApp and tap the link again.", http.StatusInternalServerError)
 		return
 	}
+	a.wfPrefillMediaValues(&page, flow)
 	page.Token = flow.Token
 	page.AppName = a.cfg.AppName
 	page.WhatsAppLink = a.whatsappDeepLink()
@@ -125,7 +129,16 @@ func (a *App) webFlowSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	// urlencoded posts take ParseForm; multipart posts (upload/voice fields
+	// render as their own forms with enctype="multipart/form-data") take
+	// ParseMultipartForm. On Go 1.21+ ParseMultipartForm returns
+	// ErrNotMultipart for urlencoded bodies, so the branch matters.
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+	} else if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
@@ -143,6 +156,7 @@ func (a *App) webFlowSubmit(w http.ResponseWriter, r *http.Request) {
 	if page == nil {
 		return // handler already redirected
 	}
+	a.wfPrefillMediaValues(page, flow)
 	page.Token = flow.Token
 	page.AppName = a.cfg.AppName
 	page.WhatsAppLink = a.whatsappDeepLink()
@@ -172,6 +186,19 @@ func (a *App) webFlowContext(w http.ResponseWriter, r *http.Request) (store.WebF
 		return store.WebFlow{}, store.User{}, false
 	}
 	return flow, user, true
+}
+
+// wfPrefillMediaValues surfaces previously extracted upload/voice text as the
+// field's value so a re-rendered step confirms what was read before asking the
+// customer to continue. Any flow that adds an upload or voice field gets this
+// automatically.
+func (a *App) wfPrefillMediaValues(page *webFlowPage, flow store.WebFlow) {
+	for i := range page.Fields {
+		f := &page.Fields[i]
+		if (f.Type == "upload" || f.Type == "voice") && f.Value == "" {
+			f.Value = flow.Payload[f.Name]
+		}
+	}
 }
 
 // wfAdvance persists the new step/payload and redirects to the GET page

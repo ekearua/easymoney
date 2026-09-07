@@ -165,8 +165,18 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 			return page, err
 		}
 		page.Title = "Who are you paying?"
-		page.Intro = "Choose the merchant, then pick a service, event ticket, or enter a custom amount."
-		page.Fields = []webFlowField{{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions(merchants)}}
+		page.Intro = "Choose the merchant, then pick a service, event ticket, or enter a custom amount. You can also snap the bill or say the amount below to prefill the form."
+		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions(merchants)}
+		// When a bill photo or voice note was already captured on this step
+		// (the media upload posts back here), pre-select the merchant named in
+		// it so the customer only confirms. The choice stays visible and is
+		// required, so nothing is charged without an explicit Continue.
+		if flow.Payload["merchant_slug"] == "" {
+			if slug := wfBillMerchantSlug(wfBillCapturedText(flow.Payload), merchants); slug != "" {
+				merchantField.Value = slug
+			}
+		}
+		page.Fields = append([]webFlowField{merchantField}, wfBillCaptureFields()...)
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	case "item":
@@ -221,7 +231,16 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		page.Title = "Amount"
 		page.Intro = fmt.Sprintf("How much would you like to pay? Between %s and %s.",
 			domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(a.cfg.PaymentMaxKobo))
-		page.Fields = []webFlowField{{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true}}
+		amountField := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true}
+		if flow.Payload["amount_kobo"] == "" {
+			// A bill photo or voice note captured earlier supplies the amount;
+			// the customer confirms it here before the charge is created.
+			if read := wfBillAmountKobo(wfBillCapturedText(flow.Payload)); read >= a.cfg.PaymentMinKobo && read <= a.cfg.PaymentMaxKobo {
+				amountField.Value = wfKoboToNairaInput(read)
+				amountField.Hint = "Read from your bill or voice note — confirm or edit before continuing."
+			}
+		}
+		page.Fields = []webFlowField{amountField}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "review":
@@ -250,6 +269,10 @@ func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage)
 		{Term: "Item", Desc: item},
 		{Term: "Amount", Desc: domain.FormatNGN(amount)},
 		{Term: "Method", Desc: "Choose below"},
+	}
+	// Show where the amount came from when a bill/voice note supplied it.
+	if read := wfBillAmountKobo(wfBillCapturedText(flow.Payload)); read > 0 && read == amount {
+		page.Review = append(page.Review, webFlowLine{Term: "Read from your bill/voice", Desc: domain.FormatNGN(read)})
 	}
 	page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
 	page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(amount)}, {Name: "back", Label: "Back"}}

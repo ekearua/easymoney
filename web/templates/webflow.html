@@ -24,33 +24,36 @@
     {{end}}
     <form method="post" action="/w/{{.Token}}">
       {{range .Fields}}
-        {{if eq .Type "hidden"}}
-          <input type="hidden" name="{{.Name}}" value="{{.Value}}">
-        {{else if eq .Type "select"}}
-          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-          <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}>
-            <option value="" selected disabled hidden>Choose…</option>
-            {{range .Options}}<option value="{{.Value}}">{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
-          </select>
-        {{else if eq .Type "radio"}}
-          {{$field := .}}
-          <fieldset class="radio-group">
-            <legend>{{.Label}}{{if .Required}} *{{end}}</legend>
-            {{range .Options}}
-            <label class="radio"><input type="radio" name="{{$field.Name}}" value="{{.Value}}" {{if eq .Value $field.Value}}checked{{end}} required><span><strong>{{.Label}}</strong>{{if .Description}}<small class="muted">{{.Description}}</small>{{end}}</span></label>
-            {{end}}
-          </fieldset>
-        {{else if eq .Type "textarea"}}
-          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-          <textarea id="{{.Name}}" name="{{.Name}}" rows="3" {{if .Required}}required{{end}}>{{.Value}}</textarea>
-        {{else}}
-          <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-          {{if eq .Type "amount"}}
-            <input id="{{.Name}}" name="{{.Name}}" type="text" inputmode="decimal" autocomplete="off" value="{{.Value}}" {{if .Required}}required{{end}} placeholder="e.g. 5000">
+        {{if and (ne .Type "upload") (ne .Type "voice")}}
+          {{if eq .Type "hidden"}}
+            <input type="hidden" name="{{.Name}}" value="{{.Value}}">
+          {{else if eq .Type "select"}}
+            {{$field := .}}
+            <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+            <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}>
+              <option value="" {{if not $field.Value}}selected{{end}} disabled hidden>Choose…</option>
+              {{range .Options}}<option value="{{.Value}}"{{if eq .Value $field.Value}} selected{{end}}>{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
+            </select>
+          {{else if eq .Type "radio"}}
+            {{$field := .}}
+            <fieldset class="radio-group">
+              <legend>{{.Label}}{{if .Required}} *{{end}}</legend>
+              {{range .Options}}
+              <label class="radio"><input type="radio" name="{{$field.Name}}" value="{{.Value}}" {{if eq .Value $field.Value}}checked{{end}} required><span><strong>{{.Label}}</strong>{{if .Description}}<small class="muted">{{.Description}}</small>{{end}}</span></label>
+              {{end}}
+            </fieldset>
+          {{else if eq .Type "textarea"}}
+            <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+            <textarea id="{{.Name}}" name="{{.Name}}" rows="3" {{if .Required}}required{{end}}>{{.Value}}</textarea>
           {{else}}
-            <input id="{{.Name}}" name="{{.Name}}" type="{{.Type}}" value="{{.Value}}" {{if .Required}}required{{end}}>
+            <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
+            {{if eq .Type "amount"}}
+              <input id="{{.Name}}" name="{{.Name}}" type="text" inputmode="decimal" autocomplete="off" value="{{.Value}}" {{if .Required}}required{{end}} placeholder="e.g. 5000">
+            {{else}}
+              <input id="{{.Name}}" name="{{.Name}}" type="{{.Type}}" value="{{.Value}}" {{if .Required}}required{{end}}>
+            {{end}}
+            {{if .Hint}}<p class="muted">{{.Hint}}</p>{{end}}
           {{end}}
-          {{if .Hint}}<p class="muted">{{.Hint}}</p>{{end}}
         {{end}}
       {{end}}
       {{if .Actions}}
@@ -65,8 +68,32 @@
         </div>
       {{end}}
     </form>
+    {{range .Fields}}
+      {{if or (eq .Type "upload") (eq .Type "voice")}}
+        <div class="media-upload">
+          <span class="media-label">{{.Label}}{{if .Required}} *{{end}}</span>
+          {{if .Value}}<p class="muted">{{if eq .Type "upload"}}Read from your upload:{{else}}Heard:{{end}} <strong>{{.Value}}</strong></p>{{end}}
+          <form method="post" action="/w/{{$.Token}}/media" enctype="multipart/form-data">
+            {{if eq .Type "upload"}}
+              <input type="file" name="file" accept="image/*"{{if .Required}} required{{end}}>
+              <div class="wf-scan">
+                <button type="button" class="wf-scan-open" data-scan="1">📷 Scan with camera</button>
+              </div>
+            {{else}}
+              <input type="file" name="file" accept="audio/*" capture{{if .Required}} required{{end}}>
+            {{end}}
+            <input type="hidden" name="field" value="{{.Name}}">
+            {{if .MediaPrompt}}<input type="hidden" name="prompt" value="{{.MediaPrompt}}">{{end}}
+            {{if eq .Type "upload"}}<button type="submit">Upload &amp; read</button>{{else}}<button type="submit">Transcribe</button>{{end}}
+          </form>
+          {{if .Hint}}<p class="muted">{{.Hint}}</p>{{end}}
+        </div>
+      {{end}}
+    {{end}}
   {{end}}
   {{if .WhatsAppLink}}<p class="muted">Open <a href="{{.WhatsAppLink}}">WhatsApp</a> to return to your Xego chat.</p>{{end}}
   <p class="muted">Xego completes every payment only after it is verified on our side.</p>
-</main></body></html>
+</main>
+<script src="/static/webflow-scan.js" defer></script>
+</body></html>
 {{end}}
