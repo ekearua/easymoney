@@ -273,7 +273,13 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	if from == to {
 		return false, tx.Commit(ctx)
 	}
-	if !domain.CanTransition(from, to) {
+	// The inline wallet rail skips the external "initialized" hop: a gateway
+	// payment moves awaiting_confirmation -> initialized when its hosted page
+	// is minted, then -> succeeded on verification, but a wallet payment is
+	// confirmed atomically against the payer's wallet balance, so
+	// awaiting_confirmation -> succeeded is the only allowed shortcut.
+	if !domain.CanTransition(from, to) &&
+		!(provider == ProviderWallet && from == domain.StatusAwaitingConfirmation && to == domain.StatusSucceeded) {
 		return false, fmt.Errorf("invalid payment transition %s -> %s", from, to)
 	}
 	raw, err := json.Marshal(detail)
@@ -361,7 +367,12 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	if err := s.insertPaymentEvent(ctx, tx, paymentID, from, to, source, userID, merchantID, provider, reference, amountKobo, currency); err != nil {
 		return false, err
 	}
-	if outbox != nil && outbox.Channel != ChannelAPI {
+	// Only write an outbox row when the transition should notify a customer
+	// on a chat rail. ChannelAPI (Partner API: no session) and ChannelCheckout
+	// (web flow: the flow already sends message 2) carry their confirmation
+	// elsewhere, so the sentinel spec they supply must not become a junk row —
+	// in passthrough mode the empty payload would even be invalid jsonb.
+	if outbox != nil && outbox.Channel != ChannelAPI && outbox.Channel != ChannelCheckout {
 		if outbox.Channel == "" {
 			outbox.Channel = "whatsapp"
 		}

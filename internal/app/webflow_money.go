@@ -524,6 +524,11 @@ func friendlyWebPaymentError(err error) string {
 // options visible so the customer can switch rail and retry, and returning a
 // nil error stops webFlowSubmit from falling through to a bare 500.
 func (a *App) wfRoutePaymentFailed(r *http.Request, flow store.WebFlow, user store.User, err error) (*webFlowPage, error) {
+	// Always surface the underlying reason in the logs: the friendly page copy
+	// deliberately hides the raw error, so without this line wallet confirm
+	// failures would be impossible to diagnose after the fact.
+	a.logger.WarnContext(r.Context(), "web flow payment failed",
+		"flow_id", flow.ID, "payee", flow.UserID, "step", flow.Step, "error", err)
 	msg := friendlyWebPaymentError(err)
 	page, rerr := a.wfRenderStep(r, flow, user)
 	if rerr != nil {

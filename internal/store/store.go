@@ -211,6 +211,14 @@ type AdminUser struct {
 // no chat session to send one to, so transitionPayment skips the outbox row.
 const ChannelAPI = "api"
 
+// ChannelCheckout is the channel recorded on payments initiated from a browser
+// web flow or a public request-money link. Those payments deliver their
+// confirmation (message 2) inside the flow itself, so the terminal transition
+// must not queue a second generic status message; like ChannelAPI, no outbox
+// row is written. PaymentService.resultOutbox returns this as a sentinel spec
+// so transitionPayment can recognise the no-outbox case.
+const ChannelCheckout = "checkout"
+
 // metadataValue returns a JSONB-safe payload for the payments.metadata column,
 // defaulting to an empty object so the NOT NULL constraint is always satisfied.
 func metadataValue(raw json.RawMessage) string {
