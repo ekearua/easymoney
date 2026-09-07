@@ -5,6 +5,7 @@ import (
 
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/ai"
+	"whatsapp-payment-demo/internal/store"
 )
 
 func TestMenuRowsStayWithinWhatsAppLimit(t *testing.T) {
@@ -13,7 +14,8 @@ func TestMenuRowsStayWithinWhatsAppLimit(t *testing.T) {
 		name string
 		rows []ports.InteractiveRow
 	}{
-		{name: "main menu", rows: mainMenuRows()},
+		{name: "main menu (complete profile)", rows: mainMenuRows()},
+		{name: "main menu (profile incomplete)", rows: menuRowsFor(store.User{})},
 		{name: "merchant services", rows: merchantServicesRows()},
 		{name: "thrift menu", rows: thriftMenuRows()},
 	}
@@ -25,6 +27,37 @@ func TestMenuRowsStayWithinWhatsAppLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMenuProfileRowShownOnlyWhenProfileIncomplete(t *testing.T) {
+	t.Parallel()
+	incomplete := store.User{}
+	rows := menuRowsFor(incomplete)
+	if !containsRowID(t, rows, "menu_profile") {
+		t.Fatalf("expected 'Complete profile' row when name/email missing, got %#v", rows)
+	}
+	if containsRowID(t, rows, "menu_my_limits") {
+		t.Fatalf("'My limits' must yield its slot to 'Complete profile' when the profile is incomplete")
+	}
+
+	complete := store.User{DisplayName: "Ada", Email: "ada@example.com"}
+	rows = menuRowsFor(complete)
+	if !containsRowID(t, rows, "menu_my_limits") {
+		t.Fatalf("expected 'My limits' row when the profile is complete, got %#v", rows)
+	}
+	if containsRowID(t, rows, "menu_profile") {
+		t.Fatalf("'Complete profile' must not displace 'My limits' for a complete profile")
+	}
+}
+
+func containsRowID(t *testing.T, rows []ports.InteractiveRow, id string) bool {
+	t.Helper()
+	for _, row := range rows {
+		if row.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNestedMenuRowsExposeExpectedActions(t *testing.T) {
@@ -58,6 +91,7 @@ func TestMenuRowIDsCoveredByDispatch(t *testing.T) {
 	t.Parallel()
 	var all []ports.InteractiveRow
 	all = append(all, mainMenuRows()...)
+	all = append(all, menuRowsFor(store.User{})...)
 	all = append(all, merchantServicesRows()...)
 	all = append(all, thriftMenuRows()...)
 

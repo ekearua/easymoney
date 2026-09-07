@@ -122,7 +122,7 @@ func (s *ConversationService) handleMerchantRegistrationDescription(ctx context.
 		request.BusinessName, request.Category, request.Reference)); err != nil {
 		return err
 	}
-	return s.sendMenu(ctx, channel, recipient)
+	return s.sendMenu(ctx, channel, recipient, user)
 }
 
 func (s *ConversationService) sendMerchantDashboard(ctx context.Context, channel, recipient string, user store.User) error {

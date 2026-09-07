@@ -154,7 +154,7 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, message.Channel, recipient)
+		return s.sendMenu(ctx, message.Channel, recipient, user)
 	}
 	if strings.EqualFold(input, "cancel") || input == "cancel_payment" {
 		s.abandonSessionPayment(ctx, user, session)
@@ -162,7 +162,7 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, message.Channel, recipient)
+		return s.sendMenu(ctx, message.Channel, recipient, user)
 	}
 	if isInterruptibleState(session.State) {
 		if interruptType, interruptArg := isPaymentInterrupt(input); interruptType != "" {
@@ -191,6 +191,13 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	}
 
 	switch session.State {
+	case "onboard_name", "onboard_email", "onboard_email_code":
+		// Reachable via the optional "Complete profile" menu row after
+		// first contact auto-confirms the WhatsApp number. Incomplete
+		// onboarding still gates earlier in Handle for legacy users.
+		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
+	case "onboard_confirm_account":
+		return s.handleAccountConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "select_merchant":
 		return s.handleMerchant(ctx, message.Channel, recipient, user, session, input)
 	case "select_service_or_amount":
@@ -530,7 +537,7 @@ func (s *ConversationService) handleAIAssistant(ctx context.Context, channel, re
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	}
 	if s.chatAI == nil {
 		return s.sendText(ctx, channel, recipient, "AI assistant is not available right now. Type MENU to see your options.")
@@ -583,7 +590,7 @@ func (s *ConversationService) routeAIIntent(ctx context.Context, channel, recipi
 		}
 		return s.sendText(ctx, channel, recipient, "Send your NIN or BVN as: NIN <11-digit number> or BVN <11-digit number>")
 	case "menu":
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	case "help":
 		return s.sendHelp(ctx, channel, recipient)
 	case "status":
@@ -593,7 +600,7 @@ func (s *ConversationService) routeAIIntent(ctx context.Context, channel, recipi
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	case "ai":
 		session.State = "ai_assistant"
 		if err := s.saveSession(ctx, session); err != nil {

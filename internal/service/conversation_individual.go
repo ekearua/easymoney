@@ -202,7 +202,7 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 		if err := s.sendText(ctx, channel, recipient, "No problem. Your Xego individual profile is Level 2 (identity on file) and approved for this demo.\n\nYou can create thrift contribution groups."); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	}
 	fields := strings.Fields(raw)
 	if len(fields) < 2 {
@@ -253,7 +253,7 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 		if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nRisk profile: %s.\n\nYou can now create thrift contribution groups.", strings.ToUpper(riskProfile.RiskBand))); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	case "mismatch", "not_found":
 		return s.sendText(ctx, channel, recipient, result.Message+".\n\nDouble-check the number and send it again as NIN <number> or BVN <number>, or type SKIP to stay at Level 2.")
 	default:

@@ -602,7 +602,7 @@ func (s *ConversationService) handleInvoiceReview(ctx context.Context, channel, 
 		invoice.MerchantName, invoice.CustomerWhatsAppNumber, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)); err != nil {
 		return err
 	}
-	return s.sendMenu(ctx, channel, recipient)
+	return s.sendMenu(ctx, channel, recipient, user)
 }
 
 func (s *ConversationService) startInvoicePayment(ctx context.Context, channel, recipient string, user store.User, session store.Session, reference string) error {

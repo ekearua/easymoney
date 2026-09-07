@@ -30,6 +30,25 @@ func (s *ConversationService) blockPaymentCredentialMessage(ctx context.Context,
 		"We can't accept that. Xego never asks for card numbers, PINs, CVVs, or OTPs in chat, and we've logged this for security. Your pending request hasn't changed - send MENU or continue with what you were doing.")
 }
 
+// startProfileCompletion is the optional onboarding path reachable from the
+// "Complete profile" menu row. WhatsApp users finish name/email in the browser
+// flow; other channels and CLI tests reuse the chat onboarding states. A user
+// whose name and email are already on file is told so instead of being asked
+// again.
+func (s *ConversationService) startProfileCompletion(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	if s.WebFlowEnabled(channel, WebFlowOnboard) {
+		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowOnboard, "", "", nil)
+	}
+	if user.DisplayName != "" && user.Email != "" {
+		return s.sendText(ctx, channel, recipient, "Your profile already has a name and email on file.")
+	}
+	session.State, session.Data = "onboard_name", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, "What name should we use on your receipts?")
+}
+
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if session.State == "web_flow_active" {
 		// The customer is finishing onboarding in the browser; do not yank
@@ -120,7 +139,7 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed for Xego payments."); err != nil {
 			return err
 		}
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	case input == "cancel_number" || input == "cancel_account" || strings.EqualFold(input, "cancel"):
 		session.State, session.Data = "onboard_name", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {

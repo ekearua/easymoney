@@ -64,7 +64,7 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 	}
 	switch strings.ToLower(input) {
 	case "menu_main", "main menu", "back":
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	case "pay", "menu_pay", "make payment":
 		if s.WebFlowEnabled(channel, WebFlowPay) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowPay, "", "", nil)
@@ -170,6 +170,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendHistory(ctx, channel, recipient, user)
 	case "my limits", "menu_my_limits", "limits":
 		return s.handleMyLimits(ctx, channel, recipient, user)
+	case "complete profile", "menu_profile", "profile":
+		return s.startProfileCompletion(ctx, channel, recipient, user, session)
 	case "help", "menu_help":
 		return s.sendHelp(ctx, channel, recipient)
 	case "ask xego", "menu_ai", "ai", "assistant":
@@ -182,20 +184,37 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		}
 		return s.sendText(ctx, channel, recipient, "I'm Xego's AI assistant. Ask me anything about payments, data, or thrift groups. Type MENU to exit.")
 	default:
-		return s.sendMenu(ctx, channel, recipient)
+		return s.sendMenu(ctx, channel, recipient, user)
 	}
 }
 
-func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string) error {
+// sendMenu shows the main menu. When the user's profile still needs a name or
+// email, the "Complete profile" row is surfaced in place of the rarely-used
+// "My limits" item (WhatsApp list messages cap at 10 rows), so a brand-new
+// user onboards through the menu instead of a blocking first-contact gate.
+func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string, user store.User) error {
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:          recipient,
 		Body:        "Welcome back to Xego. What would you like to do?",
 		ButtonLabel: "Open menu",
 		Sections: []ports.InteractiveSection{{
 			Title: "Xego",
-			Rows:  mainMenuRows(),
+			Rows:  menuRowsFor(user),
 		}},
 	})
+}
+
+func menuRowsFor(user store.User) []ports.InteractiveRow {
+	rows := mainMenuRows()
+	if user.DisplayName == "" || user.Email == "" {
+		for i, row := range rows {
+			if row.ID == "menu_my_limits" {
+				rows[i] = ports.InteractiveRow{ID: "menu_profile", Title: "Complete profile", Description: "Set your name and email for receipts"}
+				break
+			}
+		}
+	}
+	return rows
 }
 
 func (s *ConversationService) sendMerchantServicesMenu(ctx context.Context, channel, recipient string) error {
@@ -281,6 +300,8 @@ func menuRowCovers(id string) bool {
 	case "menu_history":
 		return true
 	case "menu_my_limits":
+		return true
+	case "menu_profile":
 		return true
 	case "menu_ai":
 		return true

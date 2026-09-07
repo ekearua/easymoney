@@ -44,9 +44,16 @@ type Session struct {
 }
 
 // GetOrCreateUser resolves a customer by normalized WhatsApp number.
+//
+// The WhatsApp number the customer is writing from is trusted as their
+// account identity without a separate confirmation step, so a brand-new
+// user's first MENU opens the real main menu instead of an onboarding
+// gate.  Onboarding name/email is optional (the "Complete profile" menu row),
+// and L2+ flows collect profile details when they are actually needed.
 func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error) {
 	const query = `
-		INSERT INTO users (whatsapp_number, whatsapp_verified_at, verification_level) VALUES ($1, now(), 'whatsapp_inbound')
+		INSERT INTO users (whatsapp_number, whatsapp_verified_at, verification_level, onboarding_complete, number_confirmed_at)
+		VALUES ($1, now(), 'whatsapp_confirmed', true, now())
 		ON CONFLICT (whatsapp_number) DO UPDATE SET
 			updated_at = now(),
 			last_inbound_at = now(),
