@@ -73,6 +73,18 @@ func TestSettlementLifecycle(t *testing.T) {
 		if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil || !changed {
 			t.Fatalf("succeed payment: changed=%v err=%v", changed, err)
 		}
+		// The merchant-payable accrual is recorded by the service layer via
+		// ApplyPaymentSplits; mirror it so the merchant's settlement position
+		// accrues before the cut.
+		if err := repository.ApplyPaymentSplits(ctx, payment.ID, merchant.ID, []SplitSpec{{
+			SplitType:   "merchant_receivable",
+			Account:     LedgerAccountMerchantPayable,
+			AmountKobo:  amount,
+			Currency:    "NGN",
+			Description: "Merchant receivable",
+		}}); err != nil {
+			t.Fatal(err)
+		}
 		return payment.ID
 	}
 

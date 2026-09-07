@@ -1111,6 +1111,18 @@ func TestLedgerDoubleEntry(t *testing.T) {
 	if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil {
 		t.Fatal(err)
 	}
+	// The merchant-payable accrual is recorded by the service layer via
+	// ApplyPaymentSplits (PaymentService.applyCollectionSplits), so mirror it
+	// here to exercise the full merchant-collection ledger flow.
+	if err := repository.ApplyPaymentSplits(ctx, payment.ID, merchant.ID, []SplitSpec{{
+		SplitType:   "merchant_receivable",
+		Account:     LedgerAccountMerchantPayable,
+		AmountKobo:  55_000,
+		Currency:    "NGN",
+		Description: "Merchant receivable",
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	entries, err := repository.ListLedgerEntries(ctx, 50)
 	if err != nil {
 		t.Fatal(err)
@@ -1302,6 +1314,17 @@ func TestMerchantLedgerBalance(t *testing.T) {
 		if _, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusSucceeded, "test", nil); err != nil {
 			return uuid.Nil, err
 		}
+		// The merchant-payable accrual is recorded by the service layer via
+		// ApplyPaymentSplits; mirror it so the merchant ledger position accrues.
+		if err := repository.ApplyPaymentSplits(ctx, payment.ID, merchant, []SplitSpec{{
+			SplitType:   "merchant_receivable",
+			Account:     LedgerAccountMerchantPayable,
+			AmountKobo:  amount,
+			Currency:    "NGN",
+			Description: "Merchant receivable",
+		}}); err != nil {
+			return uuid.Nil, err
+		}
 		return payment.ID, nil
 	}
 
@@ -1379,11 +1402,11 @@ func TestMerchantLedgerBalance(t *testing.T) {
 	}
 }
 
-// TestReconciliationThreeWay exercises the C17 three-way reconciliation: the
-// internal payments state, the C16 ledger money-in postings, and the simulated
-// bank rail must all agree. Clean runs are expected when every succeeded
-// payment has a money-in posting; a confirmed bank transfer for a payment that
-// was never succeeded must surface as a discrepancy.
+// TestReconciliationThreeWay exercises the C17 reconciliation: the internal
+// payments state and the C16 ledger money-in postings must agree. A clean run
+// is expected when every succeeded payment has its money-in posting. The
+// simulated bank rail was retired when bank transfers moved to the Interswitch
+// gateway (7ae7367), so reconciliation is now two-way (internal vs ledger).
 func TestReconciliationThreeWay(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
@@ -1446,35 +1469,12 @@ func TestReconciliationThreeWay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A second, pending bank-transfer payment whose simulation is force-confirmed
-	// without a success transition: the bank leg has money the internal state
-	// does not, so the run must report a bank_without_internal discrepancy.
-	pendingToken, err := domain.NewReceiptToken()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pendingPayment, err := repository.CreatePayment(ctx, domain.Payment{
-		ID: uuid.New(), UserID: user.ID, MerchantID: merchant.ID, AmountKobo: 7_500,
-		Currency: "NGN", Status: domain.StatusDraft, Provider: "bank_transfer",
-		ProviderReference: domain.NewProviderReference(), ReceiptToken: pendingToken,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, err := repository.TransitionPayment(ctx, pendingPayment.ID, domain.StatusAwaitingConfirmation, "recon-test", nil); err != nil || !changed {
-		t.Fatalf("transition to awaiting confirmation: changed=%v err=%v", changed, err)
-	}
-	if _, err := repository.InitializeBankTransferSimulation(ctx, pendingPayment.ID, accounts[0].ID, uuid.NewString()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repository.pool.Exec(ctx, `
-		UPDATE bank_transfer_simulations
-		SET status='user_confirmed', confirmed_at=now(), updated_at=now()
-		WHERE payment_id=$1`, pendingPayment.ID); err != nil {
-		t.Fatal(err)
-	}
+	// The simulated bank rail was retired when bank transfers moved to the
+	// Interswitch gateway (7ae7367), so reconciliation is two-way: internal
+	// succeeded payments vs ledger money-in postings. A payment that never
+	// reached succeeded is simply absent from both legs — no discrepancy.
 
-	// A succeeded Paystack payment (no bank leg by design).
+	// A succeeded Paystack payment.
 	psToken, err := domain.NewReceiptToken()
 	if err != nil {
 		t.Fatal(err)
@@ -1507,23 +1507,16 @@ func TestReconciliationThreeWay(t *testing.T) {
 	if run.LedgerCount != 2 {
 		t.Fatalf("expected 2 ledger money-in postings, got %d", run.LedgerCount)
 	}
-	if run.BankCount != 2 {
-		t.Fatalf("expected 2 confirmed bank transfers, got %d", run.BankCount)
+	// The retired bank rail means no bank leg: every succeeded payment has its
+	// money-in posting, so the two-way run is clean.
+	if run.BankCount != 0 {
+		t.Fatalf("bank rail retired: expected 0 bank legs, got %d", run.BankCount)
 	}
-	if run.DiscrepancyCount != 1 {
-		t.Fatalf("expected 1 discrepancy, got %d (items=%+v)", run.DiscrepancyCount, items)
+	if run.DiscrepancyCount != 0 {
+		t.Fatalf("expected no discrepancies, got %d (items=%+v)", run.DiscrepancyCount, items)
 	}
-	if run.Status != "discrepancies" {
-		t.Fatalf("expected discrepancy status, got %s", run.Status)
-	}
-	found := false
-	for _, it := range items {
-		if it.Category == "bank_without_internal" && it.Reference == pendingPayment.ID.String() {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected bank_without_internal for %s, got %+v", pendingPayment.ID, items)
+	if run.Status != "clean" {
+		t.Fatalf("expected clean status, got %s", run.Status)
 	}
 	if run.ID == 0 {
 		t.Fatal("expected persisted reconciliation run id")
@@ -1539,8 +1532,8 @@ func TestReconciliationThreeWay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored) != 1 {
-		t.Fatalf("expected 1 stored item, got %d", len(stored))
+	if len(stored) != 0 {
+		t.Fatalf("expected no stored items, got %d", len(stored))
 	}
 }
 

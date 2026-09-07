@@ -567,7 +567,11 @@ func (s *Store) AdvanceKYBTier(ctx context.Context, merchantID uuid.UUID, to str
 	if err := tx.Commit(ctx); err != nil {
 		return KYBProfile{}, fmt.Errorf("commit kyb advance: %w", err)
 	}
-	return profile, nil
+	// Re-read the profile so the returned struct reflects the post-update row:
+	// the UPDATE clears advancement_request and marks the tier approved, but
+	// the RETURNING above does not carry those columns, so without a re-read
+	// callers would see a stale pending request.
+	return s.KYBProfileByMerchant(ctx, merchantID)
 }
 
 // DowngradeKYBTier moves a merchant to a lower business tier and audits the

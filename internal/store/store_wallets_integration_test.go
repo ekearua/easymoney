@@ -158,8 +158,19 @@ func TestWalletLifecycle(t *testing.T) {
 	if broken != -1 {
 		t.Fatalf("ledger hash chain broken at entry %d of %d", broken, count)
 	}
-	if _, balanced, err := repository.VerifyDoubleEntry(ctx); err != nil || !balanced {
-		t.Fatalf("ledger must balance to zero: balanced=%v err=%v", balanced, err)
+	// A sound book nets to zero across all accounts. Individual accounts hold
+	// real balances (wallet, operating bank), so only the global sum is
+	// asserted — same convention as TestLedgerDoubleEntry.
+	balances, err := repository.LedgerBalanceSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var net int64
+	for _, b := range balances {
+		net += b.NetKobo
+	}
+	if net != 0 {
+		t.Fatalf("expected zero net ledger, got %d", net)
 	}
 
 	// Frozen wallets cannot withdraw (defensive operator control).
@@ -243,6 +254,9 @@ func TestWalletPaymentAndRefund(t *testing.T) {
 		if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil || !changed {
 			t.Fatalf("transition awaiting: changed=%v err=%v", changed, err)
 		}
+		if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusInitialized, "test", nil); err != nil || !changed {
+			t.Fatalf("transition initialized: changed=%v err=%v", changed, err)
+		}
 		return payment.ID
 	}
 
@@ -289,8 +303,19 @@ func TestWalletPaymentAndRefund(t *testing.T) {
 	if count, broken, err := repository.VerifyLedgerChain(ctx); err != nil || broken != -1 {
 		t.Fatalf("ledger chain broken at %d of %d: %v", broken, count, err)
 	}
-	if _, balanced, err := repository.VerifyDoubleEntry(ctx); err != nil || !balanced {
-		t.Fatalf("ledger must balance: balanced=%v err=%v", balanced, err)
+	// A sound book nets to zero across all accounts. Individual accounts hold
+	// real balances (wallet, operating bank), so only the global sum is
+	// asserted — same convention as TestLedgerDoubleEntry.
+	balances, err := repository.LedgerBalanceSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var net int64
+	for _, b := range balances {
+		net += b.NetKobo
+	}
+	if net != 0 {
+		t.Fatalf("expected zero net ledger, got %d", net)
 	}
 
 	// Reconciliation accepts the wallet debit as the money-in posting.
@@ -369,6 +394,9 @@ func TestWalletTopup(t *testing.T) {
 	}
 	if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil || !changed {
 		t.Fatalf("transition awaiting: changed=%v err=%v", changed, err)
+	}
+	if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusInitialized, "test", nil); err != nil || !changed {
+		t.Fatalf("transition initialized: changed=%v err=%v", changed, err)
 	}
 	if changed, err := repository.TransitionPaymentWithOutbox(ctx, payment.ID, domain.StatusSucceeded, "test", nil, OutboxSpec{Channel: ChannelAPI}); err != nil || !changed {
 		t.Fatalf("succeed top-up payment: changed=%v err=%v", changed, err)

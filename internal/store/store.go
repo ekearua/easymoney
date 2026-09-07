@@ -282,13 +282,48 @@ func migrateOn(ctx context.Context, conn *pgxpool.Conn) error {
 	return nil
 }
 
-// Seed refreshes the baseline merchant fixtures.
+// Seed refreshes the baseline merchant fixtures plus the demo-visible
+// merchant-adjacent rows that later migrations introduce: the business KYB
+// baseline (B0, screened clear, approved) and the two system merchants used
+// by the individual-pay and wallet-topup rails. Tests truncate these tables
+// and call Seed, so Seed must reproduce the post-migrate state or KYB
+// advancement and system-merchant lookups break on a fresh database.
 func (s *Store) Seed(ctx context.Context) error {
 	body, err := migrationFiles.ReadFile("migrations/002_seed_merchants.sql")
 	if err != nil {
 		return err
 	}
 	if _, err = s.pool.Exec(ctx, string(body)); err != nil {
+		return err
+	}
+	// System merchants created by migrations 057/059. On CONFLICT we refresh
+	// the metadata exactly like those migrations' upserts.
+	if _, err = s.pool.Exec(ctx, `
+		INSERT INTO merchants(slug,name,category,description,active,search_keywords,sort_order)
+		VALUES
+		    ('xego-individual-pay', 'Xego Individual Pay', 'Transfers',
+		     'System recipient for Xego individual-to-individual transfer payments.',
+		     false, 'xego individual pay transfer send money', 9999),
+		    ('xego-wallet-topup', 'Xego Wallet Top-up', 'Wallet',
+		     'System recipient for Xego wallet funding payments.',
+		     false, 'xego wallet top up fund add money deposit', 9999)
+		ON CONFLICT(slug) DO UPDATE
+		SET name=EXCLUDED.name,
+		    category=EXCLUDED.category,
+		    description=EXCLUDED.description,
+		    active=EXCLUDED.active,
+		    search_keywords=EXCLUDED.search_keywords,
+		    sort_order=EXCLUDED.sort_order`); err != nil {
+		return err
+	}
+	// Grandfather every merchant into the B0 baseline with a clear screening
+	// decision, mirroring migration 053, so truncate+seed leaves KYB
+	// advancement unlocked exactly like a fresh migrate.
+	if _, err = s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_profiles (merchant_id, tier, evidence, last_screening_decision, last_screen_at, rescreen_due, review_status)
+		SELECT m.id, 'B0', '["registration_approved"]'::jsonb, 'clear', now(), now() + interval '90 days', 'approved'
+		FROM merchants m
+		ON CONFLICT (merchant_id) DO NOTHING`); err != nil {
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
