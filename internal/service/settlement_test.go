@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/providers/payout"
 	"whatsapp-payment-demo/internal/store"
 )
@@ -34,6 +35,16 @@ func TestSettlementServiceDispatch(t *testing.T) {
 	}
 	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Payout dispatch reserves a money-out allowance against the merchant's
+	// KYB tier (C9), and the batches below total ₦2m each. B0's single ceiling
+	// is ₦200k, so step the merchant up to B2 (₦5m single, ₦5m daily-out),
+	// mirroring the KYB ladder a merchant climbs before settlement runs.
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, []string{kyc.EvBusinessDocs}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB2, []string{kyc.EvBusinessBank}, nil); err != nil {
 		t.Fatal(err)
 	}
 	user, err := repository.GetOrCreateUser(ctx, "+2348012348802")
