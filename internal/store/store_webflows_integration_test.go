@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"whatsapp-payment-demo/internal/domain"
+
 	"github.com/google/uuid"
 )
 
@@ -68,8 +70,29 @@ func TestPostgresWebFlowPayloadAtRest(t *testing.T) {
 		t.Fatalf("decrypted web flow payload mismatch: %+v", got.Payload)
 	}
 
-	// SaveWebFlowProgress re-seals and promotes payment_id to the column.
+	// SaveWebFlowProgress re-seals and promotes payment_id to the column. The
+	// payment itself must exist: the reopen marks the abandoned attempt
+	// superseded (superseded_at) so its late success is auto-refunded.
+	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
 	paymentID := uuid.New()
+	if _, err := repository.CreatePayment(ctx, domain.Payment{
+		ID:                paymentID,
+		UserID:            user.ID,
+		MerchantID:        merchant.ID,
+		AmountKobo:        250000,
+		Currency:          "NGN",
+		Status:            domain.StatusInitialized,
+		Provider:          "interswitch",
+		ProviderReference: "ref-webflow-supersede",
+		Channel:           "whatsapp",
+		ReceiptToken:      "tok-webflow-supersede",
+		Recipient:         user.WhatsAppNumber,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := repository.SaveWebFlowProgress(ctx, flow.Token, "checkout", map[string]string{
 		"payment_id": paymentID.String(),
 		"merchant":   "lagos-lunchbox",
@@ -118,6 +141,15 @@ func TestPostgresWebFlowPayloadAtRest(t *testing.T) {
 	if reopened.Step != "review" || reopened.Status != WebFlowOpen {
 		t.Fatalf("reopened flow step/status = %q/%q, want review/open", reopened.Step, reopened.Status)
 	}
+	// The abandoned payment is marked superseded so its late success is
+	// auto-refunded rather than double-charging the customer.
+	var supersededAt string
+	if err := repository.pool.QueryRow(ctx, `SELECT superseded_at::text FROM payments WHERE id=$1`, paymentID).Scan(&supersededAt); err != nil {
+		t.Fatal(err)
+	}
+	if supersededAt == "" {
+		t.Fatal("reopen should mark the abandoned payment superseded_at")
+	}
 	var colAfterReopen string
 	if err := repository.pool.QueryRow(ctx, `SELECT COALESCE(payment_id::text,'') FROM web_flows WHERE id=$1`, flow.ID).Scan(&colAfterReopen); err != nil {
 		t.Fatal(err)
@@ -128,6 +160,14 @@ func TestPostgresWebFlowPayloadAtRest(t *testing.T) {
 	// A second reopen for the same (now detached) payment must be refused.
 	if _, err := repository.ReopenWebFlowForRetry(ctx, flow.Token, paymentID, "review", map[string]string{}); err == nil {
 		t.Fatal("reopening an already-detached flow must fail")
+	}
+	// Idempotent: superseded_at does not change on a failed reopen.
+	var supersededAt2 string
+	if err := repository.pool.QueryRow(ctx, `SELECT superseded_at::text FROM payments WHERE id=$1`, paymentID).Scan(&supersededAt2); err != nil {
+		t.Fatal(err)
+	}
+	if supersededAt2 != supersededAt {
+		t.Fatalf("superseded_at changed on failed reopen: %q -> %q", supersededAt, supersededAt2)
 	}
 	// And a reopen guarded by a different payment id must also be refused.
 	if _, err := repository.ReopenWebFlowForRetry(ctx, flow.Token, uuid.New(), "review", map[string]string{}); err == nil {

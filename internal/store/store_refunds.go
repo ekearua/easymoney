@@ -87,7 +87,7 @@ func (s *Store) RefundPayment(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, fmt.Errorf("load payment: %w", err)
 	}
 	if status != "succeeded" {
-		return Refund{}, fmt.Errorf("cannot refund payment in status %q (must be succeeded)", status)
+		return Refund{}, fmt.Errorf("%w: payment is in status %q", ErrPaymentNotSucceeded, status)
 	}
 	if !domain.CanTransition(domain.PaymentStatus(status), domain.StatusRefunded) {
 		return Refund{}, fmt.Errorf("invalid payment transition %s -> refunded", status)
@@ -228,7 +228,7 @@ func (s *Store) RequestRefund(ctx context.Context, paymentID uuid.UUID, reason, 
 		return Refund{}, fmt.Errorf("load payment: %w", err)
 	}
 	if status != "succeeded" {
-		return Refund{}, fmt.Errorf("cannot refund payment in status %q (must be succeeded)", status)
+		return Refund{}, fmt.Errorf("%w: payment is in status %q", ErrPaymentNotSucceeded, status)
 	}
 	if !domain.CanTransition(domain.PaymentStatus(status), domain.StatusRefunded) {
 		return Refund{}, fmt.Errorf("invalid payment transition %s -> refunded", status)
@@ -673,4 +673,13 @@ func scanDisputes(rows pgx.Rows) ([]Dispute, error) {
 		disputes = append(disputes, d)
 	}
 	return disputes, rows.Err()
+}
+
+// CountRefundsForPayment returns the number of refund rows for the payment
+// whose reason contains the given substring (ILIKE match, anchored by '%pat%').
+func (s *Store) CountRefundsForPayment(ctx context.Context, paymentID uuid.UUID, reasonPattern string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM refunds WHERE payment_id=$1 AND reason ILIKE '%' || $2 || '%'`, paymentID, reasonPattern).Scan(&count)
+	return count, err
 }

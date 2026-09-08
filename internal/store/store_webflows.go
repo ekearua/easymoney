@@ -183,18 +183,25 @@ func (s *Store) SaveWebFlowProgress(ctx context.Context, token, step string, pay
 // succeed — the customer cancelled on the hosted Interswitch page, or the
 // card was declined. The payment association is cleared so the abandoned
 // attempt can neither claim this flow later nor be looked up by payment id,
-// and the operation only acts when the flow is open and still references
-// exactly that payment: a stale webhook for an old attempt can never rewind a
-// flow a newer attempt has moved forward. Returns the reopened flow with its
-// payload decrypted.
+// and the abandoned attempt is marked superseded (superseded_at): if it later
+// verifies as succeeded the app auto-refunds it, so a slow gateway callback
+// can never double-charge a customer who retried and paid again. The reopen
+// only acts when the flow is open and still references exactly that payment:
+// a stale webhook for an old attempt can never rewind a flow a newer attempt
+// has moved forward. Returns the reopened flow with its payload decrypted.
 func (s *Store) ReopenWebFlowForRetry(ctx context.Context, token string, paymentID uuid.UUID, step string, payload map[string]string) (WebFlow, error) {
 	sealed, _, err := s.sealWebFlowPayload(payload)
 	if err != nil {
 		return WebFlow{}, err
 	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return WebFlow{}, err
+	}
+	defer tx.Rollback(ctx)
 	var flow WebFlow
 	var raw string
-	err = s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE web_flows SET step=$2, payload=$3, payment_id=NULL
 		WHERE token=$1 AND status='open' AND payment_id=$4
 		RETURNING id, token, user_id, channel, flow_type, payload, step, status, created_at, expires_at, completed_at`, token, step, sealed, paymentID).
@@ -206,6 +213,17 @@ func (s *Store) ReopenWebFlowForRetry(ctx context.Context, token string, payment
 		}
 		return WebFlow{}, err
 	}
+	// Mark the abandoned attempt superseded so its late success is auto-refunded
+	// by the app instead of silently double-charging the customer. Setting it is
+	// idempotent per payment and atomic with the guarded reopen above.
+	if _, err := tx.Exec(ctx, `
+		UPDATE payments SET superseded_at=now()
+		WHERE id=$1 AND superseded_at IS NULL`, paymentID); err != nil {
+		return WebFlow{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return WebFlow{}, err
+	}
 	flow.Payload = map[string]string{}
 	plain, err := s.openValue(raw)
 	if err != nil {
@@ -215,6 +233,19 @@ func (s *Store) ReopenWebFlowForRetry(ctx context.Context, token string, payment
 		_ = json.Unmarshal(plain, &flow.Payload)
 	}
 	return flow, nil
+}
+
+// WebFlowAttemptSuperseded reports whether the payment belonged to a web-flow
+// attempt that was abandoned at the gateway and later reopened for retry. Such
+// an attempt must be auto-refunded the moment it unexpectedly succeeds.
+func (s *Store) WebFlowAttemptSuperseded(ctx context.Context, paymentID uuid.UUID) (bool, error) {
+	var superseded bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT superseded_at IS NOT NULL FROM payments WHERE id=$1`, paymentID).Scan(&superseded)
+	if err != nil {
+		return false, err
+	}
+	return superseded, nil
 }
 
 // CompleteWebFlow atomically claims an open flow (open -> complete) and

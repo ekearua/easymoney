@@ -256,13 +256,25 @@ func (a *App) wfRenderDone(w http.ResponseWriter, r *http.Request, flow store.We
 //
 // Only a genuinely succeeded payment claims the flow and sends the
 // confirmation; a cancelled, failed, abandoned, or still-pending attempt must
-// never be reported as "Payment received". For a non-succeeded attempt the
-// flow is instead reopened at its review step (clearing the payment link) so
-// the customer can pick a different payment method and retry — the caller can
+// never be reported as "Payment received". A superseded attempt — one that was
+// abandoned at the gateway, the flow reopened for retry, and that then
+// unexpectedly verifies succeeded — is auto-refunded instead, because the
+// retry already moved the customer's money. Any other non-succeeded attempt
+// reopens the flow at its review step (clearing the payment link) so the
+// customer can pick a different payment method and retry — the caller can
 // send them straight back into the flow. The guarded claim and the guarded
 // reopen both make the webhook racing the return page harmless.
 func (a *App) maybeCompleteWebFlowForPayment(ctx context.Context, payment store.PaymentView) string {
 	if payment.Status == domain.StatusSucceeded {
+		superseded, err := a.store.WebFlowAttemptSuperseded(ctx, payment.ID)
+		if err != nil {
+			a.logger.WarnContext(ctx, "web flow superseded check failed", "payment_id", payment.ID, "error", err)
+			return ""
+		}
+		if superseded {
+			a.autoRefundSupersededWebFlowAttempt(ctx, payment)
+			return ""
+		}
 		flow, err := a.store.OpenWebFlowByPayment(ctx, payment.ID)
 		if err != nil || flow.Status != store.WebFlowOpen {
 			return ""
@@ -288,20 +300,16 @@ func (a *App) maybeCompleteWebFlowForPayment(ctx context.Context, payment store.
 // reopen (no open flow, a non-money flow, or a flow that already moved on).
 //
 // Design note — pending-then-success after reopen. Reopening clears the payment
-// link *without* ever completing or aborting the abandoned payment, so if the
-// gateway later verifies the abandoned payment as succeeded (rare, but possible
-// with slow providers or a customer who cancels then immediately succeeds on a
-// different device), the success path in maybeCompleteWebFlowForPayment still
-// only sends message 2 when payment.Status == StatusSucceeded and only claims a
-// flow that is still open *and still references that exact payment id* (the
-// same guard as the webhook path). A reopened flow on the review step has a new
-// payment being built for the retry and no longer references the abandoned one,
-// so the abandoned payment's success cannot claim the reopened flow and cannot
-// double-notify. The user either sees the reopened flow waiting for their new
-// submit, or — if the abandoned attempt independently succeeds first — the old
-// link redirects to the receipt and the customer is told payment was already
-// confirmed; in that case they should send MENU to start a new request. Either
-// way there is exactly one receipt per attempt and no double charge.
+// link *without* ever completing or aborting the abandoned payment and marks it
+// superseded, so if the gateway later verifies the abandoned payment as
+// succeeded (rare, but possible with slow providers or a customer who cancels
+// then immediately succeeds on a different device), the success path in
+// maybeCompleteWebFlowForPayment sees the superseded mark and auto-refunds it —
+// the retry already moved the customer's money, and this late success must not
+// charge twice. The refund is atomic and replay-safe, and exactly one message
+// reports it; the abandoned attempt can never claim the reopened flow (its
+// payment_id is cleared, and the success path only claims a flow still open on
+// that exact payment id), so there is no double-notify and no double charge.
 func (a *App) wfReopenForPaymentRetry(ctx context.Context, payment store.PaymentView) string {
 	flow, err := a.store.OpenWebFlowByPayment(ctx, payment.ID)
 	if err != nil || flow.Status != store.WebFlowOpen {
@@ -325,6 +333,32 @@ func (a *App) wfReopenForPaymentRetry(ctx context.Context, payment store.Payment
 		return ""
 	}
 	return flow.Token
+}
+
+// autoRefundSupersededWebFlowAttempt returns the customer's money for a
+// web-flow attempt that was abandoned (the flow reopened for retry) and only
+// later verified as succeeded — the retry already moved money, so this late
+// success must never charge the customer twice. Store.RefundPayment is atomic
+// and replay-safe (an already-refunded payment is skipped), so a webhook
+// racing the return page can only produce one refund, and the customer gets
+// exactly one message.
+func (a *App) autoRefundSupersededWebFlowAttempt(ctx context.Context, payment store.PaymentView) {
+	if _, err := a.store.RefundPayment(ctx, payment.ID, "auto-refund: superseded web-flow attempt", "auto", nil); err != nil {
+		// A duplicate webhook/return-page hit after the first refund lands on a
+		// payment that is already refunded — the refund is replay-safe, so this
+		// is the expected quiet no-op, not a failure worth logging as error.
+		if errors.Is(err, store.ErrPaymentNotSucceeded) {
+			a.logger.InfoContext(ctx, "auto-refund superseded web-flow attempt already handled", "payment_id", payment.ID)
+			return
+		}
+		a.logger.WarnContext(ctx, "auto-refund superseded web-flow attempt failed", "payment_id", payment.ID, "error", err)
+		return
+	}
+	message := fmt.Sprintf("Payment received, then automatically refunded.\n\nMerchant: %s\nAmount: %s\n\nThe payment you retried was already completed, so this one was reversed automatically. No action needed.",
+		payment.MerchantName, domain.FormatNGN(payment.AmountKobo))
+	if err := a.conversation.NotifyWebFlowAutoRefund(ctx, payment.UserID, payment.Channel, message); err != nil {
+		a.logger.WarnContext(ctx, "auto-refund notification failed", "payment_id", payment.ID, "error", err)
+	}
 }
 
 // --- flow registry -------------------------------------------------------

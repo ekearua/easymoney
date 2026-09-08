@@ -166,6 +166,22 @@ func (s *ConversationService) FinishWebFlow(ctx context.Context, flow store.WebF
 	return nil
 }
 
+// NotifyWebFlowAutoRefund sends the single customer message reporting that an
+// abandoned web-flow attempt was auto-refunded because the payment completed
+// again. There is no claimable flow here (the reopened flow belongs to the
+// retry), so this mirrors message-2 discipline without a CompleteWebFlow claim.
+func (s *ConversationService) NotifyWebFlowAutoRefund(ctx context.Context, userID uuid.UUID, channel, message string) error {
+	recipient, err := s.store.UserContactForChannel(ctx, userID, channel)
+	if err != nil || recipient == "" {
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	ctx = withMessageFlow(ctx, "web")
+	return s.sendText(ctx, channel, recipient, message)
+}
+
 // SendEmailVerificationCode emails a fresh 6-digit verification code for the
 // user's email. It mirrors the chat confirmation path without sending any
 // chat message (web flows verify inside the browser).
