@@ -56,6 +56,16 @@ func TestValidateVerification(t *testing.T) {
 			}
 		})
 	}
+
+	// A non-terminal requery has no authoritative amount yet: Interswitch's
+	// gettransaction.json returns Amount 0 while a transaction is still being
+	// processed, so the payment must stay pending instead of failing.
+	pending := valid
+	pending.Status = "pending"
+	pending.AmountKobo = 0
+	if err := validateVerification(payment, pending); err != nil {
+		t.Fatalf("pending requery without settled amount should not be rejected: %v", err)
+	}
 }
 
 func TestResultOutboxRespectsWhatsAppServiceWindow(t *testing.T) {

@@ -805,6 +805,14 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 		return errors.New("verified reference does not match payment")
 	}
 	if verification.AmountKobo != payment.AmountKobo {
+		// An un-settled requery is inconclusive, not a discrepancy:
+		// Interswitch's gettransaction.json returns Amount 0 while the
+		// transaction is still being processed (non-00 response code). Leave the
+		// payment pending to be re-requeried; only a terminal verdict
+		// (approved/declined) is strict about the amount.
+		if mapGatewayStatus(verification.Status) == domain.StatusPending {
+			return nil
+		}
 		return fmt.Errorf("verified amount %d does not match expected %d", verification.AmountKobo, payment.AmountKobo)
 	}
 	if !strings.EqualFold(verification.Currency, payment.Currency) {
