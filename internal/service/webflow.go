@@ -60,12 +60,15 @@ var webFlowCatalog = map[string]webFlowMeta{
 }
 
 // WebFlowEnabled reports whether the given channel+flow pair should use the
-// browser flow (WhatsApp only, per config, per-flow override allowed).
+// browser flow. WhatsApp and Instagram support the button link message, so
+// both get full web flows; Telegram and TikTok keep the chat FSM (Telegram by
+// rollout decision, TikTok because its DMs restrict external link buttons),
+// per config, per-flow override allowed.
 func (s *ConversationService) WebFlowEnabled(channel, flowType string) bool {
 	if !s.cfg.WebFlowsEnabled {
 		return false
 	}
-	if channel != ChannelWhatsApp {
+	if channel != ChannelWhatsApp && channel != ChannelInstagram {
 		return false
 	}
 	if _, ok := webFlowCatalog[flowType]; !ok {

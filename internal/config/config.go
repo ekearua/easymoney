@@ -83,6 +83,22 @@ type Config struct {
 	TelegramWebhookSecret string
 	TelegramAPIBase       string
 
+	// Instagram Messaging (Meta Graph API). Requires a professional Instagram
+	// account linked to a Facebook Page and an app with instagram_manage_messages.
+	InstagramEnabled      bool
+	InstagramAppSecret    string
+	InstagramAccessToken  string
+	InstagramIGID         string // business IG account id used to send messages
+	InstagramVerifyToken  string
+	InstagramGraphVersion string
+
+	// TikTok Business Messaging. Full-parity channel adapter: interactive
+	// primitives degrade to numbered text menus (platform has no buttons).
+	TikTokEnabled     bool
+	TikTokAppSecret   string
+	TikTokAccessToken string
+	TikTokAPIBase     string
+
 	SMSEnabled       bool
 	SMSProvider      string
 	SMSWebhookSecret string
@@ -228,6 +244,16 @@ func Load() (Config, error) {
 		TelegramBotToken:           os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramWebhookSecret:      os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		TelegramAPIBase:            strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
+		InstagramEnabled:           envBool("INSTAGRAM_ENABLED", false),
+		InstagramAppSecret:         os.Getenv("INSTAGRAM_APP_SECRET"),
+		InstagramAccessToken:       os.Getenv("INSTAGRAM_ACCESS_TOKEN"),
+		InstagramIGID:              strings.TrimSpace(os.Getenv("INSTAGRAM_IG_ID")),
+		InstagramVerifyToken:       os.Getenv("INSTAGRAM_VERIFY_TOKEN"),
+		InstagramGraphVersion:      strings.TrimSpace(os.Getenv("INSTAGRAM_GRAPH_VERSION")),
+		TikTokEnabled:              envBool("TIKTOK_ENABLED", false),
+		TikTokAppSecret:            os.Getenv("TIKTOK_APP_SECRET"),
+		TikTokAccessToken:          os.Getenv("TIKTOK_ACCESS_TOKEN"),
+		TikTokAPIBase:              strings.TrimRight(env("TIKTOK_API_BASE", "https://open.tiktokapis.com"), "/"),
 		SMSEnabled:                 envBool("SMS_ENABLED", false),
 		SMSProvider:                env("SMS_PROVIDER", "webhook"),
 		SMSWebhookSecret:           os.Getenv("SMS_WEBHOOK_SECRET"),
@@ -398,6 +424,28 @@ func Load() (Config, error) {
 			} {
 				if value == "" {
 					return Config{}, fmt.Errorf("%s is required when TELEGRAM_ENABLED=true", name)
+				}
+			}
+		}
+		if cfg.InstagramEnabled {
+			for name, value := range map[string]string{
+				"INSTAGRAM_APP_SECRET":   cfg.InstagramAppSecret,
+				"INSTAGRAM_ACCESS_TOKEN": cfg.InstagramAccessToken,
+				"INSTAGRAM_IG_ID":        cfg.InstagramIGID,
+				"INSTAGRAM_VERIFY_TOKEN": cfg.InstagramVerifyToken,
+			} {
+				if value == "" {
+					return Config{}, fmt.Errorf("%s is required when INSTAGRAM_ENABLED=true", name)
+				}
+			}
+		}
+		if cfg.TikTokEnabled {
+			for name, value := range map[string]string{
+				"TIKTOK_APP_SECRET":   cfg.TikTokAppSecret,
+				"TIKTOK_ACCESS_TOKEN": cfg.TikTokAccessToken,
+			} {
+				if value == "" {
+					return Config{}, fmt.Errorf("%s is required when TIKTOK_ENABLED=true", name)
 				}
 			}
 		}

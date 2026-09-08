@@ -30,6 +30,15 @@ type User struct {
 	TelegramUsername    string
 	TelegramVerifiedAt  sql.NullTime
 	TelegramConfirmedAt sql.NullTime
+	InstagramIGSID      sql.NullString
+	InstagramUsername   string
+	InstagramVerifiedAt  sql.NullTime
+	InstagramConfirmedAt sql.NullTime
+	TikTokOpenID        sql.NullString
+	TikTokUnionID       sql.NullString
+	TikTokUsername      string
+	TikTokVerifiedAt    sql.NullTime
+	TikTokConfirmedAt   sql.NullTime
 	LastInboundAt       time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -66,6 +75,8 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
@@ -73,7 +84,10 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
 		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
-		&user.TelegramConfirmedAt, &user.LastInboundAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	return user, err
@@ -98,6 +112,8 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, chatID, userID, username).Scan(
@@ -105,7 +121,10 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
 		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
-		&user.TelegramConfirmedAt, &user.LastInboundAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	return user, err
@@ -118,6 +137,8 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE id=$1`
 	var user User
@@ -126,7 +147,10 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
 		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
-		&user.TelegramConfirmedAt, &user.LastInboundAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	return user, err
@@ -279,12 +303,197 @@ func (s *Store) ConfirmTelegramAccount(ctx context.Context, id uuid.UUID) error 
 	return err
 }
 
+// LinkChannelToUser attaches a verified channel handle to an existing user
+// row, merging the handle into one customer account so receipts, KYC history,
+// and wallet follow the customer across channels. Channel-specific confirmed
+// timestamp is stamped so onboardingCompleteForChannel opens the menu on the
+// next inbound message from that channel.
+func (s *Store) LinkChannelToUser(ctx context.Context, userID uuid.UUID, channel, handle, username string) error {
+	var statement string
+	switch channel {
+	case "instagram":
+		statement = `
+			UPDATE users SET
+				instagram_igsid=$2,
+				instagram_username=CASE WHEN $3<>'' THEN $3 ELSE instagram_username END,
+				instagram_verified_at=COALESCE(instagram_verified_at, now()),
+				instagram_confirmed_at=COALESCE(instagram_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	case "tiktok":
+		statement = `
+			UPDATE users SET
+				tiktok_open_id=$2,
+				tiktok_username=CASE WHEN $3<>'' THEN $3 ELSE tiktok_username END,
+				tiktok_verified_at=COALESCE(tiktok_verified_at, now()),
+				tiktok_confirmed_at=COALESCE(tiktok_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	case "telegram":
+		statement = `
+			UPDATE users SET
+				telegram_chat_id=$2,
+				telegram_username=CASE WHEN $3<>'' THEN $3 ELSE telegram_username END,
+				telegram_verified_at=COALESCE(telegram_verified_at, now()),
+				telegram_confirmed_at=COALESCE(telegram_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	default:
+		return fmt.Errorf("channel %q cannot be linked", channel)
+	}
+	if _, err := s.pool.Exec(ctx, statement, userID, handle, username); err != nil {
+		return err
+	}
+	return nil
+}
+
+// FindUserByChannelHandle resolves the account a verified channel handle is
+// attached to, if any (empty result means the handle is new).
+func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle string) (User, error) {
+	column := ""
+	switch channel {
+	case "instagram":
+		column = "instagram_igsid"
+	case "tiktok":
+		column = "tiktok_open_id"
+	case "telegram":
+		column = "telegram_chat_id"
+	default:
+		return User{}, fmt.Errorf("channel %q cannot be looked up", channel)
+	}
+	var user User
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			last_inbound_at, created_at, updated_at
+		FROM users WHERE `+column+`=$1`, handle).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, nil
+	}
+	return user, err
+}
+
+// ConfirmInstagramAccount records the customer's explicit Instagram confirmation.
+func (s *Store) ConfirmInstagramAccount(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET onboarding_complete=true,
+			instagram_confirmed_at=COALESCE(instagram_confirmed_at, now()),
+			verification_level='instagram_confirmed',
+			updated_at=now()
+		WHERE id=$1`, id)
+	return err
+}
+
+// ConfirmTikTokAccount records the customer's explicit TikTok confirmation.
+func (s *Store) ConfirmTikTokAccount(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET onboarding_complete=true,
+			tiktok_confirmed_at=COALESCE(tiktok_confirmed_at, now()),
+			verification_level='tiktok_confirmed',
+			updated_at=now()
+		WHERE id=$1`, id)
+	return err
+}
+
+// GetOrCreateInstagramUser resolves an Instagram customer by stable IGSID.
+func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username string) (User, error) {
+	const query = `
+		INSERT INTO users (instagram_igsid, instagram_username, instagram_verified_at, verification_level)
+		VALUES ($1,$2,now(),'instagram_inbound')
+		ON CONFLICT (instagram_igsid) DO UPDATE SET
+			instagram_username=EXCLUDED.instagram_username,
+			instagram_verified_at=COALESCE(users.instagram_verified_at, now()),
+			last_inbound_at=now(),
+			updated_at=now(),
+			verification_level = CASE
+				WHEN users.instagram_confirmed_at IS NOT NULL THEN users.verification_level
+				WHEN users.verification_level IN ('unverified','whatsapp_inbound','telegram_inbound','tiktok_inbound') THEN 'instagram_inbound'
+				ELSE users.verification_level
+			END
+		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			last_inbound_at, created_at, updated_at`
+	var user User
+	err := s.pool.QueryRow(ctx, query, igsid, username).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	return user, err
+}
+
+// GetOrCreateTikTokUser resolves a TikTok customer by stable open ID.
+func (s *Store) GetOrCreateTikTokUser(ctx context.Context, openID, unionID, username string) (User, error) {
+	const query = `
+		INSERT INTO users (tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, verification_level)
+		VALUES ($1,$2,$3,now(),'tiktok_inbound')
+		ON CONFLICT (tiktok_open_id) DO UPDATE SET
+			tiktok_union_id=EXCLUDED.tiktok_union_id,
+			tiktok_username=EXCLUDED.tiktok_username,
+			tiktok_verified_at=COALESCE(users.tiktok_verified_at, now()),
+			last_inbound_at=now(),
+			updated_at=now(),
+			verification_level = CASE
+				WHEN users.tiktok_confirmed_at IS NOT NULL THEN users.verification_level
+				WHEN users.verification_level IN ('unverified','whatsapp_inbound','telegram_inbound','instagram_inbound') THEN 'tiktok_inbound'
+				ELSE users.verification_level
+			END
+		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			last_inbound_at, created_at, updated_at`
+	var user User
+	err := s.pool.QueryRow(ctx, query, openID, unionID, username).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	return user, err
+}
+
 // ListUsers returns recent customers for the read-only dashboard.
 func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
@@ -298,7 +507,10 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 			&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
 			&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
 			&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
-			&user.TelegramConfirmedAt, &user.LastInboundAt,
+			&user.TelegramConfirmedAt,
+			&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+			&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+			&user.LastInboundAt,
 			&user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
 		}

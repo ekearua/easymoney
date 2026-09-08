@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
+	"whatsapp-payment-demo/internal/providers/tiktok"
 	"whatsapp-payment-demo/internal/providers/vtpass"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
 	"whatsapp-payment-demo/internal/service"
@@ -110,6 +112,125 @@ func (a *App) receiveTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 			MediaID:     update.MediaID,
 			MediaMime:   update.MediaMime,
 			Caption:     update.Caption,
+		}); err != nil {
+			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+			http.Error(w, "storage error", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	if fresh {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// verifyInstagramWebhook answers Meta's subscription verification handshake
+// (hub.mode/hub.verify_token/hub.challenge), mirroring the WhatsApp flow.
+func (a *App) verifyInstagramWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("hub.mode") != "subscribe" ||
+		r.URL.Query().Get("hub.verify_token") != a.cfg.InstagramVerifyToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte(r.URL.Query().Get("hub.challenge")))
+}
+
+// receiveInstagramWebhook accepts signed Instagram Messaging events. The
+// signature is checked against the raw body before parsing; events are
+// recorded for dedup/audit, then normalized messages are enqueued for the
+// conversation worker exactly like WhatsApp and Telegram events.
+func (a *App) receiveInstagramWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.InstagramEnabled || a.instagram == nil {
+		http.Error(w, "instagram disabled", http.StatusNotFound)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	validationErr := a.instagram.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
+	messages, parseErr := instagram.ParseInbound(body)
+	eventKey := digest(body)
+	if len(messages) > 0 && messages[0].ID != "" {
+		eventKey = messages[0].ID
+	}
+	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), service.ChannelInstagram, eventKey, validationErr == nil && parseErr == nil, json.RawMessage(`{}`))
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if parseErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", parseErr.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	for _, message := range messages {
+		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
+			ID: message.ID, Channel: service.ChannelInstagram, Sender: message.IGSID, Recipient: message.IGSID,
+			Text: message.Text, Interactive: message.Interactive, Username: message.Username,
+			MediaType: message.MediaType, MediaID: message.MediaID, MediaMime: message.MediaMime, Caption: message.Caption,
+		}); err != nil {
+			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+			http.Error(w, "storage error", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	w.WriteHeader(http.StatusOK)
+}
+
+// receiveTikTokWebhook accepts signed TikTok message events, mirroring the
+// Telegram flow: validate the signature, record for dedup, enqueue normalized
+// messages.
+func (a *App) receiveTikTokWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.TikTokEnabled || a.tiktok == nil {
+		http.Error(w, "tiktok disabled", http.StatusNotFound)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	validationErr := a.tiktok.ValidateSignature(body, r.Header.Get("TikTok-Signature"))
+	updates, parseErr := tiktok.ParseInbound(body)
+	eventKey := digest(body)
+	if len(updates) > 0 && updates[0].EventID != "" {
+		eventKey = updates[0].EventID
+	}
+	deliveryID, fresh, storeErr := a.store.RecordWebhook(r.Context(), service.ChannelTikTok, eventKey, validationErr == nil && parseErr == nil, json.RawMessage(`{}`))
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if parseErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", parseErr.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	for _, update := range updates {
+		// Recipient is the outbound reply-to address: the provider conversation
+		// id when present, falling back to the open_id for minimal payloads.
+		recipient := update.ConversationID
+		if recipient == "" {
+			recipient = update.OpenID
+		}
+		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
+			ID: update.EventID, Channel: service.ChannelTikTok, Sender: update.OpenID, Recipient: recipient,
+			Text: update.Text, Username: update.Username, UnionID: update.UnionID,
+			MediaType: update.MediaType, MediaID: update.MediaURL, MediaMime: update.MediaMime, Caption: update.Caption,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)

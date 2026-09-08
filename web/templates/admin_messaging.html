@@ -4,8 +4,8 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main>
-<header class="page-header"><div><p class="eyebrow">Operations</p><h1>WhatsApp messaging cost</h1>
-<p>Outbound customer messages since {{.Summary.Since.Format "02 Jan 2006 15:04"}}, priced with the configurable Meta Nigeria estimates (service ₦{{.Summary.MessageCostService}}/message). The 2-message-per-transaction model moves flow details to the browser: one link message in, one confirmation out.</p></div></header>
+<header class="page-header"><div><p class="eyebrow">Operations</p><h1>Messaging cost</h1>
+<p>Outbound customer messages since {{.Summary.Since.Format "02 Jan 2006 15:04"}}, priced with the configurable per-message estimates (service ₦{{.Summary.MessageCostService}}/message). The 2-message-per-transaction model moves flow details to the browser: one link message in, one confirmation out. Channels: WhatsApp and Instagram bill per message; Telegram and TikTok are currently free to send.</p></div></header>
 <section class="metrics">
   <article><span>Messages</span><strong>{{.Summary.TotalMessages}}</strong></article>
   <article><span>Service messages</span><strong>{{.Summary.ServiceMessages}}</strong></article>

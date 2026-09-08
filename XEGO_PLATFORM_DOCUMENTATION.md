@@ -69,6 +69,8 @@ The platform is best understood as logical layers. Layers that the analysis does
 - **Components:**
   - WhatsApp webhook (`/webhooks/whatsapp`) — signature-verified, parses text and interactive selections (`internal/providers/whatsapp/client.go`).
   - Telegram webhook (`/webhooks/telegram`) — secret-token-verified.
+  - Instagram webhook (`/webhooks/instagram`) — Meta signature-verified (`X-Hub-Signature-256`), verification handshake on GET (`internal/providers/instagram/client.go`).
+  - TikTok webhook (`/webhooks/tiktok`) — `TikTok-Signature` HMAC-verified with a 5-minute timestamp window (`internal/providers/tiktok/client.go`).
   - SMS webhook (`/webhooks/sms`) — shared-secret-verified, data-order commands only.
   - Public web pages: hosted checkout (`/checkout/{token}`), request-money link (`/link/{token}`), receipt (`/receipts/{token}`), invoice (`/invoices/{reference}`), thrift group (`/thrift/{name}`), scan landing (`/scan/{token}`).
   - Merchant console and admin console (htmx-based templates in `web/templates`).
@@ -142,6 +144,8 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | WhatsApp Cloud API channel | Signature-verified inbound messages and outbound text/interactive/checkout/template/image messages | Customers, merchants | Implemented | `internal/providers/whatsapp/client.go`; `app/webhooks.go` |
 | Telegram Bot API channel | Secret-token-verified webhook and outbound messages | Customers | Implemented | `app/webhooks.go` |
+| Instagram Messaging channel | Meta signature-verified webhook; quick replies, generic-template links, image/audio inbound (OCR/STT); full web flows | Customers | Implemented | `internal/providers/instagram/client.go`; `app/webhooks.go` |
+| TikTok Business Messaging channel | HMAC-signed webhook; interactive primitives degrade to numbered text menus and plain links (chat FSM only, no web flows) | Customers | Implemented | `internal/providers/tiktok/client.go`; `app/webhooks.go` |
 | SMS channel (data commands) | `DATA`, `PLANS`, `STATUS` commands; reply returned in webhook response | Customers | Partially Implemented (MVP; no outbound SMS sender) | `app/webhooks.go`; README:268 |
 | Rule-based chat bot | Keyword/intent/menu-state engine for payments, invoices, thrift, data, KYC | Customers | Implemented | `internal/service/conversation.go` |
 | Conversational AI / NLP | LLM, intent/entity ML, prompts | — | **Not implemented; no AI code exists** | — |
@@ -308,10 +312,12 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 
 The conversational platform is a **rule-based, stateful menu engine**. There is no AI layer: no LLM, no NLP library, no model inference, no prompts, no AI provider integration exists in the repository. The analysis is explicit that any expectation of AI capabilities is not supported by the code.
 
-- **Channel handling:** WhatsApp and Telegram are live messaging channels; SMS is a separate, data-orders-only path. Channel constants are defined in `internal/service/conversation.go:18-27`.
+- **Channel handling:** WhatsApp, Telegram, Instagram, and TikTok are live messaging channels; SMS is a separate, data-orders-only path. Channel constants are defined in `internal/service/conversation.go:18-31`.
 - **Inbound routing:**
   - WhatsApp webhook → `receiveWhatsAppWebhook` (`app/webhooks.go`) → `EnqueueInboundMessage`.
   - Telegram webhook → `receiveTelegramWebhook` (`app/webhooks.go`).
+  - Instagram webhook → `receiveInstagramWebhook` (`app/webhooks.go`) with a GET verification handshake.
+  - TikTok webhook → `receiveTikTokWebhook` (`app/webhooks.go`).
   - SMS webhook → `receiveSMSWebhook` (`app/webhooks.go`) → synchronous `data.HandleSMS`.
 - **Processing:** A 2-second ticker drains `inbound_messages` in batches of 20 and calls `conversation.Handle`; failures are retried. Evidence: `app/workers.go`.
 - **Outbound:** `messengerFor` (`conversation.go:409`) dispatches text, interactive, checkout, and image messages per channel via `sendText`, `sendInteractive`, `sendCheckout`, `sendImage`.
@@ -912,6 +918,9 @@ Side effects / events: payment creation writes payment rows; verification transi
 | `GET /webhooks/whatsapp` | Meta verification | Verify token | Implemented |
 | `POST /webhooks/whatsapp` | Meta | `X-Hub-Signature-256` | Implemented |
 | `POST /webhooks/telegram` | Telegram | `X-Telegram-Bot-Api-Secret-Token` | Implemented |
+| `GET /webhooks/instagram` | Meta verification | Verify token | Implemented |
+| `POST /webhooks/instagram` | Meta | `X-Hub-Signature-256` | Implemented |
+| `POST /webhooks/tiktok` | TikTok | `TikTok-Signature` (HMAC-SHA256, 5-min timestamp window) | Implemented |
 | `POST /webhooks/sms` | SMS provider | Shared secret | Implemented |
 | `POST /webhooks/interswitch` | Interswitch | Redirect notification (HMAC-SHA512 optional); outcome via requery | Implemented |
 | `POST /webhooks/vtpass` | VTPass | `X-VTPass-Webhook-Secret` (header) | Implemented |

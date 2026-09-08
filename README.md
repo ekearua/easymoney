@@ -135,7 +135,7 @@ Role checks are enforced by middleware on every admin route; disabled accounts a
 
 Public and webhook endpoints are rate limited per client IP with fixed one-minute windows:
 
-- **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/sms`, `/webhooks/interswitch`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
+- **Webhooks** (`/webhooks/whatsapp`, `/webhooks/telegram`, `/webhooks/instagram`, `/webhooks/tiktok`, `/webhooks/sms`, `/webhooks/interswitch`, `/webhooks/vtpass`): `RATE_LIMIT_WEBHOOKS_PER_MINUTE` (default 120)
 - **Public pages** (`/payments/return`, `/checkout/*`, `/receipts/*`, `/invoices/*`, `/thrift/*`, `/scan/*`, `/link/*`): `RATE_LIMIT_PUBLIC_PER_MINUTE` (default 60)
 - **Scanner API** (`/api/readers/scan`): `RATE_LIMIT_SCAN_PER_MINUTE` (default 30)
 - **Partner API** (per key, `/api/v1/*`): `RATE_LIMIT_API_KEYS_PER_MINUTE` (default 300)
@@ -271,6 +271,22 @@ curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
 ```
 
 The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegram updates.
+
+### Instagram Messaging
+
+- Requires a professional Instagram account linked to a Facebook Page and a Meta app with the `instagram_manage_messages` permission. Set `INSTAGRAM_ENABLED=true`.
+- Store `INSTAGRAM_APP_SECRET`, `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_IG_ID` (the professional account's ID), and a random `INSTAGRAM_VERIFY_TOKEN`.
+- Webhook URL: `https://<host>/webhooks/instagram` — subscribe to the `messages` field. Meta's subscription verification (hub.mode/hub.verify_token/hub.challenge) is answered on GET; event POSTs are authenticated with `X-Hub-Signature-256` (HMAC-SHA256 of the raw body using `INSTAGRAM_APP_SECRET`).
+- Instagram gets full web flows (link-button messages render as generic templates), quick replies for interactive menus, and inbound image/audio attachments feed the same OCR/STT pipeline as WhatsApp.
+- Identity: customers are keyed by their Instagram-scoped ID (IGSID); an email confirmed during onboarding links the handle to an existing Xego account so receipts, wallet, and KYC history follow the customer across channels.
+
+### TikTok Business Messaging
+
+- Requires a TikTok for Business app with the Business Messaging product and an access token. Set `TIKTOK_ENABLED=true`.
+- Store `TIKTOK_APP_SECRET` and `TIKTOK_ACCESS_TOKEN` (and optionally `TIKTOK_API_BASE`, default `https://open.tiktokapis.com`).
+- Webhook URL: `https://<host>/webhooks/tiktok` — event POSTs are authenticated with the `TikTok-Signature` header (`t=<unix>,s=<hex>` where the signature is HMAC-SHA256 of `"<t>.<body>"` keyed with `TIKTOK_APP_SECRET`); timestamps older than 5 minutes are rejected to bound replay.
+- The platform has no interactive DM primitives: buttons, lists, and templates degrade to numbered text menus and plain links, so every Xego flow works from TikTok with a text-menu UX. Web flows are disabled for this channel; the chat FSM drives the whole transaction.
+- Identity: customers are keyed by `open_id` with the account-level `union_id` stored for cross-app resolution.
 
 ### Interswitch Web Checkout
 

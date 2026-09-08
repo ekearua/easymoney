@@ -127,8 +127,13 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 
 func (s *ConversationService) sendAccountConfirmation(ctx context.Context, channel, recipient string) error {
 	label := "WhatsApp number"
-	if channel == ChannelTelegram {
+	switch channel {
+	case ChannelTelegram:
 		label = "Telegram account"
+	case ChannelInstagram:
+		label = "Instagram account"
+	case ChannelTikTok:
+		label = "TikTok account"
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,

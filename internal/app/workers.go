@@ -266,6 +266,16 @@ func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body strin
 			return errors.New("Telegram is not configured")
 		}
 		return a.telegram.SendText(ctx, recipient, body)
+	case service.ChannelInstagram:
+		if a.instagram == nil {
+			return errors.New("Instagram is not configured")
+		}
+		return a.instagram.SendText(ctx, recipient, body)
+	case service.ChannelTikTok:
+		if a.tiktok == nil {
+			return errors.New("TikTok is not configured")
+		}
+		return a.tiktok.SendText(ctx, recipient, body)
 	default:
 		return a.whatsapp.SendText(ctx, recipient, body)
 	}
@@ -284,6 +294,16 @@ func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageData
 			return errors.New("Telegram is not configured")
 		}
 		return a.telegram.SendImage(ctx, recipient, imageData, caption)
+	case service.ChannelInstagram:
+		if a.instagram == nil {
+			return errors.New("Instagram is not configured")
+		}
+		return a.instagram.SendImage(ctx, recipient, imageData, caption)
+	case service.ChannelTikTok:
+		if a.tiktok == nil {
+			return errors.New("TikTok is not configured")
+		}
+		return a.tiktok.SendImage(ctx, recipient, imageData, caption)
 	default:
 		return a.whatsapp.SendImage(ctx, recipient, imageData, caption)
 	}

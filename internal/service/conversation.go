@@ -19,6 +19,12 @@ const (
 	ChannelWhatsApp = "whatsapp"
 	// ChannelTelegram identifies customer conversations received through Telegram Bot API.
 	ChannelTelegram = "telegram"
+	// ChannelInstagram identifies customer conversations received through the
+	// Instagram Messaging API (Meta Graph, IGSID identity).
+	ChannelInstagram = "instagram"
+	// ChannelTikTok identifies customer conversations received through the
+	// TikTok Business Messaging API (open_id/union_id identity).
+	ChannelTikTok = "tiktok"
 	// ChannelSMS identifies lightweight SMS-originated request-code orders.
 	ChannelSMS = "sms"
 	// ChannelAPI identifies payments initiated through the merchant Partner API.
@@ -391,6 +397,21 @@ func (s *ConversationService) resolveUser(ctx context.Context, message store.Inb
 		}
 		user, err := s.store.GetOrCreateTelegramUser(ctx, recipient, message.Sender, message.Username)
 		return user, recipient, err
+	case ChannelInstagram:
+		igsid := strings.TrimSpace(message.Sender)
+		user, err := s.store.GetOrCreateInstagramUser(ctx, igsid, message.Username)
+		return user, igsid, err
+	case ChannelTikTok:
+		openID := strings.TrimSpace(message.Sender)
+		// Identity is keyed on the open_id; the union_id is kept for cross-app
+		// resolution. The conversation_id travels as message.Recipient and is
+		// the provider address outbound sends reply to.
+		user, err := s.store.GetOrCreateTikTokUser(ctx, openID, message.UnionID, message.Username)
+		recipient := strings.TrimSpace(message.Recipient)
+		if recipient == "" {
+			recipient = openID
+		}
+		return user, recipient, err
 	default:
 		number := normalizePhone(message.Sender)
 		user, err := s.store.GetOrCreateUser(ctx, number)
@@ -402,8 +423,13 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 	if !user.OnboardingComplete {
 		return false
 	}
-	if channel == ChannelTelegram {
+	switch channel {
+	case ChannelTelegram:
 		return user.TelegramConfirmedAt.Valid
+	case ChannelInstagram:
+		return user.InstagramConfirmedAt.Valid
+	case ChannelTikTok:
+		return user.TikTokConfirmedAt.Valid
 	}
 	return user.NumberConfirmedAt.Valid
 }
@@ -494,6 +520,12 @@ func normalizePhone(value string) string {
 func normalizeChannel(channel string) string {
 	if strings.EqualFold(channel, ChannelTelegram) {
 		return ChannelTelegram
+	}
+	if strings.EqualFold(channel, ChannelInstagram) {
+		return ChannelInstagram
+	}
+	if strings.EqualFold(channel, ChannelTikTok) {
+		return ChannelTikTok
 	}
 	return ChannelWhatsApp
 }

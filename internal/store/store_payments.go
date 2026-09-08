@@ -82,6 +82,7 @@ type InboundMessage struct {
 	Text        string
 	Interactive string
 	Username    string
+	UnionID     string // TikTok union id when the provider supplies one
 	MediaType   string // image, audio, video, document, photo, voice, ""
 	MediaID     string
 	MediaMime   string
@@ -130,7 +131,7 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 	if message.Recipient == "" {
 		message.Recipient = message.Sender
 	}
-	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "media_type": message.MediaType, "media_id": message.MediaID, "media_mime": message.MediaMime, "caption": message.Caption})
+	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "union_id": message.UnionID, "media_type": message.MediaType, "media_id": message.MediaID, "media_mime": message.MediaMime, "caption": message.Caption})
 	if err != nil {
 		return false, err
 	}
@@ -181,6 +182,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 		message.Text = normalized["text"]
 		message.Interactive = normalized["interactive"]
 		message.Username = normalized["username"]
+		message.UnionID = normalized["union_id"]
 		messages = append(messages, message)
 	}
 	rows.Close()

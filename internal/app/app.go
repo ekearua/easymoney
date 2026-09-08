@@ -38,7 +38,9 @@ import (
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
+	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
+	"whatsapp-payment-demo/internal/providers/tiktok"
 	"whatsapp-payment-demo/internal/providers/vtpass"
 	"whatsapp-payment-demo/internal/providers/whatsapp"
 	"whatsapp-payment-demo/internal/ratelimit"
@@ -57,6 +59,8 @@ type App struct {
 	store             *store.Store
 	interswitch       *interswitchprovider.Client
 	telegram          *telegram.Client
+	instagram         *instagram.Client
+	tiktok            *tiktok.Client
 	whatsapp          *whatsapp.Client
 	payments          *service.PaymentService
 	data              *service.DataService
@@ -112,10 +116,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	router := service.NewProviderRouter(gateways, logger)
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
 	var telegramClient *telegram.Client
+	var instagramClient *instagram.Client
+	var tiktokClient *tiktok.Client
 	messengers := map[string]ports.Messenger{service.ChannelWhatsApp: whatsappClient}
 	if cfg.TelegramEnabled {
 		telegramClient = telegram.New(cfg.TelegramBotToken, cfg.TelegramAPIBase, cfg.TelegramWebhookSecret)
 		messengers[service.ChannelTelegram] = telegramClient
+	}
+	if cfg.InstagramEnabled {
+		instagramClient = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, cfg.InstagramIGID, cfg.InstagramGraphVersion)
+		messengers[service.ChannelInstagram] = instagramClient
+	}
+	if cfg.TikTokEnabled {
+		tiktokClient = tiktok.New(cfg.TikTokAppSecret, cfg.TikTokAccessToken, cfg.TikTokAPIBase)
+		messengers[service.ChannelTikTok] = tiktokClient
 	}
 	paymentService := service.NewPaymentService(cfg, repository, gateways, router, logger)
 	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
@@ -248,7 +262,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
 	return &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
-		telegram: telegramClient, whatsapp: whatsappClient, payments: paymentService,
+		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
+		whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
@@ -380,6 +395,9 @@ func (a *App) routes() http.Handler {
 	router.Get("/webhooks/whatsapp", a.verifyWhatsAppWebhook)
 	router.With(webhookLimit).Post("/webhooks/whatsapp", a.receiveWhatsAppWebhook)
 	router.With(webhookLimit).Post("/webhooks/telegram", a.receiveTelegramWebhook)
+	router.Get("/webhooks/instagram", a.verifyInstagramWebhook)
+	router.With(webhookLimit).Post("/webhooks/instagram", a.receiveInstagramWebhook)
+	router.With(webhookLimit).Post("/webhooks/tiktok", a.receiveTikTokWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
 	router.With(webhookLimit).Post("/webhooks/interswitch", a.receiveInterswitchWebhook)
 	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)

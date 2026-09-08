@@ -286,10 +286,19 @@ func (s *Store) CompleteWebFlow(ctx context.Context, token string) (WebFlow, boo
 // UserContactForChannel returns the outbound recipient address for a user on
 // the given messenger channel (normalized WhatsApp number or Telegram chat id).
 func (s *Store) UserContactForChannel(ctx context.Context, userID uuid.UUID, channel string) (string, error) {
-	if channel == "telegram" {
+	switch channel {
+	case "telegram":
 		var chatID string
 		err := s.pool.QueryRow(ctx, `SELECT COALESCE(telegram_chat_id,'') FROM users WHERE id=$1`, userID).Scan(&chatID)
 		return chatID, err
+	case "instagram":
+		var igsid string
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(instagram_igsid,'') FROM users WHERE id=$1`, userID).Scan(&igsid)
+		return igsid, err
+	case "tiktok":
+		var openID string
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(tiktok_open_id,'') FROM users WHERE id=$1`, userID).Scan(&openID)
+		return openID, err
 	}
 	var number string
 	err := s.pool.QueryRow(ctx, `SELECT COALESCE(whatsapp_number,'') FROM users WHERE id=$1`, userID).Scan(&number)

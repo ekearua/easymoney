@@ -124,9 +124,14 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 	switch {
 	case input == "confirm_number" || input == "confirm_account" || strings.EqualFold(input, "confirm"):
 		var err error
-		if channel == ChannelTelegram {
+		switch channel {
+		case ChannelTelegram:
 			err = s.store.ConfirmTelegramAccount(ctx, user.ID)
-		} else {
+		case ChannelInstagram:
+			err = s.store.ConfirmInstagramAccount(ctx, user.ID)
+		case ChannelTikTok:
+			err = s.store.ConfirmTikTokAccount(ctx, user.ID)
+		default:
 			err = s.store.ConfirmUserNumber(ctx, user.ID)
 		}
 		if err != nil {
