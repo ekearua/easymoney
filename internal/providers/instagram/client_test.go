@@ -98,7 +98,7 @@ func TestSendInteractiveUsesQuickReplies(t *testing.T) {
 	t.Parallel()
 	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v23.0/me/messages" {
+		if r.URL.Path != "/v23.0/ig-1/messages" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {

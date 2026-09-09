@@ -329,7 +329,7 @@ func (c *Client) send(ctx context.Context, payload map[string]any) error {
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://graph.facebook.com/%s/me/messages?access_token=%s", c.graphVersion, c.accessToken)
+	url := fmt.Sprintf("https://graph.facebook.com/%s/%s/messages?access_token=%s", c.graphVersion, c.igID, c.accessToken)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return err
