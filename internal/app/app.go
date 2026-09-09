@@ -845,6 +845,17 @@ func digest(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// logWebhookBody dumps the exact raw bytes of an inbound provider webhook at
+// INFO level. Gated behind WEBHOOK_BODY_LOG_ENABLED; used to inspect the true
+// payload a provider sends (Meta's webhook tester uses a different shape than
+// the production delivery) before signature validation.
+func (a *App) logWebhookBody(provider string, body []byte) {
+	if !a.cfg.WebhookBodyLogEnabled {
+		return
+	}
+	a.logger.InfoContext(context.Background(), "webhook body", "provider", provider, "body", string(body))
+}
+
 func randomToken(size int) (string, error) {
 	raw := make([]byte, size)
 	if _, err := rand.Read(raw); err != nil {

@@ -34,6 +34,7 @@ func (a *App) receiveWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eventKey := digest(body)
+	a.logWebhookBody("whatsapp", body)
 	validationErr := a.whatsapp.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
 	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), "whatsapp", eventKey, validationErr == nil, json.RawMessage(`{}`))
 	if storeErr != nil {
@@ -78,6 +79,7 @@ func (a *App) receiveTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	validationErr := a.telegram.ValidateSecret(r.Header.Get("X-Telegram-Bot-Api-Secret-Token"))
 	updates, parseErr := telegram.ParseInbound(body)
 	eventKey := digest(body)
+	a.logWebhookBody("telegram", body)
 	if len(updates) > 0 {
 		eventKey = "update:" + strconv.FormatInt(updates[0].UpdateID, 10)
 	}
@@ -150,6 +152,7 @@ func (a *App) receiveInstagramWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid body", http.StatusBadRequest)
 		return
 	}
+	a.logWebhookBody("instagram", body)
 	validationErr := a.instagram.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
 	messages, parseErr := instagram.ParseInbound(body)
 	eventKey := digest(body)
@@ -202,6 +205,7 @@ func (a *App) receiveTikTokWebhook(w http.ResponseWriter, r *http.Request) {
 	validationErr := a.tiktok.ValidateSignature(body, r.Header.Get("TikTok-Signature"))
 	updates, parseErr := tiktok.ParseInbound(body)
 	eventKey := digest(body)
+	a.logWebhookBody("tiktok", body)
 	if len(updates) > 0 && updates[0].EventID != "" {
 		eventKey = updates[0].EventID
 	}

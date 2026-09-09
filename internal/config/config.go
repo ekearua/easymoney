@@ -99,6 +99,11 @@ type Config struct {
 	TikTokAccessToken string
 	TikTokAPIBase     string
 
+	// WebhookBodyLogEnabled logs the raw bytes of every inbound HTTPS webhook
+	// before signature validation. Off by default; mainly a field-debug tool to
+	// inspect the exact payload a provider (e.g. Meta's webhook tester) sends.
+	WebhookBodyLogEnabled bool
+
 	SMSEnabled       bool
 	SMSProvider      string
 	SMSWebhookSecret string
@@ -254,6 +259,7 @@ func Load() (Config, error) {
 		TikTokAppSecret:            os.Getenv("TIKTOK_APP_SECRET"),
 		TikTokAccessToken:          os.Getenv("TIKTOK_ACCESS_TOKEN"),
 		TikTokAPIBase:              strings.TrimRight(env("TIKTOK_API_BASE", "https://open.tiktokapis.com"), "/"),
+		WebhookBodyLogEnabled:      envBool("WEBHOOK_BODY_LOG_ENABLED", false),
 		SMSEnabled:                 envBool("SMS_ENABLED", false),
 		SMSProvider:                env("SMS_PROVIDER", "webhook"),
 		SMSWebhookSecret:           os.Getenv("SMS_WEBHOOK_SECRET"),
