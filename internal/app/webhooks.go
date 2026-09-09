@@ -153,6 +153,9 @@ func (a *App) receiveInstagramWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.logWebhookBody("instagram", body)
+	if a.cfg.WebhookBodyLogEnabled {
+		a.logger.InfoContext(r.Context(), "instagram signature", "signature", r.Header.Get("X-Hub-Signature-256"))
+	}
 	validationErr := a.instagram.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
 	messages, parseErr := instagram.ParseInbound(body)
 	eventKey := digest(body)
