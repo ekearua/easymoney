@@ -88,7 +88,8 @@ type Config struct {
 	InstagramEnabled      bool
 	InstagramAppSecret    string
 	InstagramAccessToken  string
-	InstagramIGID         string // business IG account id used to send messages
+	InstagramIGID         string // business IG account id (webhook recipient)
+	InstagramPageID       string // linked Facebook Page id used to send replies (Messenger Send API)
 	InstagramVerifyToken  string
 	InstagramGraphVersion string
 
@@ -253,6 +254,7 @@ func Load() (Config, error) {
 		InstagramAppSecret:         os.Getenv("INSTAGRAM_APP_SECRET"),
 		InstagramAccessToken:       os.Getenv("INSTAGRAM_ACCESS_TOKEN"),
 		InstagramIGID:              strings.TrimSpace(os.Getenv("INSTAGRAM_IG_ID")),
+		InstagramPageID:            strings.TrimSpace(os.Getenv("INSTAGRAM_PAGE_ID")),
 		InstagramVerifyToken:       os.Getenv("INSTAGRAM_VERIFY_TOKEN"),
 		InstagramGraphVersion:      strings.TrimSpace(os.Getenv("INSTAGRAM_GRAPH_VERSION")),
 		TikTokEnabled:              envBool("TIKTOK_ENABLED", false),

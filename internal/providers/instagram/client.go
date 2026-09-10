@@ -27,7 +27,7 @@ import (
 type Client struct {
 	appSecret    string
 	accessToken  string
-	igID         string
+	sendObjectID string // Facebook Page ID (Messenger Send API); IG account ID as fallback
 	graphVersion string
 	http         *http.Client
 }
@@ -46,14 +46,16 @@ type InboundMessage struct {
 	Username    string
 }
 
-// New creates an Instagram Messaging client.
-func New(appSecret, accessToken, igID, graphVersion string) *Client {
+// New creates an Instagram Messaging client. sendObjectID is the Facebook
+// Page ID of the Page linked to the Instagram professional account, used by
+// the Messenger Send API to deliver replies; the IG account ID works too.
+func New(appSecret, accessToken, sendObjectID, graphVersion string) *Client {
 	graphVersion = strings.TrimSpace(graphVersion)
 	if graphVersion == "" {
 		graphVersion = "v23.0"
 	}
 	return &Client{
-		appSecret: appSecret, accessToken: accessToken, igID: igID,
+		appSecret: appSecret, accessToken: accessToken, sendObjectID: sendObjectID,
 		graphVersion: graphVersion, http: &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -322,14 +324,14 @@ func (c *Client) DownloadFile(ctx context.Context, attachmentID, mediaURL string
 }
 
 func (c *Client) send(ctx context.Context, payload map[string]any) error {
-	if c.accessToken == "" || c.igID == "" {
+	if c.accessToken == "" || c.sendObjectID == "" {
 		return errors.New("Instagram messaging is not configured")
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://graph.facebook.com/%s/%s/messages?access_token=%s", c.graphVersion, c.igID, c.accessToken)
+	url := fmt.Sprintf("https://graph.facebook.com/%s/%s/messages?access_token=%s", c.graphVersion, c.sendObjectID, c.accessToken)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 	if err != nil {
 		return err

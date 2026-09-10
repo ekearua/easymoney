@@ -36,9 +36,9 @@ import (
 	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
+	"whatsapp-payment-demo/internal/providers/instagram"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
-	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/tiktok"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -124,7 +124,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		messengers[service.ChannelTelegram] = telegramClient
 	}
 	if cfg.InstagramEnabled {
-		instagramClient = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, cfg.InstagramIGID, cfg.InstagramGraphVersion)
+		sendObjectID := cfg.InstagramPageID
+		if sendObjectID == "" {
+			sendObjectID = cfg.InstagramIGID
+		}
+		instagramClient = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, sendObjectID, cfg.InstagramGraphVersion)
 		messengers[service.ChannelInstagram] = instagramClient
 	}
 	if cfg.TikTokEnabled {

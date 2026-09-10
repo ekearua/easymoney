@@ -50,7 +50,11 @@ func newChannelWebhookApp(t *testing.T, ctx context.Context, repository *store.S
 	}
 	// The webhook handlers guard on the channel client being configured.
 	if cfg.InstagramEnabled {
-		a.instagram = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, cfg.InstagramIGID, cfg.InstagramGraphVersion)
+		sendObjectID := cfg.InstagramPageID
+		if sendObjectID == "" {
+			sendObjectID = cfg.InstagramIGID
+		}
+		a.instagram = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, sendObjectID, cfg.InstagramGraphVersion)
 	}
 	if cfg.TikTokEnabled {
 		a.tiktok = tiktok.New(cfg.TikTokAppSecret, cfg.TikTokAccessToken, cfg.TikTokAPIBase)
