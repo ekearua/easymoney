@@ -372,6 +372,10 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "ai_assistant":
 		return s.handleAIAssistant(ctx, message.Channel, recipient, user, session, input)
+	case "link_phone":
+		return s.handleLinkPhone(ctx, message.Channel, recipient, user, session, input)
+	case "link_code":
+		return s.handleLinkCode(ctx, message.Channel, recipient, user, session, input)
 	default:
 		// AI intent routing: when enabled and a chat AI is available,
 		// try to classify free-text input before falling back to keyword
@@ -389,34 +393,52 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 }
 
 func (s *ConversationService) resolveUser(ctx context.Context, message store.InboundMessage) (store.User, string, error) {
+	// Every resolve path returns the surviving primary account: a channel row
+	// that was merged into a WhatsApp account via account linking is a
+	// tombstone (merged_into_id set) and all reads follow the primary so
+	// sessions, payments, and wallet stay on the surviving row.
+	var (
+		user      store.User
+		recipient string
+		err       error
+	)
 	switch message.Channel {
 	case ChannelTelegram:
-		recipient := strings.TrimSpace(message.Recipient)
+		recipient = strings.TrimSpace(message.Recipient)
 		if recipient == "" {
 			recipient = strings.TrimSpace(message.Sender)
 		}
-		user, err := s.store.GetOrCreateTelegramUser(ctx, recipient, message.Sender, message.Username)
-		return user, recipient, err
+		user, err = s.store.GetOrCreateTelegramUser(ctx, recipient, message.Sender, message.Username)
 	case ChannelInstagram:
 		igsid := strings.TrimSpace(message.Sender)
-		user, err := s.store.GetOrCreateInstagramUser(ctx, igsid, message.Username)
-		return user, igsid, err
+		user, err = s.store.GetOrCreateInstagramUser(ctx, igsid, message.Username)
+		recipient = igsid
 	case ChannelTikTok:
 		openID := strings.TrimSpace(message.Sender)
 		// Identity is keyed on the open_id; the union_id is kept for cross-app
 		// resolution. The conversation_id travels as message.Recipient and is
 		// the provider address outbound sends reply to.
-		user, err := s.store.GetOrCreateTikTokUser(ctx, openID, message.UnionID, message.Username)
-		recipient := strings.TrimSpace(message.Recipient)
+		user, err = s.store.GetOrCreateTikTokUser(ctx, openID, message.UnionID, message.Username)
+		recipient = strings.TrimSpace(message.Recipient)
 		if recipient == "" {
 			recipient = openID
 		}
-		return user, recipient, err
 	default:
 		number := normalizePhone(message.Sender)
-		user, err := s.store.GetOrCreateUser(ctx, number)
-		return user, number, err
+		user, err = s.store.GetOrCreateUser(ctx, number)
+		recipient = number
 	}
+	if err != nil {
+		return store.User{}, "", err
+	}
+	if user.MergedIntoID.Valid {
+		primary, err := s.store.ResolvePrimaryUser(ctx, user.ID)
+		if err != nil {
+			return store.User{}, "", err
+		}
+		return primary, recipient, nil
+	}
+	return user, recipient, nil
 }
 
 func (s *ConversationService) onboardingCompleteForChannel(user store.User, channel string) bool {

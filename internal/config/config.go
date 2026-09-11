@@ -41,11 +41,15 @@ type Config struct {
 	EmailConfirmationEnabled bool
 	EmailDemoCodeInChat      bool
 	EmailVerificationTTL     time.Duration
-	SMTPHost                 string
-	SMTPPort                 int
-	SMTPUsername             string
-	SMTPPassword             string
-	SMTPFrom                 string
+
+	LinkAccountsEnabled bool
+	LinkDemoCodeInChat  bool
+	LinkCodeTTL         time.Duration
+	SMTPHost            string
+	SMTPPort            int
+	SMTPUsername        string
+	SMTPPassword        string
+	SMTPFrom            string
 
 	InterswitchClientID        string
 	InterswitchClientSecret    string
@@ -229,6 +233,9 @@ func Load() (Config, error) {
 		EmailConfirmationEnabled:   envBool("EMAIL_CONFIRMATION_ENABLED", true),
 		EmailDemoCodeInChat:        envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
 		EmailVerificationTTL:       envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
+		LinkAccountsEnabled:        envBool("LINK_ACCOUNTS_ENABLED", false),
+		LinkDemoCodeInChat:         envBool("LINK_DEMO_CODE_IN_CHAT", false),
+		LinkCodeTTL:                envDuration("LINK_CODE_TTL", 10*time.Minute),
 		SMTPHost:                   strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:                   int(envInt64("SMTP_PORT", 587)),
 		SMTPUsername:               os.Getenv("SMTP_USERNAME"),
@@ -499,6 +506,9 @@ func Load() (Config, error) {
 		}
 		if cfg.EmailDemoCodeInChat {
 			return Config{}, errors.New("EMAIL_DEMO_CODE_IN_CHAT is not allowed in production")
+		}
+		if cfg.LinkDemoCodeInChat {
+			return Config{}, errors.New("LINK_DEMO_CODE_IN_CHAT is not allowed in production")
 		}
 		if cfg.TOTPEnabled {
 			if cfg.TOTPEncryptionKey == "" {

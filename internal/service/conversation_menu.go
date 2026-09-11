@@ -170,6 +170,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendHistory(ctx, channel, recipient, user)
 	case "my limits", "menu_my_limits", "limits":
 		return s.handleMyLimits(ctx, channel, recipient, user)
+	case "link accounts", "menu_link_accounts", "connect accounts", "link":
+		return s.startLinkAccounts(ctx, channel, recipient, user, session)
 	case "complete profile", "menu_profile", "profile":
 		return s.startProfileCompletion(ctx, channel, recipient, user, session)
 	case "help", "menu_help":
@@ -193,19 +195,32 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 // "My limits" item (WhatsApp list messages cap at 10 rows), so a brand-new
 // user onboards through the menu instead of a blocking first-contact gate.
 func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string, user store.User) error {
+	rows := menuRowsFor(user)
+	if link := linkAccountsRowFor(s.cfg.LinkAccountsEnabled); link != nil {
+		for i, row := range rows {
+			if row.ID == "menu_my_limits" {
+				rows[i] = *link
+				break
+			}
+		}
+	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:          recipient,
 		Body:        "Welcome back to Xego. What would you like to do?",
 		ButtonLabel: "Open menu",
 		Sections: []ports.InteractiveSection{{
 			Title: "Xego",
-			Rows:  menuRowsFor(user),
+			Rows:  rows,
 		}},
 	})
 }
 
 func menuRowsFor(user store.User) []ports.InteractiveRow {
 	rows := mainMenuRows()
+	// Optional rows swap into a fixed slot so WhatsApp's 10-row cap is
+	// preserved: "Complete profile" replaces "My limits" until profile is
+	// done; "Link accounts" replaces it once linked channels can be merged
+	// into a WhatsApp account.
 	if user.DisplayName == "" || user.Email == "" {
 		for i, row := range rows {
 			if row.ID == "menu_my_limits" {
@@ -213,8 +228,18 @@ func menuRowsFor(user store.User) []ports.InteractiveRow {
 				break
 			}
 		}
+		return rows
 	}
 	return rows
+}
+
+// linkAccountsRowFor surfaces the account-linking row in place of the rarely
+// used "My limits" item when the feature is enabled and the profile is filled.
+func linkAccountsRowFor(enabled bool) *ports.InteractiveRow {
+	if !enabled {
+		return nil
+	}
+	return &ports.InteractiveRow{ID: "menu_link_accounts", Title: "Link accounts", Description: "Connect WhatsApp, Instagram, and more"}
 }
 
 func (s *ConversationService) sendMerchantServicesMenu(ctx context.Context, channel, recipient string) error {
@@ -300,6 +325,8 @@ func menuRowCovers(id string) bool {
 	case "menu_history":
 		return true
 	case "menu_my_limits":
+		return true
+	case "menu_link_accounts":
 		return true
 	case "menu_profile":
 		return true

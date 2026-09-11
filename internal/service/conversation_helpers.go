@@ -315,6 +315,18 @@ func emailCodeHash(email, code string) ([]byte, error) {
 	return bcrypt.GenerateFromPassword(emailCodeDigest(email, code), bcrypt.DefaultCost)
 }
 
+// linkCodeDigest returns the keyed digest used to verify a submitted account
+// link code against its stored bcrypt hash.
+func linkCodeDigest(phone, code string) []byte {
+	digest := sha256.Sum256([]byte(normalizePhone(phone) + ":" + normalizeEmailCode(code)))
+	return digest[:]
+}
+
+// linkCodeHash returns a salted, slow hash of a phone-bound account link code.
+func linkCodeHash(phone, code string) ([]byte, error) {
+	return bcrypt.GenerateFromPassword(linkCodeDigest(phone, code), bcrypt.DefaultCost)
+}
+
 func normalizeEmailCode(value string) string {
 	var builder strings.Builder
 	for _, r := range value {
@@ -400,6 +412,8 @@ func serviceSwitchIntent(input string) (string, string) {
 		return "history", ""
 	case "my limits", "limits", "menu_my_limits":
 		return "limits", ""
+	case "link accounts", "connect accounts", "menu_link_accounts", "link":
+		return "link_accounts", ""
 	case "ask xego", "ai", "assistant", "menu_ai":
 		return "ai", ""
 	case "complete profile", "profile", "menu_profile":
@@ -540,6 +554,8 @@ func flowStateLabel(state string) string {
 		return "completing a request in your browser"
 	case state == "ai_assistant":
 		return "chatting with the Xego assistant"
+	case strings.HasPrefix(state, "link_"):
+		return "linking your accounts"
 	default:
 		return "in a payment flow"
 	}

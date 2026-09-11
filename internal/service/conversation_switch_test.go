@@ -63,6 +63,8 @@ func TestServiceSwitchIntentCommands(t *testing.T) {
 		{input: "PAY XG-INV-12345", want: "invoice_payment"},
 		{input: "pay_invoice:INV-456", want: "invoice_payment"},
 		{input: "my limits", want: "limits"},
+		{input: "link accounts", want: "link_accounts"},
+		{input: "menu_link_accounts", want: "link_accounts"},
 		{input: "ask xego", want: "ai"},
 		{input: "complete profile", want: "profile"},
 		{input: "back", want: "menu"},
@@ -98,7 +100,7 @@ func TestFlowStateLabelCoversDispatchedStates(t *testing.T) {
 		"select_merchant", "pay_individual_phone", "merchant_register_email",
 		"thrift_name", "invoice_item_name", "invoice_pay_amount", "select_data_network",
 		"confirm_data_order", "kyb_request_confirm", "onboard_name", "onboard_email",
-		"web_flow_active", "ai_assistant", "individual_legal_name",
+		"web_flow_active", "ai_assistant", "individual_legal_name", "link_phone", "link_code",
 	}
 	for _, state := range states {
 		if label := flowStateLabel(state); label == "" || label == "in a payment flow" {

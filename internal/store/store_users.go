@@ -15,33 +15,37 @@ import (
 
 // User is a WhatsApp customer profile.
 type User struct {
-	ID                  uuid.UUID
-	WhatsAppNumber      string
-	DisplayName         string
-	Email               string
-	OnboardingComplete  bool
-	WhatsAppVerifiedAt  sql.NullTime
-	NumberConfirmedAt   sql.NullTime
-	EmailVerifiedAt     sql.NullTime
-	VerificationLevel   string
-	AccountLevel        string
-	TelegramChatID      sql.NullString
-	TelegramUserID      sql.NullString
-	TelegramUsername    string
-	TelegramVerifiedAt  sql.NullTime
-	TelegramConfirmedAt sql.NullTime
-	InstagramIGSID      sql.NullString
-	InstagramUsername   string
+	ID                   uuid.UUID
+	WhatsAppNumber       string
+	DisplayName          string
+	Email                string
+	OnboardingComplete   bool
+	WhatsAppVerifiedAt   sql.NullTime
+	NumberConfirmedAt    sql.NullTime
+	EmailVerifiedAt      sql.NullTime
+	VerificationLevel    string
+	AccountLevel         string
+	TelegramChatID       sql.NullString
+	TelegramUserID       sql.NullString
+	TelegramUsername     string
+	TelegramVerifiedAt   sql.NullTime
+	TelegramConfirmedAt  sql.NullTime
+	InstagramIGSID       sql.NullString
+	InstagramUsername    string
 	InstagramVerifiedAt  sql.NullTime
 	InstagramConfirmedAt sql.NullTime
-	TikTokOpenID        sql.NullString
-	TikTokUnionID       sql.NullString
-	TikTokUsername      string
-	TikTokVerifiedAt    sql.NullTime
-	TikTokConfirmedAt   sql.NullTime
-	LastInboundAt       time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	TikTokOpenID         sql.NullString
+	TikTokUnionID        sql.NullString
+	TikTokUsername       string
+	TikTokVerifiedAt     sql.NullTime
+	TikTokConfirmedAt    sql.NullTime
+	// MergedIntoID points at the surviving account row when this row is a
+	// tombstone produced by cross-channel account linking. The customer's
+	// handles, payments, and wallet live on the primary row.
+	MergedIntoID  uuid.NullUUID
+	LastInboundAt time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // Session persists a user's current conversation state.
@@ -76,7 +80,7 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
@@ -87,6 +91,7 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
@@ -113,7 +118,7 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, chatID, userID, username).Scan(
@@ -124,6 +129,7 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
@@ -138,7 +144,7 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE id=$1`
 	var user User
@@ -150,6 +156,7 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
@@ -311,6 +318,15 @@ func (s *Store) ConfirmTelegramAccount(ctx context.Context, id uuid.UUID) error 
 func (s *Store) LinkChannelToUser(ctx context.Context, userID uuid.UUID, channel, handle, username string) error {
 	var statement string
 	switch channel {
+	case "whatsapp":
+		statement = `
+			UPDATE users SET
+				whatsapp_number=$2,
+				whatsapp_verified_at=COALESCE(whatsapp_verified_at, now()),
+				number_confirmed_at=COALESCE(number_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
 	case "instagram":
 		statement = `
 			UPDATE users SET
@@ -355,6 +371,8 @@ func (s *Store) LinkChannelToUser(ctx context.Context, userID uuid.UUID, channel
 func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle string) (User, error) {
 	column := ""
 	switch channel {
+	case "whatsapp":
+		column = "whatsapp_number"
 	case "instagram":
 		column = "instagram_igsid"
 	case "tiktok":
@@ -370,7 +388,7 @@ func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle str
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE `+column+`=$1`, handle).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
@@ -380,13 +398,80 @@ func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle str
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, nil
 	}
-	return user, err
+	if err != nil {
+		return User{}, err
+	}
+	if user.MergedIntoID.Valid {
+		return s.ResolvePrimaryUser(ctx, user.ID)
+	}
+	return user, nil
+}
+
+// FindUserByWhatsAppNumber returns the account owning a normalized WhatsApp
+// number without creating a row (used by account linking to look up the
+// account the caller claims to own). Empty result means the number is not
+// linked to an account yet. Tombstoned rows resolve to their primary.
+func (s *Store) FindUserByWhatsAppNumber(ctx context.Context, number string) (User, error) {
+	const query = `
+		SELECT id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
+			last_inbound_at, created_at, updated_at
+		FROM users WHERE whatsapp_number=$1`
+	var user User
+	err := s.pool.QueryRow(ctx, query, number).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
+		&user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, nil
+	}
+	if err != nil {
+		return User{}, err
+	}
+	if user.MergedIntoID.Valid {
+		return s.ResolvePrimaryUser(ctx, user.ID)
+	}
+	return user, nil
+}
+
+// ResolvePrimaryUser follows a tombstoned account row to its surviving
+// primary. Ordinary rows return themselves. The chain is bounded so a corrupt
+// row can never loop forever.
+func (s *Store) ResolvePrimaryUser(ctx context.Context, id uuid.UUID) (User, error) {
+	seen := map[uuid.UUID]bool{}
+	for depth := 0; depth < 8; depth++ {
+		if seen[id] {
+			return User{}, fmt.Errorf("merged account chain contains a cycle at %s", id)
+		}
+		seen[id] = true
+		user, err := s.UserByID(ctx, id)
+		if err != nil {
+			return User{}, err
+		}
+		if !user.MergedIntoID.Valid {
+			return user, nil
+		}
+		id = user.MergedIntoID.UUID
+	}
+	return User{}, fmt.Errorf("merged account chain is too deep at %s", id)
 }
 
 // ConfirmInstagramAccount records the customer's explicit Instagram confirmation.
@@ -432,7 +517,7 @@ func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username st
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, igsid, username).Scan(
@@ -443,6 +528,7 @@ func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username st
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
@@ -469,7 +555,7 @@ func (s *Store) GetOrCreateTikTokUser(ctx context.Context, openID, unionID, user
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
 	err := s.pool.QueryRow(ctx, query, openID, unionID, username).Scan(
@@ -480,6 +566,7 @@ func (s *Store) GetOrCreateTikTokUser(ctx context.Context, openID, unionID, user
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
 	)
@@ -493,7 +580,7 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
-			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
@@ -510,6 +597,7 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 			&user.TelegramConfirmedAt,
 			&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
 			&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+			&user.MergedIntoID,
 			&user.LastInboundAt,
 			&user.CreatedAt, &user.UpdatedAt); err != nil {
 			return nil, err
