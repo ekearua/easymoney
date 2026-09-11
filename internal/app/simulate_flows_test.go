@@ -574,7 +574,12 @@ func simulatePayIndividual(t *testing.T, ctx context.Context, run *simRun, convo
 
 // simTestDBURL returns a database URL dedicated to the app package's
 // simulation so it never shares tables with the store/service suites when the
-// whole test run happens in parallel. The database is created on first use.
+// whole test run happens in parallel. The database is dropped and recreated on
+// every run: the simulations assert exact sums over users, payments, and
+// wallets (e.g. TestReproWalletWebPayment's wallet balance), so a reused
+// database from an earlier run would double-count stale rows and fail
+// spuriously — most visibly when a single simulation is re-run in isolation
+// after the full suite already populated the derived database.
 func simTestDBURL(t *testing.T, base string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -609,14 +614,14 @@ func simTestDBURL(t *testing.T, base string) string {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
-	var exists bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)`, simDB).Scan(&exists); err != nil {
+	// WITH (FORCE) also terminates connections left over from a previous
+	// crashed or cancelled run (PostgreSQL 13+). Nothing here can be reused
+	// across runs anyway.
+	if _, err := conn.Exec(ctx, `DROP DATABASE IF EXISTS "`+simDB+`" WITH (FORCE)`); err != nil {
 		t.Fatal(err)
 	}
-	if !exists {
-		if _, err := conn.Exec(ctx, `CREATE DATABASE "`+simDB+`"`); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := conn.Exec(ctx, `CREATE DATABASE "`+simDB+`"`); err != nil {
+		t.Fatal(err)
 	}
 	return simDSN
 }
