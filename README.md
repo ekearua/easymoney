@@ -290,11 +290,12 @@ The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegra
 
 ### Interswitch Web Checkout
 
-- Use only a TEST-mode integration for the demo.
+- Use a TEST-mode integration for the demo and set `INTERSWITCH_CHECKOUT_MODE=TEST`.
 - Complete the merchant, pay item, and webhook secret fields in `.env` (`INTERSWITCH_MERCHANT_CODE`, `INTERSWITCH_PAY_ITEM_ID`, `INTERSWITCH_WEBHOOK_SECRET`).
 - Webhook URL: `https://<host>/webhooks/interswitch` — Interswitch POSTs signed JSON events (`TRANSACTION.CREATED`, `TRANSACTION.UPDATED`, `TRANSACTION.COMPLETED`) here. The body is authenticated with an HMAC-SHA512 digest sent in the `X-Interswitch-Signature` header, recomputed with the dashboard webhook secret (`INTERSWITCH_WEBHOOK_SECRET`, distinct from `INTERSWITCH_CLIENT_SECRET`). A missing or invalid signature is rejected with `401`. Configure the webhook in the Quickteller Business dashboard (Developer Tools → Webhooks → Transactions) and reply to the event with an empty `200` (Interswitch retries up to 5× on non-200).
 - Return URL: `https://<host>/payments/return` — the customer-facing redirect after checkout.
-- Set `INTERSWITCH_CHECKOUT_MODE=TEST`; the service rejects live verifications.
+
+Cards collect through the **Hosted Fields** SDK (`INTERSWITCH_CHECKOUT_RENDER=hosted_fields`, the default), which renders Interswitch's secured fields in inline iframes so card data never touches the platform; set `INTERSWITCH_CHECKOUT_RENDER=legacy` to keep the auto-submitting redirect form.
 
 The webhook and the return-page callback never mark a transaction successful by themselves: only a terminal `TRANSACTION.COMPLETED` webhook triggers a confirmation, and the outcome is always established by an authoritative server-side requery (`gettransaction.json`) before success is written. A background reconciler (`Reconcile`) re-checks any Interswitch payment still unresolved after 30s as a safety net.
 

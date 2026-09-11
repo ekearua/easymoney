@@ -55,6 +55,20 @@ type Config struct {
 	InterswitchCheckoutBaseURL string // optional; hosted payment-page host (defaults per mode)
 	InterswitchCheckoutMode    string
 	InterswitchWebhookSecret   string
+	InterswitchTerminalID      string // fallback TerminalId for quickteller v5 calls
+	InterswitchSourceAccount   string // funding account for NIP transfers and VTU
+	InterswitchCheckoutRender  string // "hosted_fields" (default) or "legacy" redirect form
+
+	// BankTransferMode selects how bank-transfer payments are collected:
+	// "simulate" (demo chat instructions) or "interswitch" (dynamic virtual
+	// accounts through the virtual accounts API).
+	BankTransferMode string
+	// PayoutProvider selects the settlement rail: "simulated" (default) or
+	// "interswitch" (Quickteller single transfer / NIP).
+	PayoutProvider string
+	// RefundProvider selects the reversal rail: "simulated" (default) or
+	// "interswitch" (refund API).
+	RefundProvider string
 
 	// Fee configuration (kobo). These control the Xego platform fee
 	// applied as a split on merchant collection payments.
@@ -228,6 +242,12 @@ func Load() (Config, error) {
 		InterswitchCheckoutBaseURL: strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
 		InterswitchCheckoutMode:    strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
 		InterswitchWebhookSecret:   os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
+		InterswitchTerminalID:      strings.TrimSpace(os.Getenv("INTERSWITCH_TERMINAL_ID")),
+		InterswitchSourceAccount:   strings.TrimSpace(os.Getenv("INTERSWITCH_SOURCE_ACCOUNT")),
+		InterswitchCheckoutRender:  strings.ToLower(env("INTERSWITCH_CHECKOUT_RENDER", "hosted_fields")),
+		BankTransferMode:           strings.ToLower(env("BANK_TRANSFER_MODE", "simulate")),
+		PayoutProvider:             strings.ToLower(env("PAYOUT_PROVIDER", "simulated")),
+		RefundProvider:             strings.ToLower(env("REFUND_PROVIDER", "simulated")),
 		FeeCardBPS:                 envInt64("XEGO_FEE_CARD_BPS", 200),
 		FeeCardFixedKobo:           envInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
 		FeeCardCapKobo:             envInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
@@ -358,6 +378,26 @@ func Load() (Config, error) {
 	}
 	if cfg.EventBus == "kafka" && len(cfg.KafkaBrokers) == 0 {
 		return Config{}, errors.New("KAFKA_BROKERS is required when EVENT_BUS=kafka")
+	}
+	switch cfg.InterswitchCheckoutRender {
+	case "", "hosted_fields", "legacy":
+	default:
+		return Config{}, fmt.Errorf("INTERSWITCH_CHECKOUT_RENDER must be \"hosted_fields\" or \"legacy\", got %q", cfg.InterswitchCheckoutRender)
+	}
+	switch cfg.BankTransferMode {
+	case "", "simulate", "interswitch":
+	default:
+		return Config{}, fmt.Errorf("BANK_TRANSFER_MODE must be \"simulate\" or \"interswitch\", got %q", cfg.BankTransferMode)
+	}
+	switch cfg.PayoutProvider {
+	case "", "simulated", "interswitch":
+	default:
+		return Config{}, fmt.Errorf("PAYOUT_PROVIDER must be \"simulated\" or \"interswitch\", got %q", cfg.PayoutProvider)
+	}
+	switch cfg.RefundProvider {
+	case "", "simulated", "interswitch":
+	default:
+		return Config{}, fmt.Errorf("REFUND_PROVIDER must be \"simulated\" or \"interswitch\", got %q", cfg.RefundProvider)
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(env("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)

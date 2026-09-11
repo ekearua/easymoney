@@ -31,6 +31,12 @@ func TestValidateVerification(t *testing.T) {
 		t.Fatalf("valid verification rejected: %v", err)
 	}
 
+	live := valid
+	live.Domain = "live"
+	if err := validateVerification(payment, live); err != nil {
+		t.Fatalf("live-domain verification rejected: %v", err)
+	}
+
 	tests := []struct {
 		name   string
 		change func(*ports.Verification)
@@ -38,7 +44,6 @@ func TestValidateVerification(t *testing.T) {
 		{name: "reference", change: func(v *ports.Verification) { v.Reference = "other" }},
 		{name: "amount", change: func(v *ports.Verification) { v.AmountKobo++ }},
 		{name: "currency", change: func(v *ports.Verification) { v.Currency = "USD" }},
-		{name: "live domain", change: func(v *ports.Verification) { v.Domain = "live" }},
 		{name: "payment metadata", change: func(v *ports.Verification) { v.Metadata["payment_id"] = uuid.NewString() }},
 		{name: "merchant metadata", change: func(v *ports.Verification) { v.Metadata["merchant_id"] = uuid.NewString() }},
 	}

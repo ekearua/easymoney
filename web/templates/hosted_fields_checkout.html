@@ -1,0 +1,40 @@
+{{define "hosted_fields_checkout.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure payment - {{.Payment.MerchantName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Secure card payment</p>
+  <h1>{{.Payment.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  <dl>
+    <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
+  </dl>
+  <p class="muted">Card details are entered inside Interswitch's secure fields. We never see your card number.</p>
+  <div class="hf-field"><label>Card number</label><div id="cardNumber-container"></div></div>
+  <div class="hf-field"><label>Expiry</label><div id="expiry-container"></div></div>
+  <div class="hf-field"><label>CVV</label><div id="cvv-container"></div></div>
+  <div class="hf-field"><label>PIN (if your card requires one)</label><div id="pin-container"></div></div>
+  <div class="hf-field"><label>OTP</label><div id="otp-container"></div></div>
+  <button id="pay-button" type="button">Pay securely</button>
+  <p id="hf-message" class="muted"></p>
+  <noscript><p class="muted">JavaScript is required to complete this secure payment.</p></noscript>
+  <script>
+    window.xegoPaymentConfig = {
+      currency: "{{.Page.CurrencyCode}}",
+      merchantCode: "{{.Page.MerchantCode}}",
+      payableCode: "{{.Page.PayableCode}}",
+      transactionReference: "{{.Page.TransactionReference}}",
+      amount: "{{.Page.Amount}}",
+      dateOfPayment: "{{.Page.DateOfPayment}}",
+      redirectURL: "{{.Page.RedirectURL}}",
+      merchantCustomerName: "{{.Page.MerchantCustomerName}}",
+      merchantCustomerID: "{{.Page.MerchantCustomerID}}"
+    };
+  </script>
+  <script src="{{.Page.SDKURL}}"></script>
+  <script src="/static/hosted_fields.js" defer></script>
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+  {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
+</main></body></html>
+{{end}}

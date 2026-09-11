@@ -96,10 +96,11 @@ func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, updated.CheckoutURL, http.StatusSeeOther)
 }
 
-// interswitchCheckout renders the page that forwards the browser to the
-// Interswitch Web Checkout hosted payment page. Web Checkout is initiated with
-// a client-side form POST, so this page auto-submits the redirect form carrying
-// the merchant, amount, and transaction reference fields.
+// interswitchCheckout renders the secure payment page. In the default
+// hosted_fields render mode the page mounts the Interswitch Hosted Fields SDK
+// (secured inline iframes) so card data only ever touches Interswitch. The
+// legacy mode keeps the auto-submitting Web Checkout redirect form, retained
+// for sandboxes where the SDK or the redirect flow is preferred.
 func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	reference := strings.TrimSpace(chi.URLParam(r, "reference"))
 	payment, err := a.store.PaymentByReference(r.Context(), reference)
@@ -109,6 +110,29 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	if payment.Provider != service.ProviderInterswitch && payment.Provider != service.ProviderBankTransfer {
 		a.renderHostedCheckout(w, r, payment, http.StatusOK)
+		return
+	}
+	if a.cfg.InterswitchCheckoutRender != "legacy" {
+		page := a.interswitch.NewHostedFieldsPage(
+			payment.ProviderReference,
+			payment.UserEmail,
+			payment.AmountKobo,
+			a.cfg.BaseURL+"/payments/return",
+		)
+		// The global CSP only allows scripts from 'self'. The Hosted Fields SDK
+		// and its inline iframes live on the Interswitch origin, so scope this
+		// page's policy to load them while keeping everything else locked down.
+		if page.SDKOrigin != "" {
+			w.Header().Set("Content-Security-Policy",
+				"default-src 'self'; script-src 'self' "+page.SDKOrigin+
+					"; connect-src 'self' https://*.interswitchng.com"+
+					"; frame-src 'self' "+page.SDKOrigin+" https://*.interswitchng.com"+
+					"; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; form-action 'self'")
+		}
+		a.renderStatus(w, "hosted_fields_checkout.html", map[string]any{
+			"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
+			"WhatsAppDeepLink": a.whatsappDeepLink(),
+		}, http.StatusOK)
 		return
 	}
 	page := a.interswitch.NewPayPage(
@@ -126,6 +150,35 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
 		"WhatsAppDeepLink": a.whatsappDeepLink(),
+	}, http.StatusOK)
+}
+
+// transferInstructions renders the DVA details (account number, bank, expiry)
+// the customer transfers into. Confirmation still arrives through the
+// Interswitch webhook + authoritative requery path.
+func (a *App) transferInstructions(w http.ResponseWriter, r *http.Request) {
+	reference := strings.TrimSpace(chi.URLParam(r, "reference"))
+	payment, err := a.store.PaymentByReference(r.Context(), reference)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if payment.Status == domain.StatusSucceeded {
+		http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+		return
+	}
+	instruction, err := a.store.VirtualAccountInstructionByPaymentID(r.Context(), payment.ID)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "transfer instructions missing", "payment_id", payment.ID)
+		a.renderStatus(w, "transfer.html", map[string]any{
+			"AppName": a.cfg.AppName, "Payment": payment, "BaseURL": a.cfg.BaseURL,
+			"Error": "Transfer instructions are not ready yet. Go back to WhatsApp and try again.",
+		}, http.StatusAccepted)
+		return
+	}
+	a.renderStatus(w, "transfer.html", map[string]any{
+		"AppName": a.cfg.AppName, "Payment": payment, "BaseURL": a.cfg.BaseURL,
+		"Instruction": instruction, "WhatsAppDeepLink": a.whatsappDeepLink(),
 	}, http.StatusOK)
 }
 

@@ -12,6 +12,7 @@ import (
 
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/redact"
 )
 
@@ -121,6 +122,53 @@ type BankTransferInstruction struct {
 	SimulatedReference string
 	Status             string
 	CreatedAt          time.Time
+}
+
+// VirtualAccountInstruction is a dynamic virtual account generated against a
+// payment so the customer can pay by bank transfer, confirmed through the
+// Interswitch webhook + requery path.
+type VirtualAccountInstruction struct {
+	PaymentID         uuid.UUID
+	AccountNumber     string
+	AccountName       string
+	BankName          string
+	ProviderReference string
+	ValidityMins      int
+	ExpiresAt         time.Time
+	CreatedAt         time.Time
+}
+
+// SetVirtualAccountInstruction persists a DVA instruction for a payment,
+// replacing any previous one so a re-initialized checkout gets a fresh account.
+func (s *Store) SetVirtualAccountInstruction(ctx context.Context, paymentID uuid.UUID, instruction ports.TransferInstruction) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO virtual_account_instructions(payment_id, account_number, account_name, bank_name, provider_reference, validity_mins, expires_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT(payment_id) DO UPDATE
+		SET account_number=EXCLUDED.account_number,
+			account_name=EXCLUDED.account_name,
+			bank_name=EXCLUDED.bank_name,
+			provider_reference=EXCLUDED.provider_reference,
+			validity_mins=EXCLUDED.validity_mins,
+			expires_at=EXCLUDED.expires_at,
+			updated_at=now()`,
+		paymentID, instruction.AccountNumber, instruction.AccountName, instruction.BankName,
+		instruction.Reference, instruction.ValidityMins, instruction.ExpiresAt)
+	return err
+}
+
+// VirtualAccountInstructionByPaymentID loads the DVA instruction for a payment.
+func (s *Store) VirtualAccountInstructionByPaymentID(ctx context.Context, paymentID uuid.UUID) (VirtualAccountInstruction, error) {
+	var instruction VirtualAccountInstruction
+	err := s.pool.QueryRow(ctx, `
+		SELECT payment_id, account_number, account_name, bank_name,
+		       provider_reference, validity_mins, expires_at, created_at
+		FROM virtual_account_instructions
+		WHERE payment_id=$1`, paymentID).Scan(
+		&instruction.PaymentID, &instruction.AccountNumber, &instruction.AccountName,
+		&instruction.BankName, &instruction.ProviderReference, &instruction.ValidityMins,
+		&instruction.ExpiresAt, &instruction.CreatedAt)
+	return instruction, err
 }
 
 // EnqueueInboundMessage persists a normalized WhatsApp message before webhook acknowledgement.

@@ -337,7 +337,7 @@ func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.P
 	if gateway == nil {
 		return store.PaymentView{}, fmt.Errorf("no gateway configured for provider %q", payment.Provider)
 	}
-	checkout, err := gateway.Initialize(ctx, ports.InitializePayment{
+	input := ports.InitializePayment{
 		Reference:   payment.ProviderReference,
 		Email:       payment.UserEmail,
 		AmountKobo:  payment.AmountKobo,
@@ -348,12 +348,45 @@ func (s *PaymentService) InitializeCheckout(ctx context.Context, payment store.P
 			"merchant_id":   payment.MerchantID.String(),
 			"merchant_slug": payment.MerchantSlug,
 		},
-	})
+	}
+	// Bank-transfer payments collected through Interswitch DVA generate a
+	// one-time virtual account instead of a card checkout page. The payment's
+	// provider reference is reused as the DVA transaction reference so the
+	// existing webhook + requery confirmation path applies unchanged.
+	if payment.Provider == ProviderBankTransfer && s.cfg.BankTransferMode == "interswitch" {
+		return s.initializeDVACheckout(ctx, payment, gateway, input)
+	}
+	checkout, err := gateway.Initialize(ctx, input)
 	if err != nil {
 		return store.PaymentView{}, err
 	}
 	if checkout.Reference != payment.ProviderReference {
 		return store.PaymentView{}, errors.New("gateway returned a mismatched reference")
+	}
+	if err := s.store.SetCheckout(ctx, payment.ID, checkout.URL); err != nil {
+		return store.PaymentView{}, err
+	}
+	return s.store.PaymentByID(ctx, payment.ID)
+}
+
+// initializeDVACheckout generates a dynamic virtual account, persists the
+// transfer instruction, and returns a checkout pointed at the transfer
+// instruction page.
+func (s *PaymentService) initializeDVACheckout(ctx context.Context, payment store.PaymentView, gateway ports.PaymentGateway, input ports.InitializePayment) (store.PaymentView, error) {
+	tg, ok := gateway.(ports.TransferGateway)
+	if !ok {
+		return store.PaymentView{}, fmt.Errorf("gateway for provider %q does not support bank-transfer collection", payment.Provider)
+	}
+	instruction, err := tg.Transfer(ctx, input)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	if err := s.store.SetVirtualAccountInstruction(ctx, payment.ID, instruction); err != nil {
+		return store.PaymentView{}, err
+	}
+	checkout := ports.Checkout{
+		Reference: instruction.Reference,
+		URL:       s.cfg.BaseURL + "/transfer/" + payment.ProviderReference,
 	}
 	if err := s.store.SetCheckout(ctx, payment.ID, checkout.URL); err != nil {
 		return store.PaymentView{}, err
@@ -817,12 +850,6 @@ func validateVerification(payment store.PaymentView, verification ports.Verifica
 	}
 	if !strings.EqualFold(verification.Currency, payment.Currency) {
 		return errors.New("verified currency does not match payment")
-	}
-	// Per-provider validation hooks.
-	if payment.Provider == ProviderInterswitch {
-		if verification.Domain != "test" {
-			return errors.New("non-test Interswitch transaction rejected by demo")
-		}
 	}
 	if value := verification.Metadata["payment_id"]; value != "" && value != payment.ID.String() {
 		return errors.New("verified payment metadata does not match")

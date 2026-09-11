@@ -1,0 +1,28 @@
+{{define "transfer.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bank transfer - {{.Payment.MerchantName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Pay by bank transfer</p>
+  <h1>{{.Payment.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  {{if .Instruction}}
+  <dl class="fee-breakdown">
+    <div><dt>Bank</dt><dd>{{.Instruction.BankName}}</dd></div>
+    <div><dt>Account number</dt><dd class="mono">{{.Instruction.AccountNumber}}</dd></div>
+    <div><dt>Account name</dt><dd>{{.Instruction.AccountName}}</dd></div>
+    <div><dt>Valid until</dt><dd>{{date .Instruction.ExpiresAt}}</dd></div>
+  </dl>
+  <ol class="muted steps">
+    <li>Transfer the exact amount above into this one-time account.</li>
+    <li>This account is single-use; it expires after the time shown.</li>
+    <li>Your payment is confirmed automatically when the transfer arrives.</li>
+  </ol>
+  {{else}}
+  <p class="muted">{{.Error}}</p>
+  {{end}}
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+  {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
+</main></body></html>
+{{end}}

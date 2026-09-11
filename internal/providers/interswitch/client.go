@@ -50,7 +50,9 @@ const (
 )
 
 // Client integrates with Interswitch Web Checkout hosted checkout, server
-// requery verification, and redirect-notification handling.
+// requery verification, and redirect-notification handling. It also carries
+// an OAuth TokenManager so direct API endpoints (virtual accounts, transfer,
+// refunds, VTU) can use a Bearer token.
 type Client struct {
 	clientID        string
 	clientSecret    string
@@ -60,6 +62,9 @@ type Client struct {
 	baseURL         string
 	checkoutBaseURL string
 	mode            string
+	configuredTerminalID string
+	sourceAccount   string
+	token           *TokenManager
 	http            *http.Client
 }
 
@@ -73,6 +78,9 @@ type Options struct {
 	BaseURL         string // API/requery host (gettransaction.json)
 	CheckoutBaseURL string // optional; host that renders the payment page
 	Mode            string // "TEST" or "LIVE"
+	TokenURL        string // optional; defaults to BaseURL + /passport/oauth/token
+	TerminalID      string // optional; terminal id used when the token response omits one
+	SourceAccount   string // optional; funding account for NIP transfers
 }
 
 // New creates an Interswitch Web Checkout client with strict request timeouts.
@@ -92,17 +100,26 @@ func New(o Options) *Client {
 			checkoutBase = testCheckoutHost
 		}
 	}
-	return &Client{
+	baseURL := strings.TrimRight(o.BaseURL, "/")
+	tokenURL := strings.TrimRight(o.TokenURL, "/")
+	if tokenURL == "" {
+		tokenURL = baseURL + "/passport/oauth/token"
+	}
+	c := &Client{
 		clientID:        o.ClientID,
 		clientSecret:    o.ClientSecret,
 		webhookSecret:   o.WebhookSecret,
 		merchantCode:    o.MerchantCode,
 		payItemID:       o.PayItemID,
-		baseURL:         strings.TrimRight(o.BaseURL, "/"),
+		baseURL:         baseURL,
 		checkoutBaseURL: checkoutBase,
 		mode:            mode,
+		configuredTerminalID: strings.TrimSpace(o.TerminalID),
+		sourceAccount:   strings.TrimSpace(o.SourceAccount),
 		http:            &http.Client{Timeout: 15 * time.Second},
 	}
+	c.token = NewTokenManager(o.ClientID, o.ClientSecret, tokenURL, c.http)
+	return c
 }
 
 // PayPage carries the data needed to render the Interswitch Web Checkout

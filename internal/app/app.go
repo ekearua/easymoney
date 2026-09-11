@@ -93,7 +93,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, err
 	}
 	repository.SetDataKey(cfg.DataEncryptionKey)
-	// Interswitch Web Checkout is the sole card payment gateway.
+	// Interswitch is the sole payment gateway: card checkout (Hosted Fields /
+	// legacy redirect form), bank-transfer DVA collection, NIP payouts,
+	// refunds, and VTU data all ride on the same client.
 	interswitchClient := interswitchprovider.New(interswitchprovider.Options{
 		ClientID:        cfg.InterswitchClientID,
 		ClientSecret:    cfg.InterswitchClientSecret,
@@ -103,6 +105,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		BaseURL:         cfg.InterswitchBaseURL,
 		CheckoutBaseURL: cfg.InterswitchCheckoutBaseURL,
 		Mode:            cfg.InterswitchCheckoutMode,
+		TerminalID:      cfg.InterswitchTerminalID,
+		SourceAccount:   cfg.InterswitchSourceAccount,
 	})
 	// Build the payment gateway registry. Interswitch is always registered so
 	// card checkout resolves even in the backlog demo where no secret is set.
@@ -137,8 +141,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	paymentService := service.NewPaymentService(cfg, repository, gateways, router, logger)
 	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
-	if strings.EqualFold(cfg.DataProvider, "vtpass") {
+	switch strings.ToLower(cfg.DataProvider) {
+	case "", "simulated", "simulator":
+	case "vtpass":
 		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
+	case "interswitch":
+		dataProvider = interswitchClient
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported DATA_PROVIDER %q", cfg.DataProvider)
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
 	var identityVerifier ports.IdentityVerifier = identityprovider.NewSimulator()
@@ -264,6 +275,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	convo := service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener, identityProviderName)
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
+	// Settlement payouts and refunds default to the simulated rails and switch
+	// to the Interswitch NIP single transfer / refund API when configured.
+	var payoutProvider ports.PayoutProvider
+	if strings.EqualFold(cfg.PayoutProvider, "interswitch") {
+		payoutProvider = interswitchClient
+	}
+	var refundProvider ports.RefundProvider
+	if strings.EqualFold(cfg.RefundProvider, "interswitch") {
+		refundProvider = interswitchClient
+	}
 	return &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
 		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
@@ -274,8 +295,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
 		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, nil, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
-		refunds:          service.NewRefundService(repository, nil, logger),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
+		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
 		imageReader:      imageReader,
 		speechToText:     speechToText,
@@ -410,6 +431,7 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Get("/checkout/{token}", a.hostedCheckout)
 	router.With(publicLimit).Post("/checkout/{token}/pay", a.hostedCheckoutPay)
 	router.With(publicLimit).Get("/checkout/interswitch/{reference}", a.interswitchCheckout)
+	router.With(publicLimit).Get("/transfer/{reference}", a.transferInstructions)
 	router.With(publicLimit).Get("/link/{token}", a.checkoutLink)
 	router.With(publicLimit).Post("/link/{token}/resolve", a.checkoutLinkResolve)
 	router.With(publicLimit).Get("/w/{token}", a.webFlowPage)

@@ -54,9 +54,10 @@ func (s *RefundService) ApproveRefund(ctx context.Context, refundID string, appr
 		return ref, fmt.Errorf("load payment for provider call: %w", err)
 	}
 	result, err := s.provider.Refund(ctx, ports.RefundRequest{
-		PaymentID:  payment.ProviderReference,
-		AmountKobo: ref.AmountKobo,
-		Currency:   payment.Currency,
+		PaymentID:         payment.ProviderReference,
+		PaymentAmountKobo: payment.AmountKobo,
+		AmountKobo:        ref.AmountKobo,
+		Currency:          payment.Currency,
 	})
 	if err != nil {
 		_ = s.store.FailRefund(ctx, ref.ID, err.Error())
