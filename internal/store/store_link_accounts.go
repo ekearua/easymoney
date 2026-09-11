@@ -218,6 +218,13 @@ func (s *Store) MergeUsers(ctx context.Context, sourceID, targetID uuid.UUID, ch
 		return err
 	}
 	for _, r := range refs {
+		// A SAVEPOINT isolates each reparent attempt: if the UPDATE hits a
+		// unique constraint (e.g. consent_records_user_id_purpose_key) the
+		// abort only rolls back to the savepoint, not the entire merge
+		// transaction, so the fallback DELETE can proceed.
+		if _, err := tx.Exec(ctx, `SAVEPOINT reparent`); err != nil {
+			return err
+		}
 		stmt := fmt.Sprintf(
 			"UPDATE %s SET %s=$2 WHERE %s=$1",
 			pgx.Identifier{r.table}.Sanitize(),
@@ -225,7 +232,13 @@ func (s *Store) MergeUsers(ctx context.Context, sourceID, targetID uuid.UUID, ch
 			pgx.Identifier{r.column}.Sanitize())
 		_, err := tx.Exec(ctx, stmt, sourceID, targetID)
 		if err == nil {
+			if _, err := tx.Exec(ctx, `RELEASE SAVEPOINT reparent`); err != nil {
+				return err
+			}
 			continue
+		}
+		if _, err := tx.Exec(ctx, `ROLLBACK TO SAVEPOINT reparent`); err != nil {
+			return err
 		}
 		if !strings.Contains(err.Error(), "duplicate key") {
 			return err

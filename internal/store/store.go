@@ -374,6 +374,33 @@ func (s *Store) Seed(ctx context.Context) error {
 		ON CONFLICT (merchant_id) DO NOTHING`); err != nil {
 		return err
 	}
+	// CBN default tier ceilings (migration 053): re-asserted so truncate+seed
+	// leaves allowance tests and fresh installs with the admin-editable ladder,
+	// mirroring how merchants, KYB profiles, and the demo admin are restored.
+	if _, err = s.pool.Exec(ctx, `
+		INSERT INTO kyc_tier_limits (account_type, tier, direction, single_limit_kobo, daily_limit_kobo, monthly_limit_kobo)
+		VALUES
+		    ('individual','L0','in',   2000000,   2000000,    10000000),
+		    ('individual','L0','out',  2000000,   2000000,    10000000),
+		    ('individual','L1','in',   5000000,   5000000,    30000000),
+		    ('individual','L1','out',  5000000,   5000000,    30000000),
+		    ('individual','L2','in',   20000000,  20000000,   50000000),
+		    ('individual','L2','out',  20000000,  20000000,   50000000),
+		    ('individual','L3','in',   100000000, 100000000,  1000000000),
+		    ('individual','L3','out',  100000000, 100000000,  1000000000),
+		    ('individual','L4','in',   500000000, 500000000,  5000000000),
+		    ('individual','L4','out',  500000000, 500000000,  5000000000),
+		    ('business','B0','in',     20000000,  20000000,   100000000),
+		    ('business','B0','out',    20000000,  20000000,   100000000),
+		    ('business','B1','in',     100000000, 100000000,  500000000),
+		    ('business','B1','out',    100000000, 100000000,  500000000),
+		    ('business','B2','in',     500000000, 500000000,  5000000000),
+		    ('business','B2','out',    500000000, 500000000,  5000000000),
+		    ('business','B3','in',     1000000000,1000000000, 10000000000),
+		    ('business','B3','out',    1000000000,1000000000, 10000000000)
+		ON CONFLICT (account_type, tier, direction) DO NOTHING`); err != nil {
+		return err
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO users (whatsapp_number, display_name, email, account_level, onboarding_complete, number_confirmed_at)
 		VALUES ('+2348000000001', 'Demo Merchant Admin', 'admin@xego.local', 'merchant', true, now())
