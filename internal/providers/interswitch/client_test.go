@@ -218,3 +218,24 @@ func webhookSignature(secret string, body []byte) string {
 	h.Write(body)
 	return hex.EncodeToString(h.Sum(nil))
 }
+
+// The legacy sandbox API host refuses Basic credentials on /passport/oauth/token
+// (401 Bad credentials), so the client must mint sandbox tokens on the
+// passport-sandbox host — proven live when the DVA smoke first ran. Explicit
+// TokenURL and non-sandbox BaseURLs keep deriving from their own host.
+func TestTokenURLRedirectsSandboxToPassport(t *testing.T) {
+	client := New(Options{BaseURL: "https://sandbox.interswitchng.com", Mode: "TEST"})
+	if got, want := client.token.tokenURL, "https://passport-sandbox.interswitchng.com/passport/oauth/token"; got != want {
+		t.Fatalf("sandbox token URL = %q, want %q", got, want)
+	}
+	client = New(Options{BaseURL: "https://webpay.live.interswitchng.com", Mode: "LIVE"})
+	if got, want := client.token.tokenURL, "https://webpay.live.interswitchng.com/passport/oauth/token"; got != want {
+		t.Fatalf("live token URL = %q, want %q", got, want)
+	}
+	client = New(Options{BaseURL: srv(), TokenURL: "https://passport.example.com/oauth/token"})
+	if got, want := client.token.tokenURL, "https://passport.example.com/oauth/token"; got != want {
+		t.Fatalf("explicit token URL = %q, want %q", got, want)
+	}
+}
+
+func srv() string { return "https://api.example.com" }

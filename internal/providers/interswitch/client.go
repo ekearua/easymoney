@@ -49,6 +49,17 @@ const (
 	liveCheckoutHost = "https://newwebpay.interswitchng.com"
 )
 
+// OAuth token (Passport) hosts. The legacy sandbox API host refuses Basic
+// credentials on /passport/oauth/token with 401 Bad credentials, so sandbox
+// direct-API calls (virtual accounts, transfers, refunds, VTU) must mint
+// tokens on the dedicated passport-sandbox host instead. LIVE has no
+// separate passport host, and any non-sandbox BaseURL (proxies, test
+// servers) keeps deriving the token URL from its own host.
+const (
+	testTokenHost   = "https://passport-sandbox.interswitchng.com"
+	sandboxAPIHost  = "https://sandbox.interswitchng.com"
+)
+
 // Client integrates with Interswitch Web Checkout hosted checkout, server
 // requery verification, and redirect-notification handling. It also carries
 // an OAuth TokenManager so direct API endpoints (virtual accounts, transfer,
@@ -103,7 +114,13 @@ func New(o Options) *Client {
 	baseURL := strings.TrimRight(o.BaseURL, "/")
 	tokenURL := strings.TrimRight(o.TokenURL, "/")
 	if tokenURL == "" {
-		tokenURL = baseURL + "/passport/oauth/token"
+		// The sandbox API host cannot mint tokens; redirect to passport-sandbox.
+		// An explicit INTERSWITCH_TOKEN_URL still wins for exotic setups.
+		if baseURL == sandboxAPIHost {
+			tokenURL = testTokenHost + "/passport/oauth/token"
+		} else {
+			tokenURL = baseURL + "/passport/oauth/token"
+		}
 	}
 	c := &Client{
 		clientID:        o.ClientID,
