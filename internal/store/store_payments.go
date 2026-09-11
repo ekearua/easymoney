@@ -726,9 +726,17 @@ func (s *Store) UnresolvedPayments(ctx context.Context, olderThan time.Time, lim
 }
 
 // ExpirablePayments returns stale pre-checkout attempts whose lifecycle can safely end.
+// Simulated bank-transfer payments join the expirable set only from 'pending'
+// (instructions issued, customer never confirmed): the rail has no gateway to
+// requery, so without expiry the attempt would sit in pending forever. A
+// gateway 'pending' (Interswitch, incl. DVA) must NOT expire here — late
+// funds still verify through UnresolvedPayments/VerifyAndApply, and expired
+// is terminal, so expiring it could strand a real late payment.
 func (s *Store) ExpirablePayments(ctx context.Context, customerCutoff time.Time, limit int) ([]PaymentView, error) {
 	return s.listPayments(ctx, `
-		WHERE p.status IN ('draft','awaiting_confirmation') AND p.updated_at < $1
+		WHERE (p.status IN ('draft','awaiting_confirmation')
+		       OR (p.status = 'pending' AND p.provider = 'bank_transfer'))
+		AND p.updated_at < $1
 		ORDER BY p.updated_at LIMIT $2`, customerCutoff, limit)
 }
 
