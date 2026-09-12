@@ -11,27 +11,39 @@
     <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
   </dl>
   <p class="muted">Card details are entered inside Interswitch's secure fields. We never see your card number.</p>
-  <div class="hf-field"><label>Card number</label><div id="cardNumber-container"></div></div>
-  <div class="hf-field"><label>Expiry</label><div id="expiry-container"></div></div>
-  <div class="hf-field"><label>CVV</label><div id="cvv-container"></div></div>
-  <div class="hf-field"><label>PIN (if your card requires one)</label><div id="pin-container"></div></div>
-  <div class="hf-field"><label>OTP</label><div id="otp-container"></div></div>
-  <button id="pay-button" type="button">Pay securely</button>
+
+  {{/* Step 1: card details. The Hosted Fields SDK mounts one iframe per field
+  into the containers below; they must exist before create() runs. */}}
+  <div id="details-page">
+    <div class="hf-field"><label>Card number</label><div id="cardNumber-container"></div></div>
+    <div class="hf-field"><label>Expiry</label><div id="expiry-container"></div></div>
+    <div class="hf-field"><label>CVV</label><div id="cvv-container"></div></div>
+    <button id="pay-button" type="button">Pay securely</button>
+  </div>
+
+  {{/* Step 2: the PIN travels inside the secure payload makePayment sends. */}}
+  <div id="pin-page" hidden>
+    <div class="hf-field"><label>Card PIN</label><div id="pin-container"></div></div>
+    <button id="continue-button" type="button">Continue</button>
+    <button id="pin-back-button" class="hf-back" type="button">Back</button>
+  </div>
+
+  {{/* Step 3: the OTP the gateway sends to the cardholder's phone. */}}
+  <div id="otp-page" hidden>
+    <div class="hf-field"><label>OTP sent to your phone</label><div id="otp-container"></div></div>
+    <button id="validate-button" type="button">Validate</button>
+    <button id="otp-back-button" class="hf-back" type="button">Back</button>
+  </div>
+
   <p id="hf-message" class="muted"></p>
   <noscript><p class="muted">JavaScript is required to complete this secure payment.</p></noscript>
-  <script>
-    window.xegoPaymentConfig = {
-      currency: "{{.Page.CurrencyCode}}",
-      merchantCode: "{{.Page.MerchantCode}}",
-      payableCode: "{{.Page.PayableCode}}",
-      transactionReference: "{{.Page.TransactionReference}}",
-      amount: "{{.Page.Amount}}",
-      dateOfPayment: "{{.Page.DateOfPayment}}",
-      redirectURL: "{{.Page.RedirectURL}}",
-      merchantCustomerName: "{{.Page.MerchantCustomerName}}",
-      merchantCustomerID: "{{.Page.MerchantCustomerID}}"
-    };
-  </script>
+  {{/* CSP: script-src does not allow inline scripts, so the SDK configuration
+  is carried in a data attribute — attribute escaping decodes transparently
+  via getAttribute, and (unlike a script-tag data island) html/template does
+  not double-encode it. Amount must be plain digits: the SDK rejects anything
+  else. */}}
+  <div id="xego-payment-config" data-config="{{.Page.ConfigJSON}}" hidden></div>
+  <div id="cardinal-container"></div>
   <script src="{{.Page.SDKURL}}"></script>
   <script src="/static/hosted_fields.js" defer></script>
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>

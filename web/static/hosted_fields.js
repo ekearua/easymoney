@@ -1,74 +1,53 @@
 (function () {
   'use strict';
 
-  var config = window.xegoPaymentConfig;
-
-  function init() {
-    if (!window.isw || !window.isw.hostedFields) {
-      setMessage('The secure payment widget could not be loaded. Please refresh and try again.');
-      return;
-    }
-    var instance;
-    try {
-      instance = isw.hostedFields.create(
-        Object.assign({
-          channel: 'WEB',
-          certifyCard: true,
-          hasContactless: false,
-          disabled: [],
-          cardNumberEl: 'cardNumber-container',
-          expiryEl: 'expiry-container',
-          cvvEl: 'cvv-container',
-          pinEl: 'pin-container',
-          otpEl: 'otp-container'
-        }, config),
-        hostedFieldsCallback
-      );
-    } catch (err) {
-      setMessage('The secure payment widget failed to start. Please refresh and try again.');
-      return;
-    }
-
-    var payButton = document.getElementById('pay-button');
-    payButton.addEventListener('click', function () {
-      payButton.disabled = true;
-      setMessage('Validating your card…');
-      try {
-        instance.getBinConfiguration(handleBinConfig);
-      } catch (err) {
-        setMessage('The payment could not be started. Please refresh and try again.');
-        payButton.disabled = false;
-      }
-    });
-
-    function handleBinConfig(response) {
-      if (!response || response.responseCode === 'T9') {
-        setMessage('This card is locked. Please try another card.');
-        payButton.disabled = false;
-        return;
-      }
-      setMessage('Processing your payment… complete any OTP prompt that appears.');
-      try {
-        instance.makePayment(response);
-      } catch (err) {
-        setMessage('The payment could not be charged. Please refresh and try again.');
-        payButton.disabled = false;
-      }
-    }
+  // isw-hosted-fields contract (verified against sdk.js V1.0.0 and the
+  // published Hosted Fields integration guide):
+  //   create(config, callback)      → callback(null, instance) once every
+  //                                   configured field has mounted
+  //   instance.getBinConfiguration(cb) → cb(error, binConfig)
+  //   instance.makePayment(cb)         → cb(error, paymentResponse); sends OTP
+  //   instance.validatePayment(cb)     → cb(error, response); charges the card
+  //   instance.on('cardinal-response', cb) → cb(error, response) when the
+  //                                   charge needed a 3-D Secure challenge
+  // The callback passed to makePayment/validatePayment IS the response
+  // handler — it is not a bin-config argument.
+  // fields keys must be exactly: cardNumber, expirationDate, cvv, pin, otp,
+  // and each MUST carry a styles object: the frame's field builder calls
+  // Object.keys(styles) and silently drops the field (empty container, no
+  // input) when it is missing.
+  var config = null;
+  try {
+    var raw = document.getElementById('xego-payment-config');
+    config = raw ? JSON.parse(raw.getAttribute('data-config')) : null;
+  } catch (err) {
+    config = null;
+  }
+  if (!config || !config.paymentParameters || !config.fields || !config.cardinal) {
+    setMessage('The payment configuration is missing. Please refresh and try again.');
+    return;
   }
 
-  function hostedFieldsCallback(response) {
-    if (!response) {
-      return;
-    }
-    var code = response.responseCode || response.resp;
-    if (code && code !== '90000' && code !== 'T0' && code !== 'S0') {
-      setMessage('Payment was not completed (code ' + code + '). You can try again.');
-      var payButton = document.getElementById('pay-button');
-      if (payButton) {
-        payButton.disabled = false;
+  // Codes the gateway returns for an approved charge. Anything else after
+  // makePayment means the customer still has to finish the OTP hop.
+  var approvedCodes = ['00', '90000', '10'];
+  var instance = null;
+  var payButton = document.getElementById('pay-button');
+  var continueButton = document.getElementById('continue-button');
+  var validateButton = document.getElementById('validate-button');
+
+  function showStep(name) {
+    ['details', 'pin', 'otp'].forEach(function (step) {
+      var el = document.getElementById(step + '-page');
+      if (!el) {
+        return;
       }
-    }
+      if (step === name) {
+        el.removeAttribute('hidden');
+      } else {
+        el.setAttribute('hidden', 'hidden');
+      }
+    });
   }
 
   function setMessage(text) {
@@ -76,6 +55,166 @@
     if (el) {
       el.textContent = text;
     }
+  }
+
+  function setBusy(busy) {
+    if (payButton) {
+      payButton.disabled = busy;
+    }
+  }
+
+  function approved(response) {
+    var code = response && (response.responseCode || response.resp);
+    return approvedCodes.indexOf(String(code)) !== -1;
+  }
+
+  // The SDK hands back a service error object, not the gateway payload, so the
+  // copy has to distinguish a customer mistake from a gateway refusal —
+  // blaming the card for a merchant-side rejection sends the customer in
+  // circles.
+  function describeServiceError(error, fallback) {
+    if (!error) {
+      return fallback;
+    }
+    if (error.networkError) {
+      return 'We could not reach the payment gateway. Please check your connection and try again.';
+    }
+    if (String(error.responseCode) === 'T9') {
+      return 'This card is locked. Please try another card.';
+    }
+    if (error.validationError) {
+      return 'Your card details look incomplete or invalid. Please check them and try again.';
+    }
+    if (error.responseCode) {
+      return 'The payment could not be started (code ' + error.responseCode + '). Please try again or choose another payment method.';
+    }
+    return fallback;
+  }
+
+  function backToDetails(text) {
+    setMessage(text);
+    setBusy(false);
+    showStep('details');
+  }
+
+  // The terminal hop: nothing is released here — the return page verifies the
+  // transaction server-side before any value moves.
+  function finish(error, response) {
+    if (error) {
+      backToDetails(describeServiceError(error, 'Payment was not completed. Please check your card details and try again.'));
+      return;
+    }
+    if (response && !approved(response) && (response.responseCode || response.resp)) {
+      backToDetails('Payment was not completed (code ' + (response.responseCode || response.resp) + '). You can try again.');
+      return;
+    }
+    setMessage('Payment approved. Confirming on our side…');
+    var back = (response && (response.redirectURL || response.redirectUrl)) || config.paymentParameters.redirectURL;
+    if (back) {
+      window.location.href = back;
+    }
+  }
+
+  function onBinConfiguration(error, binConfig) {
+    if (error) {
+      backToDetails(describeServiceError(error, 'Your card could not be read. Please check the details and try again.'));
+      return;
+    }
+    if (binConfig && String(binConfig.responseCode) === 'T9') {
+      backToDetails('This card is locked. Please try another card.');
+      return;
+    }
+    // The PIN travels inside the secure payload makePayment sends, so it has
+    // to be entered before the charge is attempted.
+    setMessage('Enter your card PIN, then continue.');
+    showStep('pin');
+  }
+
+  function onPayment(error, response) {
+    if (error) {
+      backToDetails(describeServiceError(error, 'The payment could not be started. Please try again.'));
+      return;
+    }
+    if (approved(response)) {
+      finish(null, response);
+      return;
+    }
+    setMessage('Enter the OTP sent to your phone, then validate.');
+    showStep('otp');
+  }
+
+  function onCreated(createError, hostedFieldsInstance) {
+    if (createError || !hostedFieldsInstance) {
+      setMessage('The secure payment widget failed to start. Please refresh and try again.');
+      return;
+    }
+    instance = hostedFieldsInstance;
+    instance.on('cardinal-response', finish);
+    showStep('details');
+    setBusy(false);
+    setMessage('Enter your card details to pay.');
+  }
+
+  function init() {
+    if (!window.isw || !window.isw.hostedFields) {
+      setMessage('The secure payment widget could not be loaded. Please refresh and try again.');
+      return;
+    }
+    try {
+      isw.hostedFields.create(config, onCreated);
+    } catch (err) {
+      setMessage('The secure payment widget failed to start. Please refresh and try again.');
+    }
+
+    if (payButton) {
+      payButton.addEventListener('click', function () {
+        if (!instance) {
+          setMessage('The secure fields are still loading. Please wait a moment and try again.');
+          return;
+        }
+        setBusy(true);
+        setMessage('Checking your card…');
+        try {
+          instance.getBinConfiguration(onBinConfiguration);
+        } catch (err) {
+          backToDetails('The payment could not be started. Please refresh and try again.');
+        }
+      });
+    }
+    if (continueButton) {
+      continueButton.addEventListener('click', function () {
+        if (!instance) {
+          return;
+        }
+        setMessage('Sending OTP to your phone…');
+        try {
+          instance.makePayment(onPayment);
+        } catch (err) {
+          backToDetails('The payment could not be started. Please refresh and try again.');
+        }
+      });
+    }
+    if (validateButton) {
+      validateButton.addEventListener('click', function () {
+        if (!instance) {
+          return;
+        }
+        setMessage('Charging your card…');
+        try {
+          instance.validatePayment(finish);
+        } catch (err) {
+          backToDetails('The payment could not be completed. Please try again.');
+        }
+      });
+    }
+    ['pin-back-button', 'otp-back-button'].forEach(function (id) {
+      var back = document.getElementById(id);
+      if (back) {
+        back.addEventListener('click', function () {
+          backToDetails('You can adjust your card details and try again.');
+        });
+      }
+    });
   }
 
   if (document.readyState === 'loading') {
