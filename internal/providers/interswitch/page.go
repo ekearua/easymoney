@@ -18,7 +18,7 @@ type HostedFieldsPage struct {
 	CurrencyCode         string
 	DateOfPayment        string
 	TransactionReference string
-	MerchantCustomerID   string
+	MerchantCustomerId   string
 	MerchantCustomerName string
 	RedirectURL          string
 	Mode                 string
@@ -28,17 +28,21 @@ type HostedFieldsPage struct {
 	ConfigJSON string
 }
 
-// HostedFieldsSDKURL is the per-mode URL of the Interswitch Hosted Fields SDK.
-// The SDK's field iframes always mount from hostedfields.interswitchng.com —
-// the documented QA SDK host (hostedifelds.qa…) neither resolves in DNS nor
-// completes a TLS handshake from any network we tested, and the QA origin
-// never served the SDK, which left the payment page without any secure
-// fields. Loading the LIVE SDK URL for both modes keeps the frame origin
-// consistent (and therefore the CSP simple); the mode only governs the
-// payment parameters sent to the charge endpoint.
+// HostedFieldsSDKURL is the URL of the Interswitch Hosted Fields SDK loaded
+// by the card page. An explicit Options.HostedFieldsSDKURL (the
+// INTERSWITCH_HOSTED_FIELDS_SDK_URL env var) always wins so operators can
+// point at a working sandbox SDK origin without rebuilding; otherwise both
+// modes load the live URL. The SDK's field iframes always mount from
+// hostedfields.interswitchng.com — the documented QA SDK host
+// (hostedifelds.qa…) neither resolves in DNS nor completes a TLS handshake
+// from any network we tested, and the QA origin never served the SDK, which
+// left the payment page without any secure fields. Loading the LIVE SDK URL
+// for both modes keeps the frame origin consistent (and therefore the CSP
+// simple); the mode only governs the payment parameters sent to the charge
+// endpoint.
 func (c *Client) HostedFieldsSDKURL() string {
-	if c.mode == "LIVE" {
-		return "https://hostedfields.interswitchng.com/sdk.js"
+	if c.hostedFieldsSDKURL != "" {
+		return c.hostedFieldsSDKURL
 	}
 	return "https://hostedfields.interswitchng.com/sdk.js"
 }
@@ -63,7 +67,7 @@ func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, 
 			"merchantCode":         c.merchantCode,
 			"payableCode":          c.payItemID,
 			"transactionReference": reference,
-			"merchantCustomerID":   reference,
+			"merchantCustomerId":   reference,
 			"merchantCustomerName": customerName,
 			// The SDK documents dateOfPayment as YYYY-MM-DDTHH:mm:ss; a space
 			// separator makes the gateway reject the signed parameters before
@@ -93,7 +97,7 @@ func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, 
 		CurrencyCode:         NGN,
 		DateOfPayment:        time.Now().Format("2006-01-02T15:04:05"),
 		TransactionReference: reference,
-		MerchantCustomerID:   reference,
+		MerchantCustomerId:   reference,
 		MerchantCustomerName: customerName,
 		RedirectURL:          redirectURL + "?reference=" + reference,
 		Mode:                 c.mode,

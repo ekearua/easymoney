@@ -49,6 +49,15 @@ const (
 	liveCheckoutHost = "https://newwebpay.interswitchng.com"
 )
 
+// Transfer (Quickteller Send Money v5) hosts. The v5 transfer, name-enquiry,
+// and query APIs live on their own host (qa.* for the sandbox), distinct from
+// the BaseURL requery host and the checkout host. The docs list only the QA
+// host; LIVE uses the production quicktellerservice host, which lives behind
+// Options.TransferBaseURL when a deployment needs a proxy.
+const (
+	testTransferHost = "https://qa.interswitchng.com/quicktellerservice/api/v5"
+)
+
 // OAuth token (Passport) hosts. The legacy sandbox API host refuses Basic
 // credentials on /passport/oauth/token with 401 Bad credentials, so sandbox
 // direct-API calls (virtual accounts, transfers, refunds, VTU) must mint
@@ -72,9 +81,16 @@ type Client struct {
 	payItemID       string
 	baseURL         string
 	checkoutBaseURL string
+	transferBaseURL string
 	mode            string
 	configuredTerminalID string
 	sourceAccount   string
+	hostedFieldsSDKURL string
+	senderLastname  string
+	senderOthernames string
+	senderPhone     string
+	senderEmail     string
+	initiatingEntityCode string
 	token           *TokenManager
 	http            *http.Client
 }
@@ -88,10 +104,16 @@ type Options struct {
 	PayItemID       string
 	BaseURL         string // API/requery host (gettransaction.json)
 	CheckoutBaseURL string // optional; host that renders the payment page
+	TransferBaseURL string // optional; Quickteller Send Money v5 host (payout/name-enquiry/query)
 	Mode            string // "TEST" or "LIVE"
 	TokenURL        string // optional; defaults to BaseURL + /passport/oauth/token
 	TerminalID      string // optional; terminal id used when the token response omits one
 	SourceAccount   string // optional; funding account for NIP transfers
+	HostedFieldsSDKURL string // optional; overrides the SDK script loaded by the Hosted Fields page
+	SenderName      string // optional; transfer sender name (defaults to "Xego")
+	SenderPhone     string // optional; transfer sender phone
+	SenderEmail     string // optional; transfer sender email
+	InitiatingEntityCode string // optional; v5 TransferFunds initiatingEntityCode (defaults to "PBL")
 }
 
 // New creates an Interswitch Web Checkout client with strict request timeouts.
@@ -110,6 +132,13 @@ func New(o Options) *Client {
 		default:
 			checkoutBase = testCheckoutHost
 		}
+	}
+	transferBase := strings.TrimRight(o.TransferBaseURL, "/")
+	if transferBase == "" {
+		// Pays out through the documented Quickteller Send Money v5 sandbox
+		// host in TEST. LIVE has no documented default that can be trusted:
+		// point Options.TransferBaseURL at the provisioned production host.
+		transferBase = testTransferHost
 	}
 	baseURL := strings.TrimRight(o.BaseURL, "/")
 	tokenURL := strings.TrimRight(o.TokenURL, "/")
@@ -130,10 +159,24 @@ func New(o Options) *Client {
 		payItemID:       o.PayItemID,
 		baseURL:         baseURL,
 		checkoutBaseURL: checkoutBase,
+		transferBaseURL: transferBase,
 		mode:            mode,
 		configuredTerminalID: strings.TrimSpace(o.TerminalID),
 		sourceAccount:   strings.TrimSpace(o.SourceAccount),
+		hostedFieldsSDKURL: strings.TrimSpace(o.HostedFieldsSDKURL),
 		http:            &http.Client{Timeout: 15 * time.Second},
+	}
+	senderLast, senderOther := splitName(strings.TrimSpace(o.SenderName))
+	if senderLast == "" {
+		senderLast = defaultSenderName
+	}
+	c.senderLastname = senderLast
+	c.senderOthernames = senderOther
+	c.senderPhone = strings.TrimSpace(o.SenderPhone)
+	c.senderEmail = strings.TrimSpace(o.SenderEmail)
+	c.initiatingEntityCode = strings.TrimSpace(o.InitiatingEntityCode)
+	if c.initiatingEntityCode == "" {
+		c.initiatingEntityCode = initiatingEntityCode
 	}
 	c.token = NewTokenManager(o.ClientID, o.ClientSecret, tokenURL, c.http)
 	return c

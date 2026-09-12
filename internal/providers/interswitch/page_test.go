@@ -89,12 +89,24 @@ func TestHostedFieldsSDKURL(t *testing.T) {
 	// Both modes load the SDK from hostedfields.interswitchng.com: the SDK's
 	// field iframes always mount from that origin, while the documented QA
 	// SDK host neither resolves nor completes a TLS handshake (see
-	// HostedFieldsSDKURL). The mode only changes the payment parameters.
+	// HostedFieldsSDKURL). The mode only changes the payment parameters, and
+	// an explicit Options.HostedFieldsSDKURL override always wins.
 	for _, mode := range []string{"TEST", "LIVE"} {
 		client := New(Options{BaseURL: "http://localhost", Mode: mode})
 		if url := client.HostedFieldsSDKURL(); url != "https://hostedfields.interswitchng.com/sdk.js" {
 			t.Fatalf("%s SDK URL = %q, want https://hostedfields.interswitchng.com/sdk.js", mode, url)
 		}
+	}
+	override := New(Options{BaseURL: "http://localhost", Mode: "TEST", HostedFieldsSDKURL: "https://sdk.example.test/sdk.js"})
+	if url := override.HostedFieldsSDKURL(); url != "https://sdk.example.test/sdk.js" {
+		t.Fatalf("override SDK URL = %q, want https://sdk.example.test/sdk.js", url)
+	}
+	page := override.NewHostedFieldsPage("ref", "u@t.com", 100_000, "https://x.test/return")
+	if page.SDKURL != "https://sdk.example.test/sdk.js" {
+		t.Fatalf("page SDK URL = %q, want override", page.SDKURL)
+	}
+	if page.SDKOrigin != "https://sdk.example.test" {
+		t.Fatalf("SDK origin = %q, want https://sdk.example.test", page.SDKOrigin)
 	}
 }
 

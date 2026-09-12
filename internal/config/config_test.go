@@ -163,9 +163,42 @@ func TestProductionRejectsMalformedDataEncryptionKey(t *testing.T) {
 	t.Setenv("WHATSAPP_PHONE_NUMBER_ID", "phone")
 	t.Setenv("WHATSAPP_GRAPH_VERSION", "v25.0")
 	t.Setenv("BASE_URL", "https://example.com")
-	t.Setenv("DATA_ENCRYPTION_KEY", "not-hex-short")
+t.Setenv("DATA_ENCRYPTION_KEY", "not-hex-short")
 	_, err := Load()
 	if err == nil || !strings.Contains(err.Error(), "64 hex") {
 		t.Fatalf("expected malformed DATA_ENCRYPTION_KEY rejection, got %v", err)
+	}
+}
+
+func TestCheckoutRenderEnv(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+		ok    bool
+	}{
+		{"defaults_to_hosted_fields", "", "hosted_fields", true},
+		{"hosted_fields", "hosted_fields", "hosted_fields", true},
+		{"legacy", "legacy", "legacy", true},
+		{"rejects_unknown", "newwebpay", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("APP_ENV", "development")
+			t.Setenv("INTERSWITCH_CHECKOUT_RENDER", tc.value)
+			cfg, err := Load()
+			if !tc.ok {
+				if err == nil || !strings.Contains(err.Error(), "INTERSWITCH_CHECKOUT_RENDER") {
+					t.Fatalf("expected INTERSWITCH_CHECKOUT_RENDER rejection, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.InterswitchCheckoutRender != tc.want {
+				t.Fatalf("render = %q, want %q (INTERSWITCH_CHECKOUT_RENDER)", cfg.InterswitchCheckoutRender, tc.want)
+			}
+		})
 	}
 }

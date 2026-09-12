@@ -20,12 +20,19 @@ var errUnauthorized = errors.New("interswitch API rejected the access token")
 // using the OAuth Bearer token. A 401 retries once with a freshly refreshed
 // token before failing.
 func (c *Client) doAuthorized(ctx context.Context, method, path string, payload, target any) error {
+	return c.doAuthorizedOn(ctx, c.baseURL, method, path, payload, target)
+}
+
+// doAuthorizedOn is doAuthorized against an explicit API host (e.g. the
+// Quickteller Send Money v5 host that backs transfers, distinct from the
+// requery base URL).
+func (c *Client) doAuthorizedOn(ctx context.Context, baseURL, method, path string, payload, target any) error {
 	token, err := c.token.AccessToken(ctx)
 	if err != nil {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		raw, err := c.doWithToken(ctx, method, path, payload, token)
+		raw, err := c.doWithTokenOn(ctx, baseURL, method, path, payload, token)
 		if err == nil {
 			if len(raw) > 0 && target != nil {
 				if err := json.Unmarshal(raw, target); err != nil {
@@ -47,6 +54,10 @@ func (c *Client) doAuthorized(ctx context.Context, method, path string, payload,
 }
 
 func (c *Client) doWithToken(ctx context.Context, method, path string, payload any, token string) ([]byte, error) {
+	return c.doWithTokenOn(ctx, c.baseURL, method, path, payload, token)
+}
+
+func (c *Client) doWithTokenOn(ctx context.Context, baseURL, method, path string, payload any, token string) ([]byte, error) {
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -55,7 +66,7 @@ func (c *Client) doWithToken(ctx context.Context, method, path string, payload a
 		}
 		body = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}

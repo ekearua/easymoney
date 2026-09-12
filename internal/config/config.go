@@ -56,8 +56,15 @@ type Config struct {
 	InterswitchMerchantCode    string
 	InterswitchPayItemID       string
 	InterswitchBaseURL         string // API/requery host (gettransaction.json)
+	InterswitchTokenURL        string // optional; OAuth token issuer (defaults to BaseURL's passport host)
 	InterswitchCheckoutBaseURL string // optional; hosted payment-page host (defaults per mode)
 	InterswitchCheckoutMode    string
+	InterswitchTransferBaseURL string // optional; Quickteller Send Money v5 host for payouts/name-enquiry/query
+	InterswitchSenderName      string // optional; name shown as the transfer sender
+	InterswitchSenderPhone     string // optional; sender phone on the transfer
+	InterswitchSenderEmail     string // optional; sender email on the transfer
+	InterswitchInitiatingEntityCode string // optional; initiatingEntityCode on v5 TransferFunds (defaults to "PBL")
+	InterswitchHostedFieldsSDKURL string // optional; SDK script override for the Hosted Fields card page
 	InterswitchWebhookSecret   string
 	InterswitchTerminalID      string // fallback TerminalId for quickteller v5 calls
 	InterswitchSourceAccount   string // funding account for NIP transfers and VTU
@@ -246,8 +253,15 @@ func Load() (Config, error) {
 		InterswitchMerchantCode:    strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE")),
 		InterswitchPayItemID:       strings.TrimSpace(os.Getenv("INTERSWITCH_PAY_ITEM_ID")),
 		InterswitchBaseURL:         strings.TrimRight(env("INTERSWITCH_BASE_URL", "https://sandbox.interswitchng.com"), "/"),
+		InterswitchTokenURL:        strings.TrimRight(os.Getenv("INTERSWITCH_TOKEN_URL"), "/"),
 		InterswitchCheckoutBaseURL: strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
 		InterswitchCheckoutMode:    strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
+		InterswitchTransferBaseURL: strings.TrimRight(os.Getenv("INTERSWITCH_TRANSFER_BASE_URL"), "/"),
+		InterswitchSenderName:      strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_NAME")),
+		InterswitchSenderPhone:     strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_PHONE")),
+		InterswitchSenderEmail:     strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_EMAIL")),
+		InterswitchInitiatingEntityCode: strings.TrimSpace(os.Getenv("INTERSWITCH_INITIATING_ENTITY_CODE")),
+		InterswitchHostedFieldsSDKURL: strings.TrimSpace(os.Getenv("INTERSWITCH_HOSTED_FIELDS_SDK_URL")),
 		InterswitchWebhookSecret:   os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
 		InterswitchTerminalID:      strings.TrimSpace(os.Getenv("INTERSWITCH_TERMINAL_ID")),
 		InterswitchSourceAccount:   strings.TrimSpace(os.Getenv("INTERSWITCH_SOURCE_ACCOUNT")),

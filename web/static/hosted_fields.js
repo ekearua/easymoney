@@ -136,6 +136,7 @@
   }
 
   function onBinConfiguration(error, binConfig) {
+    console.info('[hosted fields] bin config', error || binConfig);
     // A definitive lock verdict stops the flow; everything else — including a
     // bin lookup the merchant has not been provisioned for (Z1/Z81/Z82) — must
     // NOT block the charge attempt. The BIN lookup and the charge are separate
@@ -150,6 +151,18 @@
       backToDetails('This card is locked. Please try another card.');
       return;
     }
+    // Cards that do not support a PIN skip the PIN step entirely — the charge
+    // is attempted straight away and the makePayment response decides whether
+    // an OTP or a 3-D Secure challenge is required.
+    if (binConfig && binConfig.supportsPin === false) {
+      setMessage('Charging your card…');
+      try {
+        instance.makePayment(onPayment);
+      } catch (e) {
+        backToDetails(describeServiceError(e, 'The charge could not be started. Please try again.'));
+      }
+      return;
+    }
     // The PIN travels inside the secure payload makePayment sends, so it has
     // to be entered before the charge is attempted.
     setMessage('Enter your card PIN, then continue.');
@@ -158,11 +171,28 @@
 
   function onPayment(error, response) {
     if (error) {
+      console.warn('[hosted fields] makePayment error', error);
       backToDetails(describeServiceError(error, 'The charge was not completed. Please try again.'));
+      return;
+    }
+    console.info('[hosted fields] makePayment response', response);
+    if (response && response.requiresCentinelAuthorization === true) {
+      // The 3-D Secure challenge renders inside #cardinal-container; its
+      // resolution arrives as a cardinal-response event and calls finish().
+      setMessage('Authenticating your card…');
       return;
     }
     if (approved(response)) {
       finish(null, response);
+      return;
+    }
+    if (response && String(response.responseCode) === 'T0') {
+      setMessage('Enter the OTP sent to your phone, then validate.');
+      showStep('otp');
+      return;
+    }
+    if (response && (response.responseCode || response.resp)) {
+      backToDetails('Payment was not completed (code ' + (response.responseCode || response.resp) + '). You can try again.');
       return;
     }
     setMessage('Enter the OTP sent to your phone, then validate.');

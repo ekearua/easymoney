@@ -103,10 +103,17 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		MerchantCode:    cfg.InterswitchMerchantCode,
 		PayItemID:       cfg.InterswitchPayItemID,
 		BaseURL:         cfg.InterswitchBaseURL,
+		TokenURL:        cfg.InterswitchTokenURL,
 		CheckoutBaseURL: cfg.InterswitchCheckoutBaseURL,
 		Mode:            cfg.InterswitchCheckoutMode,
 		TerminalID:      cfg.InterswitchTerminalID,
 		SourceAccount:   cfg.InterswitchSourceAccount,
+		HostedFieldsSDKURL: cfg.InterswitchHostedFieldsSDKURL,
+		TransferBaseURL: cfg.InterswitchTransferBaseURL,
+		SenderName:      cfg.InterswitchSenderName,
+		SenderPhone:     cfg.InterswitchSenderPhone,
+		SenderEmail:     cfg.InterswitchSenderEmail,
+		InitiatingEntityCode: cfg.InterswitchInitiatingEntityCode,
 	})
 	// Build the payment gateway registry. Interswitch is always registered so
 	// card checkout resolves even in the backlog demo where no secret is set.
