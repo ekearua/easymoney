@@ -102,7 +102,7 @@ func TestHostedFieldsPageDateIsRecent(t *testing.T) {
 	t.Parallel()
 	client := New(Options{BaseURL: "http://localhost", Mode: "TEST"})
 	page := client.NewHostedFieldsPage("ref", "", 500, "https://xego.test/payments/return")
-	_, err := time.Parse("2006-01-02 15:04:05", page.DateOfPayment)
+	_, err := time.Parse("2006-01-02T15:04:05", page.DateOfPayment)
 	if err != nil {
 		t.Fatalf("unexpected date format %q: %v", page.DateOfPayment, err)
 	}

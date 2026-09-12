@@ -65,8 +65,11 @@ func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, 
 			"transactionReference": reference,
 			"merchantCustomerID":   reference,
 			"merchantCustomerName": customerName,
-			"dateOfPayment":        time.Now().Format("2006-01-02 15:04:05"),
-			"redirectURL":          redirectURL + "?reference=" + reference,
+			// The SDK documents dateOfPayment as YYYY-MM-DDTHH:mm:ss; a space
+			// separator makes the gateway reject the signed parameters before
+			// any PIN is collected (response code Z1, "Transaction Error").
+			"dateOfPayment": time.Now().Format("2006-01-02T15:04:05"),
+			"redirectURL":   redirectURL + "?reference=" + reference,
 		},
 		"cardinal": map[string]any{
 			"containerSelector": "#cardinal-container",
@@ -88,7 +91,7 @@ func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, 
 		PayableCode:          c.payItemID,
 		Amount:               amountKobo,
 		CurrencyCode:         NGN,
-		DateOfPayment:        time.Now().Format("2006-01-02 15:04:05"),
+		DateOfPayment:        time.Now().Format("2006-01-02T15:04:05"),
 		TransactionReference: reference,
 		MerchantCustomerID:   reference,
 		MerchantCustomerName: customerName,

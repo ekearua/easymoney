@@ -5,7 +5,11 @@
   // published Hosted Fields integration guide):
   //   create(config, callback)      → callback(null, instance) once every
   //                                   configured field has mounted
-  //   instance.getBinConfiguration(cb) → cb(error, binConfig)
+  //   instance.getBinConfiguration(cb) → cb(error, binConfig); best-effort
+  //                                   lock precheck ONLY — a bin lookup the
+  //                                   merchant has not been provisioned for
+  //                                   (Z1/Z81/Z82) never blocks the flow; the
+  //                                   charge is the authority
   //   instance.makePayment(cb)         → cb(error, paymentResponse); sends OTP
   //   instance.validatePayment(cb)     → cb(error, response); charges the card
   //   instance.on('cardinal-response', cb) → cb(error, response) when the
@@ -85,8 +89,24 @@
     if (error.validationError) {
       return 'Your card details look incomplete or invalid. Please check them and try again.';
     }
-    if (error.responseCode) {
-      return 'The payment could not be started (code ' + error.responseCode + '). Please try again or choose another payment method.';
+    var code = String(error.responseCode || '');
+    if (code) {
+      if (code === 'Z81') {
+        return 'This card type is not accepted. Please try another card.';
+      }
+      if (code === 'Z82') {
+        return 'Card payments are not enabled for this merchant yet. Please try another payment method.';
+      }
+      if (code === 'Z5') {
+        return 'This payment was already processed. Go back and check your receipt.';
+      }
+      if (code === 'XS1') {
+        return 'The payment window has expired. Please refresh and try again.';
+      }
+      if (code === 'Z1') {
+        return 'The gateway could not process this transaction (code Z1). Please try again or use another payment method.';
+      }
+      return 'The payment was not completed (code ' + error.responseCode + '). Please try again or choose another payment method.';
     }
     return fallback;
   }
@@ -116,11 +136,17 @@
   }
 
   function onBinConfiguration(error, binConfig) {
-    if (error) {
-      backToDetails(describeServiceError(error, 'Your card could not be read. Please check the details and try again.'));
+    // A definitive lock verdict stops the flow; everything else — including a
+    // bin lookup the merchant has not been provisioned for (Z1/Z81/Z82) — must
+    // NOT block the charge attempt. The BIN lookup and the charge are separate
+    // gateway calls, so the customer still gets to enter their PIN and the
+    // makePayment response is the single authority on whether the charge went
+    // through.
+    if (binConfig && String(binConfig.responseCode) === 'T9') {
+      backToDetails('This card is locked. Please try another card.');
       return;
     }
-    if (binConfig && String(binConfig.responseCode) === 'T9') {
+    if (error && String(error.responseCode || '') === 'T9') {
       backToDetails('This card is locked. Please try another card.');
       return;
     }
@@ -132,7 +158,7 @@
 
   function onPayment(error, response) {
     if (error) {
-      backToDetails(describeServiceError(error, 'The payment could not be started. Please try again.'));
+      backToDetails(describeServiceError(error, 'The charge was not completed. Please try again.'));
       return;
     }
     if (approved(response)) {
