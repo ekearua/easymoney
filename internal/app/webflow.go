@@ -50,6 +50,15 @@ type webFlowLine struct {
 	Desc string
 }
 
+// webFlowStepLabel is one node of the horizontal progress stepper rendered
+// on payment flows. State is "done" | "current" | "todo"; Dot carries the
+// glyph inside the circle (checkmark for done, position number otherwise).
+type webFlowStepLabel struct {
+	Label string
+	State string
+	Dot   string
+}
+
 // webFlowPage is the data for the shared webflow.html template.
 type webFlowPage struct {
 	AppName      string
@@ -63,12 +72,72 @@ type webFlowPage struct {
 	Actions      []webFlowAction
 	WhatsAppLink string
 	BaseURL      string
+	// Pay scopes the payment CSS layer (stepper, option cards, sticky action
+	// bar) and Steps renders the horizontal progress stepper. Both are set
+	// only for money flows; KYC/onboarding flows render exactly as before.
+	Pay   bool
+	Steps []webFlowStepLabel
 	// Done renders the completion state instead of a form.
 	Done       bool
 	DoneTitle  string
 	DoneBody   string
 	DoneAction webFlowAction
 	Expired    bool
+}
+
+// wfMoneyFlowSteps returns the stepper labels for a money flow, mapped from
+// its internal step key, plus the payment-layer flag. Non-money flows get
+// (nil, false) and keep the plain layout.
+func wfMoneyFlowSteps(flowType, step string) ([]webFlowStepLabel, bool) {
+	type pos struct {
+		labels []string
+		at     map[string]int
+	}
+	layouts := map[string]pos{
+		service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Review", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 4, "done": 4}},
+		service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
+		service.WebFlowThriftContribute: {[]string{"Contribution", "Review", "Pay"}, map[string]int{"": 0, "group": 0, "review": 1, "checkout": 2, "done": 2}},
+		service.WebFlowData:             {[]string{"Network", "Plan", "Phone", "Review", "Pay"}, map[string]int{"": 0, "network": 0, "plan": 1, "phone": 2, "review": 3, "checkout": 4, "done": 4}},
+		service.WebFlowTopup:            {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
+		service.WebFlowIndividualPay:    {[]string{"Phone", "Amount", "Bank", "Account", "Review", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 2, "bank_pick": 2, "account": 3, "review": 4, "checkout": 5, "done": 5}},
+	}
+	lay, ok := layouts[flowType]
+	if !ok {
+		return nil, false
+	}
+	cur, ok := lay.at[step]
+	if !ok {
+		cur = len(lay.labels) - 1
+	}
+	out := make([]webFlowStepLabel, len(lay.labels))
+	for i, label := range lay.labels {
+		switch {
+		case i < cur:
+			out[i] = webFlowStepLabel{Label: label, State: "done", Dot: "✓"}
+		case i == cur:
+			out[i] = webFlowStepLabel{Label: label, State: "current", Dot: strconv.Itoa(i + 1)}
+		default:
+			out[i] = webFlowStepLabel{Label: label, State: "todo", Dot: strconv.Itoa(i + 1)}
+		}
+	}
+	return out, true
+}
+
+// wfDecorate fills the render-invariant page fields and attaches the payment
+// stepper. Called on every render path (GET, submit re-render, failure
+// re-render) so the stepper can never drift from the flow state.
+func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
+	page.Token = flow.Token
+	page.AppName = a.cfg.AppName
+	page.WhatsAppLink = a.whatsappDeepLink()
+	page.BaseURL = a.cfg.BaseURL
+	if page.Done || page.Expired {
+		return
+	}
+	if steps, ok := wfMoneyFlowSteps(flow.FlowType, flow.Step); ok {
+		page.Pay = true
+		page.Steps = steps
+	}
 }
 
 func (a *App) wfPage(flow store.WebFlow) webFlowPage {
@@ -110,10 +179,7 @@ func (a *App) webFlowPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.wfPrefillMediaValues(&page, flow)
-	page.Token = flow.Token
-	page.AppName = a.cfg.AppName
-	page.WhatsAppLink = a.whatsappDeepLink()
-	page.BaseURL = a.cfg.BaseURL
+	a.wfDecorate(&page, flow)
 	a.renderStatus(w, "webflow.html", page, http.StatusOK)
 }
 
@@ -157,10 +223,7 @@ func (a *App) webFlowSubmit(w http.ResponseWriter, r *http.Request) {
 		return // handler already redirected
 	}
 	a.wfPrefillMediaValues(page, flow)
-	page.Token = flow.Token
-	page.AppName = a.cfg.AppName
-	page.WhatsAppLink = a.whatsappDeepLink()
-	page.BaseURL = a.cfg.BaseURL
+	a.wfDecorate(page, flow)
 	status := http.StatusOK
 	if page.Error != "" {
 		status = http.StatusUnprocessableEntity

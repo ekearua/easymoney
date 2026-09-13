@@ -209,6 +209,8 @@ func TestTemplatesParse(t *testing.T) {
 	flowPage := webFlowPage{
 		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",
 		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",
+		Pay:   true,
+		Steps: []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
 		Review: []webFlowLine{{Term: "Merchant", Desc: "Ade's Kitchen"}},
 		Error:  "Choose a payment method.",
 		Fields: []webFlowField{
@@ -247,6 +249,17 @@ func TestTemplatesParse(t *testing.T) {
 	if !strings.Contains(html, "Read from your upload:") || !strings.Contains(html, "NIN: 12345678901") {
 		t.Fatal("webflow.html must show previously extracted upload text as confirmation")
 	}
+	// Payment layer: the pay class scopes the payment CSS, and the stepper
+	// renders done/current states from the labels the flow engine supplies.
+	if !strings.Contains(html, "class=\"receipt pay\"") {
+		t.Fatal("webflow.html must scope the payment CSS layer via main.pay when Pay is set")
+	}
+	if !strings.Contains(html, "wf-stepper") || !strings.Contains(html, "class=\"done\"") || !strings.Contains(html, "class=\"current\"") {
+		t.Fatal("webflow.html must render the horizontal stepper with done/current states for payment flows")
+	}
+	if !strings.Contains(html, "Merchant") || !strings.Contains(html, ">✓<") {
+		t.Fatal("webflow.html stepper must carry step labels and the done checkmark")
+	}
 	if !strings.Contains(html, "Extract the 11-digit NIN or BVN number from this identity slip") {
 		t.Fatal("webflow.html must carry the OCR prompt as a hidden field")
 	}
@@ -257,5 +270,32 @@ func TestTemplatesParse(t *testing.T) {
 	mediaForm := strings.Index(html, "/media")
 	if mediaForm < 0 || mediaForm < mainFormEnd {
 		t.Fatal("media upload form must render after the main flow form, not nested inside it")
+	}
+
+	// Non-payment flows (KYC/onboarding) must NOT get the payment layer:
+	// no pay scoping class and no stepper, even when other fields match.
+	buf.Reset()
+	kycPage := flowPage
+	kycPage.Pay = false
+	kycPage.Steps = nil
+	kycPage.FlowType = "individual_upgrade"
+	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", kycPage); err != nil {
+		t.Fatalf("execute webflow.html (kyc): %v", err)
+	}
+	kycHTML := buf.String()
+	if strings.Contains(kycHTML, "receipt pay") || strings.Contains(kycHTML, "wf-stepper") {
+		t.Fatal("webflow.html must not render the payment stepper or pay class for non-payment flows")
+	}
+
+	// Done pages never show a stepper even for money flows.
+	buf.Reset()
+	donePage := flowPage
+	donePage.Done = true
+	donePage.DoneTitle = "Payment sent"
+	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", donePage); err != nil {
+		t.Fatalf("execute webflow.html (done): %v", err)
+	}
+	if strings.Contains(buf.String(), "wf-stepper") {
+		t.Fatal("webflow.html must not render the stepper on done pages")
 	}
 }

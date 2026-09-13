@@ -431,7 +431,8 @@ func simulateMakePayment(t *testing.T, ctx context.Context, run *simRun, convo *
 	status, body, _ = run.get(loc)
 	fmt.Printf("  Step: %s\n", run.page(body))
 
-	// 4. review + card checkout
+	// 4. review: choosing a method pays — the flow initializes the gateway
+	// and redirects straight to it (the checkout hub is bypassed).
 	fee := service.XegoCollectionFee(cfg, "card", 250_000).FeeKobo
 	status, body, loc = run.post("/w/"+token, url.Values{"method": {service.ProviderInterswitch}, "action": {"pay"}})
 	if status != http.StatusSeeOther {
@@ -440,22 +441,15 @@ func simulateMakePayment(t *testing.T, ctx context.Context, run *simRun, convo *
 	fmt.Printf("  ✅ Payment drafted: base %s + card fee %s = charge %s\n",
 		domain.FormatNGN(250_000), domain.FormatNGN(fee), domain.FormatNGN(250_000+fee))
 
-	// 5. branded checkout page, then confirm -> gateway
-	status, body, _ = run.get(loc)
-	if status != http.StatusOK {
-		t.Fatalf("checkout page: %d", status)
+	// 5. review redirects straight to the simulated gateway page.
+	if !strings.HasPrefix(loc, "https://") {
+		t.Fatalf("review should route straight to the gateway, got %q", loc)
 	}
-	fmt.Printf("  Branded checkout page: %s\n", run.page(body))
-	checkoutToken := strings.TrimPrefix(loc, "/checkout/")
-	payment, err := repository.PaymentByCheckoutToken(ctx, checkoutToken)
+	fmt.Printf("  🔀 Browser leaves for the gateway page (no hub hop): %s\n", loc)
+	payment, err := repository.PaymentByReference(ctx, strings.TrimPrefix(loc, "https://checkout.sim.example/x/"))
 	if err != nil {
-		t.Fatalf("load payment by checkout token: %v", err)
+		t.Fatalf("load payment by gateway reference: %v", err)
 	}
-	status, _, gatewayURL := run.post("/checkout/"+checkoutToken+"/pay", nil)
-	if status != http.StatusSeeOther || !strings.HasPrefix(gatewayURL, "https://") {
-		t.Fatalf("checkout pay: status=%d loc=%q", status, gatewayURL)
-	}
-	fmt.Printf("  🔀 Browser leaves for the Interswitch hosted page: %s\n", gatewayURL)
 
 	// 6. customer completes at the gateway; Xego requeries on the return hop
 	fmt.Printf("\n— Interswitch calls back: GET /payments/return?reference=%s… —\n", payment.ProviderReference[:12])
@@ -523,21 +517,14 @@ func simulatePayIndividual(t *testing.T, ctx context.Context, run *simRun, convo
 		domain.FormatNGN(amount), domain.FormatNGN(nipFee), domain.FormatNGN(amount-nipFee),
 		domain.FormatNGN(amount+collectionFee), domain.FormatNGN(collectionFee))
 
-	status, _, _ = run.get(loc)
-	if status != http.StatusOK {
-		t.Fatalf("checkout page: %d", status)
+	if !strings.HasPrefix(loc, "https://") {
+		t.Fatalf("review should route straight to the gateway, got %q", loc)
 	}
-	fmt.Printf("  Branded checkout page rendered.\n")
-	checkoutToken := strings.TrimPrefix(loc, "/checkout/")
-	payment, err := repository.PaymentByCheckoutToken(ctx, checkoutToken)
+	fmt.Printf("  🔀 Browser leaves for the gateway page (no hub hop): %s\n", loc)
+	payment, err := repository.PaymentByReference(ctx, strings.TrimPrefix(loc, "https://checkout.sim.example/x/"))
 	if err != nil {
-		t.Fatalf("load payment by checkout token: %v", err)
+		t.Fatalf("load payment by gateway reference: %v", err)
 	}
-	status, _, gatewayURL := run.post("/checkout/"+checkoutToken+"/pay", nil)
-	if status != http.StatusSeeOther || !strings.HasPrefix(gatewayURL, "https://") {
-		t.Fatalf("checkout pay: status=%d loc=%q", status, gatewayURL)
-	}
-	fmt.Printf("  🔀 Browser leaves for the Interswitch hosted page: %s\n", gatewayURL)
 
 	fmt.Printf("\n— Interswitch calls back: GET /payments/return?reference=%s… —\n", payment.ProviderReference[:12])
 	status, _, loc = run.get("/payments/return?reference=" + url.QueryEscape(payment.ProviderReference))

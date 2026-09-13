@@ -4,7 +4,10 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title>
 <link rel="stylesheet" href="/static/styles.css"></head>
-<body class="receipt-body"><main class="receipt">
+<body class="receipt-body"><main class="receipt{{if .Pay}} pay{{end}}">
+  {{if and .Pay (not .Done) (not .Expired)}}
+  {{if .Steps}}<ol class="wf-stepper">{{range .Steps}}<li class="{{.State}}"><span class="dot">{{.Dot}}</span><span class="lbl">{{.Label}}</span></li>{{end}}</ol>{{end}}
+  {{end}}
   <p class="eyebrow">Xego · {{.FlowType}}</p>
   {{if .Done}}
     <h1>{{.DoneTitle}}</h1>

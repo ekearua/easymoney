@@ -89,10 +89,11 @@ func (a *App) wfPageWithError(flow store.WebFlow, page webFlowPage, msg string) 
 	return &page
 }
 
-// wfRoutePayment handles the terminal action of a money flow: it saves the
-// payment id into the flow payload, then either completes instantly (wallet)
-// or redirects to the branded hosted checkout whose callback finishes the
-// flow and sends the WhatsApp confirmation.
+// wfRoutePayment handles the terminal action of a money flow: it saves
+// the payment id into the flow payload, then either completes instantly (wallet)
+// or routes directly to the destination page — the secure gateway for card,
+// transfer instructions for bank transfer. Initialization mirrors the
+// checkout hub's pay handler so behavior is identical minus the hub hop.
 func (a *App) wfRoutePayment(w http.ResponseWriter, r *http.Request, flow store.WebFlow, payment store.PaymentView, provider string) error {
 	payload := clonePayload(flow.Payload)
 	payload["payment_id"] = payment.ID.String()
@@ -113,10 +114,24 @@ func (a *App) wfRoutePayment(w http.ResponseWriter, r *http.Request, flow store.
 			updated.MerchantName, domain.FormatNGN(updated.AmountKobo), link)
 		return a.wfFinish(r.Context(), flow, msg)
 	}
+	// Park the flow on its checkout step, then route straight to the
+	// destination page by initializing the gateway exactly as the checkout
+	// hub's Pay button does: interswitch card → the hosted payment page,
+	// interswitch DVA → /transfer/:ref instructions, simulation → the
+	// simulated gateway URL. The /checkout/:token hub is no longer part of
+	// the fresh path — it remains the resume/status entry point for saved
+	// and in-flight links.
 	if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, "checkout", payload); err != nil {
 		return err
 	}
-	http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+	updated, err := a.payments.InitializeCheckout(r.Context(), payment)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "web flow checkout initialize failed", "payment_id", payment.ID, "error", err)
+		// Fall back to the checkout hub, which renders the retry affordance.
+		http.Redirect(w, r, "/checkout/"+payment.CheckoutToken, http.StatusSeeOther)
+		return nil
+	}
+	http.Redirect(w, r, updated.CheckoutURL, http.StatusSeeOther)
 	return nil
 }
 
@@ -165,6 +180,21 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		if err != nil {
 			return page, err
 		}
+		// Auto-skip: a single active merchant has nothing to choose, so the
+		// flow starts at the item step with the merchant pre-selected. The
+		// merchant stays editable via the stepper-adjacent summary on later
+		// steps, and the legacy "merchant" step keeps working for in-flight
+		// flows created before this cut.
+		if flow.Step == "" && len(merchants) == 1 {
+			payload := clonePayload(flow.Payload)
+			payload["merchant_slug"] = merchants[0].Slug
+			if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, "item", payload); err != nil {
+				return page, err
+			}
+			flow.Step = "item"
+			flow.Payload = payload
+			return a.wfPayStep(r, flow, user)
+		}
 		page.Title = "Who are you paying?"
 		page.Intro = "Choose the merchant, then pick a service, event ticket, or enter a custom amount. You can also snap the bill or say the amount below to prefill the form."
 		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions(merchants)}
@@ -207,9 +237,58 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 			}
 		}
 		opts = append(opts, webFlowOption{Value: "custom", Label: "Custom amount", Description: "Pay any amount within your limits"})
+		// Auto-skip: with only one purchasable option there is nothing to
+		// choose — jump straight past item (and, for a fixed-price option,
+		// past amount too).
+		if flow.Step == "item" && len(opts) == 1 {
+			payload := clonePayload(flow.Payload)
+			payload["item"] = opts[0].Value
+			if opts[0].Value == "custom" {
+				payload["item_kind"] = "custom"
+				flow.Step = "amount"
+				flow.Payload = payload
+				return a.wfPayStep(r, flow, user)
+			}
+			kind, idStr, _ := strings.Cut(opts[0].Value, ":")
+			id, err := uuid.Parse(idStr)
+			if err == nil {
+				switch kind {
+				case "svc":
+					if svc, err := a.store.MerchantServiceByID(r.Context(), id); err == nil {
+						payload["item_kind"] = "service"
+						payload["service_id"] = id.String()
+						payload["item_name"] = svc.Name
+						payload["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+						payload["qty"] = "1"
+						payload["amount_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+						flow.Step = "review"
+						flow.Payload = payload
+						return a.wfPayReview(r, flow, page)
+					}
+				case "evt":
+					if tier, err := a.store.TierByID(r.Context(), id); err == nil {
+						payload["item_kind"] = "event"
+						payload["tier_id"] = id.String()
+						payload["item_name"] = tier.Name
+						payload["unit_price_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
+						payload["qty"] = "1"
+						payload["amount_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
+						flow.Step = "review"
+						flow.Payload = payload
+						return a.wfPayReview(r, flow, page)
+					}
+				}
+			}
+		}
 		page.Title = merchant.Name
 		page.Intro = "What are you paying for?"
-		page.Fields = []webFlowField{{Name: "item", Label: "Item", Type: "select", Required: true, Options: opts}}
+		// Quantity folds onto the item step for fixed-price items: one page
+		// instead of two. The custom-amount option skips qty entirely.
+		itemField := webFlowField{Name: "item", Label: "Item", Type: "select", Required: true, Options: opts}
+		if v := flow.Payload["item"]; v != "" {
+			itemField.Value = v
+		}
+		page.Fields = []webFlowField{itemField, {Name: "qty", Label: "Quantity", Type: "number", Value: flow.Payload["qty"], Hint: "For fixed-price items — defaults to 1"}}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "qty":
@@ -301,11 +380,22 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		return nil, nil
 	case "item":
 		item := r.FormValue("item")
+		// Quantity arrives on the same form as the item (folded step). A blank
+		// qty means a custom amount was chosen — quantity doesn't apply.
+		qty := 1
+		if raw := strings.TrimSpace(r.FormValue("qty")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 1 {
+				return a.wfPageWithError(flow, page, "Quantity must be at least 1."), nil
+			}
+			qty = parsed
+		}
 		payload := clonePayload(flow.Payload)
 		if item == "custom" {
 			payload["item_kind"] = "custom"
 			delete(payload, "service_id")
 			delete(payload, "tier_id")
+			delete(payload, "qty")
 			a.wfAdvance(w, r, flow, "amount", payload)
 			return nil, nil
 		}
@@ -317,6 +407,7 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Choose an item."), nil
 		}
+		var unit int64
 		switch kind {
 		case "svc":
 			svc, err := a.store.MerchantServiceByID(r.Context(), id)
@@ -327,6 +418,7 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			payload["service_id"] = id.String()
 			payload["item_name"] = svc.Name
 			payload["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
+			unit = svc.UnitPriceKobo
 		case "evt":
 			tier, err := a.store.TierByID(r.Context(), id)
 			if err != nil {
@@ -336,10 +428,32 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			payload["tier_id"] = id.String()
 			payload["item_name"] = tier.Name
 			payload["unit_price_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
+			unit = tier.PriceKobo
 		default:
 			return a.wfPageWithError(flow, page, "Choose an item."), nil
 		}
-		a.wfAdvance(w, r, flow, "qty", payload)
+		// Fixed price × qty is computed here, so the amount step disappears
+		// for fixed-price items. Capacity and range checks move with it.
+		total := unit * int64(qty)
+		if total < a.cfg.PaymentMinKobo || total > a.cfg.PaymentMaxKobo {
+			return a.wfPageWithError(flow, page, fmt.Sprintf("The total (%s) is outside the allowed range. Adjust the quantity.", domain.FormatNGN(total))), nil
+		}
+		if payload["item_kind"] == "service" {
+			if svc, err := a.store.MerchantServiceByID(r.Context(), id); err == nil && svc.QuantityAvailable >= 0 && qty > svc.QuantityAvailable {
+				return a.wfPageWithError(flow, page, fmt.Sprintf("Sorry, only %d available.", svc.QuantityAvailable)), nil
+			}
+		} else if payload["item_kind"] == "event" {
+			if tier, err := a.store.TierByID(r.Context(), id); err == nil && tier.Capacity >= 0 && int64(tier.Capacity-tier.Sold) < int64(qty) {
+				return a.wfPageWithError(flow, page, fmt.Sprintf("Sorry, only %d tickets left in this tier.", tier.Capacity-tier.Sold)), nil
+			}
+		}
+		payload["qty"] = strconv.Itoa(qty)
+		payload["amount_kobo"] = strconv.FormatInt(total, 10)
+		next := "review"
+		if a.wfItemHasCustomFields(r.Context(), payload) {
+			next = "custom_fields"
+		}
+		a.wfAdvance(w, r, flow, next, payload)
 		return nil, nil
 	case "qty":
 		qty, err := strconv.Atoi(strings.TrimSpace(r.FormValue("qty")))
