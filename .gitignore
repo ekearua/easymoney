@@ -25,3 +25,7 @@ whatsapp-payment-demo
 cloudflared.bin
 tunnel-help.txt
 .cloudflared/
+
+# Playwright / Node
+test/payment-flows/node_modules/
+test/payment-flows/test-results/

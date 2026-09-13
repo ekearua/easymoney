@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"whatsapp-payment-demo/internal/crypto"
@@ -33,6 +34,13 @@ type Store struct {
 	// When empty the store runs in plaintext passthrough (dev without the env
 	// var); production requires DATA_ENCRYPTION_KEY in config.
 	dataKey []byte
+}
+
+// RawExec runs a raw SQL statement against the pool. It exists for test
+// harnesses that need one-off fixture SQL; production code should use typed
+// store methods.
+func (s *Store) RawExec(ctx context.Context, sql string) (pgconn.CommandTag, error) {
+	return s.pool.Exec(ctx, sql)
 }
 
 // SetDataKey configures the encryption-at-rest key. It must be called before

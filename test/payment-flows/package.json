@@ -1,0 +1,13 @@
+{
+  "name": "xego-payment-flows-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "install-browsers": "npx playwright install chromium",
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0"
+  }
+}
