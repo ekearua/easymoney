@@ -14,8 +14,8 @@
 .row{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
 .note{max-width:280px;color:var(--muted);font-size:13.5px}
 .note b{color:var(--ink)}
-/* phone frame */
-.phone{width:375px;flex:0 0 auto;background:#0d1b1a;border-radius:34px;padding:10px;box-shadow:var(--shadow)}
+/* phone frame — shrinks below 375px so a real phone never h-scrolls */
+.phone{width:375px;max-width:100%;flex:0 1 375px;background:#0d1b1a;border-radius:34px;padding:10px;box-shadow:var(--shadow)}
 .screen{background:var(--paper);border-radius:26px;overflow:hidden;min-height:720px;display:flex;flex-direction:column}
 .statusbar{display:flex;justify-content:space-between;padding:10px 18px 4px;font-size:11px;color:var(--muted);background:#fff}
 .brandbar{display:flex;align-items:center;gap:8px;padding:10px 18px 12px;background:#fff;border-bottom:1px solid var(--line)}
@@ -37,9 +37,11 @@
 .stp.cur .dot{background:#fff;border-color:var(--green);color:var(--green)}
 .stp.cur .lbl{color:var(--ink)}
 .stp.todo::before{background:#e3ebe7}
-/* ≤360px: labels collapse away, dots carry the progress */
-@media(max-width:360px){.stp .lbl{display:none}.stp{gap:0}.stp .dot{width:14px;height:14px;font-size:10px}.stp::before{top:7px}}
+/* ≤400px: labels collapse away, dots carry the progress (real phones are 360–393px) */
+@media(max-width:400px){.stp .lbl{display:none}.stp{gap:0}.stp .dot{width:14px;height:14px;font-size:10px}.stp::before{top:7px}.board{padding:28px 14px 60px}.phone{border-radius:22px;padding:6px}.screen{border-radius:18px}}
 .compact .stp .lbl{display:none}.compact .stp{gap:0}.compact .stp .dot{width:14px;height:14px;font-size:10px}.compact .stp::before{top:7px}
+/* keep the wide-screen variant labels on for side-by-side comparison even on a phone */
+.full .stp .lbl{display:block}.full .stp{gap:5px}.full .stp .dot{width:26px;height:26px;font-size:12px}.full .stp::before{top:13px}
 /* option cards */
 .opt-card{display:flex;align-items:center;gap:12px;background:#fff;border:1.5px solid var(--line);border-radius:14px;padding:13px 14px;margin-bottom:10px;cursor:pointer}
 .opt-card.sel{border-color:var(--green);background:#f7fcfa;box-shadow:0 0 0 1px var(--green)}
@@ -119,12 +121,12 @@
 <div class="opt-card sel"><div class="ic">🍗</div><div><div class="tt">Jollof platter</div><div class="dd">Fixed price</div></div><div class="pr">₦2,500</div><div class="rad"></div></div>
 <div class="opt-card"><div class="ic">🥤</div><div><div class="tt">Chapman</div><div class="dd">Fixed price</div></div><div class="pr">₦800</div><div class="rad"></div></div>
 <div class="opt-card"><div class="ic">✏️</div><div><div class="tt">Custom amount</div><div class="dd">Pay any amount</div></div><div class="rad"></div></div>
-<p class="note" style="margin-top:8px"><b>Quantity folded in:</b> after picking a fixed-price item, a qty stepper appears inline below the selection before Continue. <b>Compact mode shown:</b> at ≤360px the labels collapse and dots carry the progress (first phone) vs full labels (second).</p>
+<p class="note" style="margin-top:8px"><b>Quantity folded in:</b> after picking a fixed-price item, a qty stepper appears inline below the selection before Continue. <b>Compact mode shown:</b> at ≤400px the labels collapse and dots carry the progress (first phone) vs full labels (second, pinned via .full).</p>
 <div style="margin-top:10px"><span class="qty"><button>−</button><b>2</b><button>+</button></span></div>
 </div>
 <div class="actionbar"><button class="cta">Continue · ₦5,000</button><p class="trust">Xego completes every payment only after it is verified on our side.</p></div>
 </div></div>
-<div class="phone"><div class="screen">
+<div class="phone full"><div class="screen">
 <div class="statusbar"><span>9:41</span><span>▮▮▮ ⌁ 84%</span></div>
 <div class="brandbar"><div class="logo">X</div><div class="name">Xego</div><div class="amt"><small>Paying</small><b>₦5,000</b></div></div>
 <div class="stepper">
@@ -139,7 +141,7 @@
 </div>
 <div class="actionbar"><button class="cta">Continue</button></div>
 </div></div>
-<div class="note"><b>Horizontal stepper.</b> Five labels, done/current/upcoming states; collapses to dots at ≤360px — proven above, not just claimed: first phone renders the compact mode, second shows the full-label variant for comparison. Persistent amount in the header from the moment it's known. Item + quantity on one page — the standalone quantity page disappears.</div>
+<div class="note"><b>Horizontal stepper.</b> Five labels, done/current/upcoming states; collapses to dots at ≤400px (real phones are 360–393px) — proven above, not just claimed: first phone renders the compact mode, second pins the full-label variant for comparison. Persistent amount in the header from the moment it's known. Item + quantity on one page — the standalone quantity page disappears.</div>
 </div>
 
 <h2>2 · Merchant select &amp; auto-skip</h2>
