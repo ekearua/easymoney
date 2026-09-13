@@ -74,7 +74,7 @@ func TestHostedFieldsTemplateMountsEveryConfiguredField(t *testing.T) {
 		}
 	}
 
-	for _, want := range []string{page.SDKURL, "/static/hosted_fields.js", "id=\"details-page\"", "id=\"pin-page\"", "id=\"otp-page\""} {
+	for _, want := range []string{page.SDKURL, "/static/hosted_fields.js", "id=\"details-page\"", "id=\"pin-page\"", "id=\"otp-page\"", "id=\"hf-dots\""} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered page is missing %q", want)
 		}

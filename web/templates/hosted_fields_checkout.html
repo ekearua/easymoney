@@ -7,9 +7,10 @@
   <p class="eyebrow">Secure card payment</p>
   <h1>{{.Payment.MerchantName}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
-  <dl>
-    <div><dt>Status</dt><dd>{{.Payment.Status}}</dd></div>
-  </dl>
+  {{/* Sub-step dots: details → PIN → OTP inside this one page, driven by
+  hosted_fields.js showStep(). Present even before fields mount so the
+  header never reflows once the SDK is up. */}}
+  <div id="hf-dots" class="hf-dots" aria-hidden="true"><span class="on"></span><span></span><span></span></div>
   <p class="muted">Card details are entered inside Interswitch's secure fields. We never see your card number.</p>
 
   {{/* Step 1: card details. The Hosted Fields SDK mounts one iframe per field

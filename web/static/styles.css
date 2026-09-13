@@ -38,3 +38,13 @@
 .pay .actions a.button{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none}
 .pay .amount-input{font-size:26px;font-weight:800;letter-spacing:-.02em}
 @media(max-width:800px){.pay .actions{margin:18px -26px -26px;padding:16px 26px 24px}}
+/* hosted-fields sub-step dots (details → pin → otp within one gateway page) */
+.hf-dots{display:flex;justify-content:center;gap:8px;margin:2px 0 14px}
+.hf-dots span{width:8px;height:8px;border-radius:50%;background:#d3dfda;transition:all .18s ease}
+.hf-dots span.on{background:var(--green);width:22px;border-radius:5px}
+.hf-dots span.done{background:var(--green)}
+/* transfer instruction: copyable one-time account block */
+.xg-acct{border:1.5px dashed var(--green);border-radius:14px;padding:16px;text-align:center;margin:6px 0 4px;background:#fbfefc}
+.xg-acct-num{font-size:30px;font-weight:900;letter-spacing:.06em}
+.xg-copy{margin-top:10px;font:inherit;font-size:12px;font-weight:700;color:var(--green);background:var(--mint);border:0;padding:8px 16px;border-radius:9px;cursor:pointer}
+.xg-copy:active{transform:translateY(1px)}

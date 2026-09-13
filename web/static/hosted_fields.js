@@ -36,21 +36,31 @@
   // makePayment means the customer still has to finish the OTP hop.
   var approvedCodes = ['00', '90000', '10'];
   var instance = null;
+  var currentStep = 'details';
   var payButton = document.getElementById('pay-button');
   var continueButton = document.getElementById('continue-button');
   var validateButton = document.getElementById('validate-button');
 
+  // Horizontal sub-step dots: details → pin → otp inside one page. The dots
+  // track the step the customer is ON; a step ahead of the furthest reached
+  // stays dimmed so progress only ever moves forward visually.
   function showStep(name) {
-    ['details', 'pin', 'otp'].forEach(function (step) {
+    currentStep = name;
+    var order = ['details', 'pin', 'otp'];
+    var reached = order.indexOf(name);
+    order.forEach(function (step, index) {
       var el = document.getElementById(step + '-page');
-      if (!el) {
-        return;
+      if (el) {
+        if (step === name) {
+          el.removeAttribute('hidden');
+        } else {
+          el.setAttribute('hidden', 'hidden');
+        }
       }
-      if (step === name) {
-        el.removeAttribute('hidden');
-      } else {
-        el.setAttribute('hidden', 'hidden');
-      }
+    });
+    var dots = document.querySelectorAll('#hf-dots span');
+    dots.forEach(function (dot, index) {
+      dot.className = index < reached ? 'done' : (index === reached ? 'on' : '');
     });
   }
 
@@ -156,6 +166,7 @@
     // an OTP or a 3-D Secure challenge is required.
     if (binConfig && binConfig.supportsPin === false) {
       setMessage('Charging your card…');
+      showStep('otp');
       try {
         instance.makePayment(onPayment);
       } catch (e) {

@@ -4,13 +4,16 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Payment receipt - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt">
-  <div class="receipt-mark">OK</div>
+  <div class="receipt-mark">{{if eq .Payment.Status "succeeded"}}OK{{else if or (eq .Payment.Status "pending") (eq .Payment.Status "awaiting_confirmation") (eq .Payment.Status "initialized")}}⟳{{else}}✕{{end}}</div>
   <p class="eyebrow">{{if .Thrift}}Thrift contribution{{else if .Invoice}}Invoice payment{{else if .DataOrder}}Data order{{else if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</p>
   <h1>{{if .Thrift}}Contribution {{.Thrift.Status}}{{else if .Invoice}}Payment {{.Payment.Status}}{{else if .DataOrder}}Data {{.DataOrder.Status}}{{else}}Payment {{.Payment.Status}}{{end}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
   <dl>
     <div><dt>Merchant</dt><dd>{{.Payment.MerchantName}}</dd></div>
+    <div><dt>Reference</dt><dd class="mono">{{.Payment.ProviderReference}}</dd></div>
+    <div><dt>Method</dt><dd>{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</dd></div>
+    <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
     {{if .Thrift}}
     <div><dt>Thrift group</dt><dd>{{.Thrift.GroupName}}</dd></div>
     <div><dt>Cycle</dt><dd>{{.Thrift.CycleNumber}}</dd></div>
@@ -28,9 +31,6 @@
     <div><dt>Request code</dt><dd class="mono">{{.DataOrder.RequestCode}}</dd></div>
     {{end}}
     <div><dt>Provider</dt><dd>{{.Payment.Provider}}</dd></div>
-    <div><dt>Reference</dt><dd class="mono">{{.Payment.ProviderReference}}</dd></div>
-    <div><dt>Created</dt><dd>{{.Payment.CreatedAt.Format "02 Jan 2006, 15:04 MST"}}</dd></div>
-    <div><dt>Channel</dt><dd>{{if eq .Payment.Provider "bank_transfer"}}Bank transfer{{else}}Card checkout{{end}}</dd></div>
   </dl>
   {{if .ScanToken}}
   <section class="receipt-scan">
