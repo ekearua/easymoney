@@ -20,15 +20,15 @@
     <td class="mono">{{.UserID}}</td>
     <td>{{if .RequestedTier}}{{.RequestedTier}}{{else}}—{{end}}</td>
     <td>{{.Reason}}</td>
-    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
     <td>
       {{if eq .Status "pending"}}
-      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" style="display:inline-block">
+      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="decision" value="approve">
         <button class="btn btn-small" type="submit">Approve</button>
       </form>
-      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" style="display:inline-block">
+      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="decision" value="reject">
         <button class="btn btn-small btn-danger" type="submit">Reject</button>
@@ -52,21 +52,21 @@
     <td class="mono">{{.UserID}}</td>
     <td><span class="status {{if eq .Status "open"}}pending{{else}}succeeded{{end}}">{{.Status}}</span>{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</td>
     <td class="mono">{{printf "%v" .Details}}</td>
-    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
     <td>
       {{if eq .Status "open"}}
-      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="status" value="acknowledged">
         <button class="btn btn-small" type="submit">Ack</button>
       </form>
-      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="status" value="escalated">
         <button class="btn btn-small btn-danger" type="submit">Escalate</button>
       </form>
       {{else}}
-      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" style="display:inline-block">
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="status" value="resolved">
         <button class="btn btn-small" type="submit">Resolve</button>
@@ -87,7 +87,7 @@
     <td><span class="status {{if or (eq .RiskBand "medium") (eq .RiskBand "high")}}warn{{else}}ok{{end}}">{{.RiskBand}}</span> {{.RiskScore | printf "%.0f"}}</td>
     <td>{{if .LastScreeningDecision}}{{.LastScreeningDecision}}{{else}}—{{end}}</td>
     <td class="mono">{{printf "%v" .Evidence}}</td>
-    <td style="white-space:nowrap">{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td>
   </tr>
   {{else}}<tr><td colspan="6">No KYC profiles yet.</td></tr>{{end}}
   </tbody></table></div>

@@ -34,7 +34,7 @@
   <h2>STR — suspicious transaction report</h2>
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Customer</th><th>Amount</th><th>Merchant</th><th>Rule</th><th>Severity</th><th>Status</th></tr></thead><tbody>
   {{range .Bundle.STR}}<tr>
-    <td style="white-space:nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
     <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
     <td>{{money .AmountKobo}}</td>
     <td>{{.MerchantName}}</td>
@@ -50,7 +50,7 @@
   <h2>CTR — currency transaction report</h2>
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Customer</th><th>Amount</th><th>Currency</th><th>Merchant</th><th>Provider ref</th></tr></thead><tbody>
   {{range .Bundle.CTR}}<tr>
-    <td style="white-space:nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="nowrap">{{.TransactionDate.Format "02 Jan 2006 15:04:05"}}</td>
     <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
     <td>{{money .AmountKobo}}</td>
     <td>{{.Currency}}</td>
@@ -65,7 +65,7 @@
   <h2>PEP — politically exposed persons</h2>
   <div class="table-wrap"><table><thead><tr><th>Screened</th><th>Customer</th><th>Decision</th><th>Matched names</th><th>Tier</th><th>Risk</th></tr></thead><tbody>
   {{range .Bundle.PEP}}<tr>
-    <td style="white-space:nowrap">{{.ScreenedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="nowrap">{{.ScreenedAt.Format "02 Jan 2006 15:04:05"}}</td>
     <td>{{.CustomerName}}{{if .CustomerPhone}}<br><span class="muted">{{.CustomerPhone}}</span>{{end}}</td>
     <td>{{.Decision}}</td>
     <td class="mono">{{join .MatchedNames ", "}}</td>

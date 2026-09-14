@@ -9,7 +9,7 @@
 
 <section class="panel">
   <h2>Period</h2>
-  <form method="get" action="/admin/analytics" style="display:flex;gap:12px;align-items:end;flex-wrap:wrap">
+  <form method="get" action="/admin/analytics" class="flex gap-12 items-end flex-wrap">
     <label>From <input type="date" name="from" value="{{.From.Format "2006-01-02"}}"></label>
     <label>To <input type="date" name="to" value="{{.To.Format "2006-01-02"}}"></label>
     <button type="submit">Update</button>
@@ -18,7 +18,7 @@
 
 <section class="panel">
   <h2>Summary</h2>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px">
+  <div class="grid analytics-summary gap-16">
     <div class="card"><p class="eyebrow">Payments</p><p class="big">{{.TotalPayments}}</p></div>
     <div class="card"><p class="eyebrow">Collections</p><p class="big">{{money .TotalCollections}}</p></div>
     <div class="card"><p class="eyebrow">Fees earned</p><p class="big">{{money .TotalFees}}</p></div>
@@ -76,7 +76,7 @@
   <h2>Payouts</h2>
   <div class="table-wrap"><table><thead><tr><th>Date</th><th>Batch</th><th>Amount</th><th>Status</th><th>Provider ref</th></tr></thead><tbody>
   {{range .Payouts}}<tr>
-    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 15:04"}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 15:04"}}</td>
     <td class="mono">{{.BatchNo}}</td>
     <td>{{money .AmountKobo}}</td>
     <td><span class="status {{if eq .Status "completed"}}ok{{else if eq .Status "failed"}}error{{else if eq .Status "reversed"}}muted{{else}}warn{{end}}">{{.Status}}</span></td>

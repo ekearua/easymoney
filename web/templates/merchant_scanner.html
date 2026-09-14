@@ -10,12 +10,12 @@
   <section class="panel">
     <h2>Your services</h2>
     {{if .Services}}
-    {{range .Services}}<article class="panel" style="margin-bottom:12px">
+    {{range .Services}}<article class="panel mb-12">
       <h3>{{.Name}}</h3>
       <p class="muted">Type: {{.ServiceType}} · Accepted: {{.AcceptedReceiptTypes}} · TTL: {{.TokenTTLSeconds}}s · {{if .Active}}Active{{else}}Inactive{{end}}</p>
-      <form method="post" action="/merchant/scanner/services/{{.ID}}/whitelist" style="margin-top:8px;display:flex;gap:8px;align-items:end">
+      <form method="post" action="/merchant/scanner/services/{{.ID}}/whitelist" class="mt-8 flex gap-8 items-end">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-        <label style="flex:1">Phone whitelist (comma-separated E.164, empty = all phones allowed)
+        <label class="flex-1">Phone whitelist (comma-separated E.164, empty = all phones allowed)
           <input name="phone_whitelist" value="{{.PhoneWhitelist}}" placeholder="+2348012345678,+2348098765432">
         </label>
         <button type="submit">Save</button>

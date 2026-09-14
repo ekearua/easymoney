@@ -26,9 +26,9 @@
     '    <div class="wf-cam-actions">' +
     '      <button type="button" class="ghost" data-cam-cancel>Cancel</button>' +
     '      <button type="button" class="primary" data-cam-capture>Capture</button>' +
-    '      <button type="button" class="primary" data-cam-retake style="display:none">Retake</button>' +
-    '      <button type="button" class="danger" data-cam-crop style="display:none">Use without crop</button>' +
-    '      <button type="button" class="primary" data-cam-done style="display:none">Use photo</button>' +
+    '      <button type="button" class="primary hidden" data-cam-retake>Retake</button>' +
+    '      <button type="button" class="danger hidden" data-cam-crop>Use without crop</button>' +
+    '      <button type="button" class="primary hidden" data-cam-done>Use photo</button>' +
     '    </div>' +
     '    <p class="wf-cam-note" data-cam-note></p>' +
     '  </div>' +
@@ -71,11 +71,11 @@
       btn = overlay.querySelector('[data-cam-capture]');
       btn.style.display = state.capture ? '' : 'none';
       btn = overlay.querySelector('[data-cam-retake]');
-      btn.style.display = state.retake ? '' : 'none';
+      btn.classList.toggle('hidden', !state.retake);
       btn = overlay.querySelector('[data-cam-crop]');
-      btn.style.display = state.crop ? '' : 'none';
+      btn.classList.toggle('hidden', !state.crop);
       btn = overlay.querySelector('[data-cam-done]');
-      btn.style.display = state.done ? '' : 'none';
+      btn.classList.toggle('hidden', !state.done);
       if (video) { video.style.display = state.capture ? '' : 'none'; }
       if (canvas) { canvas.style.display = state.preview ? '' : 'none'; }
     }

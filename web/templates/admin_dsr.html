@@ -32,8 +32,8 @@
   <div class="table-wrap"><table><thead><tr><th>Purpose</th><th>Status</th><th>Source</th><th>Granted</th><th>Revoked</th></tr></thead><tbody>
   {{range .Consents}}<tr>
     <td>{{.Purpose}}</td><td>{{.Status}}</td><td>{{.Source}}</td>
-    <td style="white-space:nowrap">{{.GrantedAt.Format "02 Jan 2006 15:04:05"}}</td>
-    <td style="white-space:nowrap">{{if .RevokedAt}}{{.RevokedAt.Format "02 Jan 2006 15:04:05"}}{{else}}—{{end}}</td>
+    <td class="nowrap">{{.GrantedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="nowrap">{{if .RevokedAt}}{{.RevokedAt.Format "02 Jan 2006 15:04:05"}}{{else}}—{{end}}</td>
   </tr>
   {{else}}<tr><td colspan="5">No consent records.</td></tr>{{end}}
   </tbody></table></div>
@@ -55,7 +55,7 @@
   <h2>Request queue</h2>
   <div class="table-wrap"><table><thead><tr><th>Requested</th><th>Type</th><th>Status</th><th>Reason</th><th>Requested by</th><th>Reviewed by</th><th>Action</th></tr></thead><tbody>
   {{range .Requests}}<tr>
-    <td style="white-space:nowrap">{{.RequestedAt.Format "02 Jan 2006 15:04:05"}}</td>
+    <td class="nowrap">{{.RequestedAt.Format "02 Jan 2006 15:04:05"}}</td>
     <td>{{.RequestType}}{{if eq .RequestType "erasure"}} <span class="status">30-day hold</span>{{end}}</td>
     <td>{{.Status}}</td>
     <td>{{.Reason}}</td>

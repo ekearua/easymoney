@@ -23,7 +23,7 @@
   <div class="table-wrap"><table><thead><tr><th>Run</th><th>When</th><th>Type</th><th>By</th><th>Internal</th><th>Ledger</th><th>Bank</th><th>Discrepancies</th><th>Status</th></tr></thead><tbody>
   {{range .Runs}}<tr>
     <td class="mono">#{{.ID}}</td>
-    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
     <td>{{if eq .RunType "auto"}}auto{{else}}manual{{end}}</td>
     <td>{{.CreatedBy}}</td>
     <td>{{.InternalCount}}</td>

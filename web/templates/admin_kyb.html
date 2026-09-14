@@ -21,7 +21,7 @@
     <td>{{money .DailyLimitKobo}}</td>
     <td>{{money .MonthlyLimitKobo}}</td>
     <td>
-      <form method="post" action="/admin/tier-limits/{{.ID}}" style="display:flex;gap:4px;flex-wrap:wrap">
+      <form method="post" action="/admin/tier-limits/{{.ID}}" class="flex gap-4 flex-wrap">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input class="num" name="single_kobo" value="{{.SingleLimitKobo}}" title="Single (kobo)" size="9">
         <input class="num" name="daily_kobo" value="{{.DailyLimitKobo}}" title="Daily (kobo)" size="9">
@@ -51,7 +51,7 @@
         {{if .AdvanceEvidence}}<p class="mono">{{printf "%v" .AdvanceEvidence}}</p>{{end}}
         {{if .AdvanceNote}}<p class="muted">{{.AdvanceNote}}</p>{{end}}
         {{if .AdvanceRequested}}<p class="muted">At {{.AdvanceRequested}}</p>{{end}}
-        <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">
+        <div class="flex gap-4 mt-4 flex-wrap">
           <form method="post" action="/admin/kyb/{{.MerchantID}}/advance-request/approve">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
             <button class="btn btn-small" type="submit">Approve upgrade</button>
@@ -64,7 +64,7 @@
       </div>
       {{else}}<span class="muted">—</span>{{end}}
     </td>
-    <td style="white-space:nowrap">{{.UpdatedAt | date}}</td>
+    <td class="nowrap">{{.UpdatedAt | date}}</td>
     <td>
       {{if .NextTier}}
       <form method="post" action="/admin/kyb/{{.MerchantID}}/advance">
@@ -72,7 +72,7 @@
         <input type="hidden" name="target_tier" value="{{.NextTier}}">
         <p>To {{.NextTier}}:</p>
         {{range .Options}}
-        <label style="display:block"><input type="checkbox" name="evidence" value="{{.Key}}"{{if .IsRequired}} checked{{end}}> {{.Label}}{{if .IsRequired}} <em>(required)</em>{{end}}</label>
+        <label class="block"><input type="checkbox" name="evidence" value="{{.Key}}"{{if .IsRequired}} checked{{end}}> {{.Label}}{{if .IsRequired}} <em>(required)</em>{{end}}</label>
         {{end}}
         <button class="btn btn-small" type="submit">Advance → {{.NextTier}}</button>
       </form>
@@ -81,12 +81,12 @@
       {{end}}
     </td>
     <td>
-      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" style="display:inline-block">
+      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="decision" value="approve">
         <button class="btn btn-small" type="submit">Approve</button>
       </form>
-      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" style="display:inline-block">
+      <form method="post" action="/admin/kyb/{{.MerchantID}}/review" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="decision" value="reject">
         <button class="btn btn-small btn-danger" type="submit">Reject</button>

@@ -12,12 +12,12 @@
 <section><h2>Payable merchants</h2>
 <section class="cards">{{range .Merchants}}<article class="merchant-card"><span class="category">{{.Category}}</span><h2>{{.Name}}</h2><p>{{.Description}}</p><small>{{if .Active}}Active{{else}}Disabled{{end}} · {{.Slug}} {{if .PasswordHash}}· has password{{else}}· no password{{end}}</small>
 <details><summary>Manage</summary>
-<div class="panel" style="margin-top:8px">
+<div class="panel mt-8">
 {{if or (eq $.AdminRole "admin") (eq $.AdminRole "support")}}
 <h3>Set password</h3>
-<form method="post" action="/admin/merchants/{{.ID}}/password" style="display:flex;gap:8px;align-items:end">
+<form method="post" action="/admin/merchants/{{.ID}}/password" class="flex gap-8 items-end">
 <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-<input type="password" name="password" placeholder="New password" required style="flex:1">
+<input type="password" name="password" placeholder="New password" required class="flex-1">
 <button type="submit">Set</button>
 </form>
 {{end}}

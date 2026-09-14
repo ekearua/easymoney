@@ -33,7 +33,7 @@
     <td class="mono">{{.SubjectType}} · {{.SubjectID}}</td>
     <td>{{.Reason}}</td>
     <td>{{if .CreatedBy}}{{.CreatedBy}}{{else}}—{{end}}</td>
-    <td style="white-space:nowrap">{{if .ExpiresAt}}{{.ExpiresAt.Format "02 Jan 2006"}}{{else}}indefinite{{end}}</td>
+    <td class="nowrap">{{if .ExpiresAt}}{{.ExpiresAt.Format "02 Jan 2006"}}{{else}}indefinite{{end}}</td>
     <td>
       <form method="post" action="/admin/legal-holds/remove">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">

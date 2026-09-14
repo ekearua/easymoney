@@ -33,7 +33,7 @@
   {{range .Admins}}<tr>
     <td>{{.Email}}{{if eq .ID $.CurrentAdminID}} <span class="status ok">you</span>{{end}}</td>
     <td>
-      <form method="post" action="/admin/admins/{{.ID}}/role" style="display:flex;gap:4px;align-items:center">
+      <form method="post" action="/admin/admins/{{.ID}}/role" class="flex gap-4 items-center">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <select name="role" {{if eq .ID $.CurrentAdminID}}disabled{{end}}>
           <option value="readonly" {{if eq .Role "readonly"}}selected{{end}}>Read only</option>
@@ -46,15 +46,15 @@
     </td>
     <td>{{if .Enabled}}<span class="status ok">Enabled</span>{{else}}<span class="status disabled">Disabled</span>{{end}}</td>
     <td>{{.CreatedAt.Format "02 Jan 2006"}}</td>
-    <td style="white-space:nowrap">
+    <td class="nowrap">
       {{if ne .ID $.CurrentAdminID}}
-      <form method="post" action="/admin/admins/{{.ID}}/enabled" style="display:inline">
+      <form method="post" action="/admin/admins/{{.ID}}/enabled" class="inline">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="enabled" value="{{if .Enabled}}0{{else}}1{{end}}">
         <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
       </form>
-      <details style="display:inline-block;margin-left:4px"><summary>Reset password</summary>
-        <form method="post" action="/admin/admins/{{.ID}}/password" style="display:flex;gap:4px;align-items:end">
+      <details class="inline-block ml-4"><summary>Reset password</summary>
+        <form method="post" action="/admin/admins/{{.ID}}/password" class="flex gap-4 items-end">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="password" name="password" placeholder="New password" autocomplete="new-password" required>
           <button type="submit">Set</button>

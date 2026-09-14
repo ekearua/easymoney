@@ -14,8 +14,8 @@
   <h2>Refunds</h2>
   <div class="table-wrap"><table><thead><tr><th>Refund ID</th><th>Payment</th><th>Merchant</th><th>Amount</th><th>Reason</th><th>Approval</th><th>Provider ref</th><th>Status</th><th>Error</th><th>Created</th><th>Actions</th></tr></thead><tbody>
   {{range .Refunds}}<tr>
-    <td class="mono" style="font-size:0.8em">{{.ID}}</td>
-    <td class="mono" style="font-size:0.8em">{{.PaymentID}}</td>
+    <td class="mono compact">{{.ID}}</td>
+    <td class="mono compact">{{.PaymentID}}</td>
     <td>{{index $.MerchantNames .MerchantID}}</td>
     <td>{{money .AmountKobo}}</td>
     <td>{{.Reason}}</td>
@@ -23,13 +23,13 @@
     <td class="mono">{{if .ProviderRefundID}}{{.ProviderRefundID}}{{else}}—{{end}}</td>
     <td><span class="status {{if eq .Status "succeeded"}}ok{{else if eq .Status "pending"}}warn{{else}}error{{end}}">{{.Status}}</span></td>
     <td class="muted">{{if .LastError}}{{.LastError}}{{else}}—{{end}}</td>
-    <td style="white-space:nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
     <td>
       {{if eq .ApprovalStatus "pending_approval"}}
-        <form method="post" action="/admin/refunds/{{.ID}}/approve" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit" class="btn-ok">Approve</button></form>
-        <form method="post" action="/admin/refunds/{{.ID}}/reject" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="text" name="reason" placeholder="reason" style="width:80px"><button type="submit" class="btn-error">Reject</button></form>
+        <form method="post" action="/admin/refunds/{{.ID}}/approve" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit" class="btn-ok">Approve</button></form>
+        <form method="post" action="/admin/refunds/{{.ID}}/reject" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="text" name="reason" placeholder="reason" class="input-limit"><button type="submit" class="btn-error">Reject</button></form>
       {{else if and (eq .Status "pending") (eq $.AdminRole "admin")}}
-      <form method="post" action="/admin/refunds/{{.ID}}/fail" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Fail</button></form>
+      <form method="post" action="/admin/refunds/{{.ID}}/fail" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Fail</button></form>
       {{else}}—{{end}}
     </td>
   </tr>{{else}}<tr><td colspan="11">No refunds yet.</td></tr>{{end}}

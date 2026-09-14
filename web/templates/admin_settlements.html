@@ -22,10 +22,10 @@
     <td><span class="status {{if eq .Status "active"}}ok{{else}}warn{{end}}">{{.Status}}{{if .ApprovedBy}} · approved{{end}}</span></td>
     <td>
       {{if and (ne .Status "active") (eq $.AdminRole "admin")}}
-      <form method="post" action="/admin/settlements/accounts/{{.ID}}/approve" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Approve</button></form>
+      <form method="post" action="/admin/settlements/accounts/{{.ID}}/approve" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Approve</button></form>
       {{end}}
       {{if and (eq .Status "active") (eq $.AdminRole "admin")}}
-      <form method="post" action="/admin/settlements/accounts/{{.ID}}/disable" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Disable</button></form>
+      <form method="post" action="/admin/settlements/accounts/{{.ID}}/disable" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Disable</button></form>
       {{end}}
     </td>
   </tr>{{else}}<tr><td colspan="7">No settlement accounts yet.</td></tr>{{end}}
@@ -38,7 +38,7 @@
   {{range .Batches}}<tr>
     <td class="mono">{{.BatchNo}}</td>
     <td>{{index $.MerchantNames .MerchantID}}</td>
-    <td style="white-space:nowrap">{{.CutoffAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.CutoffAt.Format "02 Jan 2006 15:04"}}</td>
     <td>{{money .TotalKobo}}</td>
     <td>{{money .FeeKobo}} <span class="muted">({{.FeeBps}} bps)</span></td>
     <td>{{money (sub .TotalKobo .FeeKobo)}}</td>
@@ -61,8 +61,8 @@
     <td>
       {{if eq .Status "failed"}}
         {{if eq $.AdminRole "admin"}}
-        <form method="post" action="/admin/settlements/payouts/{{.ID}}/retry" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Retry</button></form>
-        <form method="post" action="/admin/settlements/payouts/{{.ID}}/reverse" style="display:inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="reason" value="operator reversal"><button type="submit">Reverse</button></form>
+        <form method="post" action="/admin/settlements/payouts/{{.ID}}/retry" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit">Retry</button></form>
+        <form method="post" action="/admin/settlements/payouts/{{.ID}}/reverse" class="inline"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><input type="hidden" name="reason" value="operator reversal"><button type="submit">Reverse</button></form>
         {{end}}
       {{else}}—{{end}}
     </td>

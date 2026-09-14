@@ -33,7 +33,7 @@
   {{end}}
   {{if eq .Group.Status "inviting"}}
   <a class="button-primary" href="https://wa.me/?text={{printf "JOIN %s" .Group.Name | urlquery}}" target="_blank" rel="noopener">Join on WhatsApp</a>
-  <p class="muted" style="margin-top:8px">Or open WhatsApp and send this message to Xego:</p>
+  <p class="muted mt-8">Or open WhatsApp and send this message to Xego:</p>
   <p class="mono">JOIN {{.Group.Name}}</p>
   {{else}}
   <p>To contribute, send this message to Xego on WhatsApp:</p>
