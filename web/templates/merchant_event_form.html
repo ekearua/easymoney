@@ -27,7 +27,7 @@
           <input type="number" name="tier_price_kobo[]" placeholder="Price (kobo)" min="1" value="{{$t.PriceKobo}}">
           <input type="number" name="tier_capacity[]" placeholder="Capacity (-1 = unlimited)" value="{{$t.Capacity}}">
           <input type="hidden" name="tier_active[]" value="{{if $t.IsActive}}1{{else}}0{{end}}">
-          <label class="checkbox-row"><input type="checkbox" {{if $t.IsActive}}checked{{end}} onchange="this.previousElementSibling.value=this.checked?'1':'0'"> Active</label>
+          <label class="checkbox-row"><input type="checkbox" {{if $t.IsActive}}checked{{end}}> Active</label>
           <button type="button" class="btn-sm danger cf-remove-btn">✕</button>
         </div>
         {{end}}
@@ -57,26 +57,6 @@
     </form>
   </section>
 </main>
-<script src="/static/merchant-services.js"></script>
-<script>
-(function(){
-  var addBtn=document.getElementById('tier-add-btn');
-  var list=document.getElementById('tier-list');
-  if(addBtn&&list){
-    addBtn.addEventListener('click',function(){
-      var div=document.createElement('div');
-      div.className='cf-row';
-      div.innerHTML=
-        '<input name="tier_name[]" placeholder="Tier name (e.g. VIP)">'+
-        '<input type="number" name="tier_price_kobo[]" placeholder="Price (kobo)" min="1">'+
-        '<input type="number" name="tier_capacity[]" placeholder="Capacity (-1 = unlimited)" value="-1">'+
-        '<input type="hidden" name="tier_active[]" value="1">'+
-        '<label class="checkbox-row"><input type="checkbox" checked onchange="this.previousElementSibling.value=this.checked?\'1\':\'0\'"> Active</label>'+
-        '<button type="button" class="btn-sm danger cf-remove-btn">✕</button>';
-      list.appendChild(div);
-    });
-  }
-})();
-</script>
+<script src="/static/merchant-event-form.js"></script>
 </body></html>
 {{end}}
