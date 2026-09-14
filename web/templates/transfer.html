@@ -29,19 +29,6 @@
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
   {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
 </main>
-<script>
-// Copy-to-clipboard for the one-time account number. Clipboard API needs a
-// secure context; the execCommand fallback covers plain-http local runs.
-(function(){
-  var btn=document.querySelector('.xg-copy');
-  if(!btn)return;
-  btn.addEventListener('click',function(){
-    var text=btn.getAttribute('data-copy');
-    function done(){btn.textContent='✓ Copied';setTimeout(function(){btn.textContent='⧉ Copy account number';},1800);}
-    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,function(){fallback();});}else{fallback();}
-    function fallback(){var ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(ta);}
-  });
-})();
-</script>
+<script src="/static/transfer-copy.js" defer></script>
 </body></html>
 {{end}}

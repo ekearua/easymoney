@@ -2,8 +2,10 @@ package app
 
 // Journey harness boots the real app with the simulated gateway, mints a
 // "make payment" web flow for a funded payer, and prints the flow URL so a
-// Playwright script can drive the shortened card journey end to end with
-// screenshots.
+// Playwright script can drive the shortened journey end to end with screenshots.
+//
+// Set JOURNEY_MODE=transfer to exercise the bank-transfer (DVA) path instead
+// of the default card path.
 //
 //	TEST_DATABASE_URL=postgres://... XEGO_JOURNEY=1 \
 //	go test ./internal/app/ -run TestJourneyHarness -v
@@ -70,9 +72,17 @@ func TestJourneyHarness(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Bind the server port FIRST so cfg.BaseURL can carry the live URL from
+	// construction time: PaymentService composes DVA checkout URLs from its
+	// own config copy, so a post-hoc fix-up would leave it pointing at a dead
+	// placeholder host. NewUnstartedServer creates the listener immediately.
+	srv := httptest.NewUnstartedServer(nil)
+	defer srv.Close()
+
+	transferMode := os.Getenv("JOURNEY_MODE") == "transfer"
 	cfg := config.Config{
 		AppName:                  "Xego",
-		BaseURL:                  "https://journey.local",
+		BaseURL:                  srv.URL,
 		WebFlowsEnabled:          true,
 		SessionTTL:               30 * time.Minute,
 		PaymentMinKobo:           10_000,
@@ -81,6 +91,7 @@ func TestJourneyHarness(t *testing.T) {
 		FeeCardFixedKobo:         10_000,
 		FeeCardCapKobo:           350_000,
 		RateLimitPublicPerMinute: 6000,
+		BankTransferMode:         "interswitch",
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Same-origin checkout: the real Interswitch client's PayPageURL points
@@ -89,9 +100,10 @@ func TestJourneyHarness(t *testing.T) {
 	// genuine gateway page instead of a dead external simulator host.
 	var serverBase atomic.Value // string, set once the server is up
 	journeyGW := &journeyGateway{store: repository, base: &serverBase}
+	journeyTransferGW := &journeyTransferGateway{store: repository, base: &serverBase}
 	gateways := map[string]ports.PaymentGateway{
 		service.ProviderInterswitch:  journeyGW,
-		service.ProviderBankTransfer: &simGateway{store: repository},
+		service.ProviderBankTransfer: journeyTransferGW,
 	}
 	payments := service.NewPaymentService(cfg, repository, gateways, service.NewProviderRouter(gateways, logger), logger)
 	data := service.NewDataService(repository, payments, dataprovider.NewSimulator())
@@ -138,9 +150,8 @@ func TestJourneyHarness(t *testing.T) {
 		}),
 		templates: templates, rateLimiter: ratelimit.NewMemory(),
 	}
-	srv := httptest.NewServer(a.routes())
-	defer srv.Close()
-	a.cfg.BaseURL = srv.URL
+	srv.Config.Handler = a.routes()
+	srv.Start()
 	serverBase.Store(srv.URL)
 
 	// Payer: confirmed, screened, L2 — able to pay and use the wallet.
@@ -177,6 +188,7 @@ func TestJourneyHarness(t *testing.T) {
 	flowURL := srv.URL + "/w/" + strings.TrimPrefix(sent[0].url, cfg.BaseURL+"/w/")
 	fmt.Printf("JOURNEY flow_url=%s\n", flowURL)
 	fmt.Printf("JOURNEY wallet_balance_kobo=%d\n", 1_000_000)
+	fmt.Printf("JOURNEY mode=%s\n", map[bool]string{true: "transfer", false: "card"}[transferMode])
 	// Write the URL where a waiting driver script can pick it up instantly
 	// (the flow's expiry window is short, so polling logs is too slow).
 	if out := os.Getenv("JOURNEY_URL_FILE"); out != "" {
@@ -223,4 +235,40 @@ func (g *journeyGateway) Verify(ctx context.Context, reference string, amountKob
 func (g *journeyGateway) ValidateWebhook(body []byte, signature string) (ports.GatewayWebhook, error) {
 	sim := simGateway{store: g.store}
 	return sim.ValidateWebhook(body, signature)
+}
+
+// journeyTransferGateway extends journeyGateway with TransferGateway support
+// so the bank-transfer (DVA) path renders the same-origin /transfer/:ref page
+type journeyTransferGateway struct {
+	store *store.Store
+	base  *atomic.Value
+}
+
+func (g *journeyTransferGateway) Initialize(_ context.Context, in ports.InitializePayment) (ports.Checkout, error) {
+	base, _ := g.base.Load().(string)
+	if base == "" {
+		return ports.Checkout{}, errors.New("journey transfer gateway: server base not ready")
+	}
+	return ports.Checkout{Reference: in.Reference, URL: base + "/transfer/" + url.PathEscape(in.Reference)}, nil
+}
+
+func (g *journeyTransferGateway) Verify(ctx context.Context, reference string, amountKobo int64) (ports.Verification, error) {
+	sim := simGateway{store: g.store}
+	return sim.Verify(ctx, reference, amountKobo)
+}
+
+func (g *journeyTransferGateway) ValidateWebhook(body []byte, signature string) (ports.GatewayWebhook, error) {
+	sim := simGateway{store: g.store}
+	return sim.ValidateWebhook(body, signature)
+}
+
+func (g *journeyTransferGateway) Transfer(_ context.Context, in ports.InitializePayment) (ports.TransferInstruction, error) {
+	return ports.TransferInstruction{
+		AccountNumber: "3012345678",
+		AccountName:   "Xego Journey",
+		BankName:      "Wema Bank",
+		Reference:     in.Reference,
+		ExpiresAt:     time.Now().Add(30 * time.Minute),
+		ValidityMins:  30,
+	}, nil
 }
