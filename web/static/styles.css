@@ -53,3 +53,13 @@ form.inline{display:inline;margin:0}
 .xg-copy:active{transform:translateY(1px)}
 /* Template layout utilities keep markup compatible with a strict style-src policy. */
 .flex{display:flex}.grid{display:grid}.block{display:block}.inline-block{display:inline-block}.inline{display:inline}.flex-wrap{flex-wrap:wrap}.flex-1{flex:1}.items-center{align-items:center}.items-end{align-items:end}.gap-4{gap:4px}.gap-8{gap:8px}.gap-12{gap:12px}.gap-16{gap:16px}.mt-4{margin-top:4px}.mt-8{margin-top:8px}.mb-12{margin-bottom:12px}.mb-16{margin-bottom:16px}.ml-4{margin-left:4px}.center{text-align:center}.nowrap{white-space:nowrap}.pre-wrap{white-space:pre-wrap}.break-all{word-break:break-all}.danger-text{color:#c0392b}.font-mono{font-family:monospace}.small-text{font-size:.85em}.mono.compact{font-size:.8em}.input-wide{width:24em}.input-limit{width:80px}.input-whitelist{width:200px}.truncate-10em{max-width:10em;overflow:hidden;text-overflow:ellipsis}.truncate-14em{max-width:14em;overflow:hidden;text-overflow:ellipsis}.truncate-200{max-width:200px;overflow:hidden;text-overflow:ellipsis}.truncate-32em{max-width:32em;overflow:hidden;text-overflow:ellipsis}.payload-preview{white-space:pre-wrap;max-width:400px}.analytics-summary{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+/* date-picker: independent day/month/year selects (plus hour/minute for
+   datetime-local) replace the native box; the original input stays in the
+   form with its name/value contract intact and is only visually hidden. */
+.date-picker{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}
+.date-picker select{font:inherit;font-size:14px;border:1.5px solid var(--line);border-radius:10px;background:#fff;padding:8px 10px;color:var(--ink);appearance:none;-webkit-appearance:none}
+.date-picker select.dp-day,.date-picker select.dp-hour{width:auto;min-width:64px}
+.date-picker select.dp-month{min-width:118px}
+.date-picker select.dp-year,.date-picker select.dp-minute{min-width:76px}
+.date-picker select:focus{outline:2px solid var(--green);outline-offset:1px;border-color:var(--green)}
+input.dp-orig{display:none}

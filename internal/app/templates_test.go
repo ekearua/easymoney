@@ -245,6 +245,15 @@ func TestTemplatesParse(t *testing.T) {
 	if !strings.Contains(html, "/static/webflow-scan.js") {
 		t.Fatal("webflow.html must load the external scan script")
 	}
+	if !strings.Contains(html, "/static/date-picker.js") {
+		t.Fatal("webflow.html must load the friendly date-picker script")
+	}
+	// A date field stays a native type="date" box so the external date-picker
+	// script (enhancement keyed on input[type=date]) can upgrade it to
+	// independent day/month/year selects without a server-round trip.
+	if !strings.Contains(html, `type="date"`) {
+		t.Fatal("webflow.html must render web flow date fields as type=date for the date-picker enhancement")
+	}
 	if !strings.Contains(html, "Read from your upload:") || !strings.Contains(html, "NIN: 12345678901") {
 		t.Fatal("webflow.html must show previously extracted upload text as confirmation")
 	}
