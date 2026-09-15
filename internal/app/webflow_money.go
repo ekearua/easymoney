@@ -186,6 +186,80 @@ func wfProviderValid(provider string, wallet bool) bool {
 	return false
 }
 
+// --- checkout / change-method helpers ------------------------------------
+
+// wfCheckoutPage renders the consistent "Payment in progress" page shown by
+// every money flow that is parked on its gateway "checkout" or "done" step.
+// It provides a "Back to payment" link (when the gateway page is reachable)
+// and a "Change payment method" submit so the customer can rewind to review.
+func (a *App) wfCheckoutPage(r *http.Request, flow store.WebFlow) webFlowPage {
+	page := a.wfPage(flow)
+	page.Title = "Payment in progress"
+	page.Intro = "Complete the payment on the secure page, then return here (or just check WhatsApp) for the confirmation. If anything goes wrong you can change the payment method below."
+	var checkoutURL string
+	if id := flow.Payload["payment_id"]; id != "" {
+		if pid, err := uuid.Parse(id); err == nil {
+			if payment, err := a.store.PaymentByID(r.Context(), pid); err == nil {
+				switch payment.Status {
+				case domain.StatusSucceeded:
+					page.Intro = "This payment was completed."
+					page.Actions = []webFlowAction{
+						{Kind: "link", Label: "View receipt", URL: a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken},
+						{Kind: "submit", Name: "change_method", Label: "Change payment method"},
+					}
+					return page
+				case domain.StatusAwaitingConfirmation, domain.StatusInitialized, domain.StatusPending:
+					checkoutURL = payment.CheckoutURL
+				}
+			}
+		}
+	}
+	switch {
+	case checkoutURL != "":
+		page.Actions = []webFlowAction{
+			{Kind: "link", Label: "Back to payment", URL: checkoutURL},
+			{Name: "change_method", Label: "Change payment method"},
+		}
+	default:
+		page.Actions = []webFlowAction{{Name: "change_method", Label: "Change payment method"}}
+	}
+	return page
+}
+
+// wfChangeMethod rewinds a money flow parked on checkout back to the review
+// step where the payment-method options render. If the payment already
+// succeeded the customer is sent straight to the receipt instead. The
+// abandoned attempt is marked superseded so a late gateway success is
+// auto-refunded rather than double-charging.
+func (a *App) wfChangeMethod(w http.ResponseWriter, r *http.Request, flow store.WebFlow) {
+	payload := clonePayload(flow.Payload)
+	rawPID := payload["payment_id"]
+	delete(payload, "payment_id")
+	// The abandoned attempt's provider becomes the preset choice on the review
+	// step so the customer can either retry the same method or pick another.
+	if m := payload["provider"]; wfProviderValid(m, true) || wfProviderValid(m, false) {
+		payload["method"] = m
+	}
+	delete(payload, "provider")
+	// When a payment exists, guard against rewinding a successful payment
+	// and mark the abandoned attempt superseded.
+	if rawPID != "" {
+		if pid, err := uuid.Parse(rawPID); err == nil {
+			if payment, err := a.store.PaymentByID(r.Context(), pid); err == nil && payment.Status == domain.StatusSucceeded {
+				http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
+				return
+			}
+			if _, err := a.store.ReopenWebFlowForRetry(r.Context(), flow.Token, pid, "review", payload); err != nil {
+				a.logger.WarnContext(r.Context(), "change_method reopen failed", "flow_id", flow.ID, "payment_id", rawPID, "error", err)
+			}
+		}
+	} else {
+		// No payment in flight — just advance to review.
+		_ = a.store.SaveWebFlowProgress(r.Context(), flow.Token, "review", payload)
+	}
+	http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
+}
+
 // =========================================================================
 // pay — merchant collection (services, events, custom amount)
 // =========================================================================
@@ -349,9 +423,7 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 	case "review":
 		return a.wfPayReview(r, flow, page)
 	case "checkout", "done":
-		page.DoneTitle = "Checkout started"
-		page.DoneBody = "Complete the payment on the secure page. Xego will confirm the result on WhatsApp."
-		return page, nil
+		return a.wfCheckoutPage(r, flow), nil
 	}
 	return page, fmt.Errorf("unknown pay step %q", flow.Step)
 }
@@ -588,6 +660,15 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			done.DoneAction = webFlowAction{Kind: "link", Label: "Open WhatsApp", URL: a.whatsappDeepLink()}
 			return &done, nil
 		}
+		return nil, nil
+	case "checkout", "done":
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		// A stale browser-back POST on a parked checkout re-renders the page
+		// instead of getting "This flow has finished".
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil

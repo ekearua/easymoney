@@ -99,8 +99,10 @@ func (a *App) hostedCheckoutPay(w http.ResponseWriter, r *http.Request) {
 // interswitchCheckout renders the secure payment page. In the default
 // hosted_fields render mode the page mounts the Interswitch Hosted Fields SDK
 // (secured inline iframes) so card data only ever touches Interswitch. The
-// legacy mode keeps the auto-submitting Web Checkout redirect form, retained
-// for sandboxes where the SDK or the redirect flow is preferred.
+// legacy mode renders the Web Checkout redirect form, which posts to the
+// gateway only when the customer deliberately submits the form (no page-load
+// auto-submit, so a dropped-in customer never lands on the gateway by
+// accident).
 func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	reference := strings.TrimSpace(chi.URLParam(r, "reference"))
 	payment, err := a.store.PaymentByReference(r.Context(), reference)
@@ -112,10 +114,26 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 		a.renderHostedCheckout(w, r, payment, http.StatusOK)
 		return
 	}
+	// The gateway uses the customer email as a candidate identifier; customers
+	// who never completed onboarding have an empty stored email. Fall back to a
+	// deterministic address derived from their WhatsApp number rather than
+	// posting an empty cust_email.
+	email := payment.UserEmail
+	if email == "" {
+		phone := payment.WhatsAppNumber
+		if phone == "" {
+			phone = payment.Recipient
+		}
+		email = "sms+" + strings.TrimPrefix(phone, "+") + "@xego.local"
+	}
+	var flowToken string
+	if flow, err := a.store.OpenWebFlowByPayment(r.Context(), payment.ID); err == nil {
+		flowToken = flow.Token
+	}
 	if a.cfg.InterswitchCheckoutRender != "legacy" {
 		page := a.interswitch.NewHostedFieldsPage(
 			payment.ProviderReference,
-			payment.UserEmail,
+			email,
 			payment.AmountKobo,
 			a.cfg.BaseURL+"/payments/return",
 		)
@@ -131,13 +149,13 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 		}
 		a.renderStatus(w, "hosted_fields_checkout.html", map[string]any{
 			"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
-			"WhatsAppDeepLink": a.whatsappDeepLink(),
+			"WhatsAppDeepLink": a.whatsappDeepLink(), "FlowToken": flowToken,
 		}, http.StatusOK)
 		return
 	}
 	page := a.interswitch.NewPayPage(
 		payment.ProviderReference,
-		payment.UserEmail,
+		email,
 		payment.AmountKobo,
 		a.cfg.BaseURL+"/payments/return",
 	)
@@ -149,7 +167,7 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
-		"WhatsAppDeepLink": a.whatsappDeepLink(),
+		"WhatsAppDeepLink": a.whatsappDeepLink(), "FlowToken": flowToken,
 	}, http.StatusOK)
 }
 

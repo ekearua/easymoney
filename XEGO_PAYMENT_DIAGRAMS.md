@@ -99,8 +99,8 @@ sequenceDiagram
         M->>P: InitializeCheckout
         P->>S: SetCheckout → status initialized
         S-->>M: checkout URL /checkout/{token}
-        C->>M: "Continue to secure checkout"
-        M-->>G: auto-submit form → CheckoutBaseURL /collections/w/pay
+        C->>M: taps "Continue to Interswitch"
+        M-->>G: submit form → CheckoutBaseURL /collections/w/pay
         C->>G: pays on hosted page (card PIN / OTP / transfer)
         G-->>P: return hop /webhook → VerifyAndApply(ref)
         P->>G: requery gettransaction.json (signed, amount echoed)
@@ -182,7 +182,7 @@ signed `gettransaction.json`: `sandbox.interswitchng.com` TEST /
 ```mermaid
 flowchart LR
     subgraph App
-        T[interswitch_checkout.html<br/>auto-submit form]
+        T[interswitch_checkout.html<br/>Continue-to-Interswitch form]
     end
     subgraph CheckoutBaseURL [CheckoutBaseURL — renders the page]
         H[newwebpay-sandbox / newwebpay<br/>/collections/w/pay]

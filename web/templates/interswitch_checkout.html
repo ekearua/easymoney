@@ -7,6 +7,7 @@
   <h1>{{.Payment.MerchantName}}</h1>
   <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
   <p class="muted">You are being redirected to Interswitch to complete this payment securely.</p>
+  {{if .FlowToken}}<p class="muted">Changed your mind? <a href="/w/{{.FlowToken}}">Change payment method</a>.</p>{{end}}
   <form id="interswitch-form" method="post" action="{{.Page.Action}}">
     <input type="hidden" name="merchant_code" value="{{.Page.MerchantCode}}">
     <input type="hidden" name="pay_item_id" value="{{.Page.PayItemID}}">
@@ -18,8 +19,6 @@
     <input type="hidden" name="mode" value="{{.Page.Mode}}">
     <button type="submit">Continue to Interswitch</button>
   </form>
-  <noscript><p class="muted">JavaScript is disabled. Use the button above to continue.</p></noscript>
-  <script src="/static/interswitch.js" defer></script>
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
   {{if .WhatsAppDeepLink}}<p class="muted">Changed your mind? <a href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a>.</p>{{end}}
 </main></body></html>

@@ -52,10 +52,7 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 		page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(amount)}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "checkout", "done":
-		page.Title = "Checkout started"
-		page.Intro = "Complete the payment on the secure page. Xego updates the invoice only after the payment is verified."
-		page.Done = true
-		return page, nil
+		return a.wfCheckoutPage(r, flow), nil
 	}
 	return page, fmt.Errorf("unknown pay_invoice step %q", flow.Step)
 }
@@ -117,6 +114,13 @@ func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow st
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
 			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
+		return nil, nil
+	case "checkout", "done":
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
@@ -196,6 +200,9 @@ func (a *App) wfThriftContributeStep(r *http.Request, flow store.WebFlow, user s
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	}
+	if flow.Step == "checkout" || flow.Step == "done" {
+		return a.wfCheckoutPage(r, flow), nil
+	}
 	contribution, err := a.wfThriftContribution(r, flow)
 	if err != nil {
 		page.Title = "No active contribution"
@@ -216,6 +223,14 @@ func (a *App) wfThriftContributeStep(r *http.Request, flow store.WebFlow, user s
 
 func (a *App) wfThriftContributeSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
+	if flow.Step == "checkout" || flow.Step == "done" {
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
+		return nil, nil
+	}
 	if flow.Step == "" || flow.Step == "group" {
 		name := strings.TrimSpace(r.FormValue("thrift_name"))
 		if name == "" {
@@ -311,6 +326,8 @@ func (a *App) wfDataStep(r *http.Request, flow store.WebFlow, user store.User) (
 		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
 		page.Actions = []webFlowAction{{Name: "pay", Label: "Pay and activate"}}
 		return page, nil
+	case "checkout", "done":
+		return a.wfCheckoutPage(r, flow), nil
 	}
 	return page, fmt.Errorf("unknown data step %q", flow.Step)
 }
@@ -365,6 +382,13 @@ func (a *App) wfDataSubmit(w http.ResponseWriter, r *http.Request, flow store.We
 			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		return nil, nil
+	case "checkout", "done":
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
+		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
 }
@@ -388,6 +412,8 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(false)}}
 		page.Actions = []webFlowAction{{Name: "pay", Label: "Continue to payment"}}
 		return page, nil
+	case "checkout", "done":
+		return a.wfCheckoutPage(r, flow), nil
 	}
 	return page, fmt.Errorf("unknown topup step %q", flow.Step)
 }
@@ -420,6 +446,13 @@ func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.W
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
 			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
+		return nil, nil
+	case "checkout", "done":
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
@@ -489,10 +522,7 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 		page.Actions = []webFlowAction{{Name: "pay", Label: "Send " + domain.FormatNGN(amount+collectionFee.FeeKobo)}}
 		return page, nil
 	case "checkout", "done":
-		page.Title = "Checkout started"
-		page.Intro = "Complete the payment on the secure page. Xego disburses to the recipient only after the payment is verified."
-		page.Done = true
-		return page, nil
+		return a.wfCheckoutPage(r, flow), nil
 	}
 	return page, fmt.Errorf("unknown individual_pay step %q", flow.Step)
 }
@@ -609,6 +639,13 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
 			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
+		return nil, nil
+	case "checkout", "done":
+		if action == "change_method" {
+			a.wfChangeMethod(w, r, flow)
+			return nil, nil
+		}
+		http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil

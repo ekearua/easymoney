@@ -47,6 +47,7 @@
   <div id="cardinal-container"></div>
   <script src="{{.Page.SDKURL}}"></script>
   <script src="/static/hosted_fields.js" defer></script>
+  {{if .FlowToken}}<p class="muted">Changed your mind? <a href="/w/{{.FlowToken}}">Change payment method</a>.</p>{{end}}
   <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
   {{if .WhatsAppDeepLink}}<p class="actions"><a class="button" href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a></p>{{end}}
 </main></body></html>

@@ -372,7 +372,7 @@ The boundary between conversation and business operation is the conversation eng
 
 ### 6.1 Payment initiation
 
-- **Card checkout:** A payment is created in draft state, then an Interswitch Web Checkout redirect form is prepared whose fields (merchant code, pay item id, transaction reference, amount in kobo, currency code 566) post to the hosted `/collections/w/pay` page; the customer is directed to a platform page that auto-submits that form. Evidence: `internal/providers/interswitch/client.go`; `app/checkout.go`.
+- **Card checkout:** A payment is created in draft state, then an Interswitch Web Checkout redirect form is prepared whose fields (merchant code, pay item id, transaction reference, amount in kobo, currency code 566) post to the hosted `/collections/w/pay` page; the customer is directed to a platform page that submits that form to Interswitch only on their deliberate **Continue to Interswitch** tap (no page-load auto-submit). Evidence: `internal/providers/interswitch/client.go`; `app/checkout.go`.
 - **Bank transfer:** A draft payment is created on the bank-transfer rail, which is backed by the Interswitch gateway (registered for both `interswitch` and `bank_transfer`). The customer completes the payment on the Interswitch hosted checkout and success is written **only** after the server-side requery verification confirms it. Evidence: `internal/app/app.go`, `internal/service/payments.go`.
 - **Partner API:** Merchants initiate via `POST /api/v1/payments` with a merchant `reference` as idempotency key. Evidence: README:341; `app/api_keys.go`.
 - **Request-money links / invoices / thrift / data:** These create payments through the same payment service on the card or bank path.
@@ -1046,7 +1046,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 - **Process:**
   1. Conversation captures merchant, amount, channel.
   2. Draft payment created (`awaiting_confirmation` → `initialized`/`pending`).
-  3. Interswitch Web Checkout redirect form prepared; the platform page auto-submits to Interswitch `/collections/w/pay` (card only).
+  3. Interswitch Web Checkout redirect form prepared; the customer clicks **Continue to Interswitch** on the platform page and the form posts to Interswitch `/collections/w/pay` (card only).
   4. Customer completes the card flow on the Interswitch hosted page.
   5. Callback `/payments/return` or the outbound webhook (`TRANSACTION.COMPLETED`) triggers `VerifyAndApply` — an authoritative Interswitch requery (`gettransaction.json`) of reference/amount/currency/test-mode.
   6. On confirmation: payment → `succeeded`; ledger money-in pair; `payment.succeeded` into outbox.

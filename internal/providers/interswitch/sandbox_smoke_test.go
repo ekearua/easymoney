@@ -171,6 +171,15 @@ func TestSandboxCheckoutPageSmoke(t *testing.T) {
 		t.Fatalf("gateway returned an EMPTY 200 page (content-length 0): the checkout form was rejected before rendering — check that INTERSWITCH_MERCHANT_CODE/INTERSWITCH_PAY_ITEM_ID are provisioned for Web Checkout on this host and that the amount is within the pay item's configured range")
 	}
 
+	// Interswitch's current generic error page ("Oops, something went wrong /
+	// We could not process your payment request") is served for every Web
+	// Checkout form POST on some hosts, even with a correctly provisioned
+	// merchant. That is an upstream sandbox condition, not a failure of the
+	// form Xego posts — report it distinctly from a malformed request.
+	if upstream := upstreamCheckoutFailure(string(body)); upstream != "" {
+		t.Fatalf("gateway returned its generic error page: %s (%d bytes). This is an UPSTREAM Interswitch condition — the legacy Web Checkout form flow is currently unusable on %s for every merchant (even Interswitch's own demo merchant). Verify interoperability with Interswitch; consider the hosted-fields render mode or the current gateway host", upstream, len(body), page.Action)
+	}
+
 	// A rendered payment page embeds its state as window.IpgApp JSON with no
 	// responseCode; a rejected page carries an error responseCode (Z4 =
 	// merchant/pay item unknown, Z5 = duplicate reference).
@@ -196,7 +205,18 @@ var (
 	ipgAppRe       = regexp.MustCompile(`IpgApp\s*=\s*JSON\.parse\('(.*?)'\)`)
 	responseCodeRe = regexp.MustCompile(`"responseCode":"([^"]*)"`)
 	descRe         = regexp.MustCompile(`"responseDescription":"([^"]*)"`)
+	genericErrRe   = regexp.MustCompile(`(?is)oops|\bcould not process your payment request\b`)
 )
+
+// upstreamCheckoutFailure reports the Interswitch generic "Oops / could not
+// process your payment request" condition when the served page carries that
+// text (it has no IpgApp JSON to interrogate). Returns "" on a normal page.
+func upstreamCheckoutFailure(html string) string {
+	if genericErrRe.MatchString(html) && !strings.Contains(html, "IpgApp") {
+		return "page text reports an error (\"Oops\" / \"could not process your payment request\")"
+	}
+	return ""
+}
 
 func extractIpgApp(html string) string {
 	if m := ipgAppRe.FindStringSubmatch(html); len(m) == 2 {

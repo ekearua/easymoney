@@ -2,10 +2,12 @@ package app
 
 // TestCheckoutRenderToggle pins the INTERSWITCH_CHECKOUT_RENDER switch: the
 // /checkout/interswitch/{ref} page must serve the Hosted Fields SDK template in
-// hosted_fields mode and the auto-submitting Web Checkout redirect form (which
-// posts to the newwebpay-sandbox gateway host) in legacy mode. The decision is
-// read from the config on every request, so the same payment is served under
-// both modes.
+// hosted_fields mode and the Web Checkout redirect form (which posts to the
+// newwebpay-sandbox gateway host) in legacy mode. The decision is read from
+// the config on every request, so the same payment is served under both modes.
+// Legacy mode no longer auto-submits — submitting is the customer's deliberate
+// action — and a customer without a stored email gets a deterministic fallback
+// cust_email derived from their WhatsApp number rather than an empty field.
 //
 //	TEST_DATABASE_URL=postgres://... go test ./internal/app/ -run TestCheckoutRenderToggle -v
 
@@ -163,7 +165,19 @@ func TestCheckoutRenderToggle(t *testing.T) {
 	a.cfg.InterswitchCheckoutRender = "legacy"
 	body = renderCheckout(t, client, srv.URL+path)
 	if !strings.Contains(body, `id="interswitch-form"`) || !strings.Contains(body, "newwebpay-sandbox.interswitchng.com") {
-		t.Fatalf("legacy mode did not render the auto-submitting newwebpay redirect form\n%s", body[:min(len(body), 600)])
+		t.Fatalf("legacy mode did not render the newwebpay redirect form\n%s", body[:min(len(body), 600)])
+	}
+	if strings.Contains(body, "/static/interswitch.js") {
+		t.Fatalf("legacy mode must NOT auto-submit via interswitch.js — submission is the customer's deliberate action")
+	}
+	// The payer never completed onboarding, so the stored email is empty and
+	// the deterministic WhatsApp-number-derived fallback must be posted. The
+	// template escapes the '+' as &#43;.
+	if !strings.Contains(body, `name="cust_email" value="sms&#43;2348012340111@xego.local"`) {
+		t.Fatalf("legacy mode did not fall back to the WhatsApp-derived cust_email\n%s", body[:min(len(body), 600)])
+	}
+	if strings.Contains(body, "Change payment method") {
+		t.Fatalf("legacy mode unexpectedly rendered the change-method link with no open web flow")
 	}
 	if strings.Contains(body, "/static/hosted_fields.js") {
 		t.Fatalf("legacy mode unexpectedly rendered the Hosted Fields page")
