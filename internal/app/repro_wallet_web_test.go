@@ -191,16 +191,23 @@ func TestReproWalletWebPayment(t *testing.T) {
 		t.Fatalf("unexpected web-flow token %q", token)
 	}
 
-	// 2. Browser wizard: merchant -> item -> amount -> review
+	// 2. Browser wizard: merchant -> amount -> review. The seeded demo
+	// merchants have no catalog, so the item step has nothing to choose: the
+	// redirect target renders the amount step directly, and the browser
+	// follows it before the customer can enter an amount.
 	status, body, _ := run.get("/w/" + token)
 	if status != http.StatusOK {
 		t.Fatalf("web flow page: %d", status)
 	}
-	if status, _, loc := run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}}); status != http.StatusSeeOther || !strings.HasSuffix(loc, "/w/"+token) {
+	status, _, loc := run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}})
+	if status != http.StatusSeeOther || !strings.HasSuffix(loc, "/w/"+token) {
 		t.Fatalf("merchant step: status=%d loc=%s", status, loc)
 	}
-	if status, _, _ = run.post("/w/"+token, url.Values{"item": {"custom"}}); status != http.StatusSeeOther {
-		t.Fatalf("item step: %d", status)
+	// The page after the merchant must be the amount step itself: the item
+	// step is auto-skipped, not silently rendered under an amount title.
+	status, body, _ = run.get(loc)
+	if status != http.StatusOK || !strings.Contains(body, `name="amount_kobo"`) {
+		t.Fatalf("auto-skipped item step page: status=%d body=%s", status, run.page(body))
 	}
 	if status, _, _ = run.post("/w/"+token, url.Values{"amount_kobo": {"2500"}}); status != http.StatusSeeOther {
 		t.Fatalf("amount step: %d", status)

@@ -135,6 +135,24 @@ func (a *App) wfRoutePayment(w http.ResponseWriter, r *http.Request, flow store.
 	return nil
 }
 
+// wfSkipStep records a render-time auto-skip and returns the advanced flow.
+// The pay flow hides the steps that have nothing to choose (a lone merchant, an
+// empty catalog), so the render path advances the flow itself. That advance is
+// a real transition and is persisted before the page is drawn: the stored step
+// is what the next POST is dispatched against, and a skip kept in memory alone
+// left the page on Amount while the row still said "item", so submitting the
+// amount was handled as an item submission and dead-ended on an empty page.
+// The returned flow carries the new step so the rendered stepper and the page
+// being shown cannot disagree.
+func (a *App) wfSkipStep(r *http.Request, flow store.WebFlow, next string, payload map[string]string) (store.WebFlow, error) {
+	if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, next, payload); err != nil {
+		return flow, err
+	}
+	flow.Step = next
+	flow.Payload = payload
+	return flow, nil
+}
+
 func clonePayload(payload map[string]string) map[string]string {
 	out := make(map[string]string, len(payload)+2)
 	for k, v := range payload {
@@ -188,12 +206,11 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		if flow.Step == "" && len(merchants) == 1 {
 			payload := clonePayload(flow.Payload)
 			payload["merchant_slug"] = merchants[0].Slug
-			if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, "item", payload); err != nil {
+			skipped, err := a.wfSkipStep(r, flow, "item", payload)
+			if err != nil {
 				return page, err
 			}
-			flow.Step = "item"
-			flow.Payload = payload
-			return a.wfPayStep(r, flow, user)
+			return a.wfPayStep(r, skipped, user)
 		}
 		page.Title = "Who are you paying?"
 		page.Intro = "Choose the merchant, then pick a service, event ticket, or enter a custom amount. You can also snap the bill or say the amount below to prefill the form."
@@ -245,9 +262,11 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 			payload["item"] = opts[0].Value
 			if opts[0].Value == "custom" {
 				payload["item_kind"] = "custom"
-				flow.Step = "amount"
-				flow.Payload = payload
-				return a.wfPayStep(r, flow, user)
+				skipped, err := a.wfSkipStep(r, flow, "amount", payload)
+				if err != nil {
+					return page, err
+				}
+				return a.wfPayStep(r, skipped, user)
 			}
 			kind, idStr, _ := strings.Cut(opts[0].Value, ":")
 			id, err := uuid.Parse(idStr)
@@ -261,9 +280,11 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 						payload["unit_price_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
 						payload["qty"] = "1"
 						payload["amount_kobo"] = strconv.FormatInt(svc.UnitPriceKobo, 10)
-						flow.Step = "review"
-						flow.Payload = payload
-						return a.wfPayReview(r, flow, page)
+						skipped, serr := a.wfSkipStep(r, flow, "review", payload)
+						if serr != nil {
+							return page, serr
+						}
+						return a.wfPayReview(r, skipped, page)
 					}
 				case "evt":
 					if tier, err := a.store.TierByID(r.Context(), id); err == nil {
@@ -273,9 +294,11 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 						payload["unit_price_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
 						payload["qty"] = "1"
 						payload["amount_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
-						flow.Step = "review"
-						flow.Payload = payload
-						return a.wfPayReview(r, flow, page)
+						skipped, serr := a.wfSkipStep(r, flow, "review", payload)
+						if serr != nil {
+							return page, serr
+						}
+						return a.wfPayReview(r, skipped, page)
 					}
 				}
 			}

@@ -255,6 +255,15 @@ func TestSimulateMakePaymentAndPayIndividual(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The seeded demo merchants ship without a catalog, which auto-skips the
+	// item step (there is nothing to choose). Seed one fixed-price service so
+	// this simulation really drives the item step and its custom-amount exit.
+	if _, err := repository.RawExec(ctx, `INSERT INTO merchant_services (merchant_id, name, description, unit_price_kobo, is_active)
+		SELECT id, 'Jollof Combo', 'simulation fixture', 250000, true FROM merchants WHERE slug='lagos-lunchbox'
+		AND NOT EXISTS (SELECT 1 FROM merchant_services s JOIN merchants m ON m.id=s.merchant_id WHERE m.slug='lagos-lunchbox' AND s.is_active)`); err != nil {
+		t.Fatal(err)
+	}
+
 	cfg := config.Config{
 		AppName:              "Xego",
 		BaseURL:              "https://demo.xego.ng",
@@ -367,6 +376,9 @@ func TestSimulateMakePaymentAndPayIndividual(t *testing.T) {
 	// =====================================================================
 	fmt.Printf("\n========== SIMULATION 2: PAY AN INDIVIDUAL ==========\n")
 	simulatePayIndividual(t, ctx, run, convo, repository, messenger, cfg, payer, recipientPhone)
+	// =====================================================================
+	fmt.Printf("\n========== SIMULATION 3: MERCHANT WITH AN EMPTY CATALOG ==========\n")
+	simulateAutoSkippedItemStep(t, ctx, run, convo, repository, messenger, cfg, payer)
 
 	// =====================================================================
 	fmt.Printf("\n========== MESSAGING COST METER ==========\n")
@@ -415,7 +427,8 @@ func simulateMakePayment(t *testing.T, ctx context.Context, run *simRun, convo *
 	status, body, _ = run.get(loc)
 	fmt.Printf("  Step: %s\n", run.page(body))
 
-	// 2. item -> custom amount
+	// 2. item -> custom amount (the item page is real: the fixture service
+	// above keeps the step from being auto-skipped)
 	status, body, loc = run.post("/w/"+token, url.Values{"item": {"custom"}})
 	if status != http.StatusSeeOther {
 		t.Fatalf("item step: %d", status)

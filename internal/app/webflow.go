@@ -72,6 +72,10 @@ type webFlowPage struct {
 	Actions      []webFlowAction
 	WhatsAppLink string
 	BaseURL      string
+	// Step is the flow step this page actually represents. A render-time
+	// auto-skip advances the flow past a step the customer never sees, so the
+	// stepper follows this rather than the caller's pre-skip flow row.
+	Step string
 	// Pay scopes the payment CSS layer (stepper, option cards, sticky action
 	// bar) and Steps renders the horizontal progress stepper. Both are set
 	// only for money flows; KYC/onboarding flows render exactly as before.
@@ -134,7 +138,12 @@ func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
 	if page.Done || page.Expired {
 		return
 	}
-	if steps, ok := wfMoneyFlowSteps(flow.FlowType, flow.Step); ok {
+	// Handlers that never set a step (KYC/onboarding pages, error re-renders of
+	// a step that did not advance) keep the flow's own step.
+	if page.Step == "" {
+		page.Step = flow.Step
+	}
+	if steps, ok := wfMoneyFlowSteps(flow.FlowType, page.Step); ok {
 		page.Pay = true
 		page.Steps = steps
 	}
@@ -142,7 +151,7 @@ func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
 
 func (a *App) wfPage(flow store.WebFlow) webFlowPage {
 	return webFlowPage{
-		AppName: a.cfg.AppName, FlowType: flow.FlowType, Token: flow.Token,
+		AppName: a.cfg.AppName, FlowType: flow.FlowType, Token: flow.Token, Step: flow.Step,
 		BaseURL: a.cfg.BaseURL, WhatsAppLink: a.whatsappDeepLink(),
 	}
 }
