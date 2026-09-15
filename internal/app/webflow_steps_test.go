@@ -168,8 +168,15 @@ func TestFlowStepsStates(t *testing.T) {
 
 	// An unmapped key must never be invented: the flow falls back to the last
 	// node (and the drift guard above is what keeps that unreachable).
-	if _, ok := wfFlowSteps("invoice_create", "amount"); ok {
-		t.Fatal("invoice_create has no layout, it must render the plain page")
+	if _, ok := wfFlowSteps("no_such_flow", "amount"); ok {
+		t.Fatal("a flow with no layout must render the plain page")
+	}
+	// invoice_create is now stepped, and both of its items pages share the
+	// Items node (items_summary is a confirmation of the same node, not a
+	// separate step in the customer's mind).
+	itemsSteps, ok := wfFlowSteps(service.WebFlowInvoiceCreate, "items_summary")
+	if !ok || itemsSteps[2].State != "current" || itemsSteps[2].Label != "Items" {
+		t.Fatalf("invoice_create items_summary must be the Items node, got %+v (ok=%v)", itemsSteps, ok)
 	}
 	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "note"); !ok || steps[1].State != "current" {
 		t.Fatalf("kyb_request note step must be the current node, got %+v (ok=%v)", steps, ok)
@@ -297,8 +304,76 @@ func simulateSteppedKYCAndThrift(t *testing.T, ctx context.Context, run *simRun,
 	}
 	fmt.Printf("  ✅ onboard walks the stepped shell (Name→Email→Verify) with Verify before Resend code\n")
 
+	// ---- invoice_create: add-one-item page and its summary ---------------
+	messenger.reset()
+	resetChatSession(t, ctx, repository, payer.ID)
+	// Make the payer an approved merchant owner so the flow has a merchant to
+	// bill from (the flow requires one before it starts).
+	if _, err := repository.RawExec(ctx, fmt.Sprintf(`INSERT INTO merchant_owners (merchant_id, user_id)
+		SELECT m.id, '%s' FROM merchants m WHERE m.slug='lagos-lunchbox'
+		ON CONFLICT DO NOTHING`, payer.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := convo.Handle(ctx, store.InboundMessage{Channel: service.ChannelWhatsApp, Sender: payer.WhatsAppNumber, Text: "generate invoice"}); err != nil {
+		t.Fatalf("handle 'generate invoice': %v", err)
+	}
+	sent = messenger.snapshot()
+	if len(sent) != 1 || sent[0].kind != "link" {
+		t.Fatalf("expected one link message for generate invoice, got %+v", sent)
+	}
+	invToken := strings.TrimPrefix(sent[0].url, cfg.BaseURL+"/w/")
+
+	invPost := func(form map[string]string) string {
+		t.Helper()
+		values := url.Values{}
+		for k, v := range form {
+			values.Set(k, v)
+		}
+		status, _, loc := run.post("/w/"+invToken, values)
+		if status != http.StatusSeeOther {
+			t.Fatalf("invoice step %v: status=%d", form, status)
+		}
+		status, body, _ = run.get(loc)
+		if status != http.StatusOK {
+			t.Fatalf("invoice page after %v: %d", form, status)
+		}
+		return body
+	}
+
+	assertStepped("invoice create (merchant)", invPost(map[string]string{"action": "next", "merchant_slug": "lagos-lunchbox"}), "Customer")
+	assertStepped("invoice create (customer)", invPost(map[string]string{
+		"action": "next", "customer_phone": "+2348033334444", "customer_email": "buyer@example.com",
+	}), "Items")
+	// The items page: add an item and land on the summary, still on the
+	// Items node, with the items total and a single primary Continue. The
+	// action arrives from the submit button the browser includes.
+	body = invPost(map[string]string{"action": "add_item", "item_name": "Jollof tray", "item_quantity": "2", "item_price": "2500"})
+	assertStepped("invoice create (items summary)", body, "Items")
+	if !strings.Contains(body, "Items total") || !strings.Contains(body, "₦5,000") {
+		t.Fatalf("items summary must show the computed total (page: %s)", run.page(body))
+	}
+	if strings.Contains(body, `value="add_item"`) {
+		t.Fatal("items summary must not render the add-item form")
+	}
+	// Add a second item via the summary's secondary action, then continue.
+	status, _, loc = run.post("/w/"+invToken, url.Values{"action": {"add_more"}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("add another item: status=%d", status)
+	}
+	status, body, _ = run.get(loc)
+	assertStepped("invoice create (second item)", body, "Items")
+	body = invPost(map[string]string{"action": "add_item", "item_name": "Delivery", "item_quantity": "1", "item_price": "1000"})
+	assertStepped("invoice create (summary of 2)", body, "Items")
+	if !strings.Contains(body, "₦6,000") {
+		t.Fatalf("items summary total must include both items (page: %s)", run.page(body))
+	}
+	body = invPost(map[string]string{"action": "items_done"})
+	assertStepped("invoice create (options)", body, "Options")
+	fmt.Printf("  ✅ invoice_create walks the stepped shell (Merchant→Customer→Items→Options)")
+	fmt.Printf(" with one item per POST and a computed summary\n")
+
 	// ---- leave nothing open ---------------------------------------------
-	for _, token := range []string{thriftToken, onboardToken} {
+	for _, token := range []string{thriftToken, onboardToken, invToken} {
 		if _, _, err := repository.CompleteWebFlow(ctx, token); err != nil {
 			t.Fatalf("close flow: %v", err)
 		}

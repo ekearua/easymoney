@@ -71,12 +71,15 @@ func (a *App) wfInvoiceCreateStep(r *http.Request, flow store.WebFlow, user stor
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "items":
+		// The add-one-item page: one item per POST, with what's already on the
+		// invoice listed above the form. The multi-button items step this used
+		// to be did not fit the stepped shell's one-primary-CTA model.
 		items, err := wfInvoiceItemsFromPayload(flow.Payload)
 		if err != nil {
 			return page, err
 		}
-		page.Title = "Invoice items"
-		page.Intro = "Add line items. Each item: name, quantity and unit price in naira."
+		page.Title = "Add an item"
+		page.Intro = "Each item: description, quantity and unit price in naira."
 		for _, item := range items {
 			page.Review = append(page.Review, webFlowLine{
 				Term: item.Description + " × " + strconv.Itoa(item.Quantity),
@@ -84,13 +87,43 @@ func (a *App) wfInvoiceCreateStep(r *http.Request, flow store.WebFlow, user stor
 			})
 		}
 		page.Fields = []webFlowField{
-			{Name: "item_name", Label: "Item description", Type: "text"},
-			{Name: "item_quantity", Label: "Quantity", Type: "number", Value: "1"},
-			{Name: "item_price", Label: "Unit price (naira)", Type: "amount"},
+			{Name: "item_name", Label: "Item description", Type: "text", Required: true},
+			{Name: "item_quantity", Label: "Quantity", Type: "number", Value: "1", Required: true},
+			{Name: "item_price", Label: "Unit price (naira)", Type: "amount", Required: true},
 		}
+		// Primary action first: add another item; the summary step is where the
+		// customer says the list is complete.
 		page.Actions = []webFlowAction{
 			{Name: "add_item", Label: "Add item"},
-			{Name: "items_done", Label: "Done — delivery and date"},
+			{Name: "back", Label: "Back"},
+		}
+		return page, nil
+	case "items_summary":
+		// The list-is-complete page: everything on the invoice, with the CTA to
+		// continue and a secondary route back to add another item.
+		items, err := wfInvoiceItemsFromPayload(flow.Payload)
+		if err != nil {
+			return page, err
+		}
+		page.Title = "Invoice items"
+		if len(items) == 0 {
+			page.Intro = "No items yet — add the first one."
+		} else {
+			var total int64
+			for _, item := range items {
+				line := int64(item.Quantity) * item.UnitPriceKobo
+				total += line
+				page.Review = append(page.Review, webFlowLine{
+					Term: item.Description + " × " + strconv.Itoa(item.Quantity),
+					Desc: domain.FormatNGN(line),
+				})
+			}
+			page.Review = append(page.Review, webFlowLine{Term: "Items total", Desc: domain.FormatNGN(total)})
+			page.Intro = "All items on this invoice. Continue to delivery details, or add another."
+		}
+		page.Actions = []webFlowAction{
+			{Name: "items_done", Label: "Continue"},
+			{Name: "add_more", Label: "Add another item"},
 		}
 		return page, nil
 	case "options":
@@ -99,6 +132,8 @@ func (a *App) wfInvoiceCreateStep(r *http.Request, flow store.WebFlow, user stor
 			{Name: "delivery_fee", Label: "Delivery fee (naira, optional)", Type: "amount", Value: flow.Payload["delivery_fee_kobo"]},
 			{Name: "due_date", Label: "Due date (YYYY-MM-DD, optional)", Type: "date", Value: flow.Payload["due_date"]},
 		}
+		// Back from options returns to the summary; "Add another item" from the
+		// summary covers the add-items route.
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back to items"}}
 		return page, nil
 	case "review":
@@ -167,27 +202,36 @@ func (a *App) wfInvoiceCreateSubmit(w http.ResponseWriter, r *http.Request, flow
 		a.wfAdvance(w, r, flow, "items", payload)
 		return nil, nil
 	case "items":
+		// One item per POST; the customer lands on the summary afterwards.
+		items, err := wfInvoiceItemsFromPayload(flow.Payload)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Your invoice session is invalid. Please start again."), nil
+		}
+		if action != "add_item" {
+			return a.wfPageWithError(flow, page, "Tap Add item to record the entry."), nil
+		}
+		name := strings.TrimSpace(r.FormValue("item_name"))
+		qty, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("item_quantity")))
+		if qty < 1 {
+			qty = 1
+		}
+		price, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("item_price")), 100, a.cfg.PaymentMaxKobo)
+		if err != nil || name == "" || len([]rune(name)) > 120 {
+			return a.wfPageWithError(flow, page, "Each item needs a description and a unit price in naira (min ₦1)."), nil
+		}
+		items = append(items, wfInvoiceItemDraft{Description: name, Quantity: qty, UnitPriceKobo: price})
+		raw, _ := wfInvoiceItemsToPayload(items)
+		payload := clonePayload(flow.Payload)
+		payload["invoice_items"] = raw
+		a.wfAdvance(w, r, flow, "items_summary", payload)
+		return nil, nil
+	case "items_summary":
 		items, err := wfInvoiceItemsFromPayload(flow.Payload)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Your invoice session is invalid. Please start again."), nil
 		}
 		payload := clonePayload(flow.Payload)
 		switch action {
-		case "add_item":
-			name := strings.TrimSpace(r.FormValue("item_name"))
-			qty, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("item_quantity")))
-			if qty < 1 {
-				qty = 1
-			}
-			price, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("item_price")), 100, a.cfg.PaymentMaxKobo)
-			if err != nil || name == "" || len([]rune(name)) > 120 {
-				return a.wfPageWithError(flow, page, "Each item needs a description and a unit price in naira (min ₦1)."), nil
-			}
-			items = append(items, wfInvoiceItemDraft{Description: name, Quantity: qty, UnitPriceKobo: price})
-			raw, _ := wfInvoiceItemsToPayload(items)
-			payload["invoice_items"] = raw
-			a.wfAdvance(w, r, flow, "items", payload)
-			return nil, nil
 		case "items_done":
 			if len(items) == 0 {
 				return a.wfPageWithError(flow, page, "Add at least one item to the invoice."), nil
@@ -196,12 +240,19 @@ func (a *App) wfInvoiceCreateSubmit(w http.ResponseWriter, r *http.Request, flow
 			payload["invoice_items"] = raw
 			a.wfAdvance(w, r, flow, "options", payload)
 			return nil, nil
+		case "add_more":
+			a.wfAdvance(w, r, flow, "items", flow.Payload)
+			return nil, nil
 		case "back":
 			a.wfAdvance(w, r, flow, "customer", flow.Payload)
 			return nil, nil
 		}
 		return a.wfPageWithError(flow, page, "Choose an action."), nil
 	case "options":
+		if action == "back" {
+			a.wfAdvance(w, r, flow, "items_summary", flow.Payload)
+			return nil, nil
+		}
 		fee, _ := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("delivery_fee")), 0, 1<<40)
 		payload := clonePayload(flow.Payload)
 		payload["delivery_fee_kobo"] = strconv.FormatInt(fee, 10)

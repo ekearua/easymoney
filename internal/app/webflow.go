@@ -104,9 +104,9 @@ type wfFlowLayout struct {
 }
 
 // wfFlowLayouts lists every flow that walks the stepped shell. Money, KYC,
-// and thrift flows all use it; a flow with no entry (invoice creation, whose
-// items step needs a multi-button action bar the shell does not model) renders
-// the plain one-page layout.
+// and thrift flows all use it. Invoice creation does too: its items step is
+// split into an add-one-item page and an items summary so each step carries a
+// single primary action.
 var wfFlowLayouts = map[string]wfFlowLayout{
 	service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Review", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 4, "done": 4}},
 	service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
@@ -123,6 +123,9 @@ var wfFlowLayouts = map[string]wfFlowLayout{
 	// two-step confirm of the group the customer was invited to.
 	service.WebFlowThriftCreate: {[]string{"Name", "Amount", "Frequency", "Size", "Review"}, map[string]int{"": 0, "name": 0, "amount": 1, "frequency": 2, "target": 3, "review": 4, "done": 4}},
 	service.WebFlowThriftJoin:   {[]string{"Group", "Join"}, map[string]int{"": 0, "name": 0, "review": 1, "done": 1}},
+	// Invoice creation: items are added one at a time, then confirmed on a
+	// summary before delivery options.
+	service.WebFlowInvoiceCreate: {[]string{"Merchant", "Customer", "Items", "Options", "Review"}, map[string]int{"": 0, "merchant": 0, "customer": 1, "items": 2, "items_summary": 2, "options": 3, "review": 4, "done": 4}},
 }
 
 // wfFlowSteps returns the stepper labels for a stepped web flow, mapped from

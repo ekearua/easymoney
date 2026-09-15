@@ -180,6 +180,19 @@ func TestWebFlowFormHarness(t *testing.T) {
 	}
 	pages["onboard_code"] = cfg.BaseURL + "/w/" + onboardToken
 
+	// invoice_create, parked on the items summary with two items already on
+	// the list: the computed total and the add-another secondary route.
+	invoiceToken := startFlow("generate invoice")
+	if err := repository.SaveWebFlowProgress(ctx, invoiceToken, "items_summary", map[string]string{
+		"merchant_slug":  "lagos-lunchbox",
+		"customer_phone": "+2348033334444",
+		"customer_email": "buyer@example.com",
+		"invoice_items":  `[{"Description":"Jollof tray","Quantity":2,"UnitPriceKobo":250000}]`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pages["invoice_items_summary"] = cfg.BaseURL + "/w/" + invoiceToken
+
 	// kyb_request needs an approved merchant owned by the payer; seed the
 	// merchant_owners join directly and park the flow on its note step.
 	if _, err := repository.RawExec(ctx, fmt.Sprintf(`INSERT INTO merchant_owners (merchant_id, user_id)
@@ -191,7 +204,7 @@ func TestWebFlowFormHarness(t *testing.T) {
 	pages["kyb_note"] = cfg.BaseURL + "/w/" + kybToken
 
 	fmt.Printf("FORMS base=%s\n", srv.URL)
-	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note"} {
+	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note", "invoice_items_summary"} {
 		fmt.Printf("FORMS %s=%s\n", name, pages[name])
 	}
 	if out := os.Getenv("FORMS_META_FILE"); out != "" {
