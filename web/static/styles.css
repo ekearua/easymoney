@@ -7,7 +7,7 @@
 .receipt button#continue-button,.receipt button#validate-button{display:block;width:100%;margin-top:18px;background:var(--green);color:#fff;font:inherit;font-weight:800;font-size:16px;border:0;border-radius:12px;padding:14px;cursor:pointer}
 .receipt button.hf-back{display:block;width:100%;margin-top:6px;background:transparent;color:var(--muted);font:inherit;font-weight:700;font-size:14px;border:0;padding:8px;cursor:pointer}
 #cardinal-container:not(:empty){min-height:320px;margin-top:14px}
-/* ===== payment flow layer (payment webflows only; scoped under main.pay) ===== */
+/* ===== stepped flow layer (any web flow with steps; scoped under main.wf) ===== */
 .wf-stepper{display:flex;align-items:flex-start;list-style:none;margin:0 0 18px;padding:0;text-align:left}
 .wf-stepper li{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;position:relative;min-width:0}
 .wf-stepper li::before{content:"";position:absolute;top:12px;left:-50%;width:100%;height:2px;background:var(--line)}
@@ -20,24 +20,26 @@
 .wf-stepper li.current .lbl{color:var(--ink)}
 @media(max-width:400px){.wf-stepper .lbl{display:none}.wf-stepper li{gap:0}.wf-stepper .dot{width:14px;height:14px;font-size:10px}.wf-stepper li::before{top:7px}}
 /* option cards: selects and radios become tappable cards on payment pages */
-.pay select,.pay input[type=number],.pay input[type=tel],.pay input[type=text]:not(.hf-input),.pay input[type=email],.pay textarea{appearance:none;-webkit-appearance:none;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;padding:12px 14px}
-.pay select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3Epath d='M1 1l5 5 5-5' stroke='%23607272' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;width:100%}
-.pay .radio-group{border:0;padding:0;margin:8px 0 0}
-.pay .radio{display:flex;align-items:center;gap:12px;background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:13px 14px;margin:0 0 10px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
-.pay .radio:has(input:checked){border-color:var(--green);background:#f7fcfa;box-shadow:0 0 0 1px var(--green)}
-.pay .radio input{width:18px;height:18px;accent-color:var(--green);margin:0;flex:0 0 auto}
-.pay .radio span{display:flex;flex-direction:column;text-align:left;min-width:0}
-.pay .radio small{font-size:12px}
-.pay .radio label{display:none}
-.pay .radio span strong{font-size:14px}
+.wf select,.wf input[type=number],.wf input[type=tel],.wf input[type=text]:not(.hf-input),.wf input[type=email],.wf textarea{appearance:none;-webkit-appearance:none;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;padding:12px 14px}
+.wf select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3Epath d='M1 1l5 5 5-5' stroke='%23607272' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;width:100%}
+.wf .radio-group{border:0;padding:0;margin:8px 0 0}
+.wf .radio{display:flex;align-items:center;gap:12px;background:#fff;border:1.5px solid var(--line);border-radius:12px;padding:13px 14px;margin:0 0 10px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.wf .radio:has(input:checked){border-color:var(--green);background:#f7fcfa;box-shadow:0 0 0 1px var(--green)}
+.wf .radio input{width:18px;height:18px;accent-color:var(--green);margin:0;flex:0 0 auto}
+.wf .radio span{display:flex;flex-direction:column;text-align:left;min-width:0}
+.wf .radio small{font-size:12px}
+.wf .radio label{display:none}
+.wf .radio span strong{font-size:14px}
 /* sticky action bar with the big pay CTA */
-.pay .actions{position:sticky;bottom:0;display:flex;flex-direction:column;gap:8px;margin:18px -38px -38px;padding:16px 38px 30px;background:linear-gradient(to top,var(--paper) 78%,transparent)}
-.pay .actions button[type=submit],.pay .actions .button{display:block;width:100%;min-height:56px;border:0;border-radius:15px;background:linear-gradient(180deg,#0a9c6f,var(--green));color:#fff;font:inherit;font-weight:800;font-size:17px;padding:15px;cursor:pointer;box-shadow:0 10px 26px rgba(8,127,91,.4),inset 0 2px 0 rgba(255,255,255,.22);text-align:center;text-decoration:none}
-.pay .actions button[type=submit]:active{transform:translateY(1px)}
-.pay .actions button[value=back],.pay .actions button[value=cancel]{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none;min-height:52px;font-size:15px}
-.pay .actions a.button{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none}
-.pay .amount-input{font-size:26px;font-weight:800;letter-spacing:-.02em}
-@media(max-width:800px){.pay .actions{margin:18px -26px -26px;padding:16px 26px 24px}}
+.wf .actions{position:sticky;bottom:0;display:flex;flex-direction:column;gap:8px;margin:18px -38px -38px;padding:16px 38px 30px;background:linear-gradient(to top,var(--paper) 78%,transparent)}
+.wf .actions button[type=submit],.wf .actions .button{display:block;width:100%;min-height:56px;border:0;border-radius:15px;background:linear-gradient(180deg,#0a9c6f,var(--green));color:#fff;font:inherit;font-weight:800;font-size:17px;padding:15px;cursor:pointer;box-shadow:0 10px 26px rgba(8,127,91,.4),inset 0 2px 0 rgba(255,255,255,.22);text-align:center;text-decoration:none}
+.wf .actions button[type=submit]:active{transform:translateY(1px)}
+/* everything after the first action is secondary, so a step with a retry or a
+   skip link keeps exactly one dominant CTA no matter the action order */
+.wf .actions button:not(:first-child),.wf .actions a.button:not(:first-child),.wf .actions button[value=back],.wf .actions button[value=cancel]{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none;min-height:52px;font-size:15px}
+.wf .actions a.button{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none}
+.wf .amount-input{font-size:26px;font-weight:800;letter-spacing:-.02em}
+@media(max-width:800px){.wf .actions{margin:18px -26px -26px;padding:16px 26px 24px}}
 /* hosted-fields sub-step dots (details → pin → otp within one gateway page) */
 .hf-dots{display:flex;justify-content:center;gap:8px;margin:2px 0 14px}
 .hf-dots span{width:8px;height:8px;border-radius:50%;background:#d3dfda;transition:all .18s ease}

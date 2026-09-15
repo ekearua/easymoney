@@ -18,7 +18,10 @@ import (
 
 // webFlowAction is one button on a web-flow page. Kind "submit" posts the
 // form back with the action value; kind "link" opens a URL (used on done
-// pages for the receipt and return-to-chat).
+// pages for the receipt and return-to-chat). On a stepped page the actions
+// render as a sticky bar whose first entry is the dominant call to action and
+// whose remaining entries are secondary, so a step's primary action belongs
+// first — retries, skips, and back links come after it.
 type webFlowAction struct {
 	Kind  string // "submit" (default) | "link"
 	Name  string
@@ -76,10 +79,10 @@ type webFlowPage struct {
 	// auto-skip advances the flow past a step the customer never sees, so the
 	// stepper follows this rather than the caller's pre-skip flow row.
 	Step string
-	// Pay scopes the payment CSS layer (stepper, option cards, sticky action
-	// bar) and Steps renders the horizontal progress stepper. Both are set
-	// only for money flows; KYC/onboarding flows render exactly as before.
-	Pay   bool
+	// Steps renders the horizontal progress stepper. A non-empty Steps also
+	// switches the page to the stepped flow CSS layer (card inputs, sticky
+	// action bar, stepper) — money, KYC/onboarding, and thrift flows all walk
+	// through the same shell, so there is no separate flag to keep in sync.
 	Steps []webFlowStepLabel
 	// Done renders the completion state instead of a form.
 	Done       bool
@@ -89,23 +92,44 @@ type webFlowPage struct {
 	Expired    bool
 }
 
-// wfMoneyFlowSteps returns the stepper labels for a money flow, mapped from
-// its internal step key, plus the payment-layer flag. Non-money flows get
-// (nil, false) and keep the plain layout.
-func wfMoneyFlowSteps(flowType, step string) ([]webFlowStepLabel, bool) {
-	type pos struct {
-		labels []string
-		at     map[string]int
-	}
-	layouts := map[string]pos{
-		service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Review", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 4, "done": 4}},
-		service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
-		service.WebFlowThriftContribute: {[]string{"Contribution", "Review", "Pay"}, map[string]int{"": 0, "group": 0, "review": 1, "checkout": 2, "done": 2}},
-		service.WebFlowData:             {[]string{"Network", "Plan", "Phone", "Review", "Pay"}, map[string]int{"": 0, "network": 0, "plan": 1, "phone": 2, "review": 3, "checkout": 4, "done": 4}},
-		service.WebFlowTopup:            {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
-		service.WebFlowIndividualPay:    {[]string{"Phone", "Amount", "Bank", "Account", "Review", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 2, "bank_pick": 2, "account": 3, "review": 4, "checkout": 5, "done": 5}},
-	}
-	lay, ok := layouts[flowType]
+// wfFlowLayout is one flow's stepper: its node labels, plus the map from the
+// flow's internal step key to the node that key represents. Every step key a
+// flow's step and submit switches handle belongs here — an unmapped key parks
+// the stepper on the last node, which is exactly the disagreement between page
+// and progress bar this map exists to prevent (TestFlowStepMapsCoverSteps
+// pins that).
+type wfFlowLayout struct {
+	labels []string
+	at     map[string]int
+}
+
+// wfFlowLayouts lists every flow that walks the stepped shell. Money, KYC,
+// and thrift flows all use it; a flow with no entry (invoice creation, whose
+// items step needs a multi-button action bar the shell does not model) renders
+// the plain one-page layout.
+var wfFlowLayouts = map[string]wfFlowLayout{
+	service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Review", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 4, "done": 4}},
+	service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
+	service.WebFlowThriftContribute: {[]string{"Contribution", "Review", "Pay"}, map[string]int{"": 0, "group": 0, "review": 1, "checkout": 2, "done": 2}},
+	service.WebFlowData:             {[]string{"Network", "Plan", "Phone", "Review", "Pay"}, map[string]int{"": 0, "network": 0, "plan": 1, "phone": 2, "review": 3, "checkout": 4, "done": 4}},
+	service.WebFlowTopup:            {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
+	service.WebFlowIndividualPay:    {[]string{"Phone", "Amount", "Bank", "Account", "Review", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 2, "bank_pick": 2, "account": 3, "review": 4, "checkout": 5, "done": 5}},
+	// KYC / onboarding: identity and profile setup walk the same shell.
+	service.WebFlowOnboard:           {[]string{"Name", "Email", "Verify", "Confirm"}, map[string]int{"": 0, "name": 0, "email": 1, "code": 2, "confirm": 3, "done": 3}},
+	service.WebFlowIndividualUpgrade: {[]string{"Email", "Verify", "Profile", "Review", "ID"}, map[string]int{"": 0, "email": 0, "code": 1, "profile": 2, "review": 3, "result": 4, "done": 4}},
+	service.WebFlowMerchantRegister:  {[]string{"Email", "Verify", "Name", "Category", "About", "Review"}, map[string]int{"": 0, "email": 0, "code": 1, "name": 2, "category": 3, "description": 4, "review": 5, "done": 5}},
+	service.WebFlowKYBRequest:        {[]string{"Merchant", "Note", "Review"}, map[string]int{"": 0, "merchant": 0, "note": 1, "review": 2, "done": 2}},
+	// Thrift: creating a group walks the contribution terms; joining is a
+	// two-step confirm of the group the customer was invited to.
+	service.WebFlowThriftCreate: {[]string{"Name", "Amount", "Frequency", "Size", "Review"}, map[string]int{"": 0, "name": 0, "amount": 1, "frequency": 2, "target": 3, "review": 4, "done": 4}},
+	service.WebFlowThriftJoin:   {[]string{"Group", "Join"}, map[string]int{"": 0, "name": 0, "review": 1, "done": 1}},
+}
+
+// wfFlowSteps returns the stepper labels for a stepped web flow, mapped from
+// its internal step key. Flows with no layout get (nil, false) and keep the
+// plain layout.
+func wfFlowSteps(flowType, step string) ([]webFlowStepLabel, bool) {
+	lay, ok := wfFlowLayouts[flowType]
 	if !ok {
 		return nil, false
 	}
@@ -127,7 +151,7 @@ func wfMoneyFlowSteps(flowType, step string) ([]webFlowStepLabel, bool) {
 	return out, true
 }
 
-// wfDecorate fills the render-invariant page fields and attaches the payment
+// wfDecorate fills the render-invariant page fields and attaches the flow
 // stepper. Called on every render path (GET, submit re-render, failure
 // re-render) so the stepper can never drift from the flow state.
 func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
@@ -143,8 +167,7 @@ func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
 	if page.Step == "" {
 		page.Step = flow.Step
 	}
-	if steps, ok := wfMoneyFlowSteps(flow.FlowType, page.Step); ok {
-		page.Pay = true
+	if steps, ok := wfFlowSteps(flow.FlowType, page.Step); ok {
 		page.Steps = steps
 	}
 }

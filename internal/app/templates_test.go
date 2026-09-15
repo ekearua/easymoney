@@ -209,8 +209,7 @@ func TestTemplatesParse(t *testing.T) {
 	flowPage := webFlowPage{
 		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",
 		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",
-		Pay:   true,
-		Steps: []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
+		Steps:  []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
 		Review: []webFlowLine{{Term: "Merchant", Desc: "Ade's Kitchen"}},
 		Error:  "Choose a payment method.",
 		Fields: []webFlowField{
@@ -249,13 +248,14 @@ func TestTemplatesParse(t *testing.T) {
 	if !strings.Contains(html, "Read from your upload:") || !strings.Contains(html, "NIN: 12345678901") {
 		t.Fatal("webflow.html must show previously extracted upload text as confirmation")
 	}
-	// Payment layer: the pay class scopes the payment CSS, and the stepper
-	// renders done/current states from the labels the flow engine supplies.
-	if !strings.Contains(html, "class=\"receipt pay\"") {
-		t.Fatal("webflow.html must scope the payment CSS layer via main.pay when Pay is set")
+	// Stepped layer: a page carrying steps scopes the flow CSS (main.wf) and
+	// renders the stepper with done/current states from the labels the flow
+	// engine supplies — the same shell for money, KYC, and thrift flows.
+	if !strings.Contains(html, "class=\"receipt wf\"") {
+		t.Fatal("webflow.html must scope the stepped flow CSS layer via main.wf when the page has steps")
 	}
 	if !strings.Contains(html, "wf-stepper") || !strings.Contains(html, "class=\"done\"") || !strings.Contains(html, "class=\"current\"") {
-		t.Fatal("webflow.html must render the horizontal stepper with done/current states for payment flows")
+		t.Fatal("webflow.html must render the horizontal stepper with done/current states for stepped flows")
 	}
 	if !strings.Contains(html, "Merchant") || !strings.Contains(html, ">✓<") {
 		t.Fatal("webflow.html stepper must carry step labels and the done checkmark")
@@ -272,19 +272,18 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatal("media upload form must render after the main flow form, not nested inside it")
 	}
 
-	// Non-payment flows (KYC/onboarding) must NOT get the payment layer:
-	// no pay scoping class and no stepper, even when other fields match.
+	// A flow without a step map keeps the plain one-page layout: no scoping
+	// class, no stepper, so an unmigrated flow cannot render a half-built shell.
 	buf.Reset()
-	kycPage := flowPage
-	kycPage.Pay = false
-	kycPage.Steps = nil
-	kycPage.FlowType = "individual_upgrade"
-	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", kycPage); err != nil {
-		t.Fatalf("execute webflow.html (kyc): %v", err)
+	plainPage := flowPage
+	plainPage.Steps = nil
+	plainPage.FlowType = "invoice_create"
+	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", plainPage); err != nil {
+		t.Fatalf("execute webflow.html (unstepped): %v", err)
 	}
-	kycHTML := buf.String()
-	if strings.Contains(kycHTML, "receipt pay") || strings.Contains(kycHTML, "wf-stepper") {
-		t.Fatal("webflow.html must not render the payment stepper or pay class for non-payment flows")
+	plainHTML := buf.String()
+	if strings.Contains(plainHTML, "receipt wf") || strings.Contains(plainHTML, "wf-stepper") {
+		t.Fatal("webflow.html must not render the stepped shell for a flow without steps")
 	}
 
 	// Done pages never show a stepper even for money flows.

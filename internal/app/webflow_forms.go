@@ -487,7 +487,7 @@ func (a *App) wfOnboardStep(r *http.Request, flow store.WebFlow, user store.User
 		page.Title = "Confirm your email"
 		page.Intro = "Enter the 6-digit code we emailed to " + flow.Payload["email"] + "."
 		page.Fields = []webFlowField{{Name: "code", Label: "6-digit code", Type: "text", Required: true}}
-		page.Actions = []webFlowAction{{Name: "resend", Label: "Resend code"}, {Name: "next", Label: "Verify"}}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Verify"}, {Name: "resend", Label: "Resend code"}}
 		return page, nil
 	case "confirm":
 		page.Title = "Almost done"
@@ -542,7 +542,7 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 			page.Title = "Confirm your email"
 			page.Intro = "A fresh code is on its way to " + flow.Payload["email"] + ". Enter it below."
 			page.Fields = []webFlowField{{Name: "code", Label: "6-digit code", Type: "text", Required: true}}
-			page.Actions = []webFlowAction{{Name: "resend", Label: "Resend code"}, {Name: "next", Label: "Verify"}}
+			page.Actions = []webFlowAction{{Name: "next", Label: "Verify"}, {Name: "resend", Label: "Resend code"}}
 			return &page, nil
 		}
 		code := strings.TrimSpace(r.FormValue("code"))
@@ -628,7 +628,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		page.Title = "Enter the code"
 		page.Intro = "Enter the 6-digit code emailed to " + flow.Payload["email"] + "."
 		page.Fields = []webFlowField{{Name: "code", Label: "6-digit code", Type: "text", Required: true}}
-		page.Actions = []webFlowAction{{Name: "resend", Label: "Resend code"}, {Name: "next", Label: "Verify"}}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Verify"}, {Name: "resend", Label: "Resend code"}}
 		return page, nil
 	case "profile":
 		page.Title = "Your details"
@@ -693,7 +693,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 			{Name: "id_voice", Label: "Or say your 11-digit number", Type: "voice",
 				Hint: "Record a short voice note saying the number clearly."},
 		}
-		page.Actions = []webFlowAction{{Name: "skip", Label: "Skip for now"}, {Name: "verify_id", Label: "Verify ID"}}
+		page.Actions = []webFlowAction{{Name: "verify_id", Label: "Verify ID"}, {Name: "skip", Label: "Skip for now"}}
 		return page, nil
 	}
 	return page, fmt.Errorf("unknown individual_upgrade step %q", flow.Step)
@@ -871,7 +871,7 @@ func (a *App) wfMerchantRegisterStep(r *http.Request, flow store.WebFlow, user s
 		page.Title = "Verify your email"
 		page.Intro = "Enter the 6-digit code emailed to " + flow.Payload["email"] + "."
 		page.Fields = []webFlowField{{Name: "code", Label: "6-digit code", Type: "text", Required: true}}
-		page.Actions = []webFlowAction{{Name: "resend", Label: "Resend code"}, {Name: "next", Label: "Verify"}}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Verify"}, {Name: "resend", Label: "Resend code"}}
 		return page, nil
 	case "name":
 		page.Title = "Business name"

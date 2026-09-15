@@ -379,6 +379,9 @@ func TestSimulateMakePaymentAndPayIndividual(t *testing.T) {
 	// =====================================================================
 	fmt.Printf("\n========== SIMULATION 3: MERCHANT WITH AN EMPTY CATALOG ==========\n")
 	simulateAutoSkippedItemStep(t, ctx, run, convo, repository, messenger, cfg, payer)
+	// =====================================================================
+	fmt.Printf("\n========== SIMULATION 4: KYC AND THRIFT WALK THE STEPPED SHELL ==========\n")
+	simulateSteppedKYCAndThrift(t, ctx, run, convo, repository, messenger, cfg, payer)
 
 	// =====================================================================
 	fmt.Printf("\n========== MESSAGING COST METER ==========\n")
