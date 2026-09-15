@@ -11,6 +11,7 @@ import (
 	"whatsapp-payment-demo/internal/chatguard"
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -47,12 +48,22 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
-	identityProviderName string
+	identityProviderName  string
+	screeningProviderName string
 
 	// AI/media providers (nil when AI_ENABLED=false).
 	imageReader  ports.ImageReader
 	speechToText ports.SpeechToText
 	chatAI       ports.ChatAI
+
+	// mediaDownloader fetches raw chat-media bytes before OCR/STT so the AI
+	// providers receive real payloads instead of nil data.
+	mediaDownloader ports.MediaDownloader
+
+	// AIMaxRPM enforcement: AI calls are throttled per conversation key
+	// (recipient/ID). nil limiter or maxRPM <= 0 leaves AI calls unlimited.
+	aiLimiter ratelimit.Limiter
+	aiMaxRPM  int
 
 	acceptedMu      sync.RWMutex
 	acceptedNumbers map[string]bool
@@ -68,7 +79,16 @@ func NewConversationService(cfg config.Config, repository *store.Store, payments
 	if len(identityProviderName) > 0 && identityProviderName[0] != "" {
 		pName = identityProviderName[0]
 	}
-	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, identityProviderName: pName, acceptedNumbers: accepted}
+	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, identityProviderName: pName, screeningProviderName: pName, acceptedNumbers: accepted}
+}
+
+// SetScreeningProviderName overrides the provider label recorded with
+// sanctions/PEP screening results. Defaults to the identity provider name so
+// existing callers keep their current audit label until explicitly wired.
+func (s *ConversationService) SetScreeningProviderName(name string) {
+	if strings.TrimSpace(name) != "" {
+		s.screeningProviderName = name
+	}
 }
 
 // SetMediaProviders configures the optional AI/media providers for image-to-text,
@@ -77,6 +97,32 @@ func (s *ConversationService) SetMediaProviders(imageReader ports.ImageReader, s
 	s.imageReader = imageReader
 	s.speechToText = speechToText
 	s.chatAI = chatAI
+}
+
+// SetAIRateLimiter enforces the AI requests-per-minute cap per conversation
+// key (the recipient address, so one customer cannot saturate the AI budget).
+// A nil limiter or maxRPM <= 0 leaves AI calls unlimited (safe for tests and
+// the simulated provider).
+func (s *ConversationService) SetAIRateLimiter(limiter ratelimit.Limiter, maxRPM int) {
+	s.aiLimiter = limiter
+	s.aiMaxRPM = maxRPM
+}
+
+// SetMediaDownloader configures the channel provider used to fetch raw media
+// bytes for OCR/STT. Without it, chat media degrades to empty text.
+func (s *ConversationService) SetMediaDownloader(downloader ports.MediaDownloader) {
+	s.mediaDownloader = downloader
+}
+
+// aiAllowed reports whether the next AI call for key is within the configured
+// requests-per-minute cap. Fail-open: when no limiter is wired the call is
+// allowed, and rate-limit storage errors never block a customer.
+func (s *ConversationService) aiAllowed(ctx context.Context, key string) bool {
+	if s.aiLimiter == nil || s.aiMaxRPM <= 0 {
+		return true
+	}
+	allowed, _ := s.aiLimiter.Allow(ctx, "ai:"+key, s.aiMaxRPM, time.Minute)
+	return allowed
 }
 
 // AcceptedInvoiceNumbers returns the current list of accepted customer phone numbers.
@@ -130,8 +176,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 
 	// Pre-process media: extract text from images (OCR) and audio (STT).
 	// This converts media messages into text before the FSM sees them.
-	if message.MediaType != "" && message.MediaID != "" && input == "" {
-		input = s.processMedia(ctx, message)
+	if message.MediaType != "" && (message.MediaID != "" || message.MediaURL != "") && input == "" {
+		input = s.processMedia(ctx, message, "media:"+user.ID.String())
 	}
 
 	// C18 chat content guard: Xego never asks for card numbers, PINs, CVVs, or
@@ -148,12 +194,10 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 			return err
 		}
 	}
-	if strings.EqualFold(input, "help") || strings.EqualFold(input, "/help") {
-		return s.sendHelp(ctx, message.Channel, recipient)
-	}
-	if !s.onboardingCompleteForChannel(user, message.Channel) {
-		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
-	}
+	// menu and cancel are global interrupts: they work in every session,
+	// including the onboarding/registration states gated below, so a customer
+	// stuck mid-signup (or parked on a browser flow whose page was closed) can
+	// always bail out.
 	if strings.EqualFold(input, "menu") || strings.EqualFold(input, "/menu") {
 		s.abandonSessionPayment(ctx, user, session)
 		session.State, session.Data = "menu", map[string]string{}
@@ -163,12 +207,13 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.sendMenu(ctx, message.Channel, recipient, user)
 	}
 	if strings.EqualFold(input, "cancel") || input == "cancel_payment" {
-		s.abandonSessionPayment(ctx, user, session)
-		session.State, session.Data = "menu", map[string]string{}
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendMenu(ctx, message.Channel, recipient, user)
+		return s.handleCancel(ctx, message.Channel, recipient, user, session)
+	}
+	if strings.EqualFold(input, "help") || strings.EqualFold(input, "/help") {
+		return s.sendHelp(ctx, message.Channel, recipient)
+	}
+	if !s.onboardingCompleteForChannel(user, message.Channel) {
+		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
 	}
 	// A brand-new service request while another session is already active
 	// asks the customer whether to switch (abandoning the current one) or
@@ -364,10 +409,10 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleWalletTopupMethod(ctx, message.Channel, recipient, user, session, input)
 	case "web_flow_active":
 		// The customer is completing a flow in the browser; acknowledge chat
-		// input without restarting anything. Completing (or abandoning) the
-		// web flow resets the session itself.
+		// input without restarting anything. MENU resets the session and
+		// CANCEL additionally abandons the open browser flow.
 		return s.sendText(ctx, message.Channel, recipient,
-			"You're completing this in your browser — tap the link we sent to continue, or type MENU to cancel.")
+			"You're completing this in your browser — tap the link we sent to continue, or type CANCEL to stop.")
 	case "confirm_session_switch":
 		return s.handleSessionSwitchConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "ai_assistant":
@@ -382,7 +427,7 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		// matching.  Interactive selections (list row taps, button presses)
 		// carry explicit IDs that are already handled by the state-specific
 		// cases above and by handleMenu, so they must never be classified.
-		if s.chatAI != nil && s.cfg.AIEnabled && message.Interactive == "" {
+		if s.chatAI != nil && s.cfg.AIEnabled && message.Interactive == "" && s.aiAllowed(ctx, "intent:"+recipient) {
 			intent, err := s.chatAI.ClassifyIntent(ctx, input, nil)
 			if err == nil && intent.Confidence >= 0.7 && intent.Intent != "none" {
 				return s.routeAIIntent(ctx, message.Channel, recipient, user, session, intent)
@@ -553,15 +598,37 @@ func normalizeChannel(channel string) string {
 }
 
 // processMedia extracts text from media messages using OCR (images) or STT (audio).
-// Returns empty string if the provider is unavailable or processing fails.
-func (s *ConversationService) processMedia(ctx context.Context, message store.InboundMessage) string {
+// The provider floor (imageReader/speechToText) and AI rate cap are checked
+// before any download so throttled or disabled AI never wastes a download.
+// Returns empty string if the media cannot be fetched or processed — the
+// caller then falls back to keyword handling.
+func (s *ConversationService) processMedia(ctx context.Context, message store.InboundMessage, rateKey string) string {
 	switch message.MediaType {
 	case "image", "photo", "document":
-		if s.imageReader == nil {
+		if s.imageReader == nil || !s.aiAllowed(ctx, rateKey) {
 			return ""
 		}
+	case "audio", "voice":
+		if s.speechToText == nil || !s.aiAllowed(ctx, rateKey) {
+			return ""
+		}
+	default:
+		return ""
+	}
+	if s.mediaDownloader == nil {
+		return ""
+	}
+	data, mime, err := s.mediaDownloader.Download(ctx, message.Channel, message.MediaID, message.MediaURL)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if mime == "" {
+		mime = message.MediaMime
+	}
+	switch message.MediaType {
+	case "image", "photo", "document":
 		// For documents, we still try OCR if it looks like an image MIME type.
-		if message.MediaType == "document" && !strings.HasPrefix(message.MediaMime, "image/") {
+		if message.MediaType == "document" && !strings.HasPrefix(mime, "image/") {
 			return ""
 		}
 		prompt := "Extract all readable text from this image."
@@ -570,17 +637,14 @@ func (s *ConversationService) processMedia(ctx context.Context, message store.In
 		} else if strings.Contains(strings.ToLower(message.Caption), "nin") || strings.Contains(strings.ToLower(message.Caption), "bvn") || strings.Contains(strings.ToLower(message.Caption), "slip") {
 			prompt = "Extract the NIN or BVN number from this identity slip."
 		}
-		text, err := s.imageReader.ReadImage(ctx, nil, message.MediaMime, prompt)
+		text, err := s.imageReader.ReadImage(ctx, data, mime, prompt)
 		if err != nil {
 			return ""
 		}
 		return text
 
 	case "audio", "voice":
-		if s.speechToText == nil {
-			return ""
-		}
-		text, err := s.speechToText.Transcribe(ctx, nil, message.MediaMime, "en")
+		text, err := s.speechToText.Transcribe(ctx, data, mime, "en")
 		if err != nil {
 			return ""
 		}
@@ -600,6 +664,9 @@ func (s *ConversationService) handleAIAssistant(ctx context.Context, channel, re
 	}
 	if s.chatAI == nil {
 		return s.sendText(ctx, channel, recipient, "AI assistant is not available right now. Type MENU to see your options.")
+	}
+	if !s.aiAllowed(ctx, "assistant:"+recipient) {
+		return s.sendText(ctx, channel, recipient, "I'm a little busy right now. Try again in a moment, or type MENU to see your options.")
 	}
 	answer, err := s.chatAI.Answer(ctx, input, nil)
 	if err != nil {

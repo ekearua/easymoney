@@ -52,9 +52,11 @@ func (s *ConversationService) startProfileCompletion(ctx context.Context, channe
 func (s *ConversationService) handleOnboarding(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	if session.State == "web_flow_active" {
 		// The customer is finishing onboarding in the browser; do not yank
-		// them into the chat flow mid-way.
+		// them into the chat flow mid-way. MENU resets the chat session and
+		// CANCEL abandons the open browser flow too (both are handled globally
+		// in Handle, so this branch only sees other input).
 		return s.sendText(ctx, channel, recipient,
-			"You're completing your profile in your browser — tap the link we sent to continue, or type MENU to cancel.")
+			"You're completing your profile in your browser — tap the link we sent to continue, or type CANCEL to stop.")
 	}
 	if session.State == "onboard_confirm_account" {
 		return s.handleAccountConfirmation(ctx, channel, recipient, user, session, input)

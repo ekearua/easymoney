@@ -35,6 +35,7 @@ const (
 	WebFlowOpen     = "open"
 	WebFlowComplete = "complete"
 	WebFlowExpired  = "expired"
+	WebFlowCancelled = "cancelled"
 )
 
 // MintWebFlow creates a new open web flow with the given initial payload and
@@ -175,6 +176,16 @@ func (s *Store) SaveWebFlowProgress(ctx context.Context, token, step string, pay
 		return fmt.Errorf("web flow %q is not open", token)
 	}
 	return nil
+}
+
+// AbandonWebFlow cancels an open browser flow from the chat side (the CANCEL
+// interrupt): the link stops working, a fresh flow mints cleanly, and the
+// flow is recorded as cancelled so admin flow counts can audit chat cancels.
+// It is best-effort and idempotent — a flow already completed or expired is a
+// no-op, and the chat session is reset regardless of the outcome.
+func (s *Store) AbandonWebFlow(ctx context.Context, token string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE web_flows SET status='cancelled' WHERE token=$1 AND status='open'`, token)
+	return err
 }
 
 // ReopenWebFlowForRetry rewinds an open money flow that was parked on its

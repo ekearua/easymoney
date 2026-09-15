@@ -198,6 +198,25 @@ func (s *ConversationService) resetWithMessage(ctx context.Context, channel, rec
 	return s.sendText(ctx, channel, recipient, body)
 }
 
+// handleCancel is the global CANCEL interrupt. It abandons any in-flight
+// payment (draft/awaiting/initialized/pending → abandoned, including a
+// purchase abandoned from a confirm_session_switch dialog), cancels an open
+// browser flow whose link is parked on this chat session, and returns the
+// session to the empty/idle state (menu + clean data) with a quiet ack — no
+// menu dump. It runs before the onboarding gate, so signup/registration
+// blocks can be bailed out of too.
+func (s *ConversationService) handleCancel(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	s.abandonSessionPayment(ctx, user, session)
+	if session.State == "web_flow_active" {
+		if token := strings.TrimSpace(session.Data["web_flow_token"]); token != "" {
+			if err := s.store.AbandonWebFlow(ctx, token); err != nil {
+				slog.Warn("abandon web flow on cancel", "token", token, "error", err)
+			}
+		}
+	}
+	return s.resetWithMessage(ctx, channel, recipient, user, session, "Cancelled. Nothing is in progress.")
+}
+
 func (s *ConversationService) sessionMerchantAndAmount(ctx context.Context, session store.Session) (store.Merchant, int64, error) {
 	merchant, err := s.store.MerchantBySlug(ctx, session.Data["merchant_slug"])
 	if err != nil {
