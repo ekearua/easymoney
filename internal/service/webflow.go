@@ -249,7 +249,7 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 		return "", err
 	}
 	if _, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
-		UserID: user.ID, Provider: s.identityProviderName,
+		UserID: user.ID, Provider: s.screeningProviderName,
 		Decision: result.Decision, MatchedNames: result.MatchedNames,
 	}, s.cfg.KYCRescreenPeriod); err != nil {
 		return "", err

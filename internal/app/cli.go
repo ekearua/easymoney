@@ -189,7 +189,7 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			continue
 		}
 		if _, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
-			UserID: profile.UserID, Provider: "simulated", Decision: decision.Decision,
+			UserID: profile.UserID, Provider: a.screeningProviderName, Decision: decision.Decision,
 			MatchedNames: decision.MatchedNames,
 		}, a.cfg.KYCRescreenPeriod); err != nil {
 			a.logger.WarnContext(ctx, "rescreen record failed", "user_id", profile.UserID.String(), "error", err)

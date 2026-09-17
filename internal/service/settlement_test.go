@@ -5,9 +5,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"whatsapp-payment-demo/internal/kyc"
-	"whatsapp-payment-demo/internal/providers/payout"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -59,7 +59,7 @@ func TestSettlementServiceDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewSettlementService(repository, payout.NewSimulatedProvider(), testLogger(), 0)
+	svc := NewSettlementService(repository, stubPayoutProvider{now: time.Now}, testLogger(), 0)
 
 	batch, err := svc.Cut(ctx, merchant.ID, "BATCH-SVC-1")
 	if err != nil {

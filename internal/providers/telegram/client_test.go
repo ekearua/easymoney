@@ -71,3 +71,47 @@ func TestSendInteractiveUsesInlineKeyboard(t *testing.T) {
 		t.Fatalf("inline keyboard missing: %#v", requestBody)
 	}
 }
+
+func TestDownloadFile(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/bottoken/getFile" {
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"file_id":"doc-1","file_path":"voice_1.ogg"}}`))
+			return
+		}
+		if r.URL.Path == "/file/bottoken/voice_1.ogg" {
+			_, _ = w.Write([]byte("fake-ogg-bytes"))
+			return
+		}
+		http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := New("token", server.URL, "secret")
+	data, mime, err := client.DownloadFile(context.Background(), "doc-1")
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if string(data) != "fake-ogg-bytes" {
+		t.Fatalf("unexpected bytes: %q", data)
+	}
+	if mime != "audio/ogg" {
+		t.Fatalf("unexpected mime: %q", mime)
+	}
+}
+
+func TestDownloadFileErrors(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := New("token", server.URL, "secret")
+	if _, _, err := client.DownloadFile(context.Background(), "doc-1"); err == nil {
+		t.Fatal("missing file should error")
+	}
+	if _, _, err := New("", server.URL, "secret").DownloadFile(context.Background(), "doc-1"); err == nil {
+		t.Fatal("unconfigured client should error")
+	}
+}

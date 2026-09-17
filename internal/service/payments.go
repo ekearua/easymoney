@@ -394,45 +394,6 @@ func (s *PaymentService) initializeDVACheckout(ctx context.Context, payment stor
 	return s.store.PaymentByID(ctx, payment.ID)
 }
 
-// InitializeBankTransferSimulation prepares demo transfer details for a chosen
-// collection bank and moves the payment into pending.
-func (s *PaymentService) InitializeBankTransferSimulation(ctx context.Context, payment store.PaymentView, account store.BankTransferAccount) (store.PaymentView, store.BankTransferInstruction, error) {
-	if payment.Provider != ProviderBankTransfer {
-		return store.PaymentView{}, store.BankTransferInstruction{}, fmt.Errorf("payment provider %q cannot use bank transfer", payment.Provider)
-	}
-	if payment.Status != domain.StatusAwaitingConfirmation {
-		return store.PaymentView{}, store.BankTransferInstruction{}, fmt.Errorf("payment is not awaiting confirmation")
-	}
-	instruction, err := s.store.InitializeBankTransferSimulation(ctx, payment.ID, account.ID, payment.ProviderReference)
-	if err != nil {
-		return store.PaymentView{}, store.BankTransferInstruction{}, err
-	}
-	updated, err := s.store.PaymentByID(ctx, payment.ID)
-	if err != nil {
-		return store.PaymentView{}, store.BankTransferInstruction{}, err
-	}
-	return updated, instruction, nil
-}
-
-// ConfirmBankTransferSimulation treats the customer's WhatsApp confirmation as
-// the demo's simulated bank verification signal.
-func (s *PaymentService) ConfirmBankTransferSimulation(ctx context.Context, payment store.PaymentView) (store.PaymentView, bool, error) {
-	if payment.Provider != ProviderBankTransfer {
-		return store.PaymentView{}, false, fmt.Errorf("payment provider %q cannot confirm bank transfer", payment.Provider)
-	}
-	changed, err := s.store.ConfirmBankTransferSimulation(ctx, payment.ID, s.resultOutbox(payment, domain.StatusSucceeded))
-	if err != nil {
-		return payment, false, err
-	}
-	updated, err := s.store.PaymentByID(ctx, payment.ID)
-	if err != nil {
-		return payment, changed, err
-	}
-	if changed {
-		s.applyPaymentSuccessHooks(ctx, updated)
-	}
-	return updated, changed, nil
-}
 
 // VerifyAndApply is the sole path that can mark a payment successful.
 func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source string) (store.PaymentView, bool, error) {

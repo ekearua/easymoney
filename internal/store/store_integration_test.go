@@ -1438,8 +1438,9 @@ func TestReconciliationThreeWay(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A succeeded bank-transfer payment with a confirmed simulation: the bank
-	// leg matches internal and ledger, so the run should be clean.
+	// A succeeded bank-transfer payment driven through the Interswitch DVA
+	// lifecycle: the succeeded transition posts the ledger money-in posting
+	// atomically, so the run stays clean.
 	btToken, err := domain.NewReceiptToken()
 	if err != nil {
 		t.Fatal(err)
@@ -1455,17 +1456,11 @@ func TestReconciliationThreeWay(t *testing.T) {
 	if changed, err := repository.TransitionPayment(ctx, btPayment.ID, domain.StatusAwaitingConfirmation, "recon-test", nil); err != nil || !changed {
 		t.Fatalf("transition to awaiting confirmation: changed=%v err=%v", changed, err)
 	}
-	accounts, err := repository.ListActiveBankTransferAccounts(ctx)
-	if err != nil || len(accounts) == 0 {
-		t.Fatalf("no seeded bank accounts: %v", err)
+	if changed, err := repository.TransitionPayment(ctx, btPayment.ID, domain.StatusInitialized, "recon-test", nil); err != nil || !changed {
+		t.Fatalf("transition to initialized: changed=%v err=%v", changed, err)
 	}
-	if _, err := repository.InitializeBankTransferSimulation(ctx, btPayment.ID, accounts[0].ID, uuid.NewString()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := repository.ConfirmBankTransferSimulation(ctx, btPayment.ID, OutboxSpec{
-		UserID: user.ID, Recipient: user.WhatsAppNumber, Kind: "text", Payload: []byte(`{"body":"transfer confirmed"}`),
-	}); err != nil {
-		t.Fatal(err)
+	if changed, err := repository.TransitionPayment(ctx, btPayment.ID, domain.StatusSucceeded, "recon-test", nil); err != nil || !changed {
+		t.Fatalf("transition to succeeded: changed=%v err=%v", changed, err)
 	}
 
 	// The simulated bank rail was retired when bank transfers moved to the

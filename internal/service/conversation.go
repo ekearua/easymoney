@@ -270,8 +270,6 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleAmount(ctx, message.Channel, recipient, user, session, input)
 	case "select_payment_method":
 		return s.handlePaymentMethod(ctx, message.Channel, recipient, user, session, input)
-	case "select_transfer_bank":
-		return s.handleTransferBank(ctx, message.Channel, recipient, user, session, input)
 	case "select_data_network":
 		return s.handleDataNetwork(ctx, message.Channel, recipient, user, session, input)
 	case "select_data_plan":
@@ -282,14 +280,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleDataOrderConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "select_data_payment_method":
 		return s.handleDataPaymentMethod(ctx, message.Channel, recipient, user, session, input)
-	case "select_data_transfer_bank":
-		return s.handleDataTransferBank(ctx, message.Channel, recipient, user, session, input)
-	case "await_data_bank_transfer":
-		return s.handleDataBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "confirm_payment":
 		return s.handleConfirmation(ctx, message.Channel, recipient, user, session, input)
-	case "await_bank_transfer":
-		return s.handleBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "merchant_register_email":
 		return s.handleMerchantRegistrationEmail(ctx, message.Channel, recipient, user, session, input)
 	case "merchant_register_email_code":
@@ -336,10 +328,6 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleThriftConcatReview(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_pay_method":
 		return s.handleThriftPayMethod(ctx, message.Channel, recipient, user, session, input)
-	case "thrift_pay_bank":
-		return s.handleThriftPayBank(ctx, message.Channel, recipient, user, session, input)
-	case "await_thrift_bank_transfer":
-		return s.handleThriftBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_edit_field":
 		return s.handleThriftEditField(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_edit_amount_value":
@@ -380,10 +368,6 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleInvoicePayAmount(ctx, message.Channel, recipient, user, session, input)
 	case "invoice_pay_method":
 		return s.handleInvoicePayMethod(ctx, message.Channel, recipient, user, session, input)
-	case "invoice_pay_bank":
-		return s.handleInvoicePayBank(ctx, message.Channel, recipient, user, session, input)
-	case "await_invoice_bank_transfer":
-		return s.handleInvoiceBankTransferConfirmation(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_phone":
 		return s.handlePayIndividualPhone(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_amount":

@@ -33,12 +33,12 @@ import (
 	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
 	aiprovider "whatsapp-payment-demo/internal/providers/ai"
-	dataprovider "whatsapp-payment-demo/internal/providers/data"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
+	smsprovider "whatsapp-payment-demo/internal/providers/sms"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/tiktok"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -54,30 +54,32 @@ const merchantCookieName = "wpd_merchant"
 
 // App is the fully assembled payment demo.
 type App struct {
-	cfg               config.Config
-	logger            *slog.Logger
-	store             *store.Store
-	interswitch       *interswitchprovider.Client
-	telegram          *telegram.Client
-	instagram         *instagram.Client
-	tiktok            *tiktok.Client
-	whatsapp          *whatsapp.Client
-	payments          *service.PaymentService
-	data              *service.DataService
-	conversation      *service.ConversationService
-	templates         *template.Template
-	limiter           *loginLimiter
-	rateLimiter       ratelimit.Limiter
-	rateClose         func() error
-	totpKey           []byte
-	sanctionsScreener ports.SanctionsScreener
-	eventBus          ports.EventBus
-	publisher         *service.EventPublisher
-	merchantWebhooks  *service.MerchantWebhookDeliverer
-	settlements       *service.SettlementService
-	refunds           *service.RefundService
-	disputes          *service.DisputeService
-	workerWg          sync.WaitGroup
+	cfg                   config.Config
+	logger                *slog.Logger
+	store                 *store.Store
+	interswitch           *interswitchprovider.Client
+	telegram              *telegram.Client
+	instagram             *instagram.Client
+	tiktok                *tiktok.Client
+	whatsapp              *whatsapp.Client
+	payments              *service.PaymentService
+	data                  *service.DataService
+	conversation          *service.ConversationService
+	templates             *template.Template
+	limiter               *loginLimiter
+	rateLimiter           ratelimit.Limiter
+	rateClose             func() error
+	totpKey               []byte
+	sanctionsScreener     ports.SanctionsScreener
+	screeningProviderName string
+	smsSender             ports.SMSSender
+	eventBus              ports.EventBus
+	publisher             *service.EventPublisher
+	merchantWebhooks      *service.MerchantWebhookDeliverer
+	settlements           *service.SettlementService
+	refunds               *service.RefundService
+	disputes              *service.DisputeService
+	workerWg              sync.WaitGroup
 
 	// AI providers (nil when AI_ENABLED=false).
 	imageReader  ports.ImageReader
@@ -147,10 +149,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		messengers[service.ChannelTikTok] = tiktokClient
 	}
 	paymentService := service.NewPaymentService(cfg, repository, gateways, router, logger)
-	var dataProvider ports.DataProvider = dataprovider.NewSimulator()
+	var dataProvider ports.DataProvider
 	switch strings.ToLower(cfg.DataProvider) {
-	case "", "simulated", "simulator":
-	case "vtpass":
+	case "", "vtpass":
 		dataProvider = vtpass.NewWithTimeout(cfg.VTPassBaseURL, cfg.VTPassAPIKey, cfg.VTPassPublicKey, cfg.VTPassSecretKey, cfg.VTPassTimeout)
 	case "interswitch":
 		dataProvider = interswitchClient
@@ -159,12 +160,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, fmt.Errorf("unsupported DATA_PROVIDER %q", cfg.DataProvider)
 	}
 	dataService := service.NewDataService(repository, paymentService, dataProvider)
-	var identityVerifier ports.IdentityVerifier = identityprovider.NewSimulator()
-	identityProviderName := "simulated"
+	var identityVerifier ports.IdentityVerifier
+	identityProviderName := "ninbvnportal"
 	switch strings.ToLower(cfg.IdentityProvider) {
-	case "simulated", "":
-		// default simulator
-	case "ninbvnportal":
+	case "", "ninbvnportal":
 		if cfg.NINBVNPortalKey == "" {
 			repository.Close()
 			return nil, errors.New("NINBVNPORTAL_API_KEY is required when IDENTITY_PROVIDER=ninbvnportal")
@@ -176,12 +175,37 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported IDENTITY_PROVIDER %q", cfg.IdentityProvider)
 	}
-	var sanctionsScreener ports.SanctionsScreener = screeningprovider.NewSimulator()
+	var sanctionsScreener ports.SanctionsScreener
+	screeningProviderName := "http"
 	switch strings.ToLower(cfg.ScreeningProvider) {
-	case "simulated", "":
+	case "", "http":
+		if cfg.ScreeningAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("SCREENING_API_BASE is required when SCREENING_PROVIDER=http")
+		}
+		p := screeningprovider.NewHTTP(cfg.ScreeningAPIBase, cfg.ScreeningAPIKey, cfg.ScreeningTimeout)
+		sanctionsScreener = p
+		screeningProviderName = p.ProviderName()
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported SCREENING_PROVIDER %q", cfg.ScreeningProvider)
+	}
+	// Outbound SMS sender. "webhook" (the default) has no async sender: replies
+	// are returned synchronously from /webhooks/sms, and outbox delivery for
+	// the sms channel stays a no-op. "http" sends through a generic REST
+	// gateway and reports async delivery status to /webhooks/sms/status.
+	var smsSender ports.SMSSender
+	switch strings.ToLower(cfg.SMSProvider) {
+	case "", "webhook":
+	case "http":
+		if cfg.SMSAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("SMS_API_BASE is required when SMS_PROVIDER=http")
+		}
+		smsSender = smsprovider.NewHTTP(cfg.SMSAPIBase, cfg.SMSAPIKey, cfg.SMSSenderID, 0)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported SMS_PROVIDER %q", cfg.SMSProvider)
 	}
 	var emailSender ports.EmailSender
 	if cfg.SMTPHost != "" {
@@ -193,7 +217,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	var chatAI ports.ChatAI
 	if cfg.AIEnabled {
 		switch strings.ToLower(cfg.AIProvider) {
-		case "openai":
+		case "", "openai":
 			if cfg.AIAPIKey == "" {
 				repository.Close()
 				return nil, errors.New("AI_API_KEY is required when AI_PROVIDER=openai")
@@ -202,11 +226,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			imageReader = openai
 			speechToText = openai
 			chatAI = openai
-		case "simulated", "":
-			sim := aiprovider.NewSimulated()
-			imageReader = sim
-			speechToText = sim
-			chatAI = sim
 		default:
 			repository.Close()
 			return nil, fmt.Errorf("unsupported AI_PROVIDER %q", cfg.AIProvider)
@@ -282,25 +301,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	convo := service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener, identityProviderName)
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
-	// Settlement payouts and refunds default to the simulated rails and switch
-	// to the Interswitch NIP single transfer / refund API when configured.
-	var payoutProvider ports.PayoutProvider
-	if strings.EqualFold(cfg.PayoutProvider, "interswitch") {
-		payoutProvider = interswitchClient
-	}
-	var refundProvider ports.RefundProvider
-	if strings.EqualFold(cfg.RefundProvider, "interswitch") {
-		refundProvider = interswitchClient
-	}
-	return &App{
+	convo.SetScreeningProviderName(screeningProviderName)
+	convo.SetAIRateLimiter(rateLimiter, cfg.AIMaxRPM)
+	// Settlement payouts and refunds ride the Interswitch NIP single transfer /
+// refund API (the only supported real rails).
+	payoutProvider := ports.PayoutProvider(interswitchClient)
+	refundProvider := ports.RefundProvider(interswitchClient)
+	app := &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
 		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
 		whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
-		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener,
-		eventBus: eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
+		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
+		smsSender: smsSender,
+		eventBus:  eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
 		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
@@ -308,7 +324,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		imageReader:      imageReader,
 		speechToText:     speechToText,
 		chatAI:           chatAI,
-	}, nil
+	}
+	convo.SetMediaDownloader(app)
+	return app, nil
 }
 
 // Close releases persistent resources.
@@ -320,6 +338,40 @@ func (a *App) Close() {
 		_ = a.eventBus.Close()
 	}
 	a.store.Close()
+}
+
+// Download fetches the raw bytes of an inbound chat media message through the
+// owning channel provider. It satisfies ports.MediaDownloader so the
+// conversation service OCR/transcribes real media instead of nil payloads.
+func (a *App) Download(ctx context.Context, channel, mediaID, mediaURL string) ([]byte, string, error) {
+	switch channel {
+	case service.ChannelTelegram:
+		if a.telegram == nil {
+			return nil, "", errors.New("Telegram is not configured")
+		}
+		return a.telegram.DownloadFile(ctx, mediaID)
+	case service.ChannelInstagram:
+		if a.instagram == nil {
+			return nil, "", errors.New("Instagram is not configured")
+		}
+		return a.instagram.DownloadFile(ctx, mediaID, mediaURL)
+	case service.ChannelTikTok:
+		if a.tiktok == nil {
+			return nil, "", errors.New("TikTok is not configured")
+		}
+		url := mediaURL
+		if url == "" {
+			url = mediaID
+		}
+		return a.tiktok.DownloadMedia(ctx, url)
+	case service.ChannelSMS, service.ChannelAPI, service.ChannelCheckout:
+		return nil, "", fmt.Errorf("channel %s does not support media", channel)
+	default:
+		if a.whatsapp == nil {
+			return nil, "", errors.New("WhatsApp is not configured")
+		}
+		return a.whatsapp.DownloadMedia(ctx, mediaID)
+	}
 }
 
 // Migrate applies the embedded PostgreSQL schema and ensures the bootstrap
@@ -431,6 +483,7 @@ func (a *App) routes() http.Handler {
 	router.With(webhookLimit).Post("/webhooks/instagram", a.receiveInstagramWebhook)
 	router.With(webhookLimit).Post("/webhooks/tiktok", a.receiveTikTokWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
+	router.With(webhookLimit).Post("/webhooks/sms/status", a.receiveSMSStatusWebhook)
 	router.With(webhookLimit).Post("/webhooks/interswitch", a.receiveInterswitchWebhook)
 	router.With(webhookLimit).Post("/webhooks/vtpass", a.receiveVTPassWebhook)
 	router.With(publicLimit).Get("/payments/return", a.paymentReturn)

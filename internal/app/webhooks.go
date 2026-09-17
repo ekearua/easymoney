@@ -181,7 +181,7 @@ func (a *App) receiveInstagramWebhook(w http.ResponseWriter, r *http.Request) {
 		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
 			ID: message.ID, Channel: service.ChannelInstagram, Sender: message.IGSID, Recipient: message.IGSID,
 			Text: message.Text, Interactive: message.Interactive, Username: message.Username,
-			MediaType: message.MediaType, MediaID: message.MediaID, MediaMime: message.MediaMime, Caption: message.Caption,
+			MediaType: message.MediaType, MediaID: message.MediaID, MediaURL: message.MediaURL, MediaMime: message.MediaMime, Caption: message.Caption,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)
@@ -237,7 +237,7 @@ func (a *App) receiveTikTokWebhook(w http.ResponseWriter, r *http.Request) {
 		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
 			ID: update.EventID, Channel: service.ChannelTikTok, Sender: update.OpenID, Recipient: recipient,
 			Text: update.Text, Username: update.Username, UnionID: update.UnionID,
-			MediaType: update.MediaType, MediaID: update.MediaURL, MediaMime: update.MediaMime, Caption: update.Caption,
+			MediaType: update.MediaType, MediaURL: update.MediaURL, MediaMime: update.MediaMime, Caption: update.Caption,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)
@@ -283,6 +283,109 @@ func (a *App) receiveSMSWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"reply": reply})
+}
+
+// receiveSMSStatusWebhook handles delivery-status callbacks from the outbound
+// SMS gateway. It is authenticated the same way as the inbound SMS webhook and
+// reconciles the outbox row (by provider message identifier) to delivered or
+// failed. Unmatched or unrecognized statuses are recorded for audit and respond
+// 200 so gateways do not retry forever.
+func (a *App) receiveSMSStatusWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.SMSEnabled {
+		http.Error(w, "sms disabled", http.StatusNotFound)
+		return
+	}
+	secret := r.Header.Get("X-SMS-Webhook-Secret")
+	if secret == "" {
+		secret = r.Header.Get("X-Xego-SMS-Secret")
+	}
+	if a.cfg.SMSWebhookSecret == "" || secret != a.cfg.SMSWebhookSecret {
+		http.Error(w, "invalid sms secret", http.StatusUnauthorized)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	providerRef, status, reason := parseSMSStatusWebhookPayload(r, body)
+	if providerRef == "" {
+		http.Error(w, "missing provider_ref", http.StatusBadRequest)
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"provider_ref": providerRef, "status": status, "reason": reason})
+	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), "sms_status", "sms-status:"+providerRef, true, payload)
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	matched, reconcileErr := a.store.MarkOutboxDelivery(r.Context(), providerRef, status, reason)
+	switch {
+	case reconcileErr != nil:
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", reconcileErr.Error())
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	case !matched:
+		a.logger.WarnContext(r.Context(), "unmatched sms status callback", "provider_ref", providerRef, "status", status)
+	}
+	_ = a.store.CompleteWebhook(r.Context(), deliveryID, "delivered", "")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// parseSMSStatusWebhookPayload extracts the provider message identifier, the
+// delivery status, and an optional failure reason from a delivery-status
+// callback. It accepts the same envelope conventions as the outbound HTTP
+// sender (message_id, messageId, msg_id, id, reference) plus provider_ref.
+func parseSMSStatusWebhookPayload(r *http.Request, body []byte) (string, string, string) {
+	var payload struct {
+		ProviderRef string `json:"provider_ref"`
+		MessageID   string `json:"message_id"`
+		MessageId   string `json:"messageId"`
+		MsgID       string `json:"msg_id"`
+		ID          string `json:"id"`
+		Reference   string `json:"reference"`
+		Status      string `json:"status"`
+		Error       string `json:"error"`
+		Reason      string `json:"reason"`
+		Message     string `json:"message"`
+	}
+	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+		_ = json.Unmarshal(body, &payload)
+	} else if values, err := url.ParseQuery(string(body)); err == nil {
+		payload.ProviderRef = values.Get("provider_ref")
+		payload.MessageID = values.Get("message_id")
+		payload.MsgID = values.Get("msg_id")
+		payload.ID = values.Get("id")
+		payload.Reference = values.Get("reference")
+		payload.Status = values.Get("status")
+		payload.Error = values.Get("error")
+		payload.Reason = values.Get("reason")
+		payload.Message = values.Get("message")
+	}
+	providerRef := strings.TrimSpace(payload.ProviderRef)
+	if providerRef == "" {
+		providerRef = strings.TrimSpace(payload.MessageID)
+	}
+	if providerRef == "" {
+		providerRef = strings.TrimSpace(payload.MessageId)
+	}
+	if providerRef == "" {
+		providerRef = strings.TrimSpace(payload.MsgID)
+	}
+	if providerRef == "" {
+		providerRef = strings.TrimSpace(payload.ID)
+	}
+	if providerRef == "" {
+		providerRef = strings.TrimSpace(payload.Reference)
+	}
+	reason := strings.TrimSpace(payload.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(payload.Error)
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(payload.Message)
+	}
+	return providerRef, strings.TrimSpace(payload.Status), reason
 }
 
 // receiveInterswitchWebhook handles the Interswitch outbound webhook. The

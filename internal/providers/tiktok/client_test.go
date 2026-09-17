@@ -152,3 +152,40 @@ func TestSendTextRejectsUnconfiguredClient(t *testing.T) {
 		t.Fatal("unconfigured client should error")
 	}
 }
+
+func TestDownloadMedia(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-jpeg-bytes"))
+	}))
+	defer server.Close()
+
+	client := New("secret", "token", "")
+	data, mime, err := client.DownloadMedia(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if string(data) != "fake-jpeg-bytes" {
+		t.Fatalf("unexpected bytes: %q", data)
+	}
+	if mime != "image/jpeg" {
+		t.Fatalf("unexpected mime: %q", mime)
+	}
+}
+
+func TestDownloadMediaErrors(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusGone)
+	}))
+	defer server.Close()
+
+	client := New("secret", "token", "")
+	if _, _, err := client.DownloadMedia(context.Background(), server.URL); err == nil {
+		t.Fatal("non-2xx media download should error")
+	}
+	if _, _, err := client.DownloadMedia(context.Background(), ""); err == nil {
+		t.Fatal("empty media URL should error")
+	}
+}

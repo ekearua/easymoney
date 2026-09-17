@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"whatsapp-payment-demo/internal/config"
-	aiprovider "whatsapp-payment-demo/internal/providers/ai"
 	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/store"
 	"whatsapp-payment-demo/web"
@@ -73,7 +72,7 @@ func TestPostgresWebFlowMediaUpload(t *testing.T) {
 		t.Fatalf("parse webflow template: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	sim := aiprovider.NewSimulated()
+	sim := stubAI{}
 	a := &App{
 		cfg: configForMediaTest(), logger: logger, store: repository,
 		templates: templates, rateLimiter: ratelimit.NewMemory(),

@@ -53,7 +53,7 @@ func TestRefundServiceRefund(t *testing.T) {
 		}
 	}
 
-	svc := NewRefundService(repository, nil, testLogger())
+	svc := NewRefundService(repository, stubRefundProvider{}, testLogger())
 	refund, err := svc.Refund(ctx, payment.ID.String(), "test refund")
 	if err != nil {
 		t.Fatalf("refund request: %v", err)
@@ -136,7 +136,7 @@ func TestRefundServiceIdempotent(t *testing.T) {
 		}
 	}
 
-	svc := NewRefundService(repository, nil, testLogger())
+	svc := NewRefundService(repository, stubRefundProvider{}, testLogger())
 	if _, err := svc.Refund(ctx, payment.ID.String(), "first refund"); err != nil {
 		t.Fatal(err)
 	}

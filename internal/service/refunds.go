@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 
 	"whatsapp-payment-demo/internal/ports"
-	"whatsapp-payment-demo/internal/providers/refund"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -20,10 +19,10 @@ type RefundService struct {
 }
 
 // NewRefundService returns a RefundService backed by the given store and
-// provider. If provider is nil a simulated rail is used.
+// provider.
 func NewRefundService(repository *store.Store, provider ports.RefundProvider, logger *slog.Logger) *RefundService {
 	if provider == nil {
-		provider = refund.NewSimulatedProvider()
+		panic("refund service requires a non-nil refund provider")
 	}
 	return &RefundService{store: repository, provider: provider, logger: logger}
 }

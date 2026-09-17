@@ -308,6 +308,34 @@ func (c *Client) sendImageMedia(ctx context.Context, to string, imageData []byte
 	return nil
 }
 
+// DownloadMedia fetches an inbound media file from the signed URL carried in
+// the message webhook. TikTok's incoming-media URLs are self-authenticating,
+// so no Bearer header is required from this client.
+func (c *Client) DownloadMedia(ctx context.Context, mediaURL string) ([]byte, string, error) {
+	u := strings.TrimSpace(mediaURL)
+	if u == "" {
+		return nil, "", errors.New("TikTok media URL is empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("TikTok media download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, "", fmt.Errorf("TikTok media download returned %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20)) // 16 MiB cap
+	if err != nil {
+		return nil, "", fmt.Errorf("TikTok media download read: %w", err)
+	}
+	return data, resp.Header.Get("Content-Type"), nil
+}
+
 func (c *Client) send(ctx context.Context, to, body string) error {
 	if c.accessToken == "" {
 		return errors.New("TikTok access token is not configured")

@@ -11,7 +11,7 @@ func TestSessionSwitchable(t *testing.T) {
 	t.Parallel()
 	active := []string{
 		"select_merchant", "enter_amount", "select_payment_method", "confirm_payment",
-		"await_bank_transfer", "web_flow_active", "ai_assistant",
+		"web_flow_active", "ai_assistant",
 		"merchant_register_email", "individual_legal_name", "thrift_name",
 		"invoice_item_name", "pay_individual_phone", "wallet_topup_amount",
 		"select_data_network", "kyb_request_confirm", "onboard_name",

@@ -81,15 +81,15 @@ var paymentPlanScenarios = []planScenario{
 	},
 	{
 		id:     "B1",
-		desc:   "Simulated bank transfer success",
+		desc:   "Bank transfer success (Interswitch DVA ledger posting)",
 		tests:  map[string]string{"TestReconciliationThreeWay": "internal/store/store_integration_test.go"},
-		region: "store_integration_test.go:1409 (drives ConfirmBankTransferSimulation)",
+		region: "store_integration_test.go:1409 (bank-transfer draft driven to succeeded)",
 	},
 	{
 		id:     "B2",
-		desc:   "Simulated bank transfer expiry",
+		desc:   "Bank transfer expiry",
 		tests:  map[string]string{"TestBankTransferExpiry_B2": "internal/service/payment_expiry_test.go"},
-		region: "payment_expiry_test.go:100",
+		region: "payment_expiry_test.go:93",
 	},
 	{
 		id:     "B3",

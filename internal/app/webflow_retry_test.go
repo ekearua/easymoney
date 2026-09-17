@@ -30,10 +30,7 @@ import (
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
-	dataprovider "whatsapp-payment-demo/internal/providers/data"
-	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/interswitch"
-	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
@@ -51,10 +48,10 @@ func newWebFlowRetryApp(t *testing.T, ctx context.Context, repository *store.Sto
 		service.ProviderBankTransfer: &simGateway{store: repository},
 	}
 	payments := service.NewPaymentService(cfg, repository, gateways, service.NewProviderRouter(gateways, logger), logger)
-	data := service.NewDataService(repository, payments, dataprovider.NewSimulator())
+	data := service.NewDataService(repository, payments, stubDataProvider{})
 	convo := service.NewConversationService(cfg, repository, payments, data,
 		map[string]ports.Messenger{service.ChannelWhatsApp: &simMessenger{}},
-		nil, identityprovider.NewSimulator(), screeningprovider.NewSimulator())
+		nil, stubIdentityVerifier{}, stubSanctionsScreener{})
 
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,

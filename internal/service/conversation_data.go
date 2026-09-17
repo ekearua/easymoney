@@ -179,83 +179,6 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 	}
 }
 
-func (s *ConversationService) handleDataTransferBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	order, err := s.dataOrderFromSession(ctx, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That data order session expired. Please start again.")
-	}
-	switch {
-	case input == "bank_choose_other":
-		session.Data["bank_query"] = ""
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case strings.HasPrefix(input, "bank_page:"):
-		page := parsePickerPage(strings.TrimPrefix(input, "bank_page:"))
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], page)
-	case !strings.HasPrefix(input, "bank:"):
-		query := strings.TrimSpace(input)
-		session.Data["bank_query"] = query
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, query, 0)
-	}
-	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	account, err := s.store.BankTransferAccountByID(ctx, accountID)
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
-	}
-	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
-	if err != nil {
-		return err
-	}
-	session.State = "await_data_bank_transfer"
-	delete(session.Data, "bank_query")
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendDataBankTransferInstructions(ctx, channel, recipient, payment, order, instruction)
-}
-
-func (s *ConversationService) handleDataBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		order, err := s.dataOrderFromSession(ctx, session)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That data order session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		return s.sendDataBankTransferInstructions(ctx, channel, recipient, payment, order, instruction)
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-	}
-	if _, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment); err != nil {
-		return err
-	}
-	session.State, session.Data = "menu", map[string]string{}
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient, "Thanks. Xego has received your transfer confirmation. Your data order will be fulfilled after payment confirmation is processed.")
-}
-
 func (s *ConversationService) sendDataNetworks(ctx context.Context, channel, recipient string) error {
 	networks, err := s.store.ListActiveDataNetworks(ctx)
 	if err != nil {
@@ -349,18 +272,6 @@ func (s *ConversationService) sendDataWalletReview(ctx context.Context, channel,
 			domain.FormatNGN(order.AmountKobo), s.walletBalanceLine(ctx, user, order.AmountKobo)),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Pay from wallet"},
-			{ID: "cancel_payment", Title: "Cancel"},
-		},
-	})
-}
-
-func (s *ConversationService) sendDataBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, order store.DataOrderView, instruction store.BankTransferInstruction) error {
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Bank transfer details for your data order\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nPayment reference: %s\nRequest code: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above.\n3. Put the payment reference exactly in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nXego uses the payment reference to match the transfer, and the request code to track this data order.",
-			order.NetworkName, order.PlanName, order.BeneficiaryPhone, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference, order.RequestCode),
-		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_bank_transfer", Title: "I have transferred"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})

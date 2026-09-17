@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,6 +87,7 @@ type InboundMessage struct {
 	UnionID     string // TikTok union id when the provider supplies one
 	MediaType   string // image, audio, video, document, photo, voice, ""
 	MediaID     string
+	MediaURL    string // provider-signed download URL when supplied (Instagram, TikTok)
 	MediaMime   string
 	Caption     string
 	Attempts    int
@@ -98,30 +100,6 @@ type GatewayEvent struct {
 	Reference string `json:"reference"`
 	Message   string `json:"message"`
 	Attempts  int    `json:"-"`
-}
-
-// BankTransferAccount is a demo collection account shown to customers.
-type BankTransferAccount struct {
-	ID             uuid.UUID
-	BankName       string
-	AccountName    string
-	AccountNumber  string
-	Active         bool
-	SearchKeywords string
-	SortOrder      int
-	CreatedAt      time.Time
-}
-
-// BankTransferInstruction contains the bank details and simulated proof handle.
-type BankTransferInstruction struct {
-	PaymentID          uuid.UUID
-	BankAccountID      uuid.UUID
-	BankName           string
-	AccountName        string
-	AccountNumber      string
-	SimulatedReference string
-	Status             string
-	CreatedAt          time.Time
 }
 
 // VirtualAccountInstruction is a dynamic virtual account generated against a
@@ -179,7 +157,7 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 	if message.Recipient == "" {
 		message.Recipient = message.Sender
 	}
-	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "union_id": message.UnionID, "media_type": message.MediaType, "media_id": message.MediaID, "media_mime": message.MediaMime, "caption": message.Caption})
+	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "union_id": message.UnionID, "media_type": message.MediaType, "media_id": message.MediaID, "media_url": message.MediaURL, "media_mime": message.MediaMime, "caption": message.Caption})
 	if err != nil {
 		return false, err
 	}
@@ -188,8 +166,8 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 		return false, err
 	}
 	tag, err := s.pool.Exec(ctx, `
-		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload, media_type, media_id, media_mime, caption)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, sealed, message.MediaType, message.MediaID, message.MediaMime, message.Caption)
+		INSERT INTO inbound_messages (provider_message_id, channel, sender, recipient, payload, media_type, media_id, media_url, media_mime, caption)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING`, message.ID, message.Channel, message.Sender, message.Recipient, sealed, message.MediaType, message.MediaID, message.MediaURL, message.MediaMime, message.Caption)
 	return tag.RowsAffected() == 1, err
 }
 
@@ -201,7 +179,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		SELECT provider_message_id,channel,sender,recipient,payload,attempts,media_type,media_id,media_mime,caption
+		SELECT provider_message_id,channel,sender,recipient,payload,attempts,media_type,media_id,media_url,media_mime,caption
 		FROM inbound_messages
 		WHERE status IN ('pending','processing') AND available_at <= now()
 		ORDER BY received_at
@@ -213,7 +191,7 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 	for rows.Next() {
 		var message InboundMessage
 		var payload string
-		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts, &message.MediaType, &message.MediaID, &message.MediaMime, &message.Caption); err != nil {
+		if err := rows.Scan(&message.ID, &message.Channel, &message.Sender, &message.Recipient, &payload, &message.Attempts, &message.MediaType, &message.MediaID, &message.MediaURL, &message.MediaMime, &message.Caption); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -466,174 +444,6 @@ func (s *Store) SetCheckout(ctx context.Context, paymentID uuid.UUID, checkoutUR
 	return tx.Commit(ctx)
 }
 
-// InitializeBankTransferSimulation creates transfer instructions and moves the
-// payment into pending. This simulates a bank rail waiting for customer action.
-func (s *Store) InitializeBankTransferSimulation(ctx context.Context, paymentID, bankAccountID uuid.UUID, simulatedReference string) (BankTransferInstruction, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return BankTransferInstruction{}, err
-	}
-	defer tx.Rollback(ctx)
-
-	var from domain.PaymentStatus
-	var provider string
-	if err := tx.QueryRow(ctx, `SELECT status, provider FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider); err != nil {
-		return BankTransferInstruction{}, err
-	}
-	if provider != "bank_transfer" {
-		return BankTransferInstruction{}, fmt.Errorf("payment provider %q cannot use bank transfer simulation", provider)
-	}
-	if from != domain.StatusAwaitingConfirmation {
-		return BankTransferInstruction{}, fmt.Errorf("cannot initialize bank transfer in %s", from)
-	}
-
-	var instruction BankTransferInstruction
-	err = tx.QueryRow(ctx, `
-		INSERT INTO bank_transfer_simulations(payment_id, bank_account_id, simulated_reference)
-		VALUES($1,$2,$3)
-		ON CONFLICT(payment_id) DO UPDATE
-		SET bank_account_id=EXCLUDED.bank_account_id,
-			simulated_reference=EXCLUDED.simulated_reference,
-			updated_at=now()
-		RETURNING payment_id, bank_account_id, simulated_reference, status, created_at`,
-		paymentID, bankAccountID, simulatedReference,
-	).Scan(&instruction.PaymentID, &instruction.BankAccountID, &instruction.SimulatedReference, &instruction.Status, &instruction.CreatedAt)
-	if err != nil {
-		return BankTransferInstruction{}, err
-	}
-	if err := tx.QueryRow(ctx, `
-		SELECT bank_name, account_name, account_number
-		FROM bank_transfer_accounts
-		WHERE id=$1 AND active=true`, bankAccountID).Scan(&instruction.BankName, &instruction.AccountName, &instruction.AccountNumber); err != nil {
-		return BankTransferInstruction{}, err
-	}
-
-	if !domain.CanTransition(from, domain.StatusPending) {
-		return BankTransferInstruction{}, fmt.Errorf("invalid payment transition %s -> %s", from, domain.StatusPending)
-	}
-	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, updated_at=now() WHERE id=$1`, paymentID, domain.StatusPending); err != nil {
-		return BankTransferInstruction{}, err
-	}
-	detail, err := json.Marshal(map[string]any{
-		"bank_name":           instruction.BankName,
-		"account_number":      instruction.AccountNumber,
-		"simulated_reference": simulatedReference,
-	})
-	if err != nil {
-		return BankTransferInstruction{}, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
-		VALUES($1,$2,$3,'bank_transfer.initialize',$4)`, paymentID, from, domain.StatusPending, detail); err != nil {
-		return BankTransferInstruction{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return BankTransferInstruction{}, err
-	}
-	return instruction, nil
-}
-
-// BankTransferInstructionByPaymentID reloads transfer instructions for retries
-// or customer reminders in the WhatsApp conversation.
-func (s *Store) BankTransferInstructionByPaymentID(ctx context.Context, paymentID uuid.UUID) (BankTransferInstruction, error) {
-	var instruction BankTransferInstruction
-	err := s.pool.QueryRow(ctx, `
-		SELECT bts.payment_id, bts.bank_account_id, bta.bank_name, bta.account_name,
-		       bta.account_number, bts.simulated_reference, bts.status, bts.created_at
-		FROM bank_transfer_simulations bts
-		JOIN bank_transfer_accounts bta ON bta.id=bts.bank_account_id
-		WHERE bts.payment_id=$1`, paymentID).Scan(
-		&instruction.PaymentID, &instruction.BankAccountID, &instruction.BankName,
-		&instruction.AccountName, &instruction.AccountNumber, &instruction.SimulatedReference,
-		&instruction.Status, &instruction.CreatedAt,
-	)
-	return instruction, err
-}
-
-// ConfirmBankTransferSimulation marks a pending simulated transfer successful
-// after the customer taps "I have transferred" in WhatsApp.
-func (s *Store) ConfirmBankTransferSimulation(ctx context.Context, paymentID uuid.UUID, outbox OutboxSpec) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-
-	var from domain.PaymentStatus
-	var provider string
-	var amountKobo int64
-	var currency string
-	var merchantID uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT status, provider, amount_kobo, currency, merchant_id FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &provider, &amountKobo, &currency, &merchantID); err != nil {
-		return false, err
-	}
-	if provider != "bank_transfer" {
-		return false, fmt.Errorf("payment provider %q cannot confirm bank transfer simulation", provider)
-	}
-	if from == domain.StatusSucceeded {
-		return false, tx.Commit(ctx)
-	}
-	if !domain.CanTransition(from, domain.StatusSucceeded) {
-		return false, fmt.Errorf("invalid payment transition %s -> %s", from, domain.StatusSucceeded)
-	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE bank_transfer_simulations
-		SET status='user_confirmed', confirmed_at=COALESCE(confirmed_at, now()), updated_at=now()
-		WHERE payment_id=$1`, paymentID); err != nil {
-		return false, err
-	}
-	detail, err := json.Marshal(map[string]any{"simulation": true, "confirmation": "user_tapped_i_have_transferred"})
-	if err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `UPDATE payments SET status=$2, paid_at=COALESCE(paid_at, now()), updated_at=now() WHERE id=$1`, paymentID, domain.StatusSucceeded); err != nil {
-		return false, err
-	}
-	// C16: money-in posting, mirroring the card-gateway success path. Thrift and
-	// data-order payments stay untagged platform movements; plain merchant
-	// collections are tagged and accrue the merchant payable.
-	var isInvoice, isThrift, isData bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM invoice_payments WHERE payment_id=$1),
-		       EXISTS(SELECT 1 FROM thrift_contributions WHERE payment_id=$1),
-		       EXISTS(SELECT 1 FROM data_orders WHERE payment_id=$1)`, paymentID).
-		Scan(&isInvoice, &isThrift, &isData); err != nil {
-		return false, err
-	}
-	var tag *uuid.UUID
-	if !isThrift && !isData {
-		tag = &merchantID
-	}
-	if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-		LedgerAccountOperatingBank, LedgerAccountCustomerFloat, currency, "Payment received (bank transfer)", "system", amountKobo, tag); err != nil {
-		return false, err
-	}
-	if !isInvoice && !isThrift && !isData {
-		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-			LedgerAccountCustomerFloat, LedgerAccountMerchantPayable, currency, "Merchant collection accrual", "system", amountKobo, &merchantID); err != nil {
-			return false, err
-		}
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO payment_events(payment_id,from_status,to_status,source,detail)
-		VALUES($1,$2,$3,'bank_transfer.user_confirmation',$4)`, paymentID, from, domain.StatusSucceeded, detail); err != nil {
-		return false, err
-	}
-	if outbox.Channel == "" {
-		outbox.Channel = "whatsapp"
-	}
-	sealed, err := s.sealValue(outbox.Payload)
-	if err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO message_outbox(user_id,channel,recipient,kind,payload)
-		VALUES($1,$2,$3,$4,$5)`, outbox.UserID, outbox.Channel, outbox.Recipient, outbox.Kind, sealed); err != nil {
-		return false, err
-	}
-	return true, tx.Commit(ctx)
-}
-
 // PaymentByID returns one payment with display fields.
 func (s *Store) PaymentByID(ctx context.Context, id uuid.UUID) (PaymentView, error) {
 	return s.paymentBy(ctx, "p.id=$1", id)
@@ -726,16 +536,13 @@ func (s *Store) UnresolvedPayments(ctx context.Context, olderThan time.Time, lim
 }
 
 // ExpirablePayments returns stale pre-checkout attempts whose lifecycle can safely end.
-// Simulated bank-transfer payments join the expirable set only from 'pending'
-// (instructions issued, customer never confirmed): the rail has no gateway to
-// requery, so without expiry the attempt would sit in pending forever. A
-// gateway 'pending' (Interswitch, incl. DVA) must NOT expire here — late
-// funds still verify through UnresolvedPayments/VerifyAndApply, and expired
-// is terminal, so expiring it could strand a real late payment.
+// Only drafts and awaiting-confirmation attempts expire. Gateway-initialized
+// attempts (Interswitch, incl. DVA) must NOT expire here — late funds still
+// verify through UnresolvedPayments/VerifyAndApply, and expired is terminal, so
+// expiring one could strand a real late payment.
 func (s *Store) ExpirablePayments(ctx context.Context, customerCutoff time.Time, limit int) ([]PaymentView, error) {
 	return s.listPayments(ctx, `
-		WHERE (p.status IN ('draft','awaiting_confirmation')
-		       OR (p.status = 'pending' AND p.provider = 'bank_transfer'))
+		WHERE p.status IN ('draft','awaiting_confirmation')
 		AND p.updated_at < $1
 		ORDER BY p.updated_at LIMIT $2`, customerCutoff, limit)
 }
@@ -982,6 +789,37 @@ func (s *Store) RetryOutbox(ctx context.Context, id int64, attempts int, message
 		SET status=$2,attempts=$3,last_error=$4,available_at=$5
 		WHERE id=$1`, id, status, nextAttempts, redact.Error(message, redact.DefaultMaxLen), time.Now().Add(delay))
 	return err
+}
+
+// SetOutboxProviderRef records the provider's message identifier after a
+// successful outbound send so the delivery-status webhook can correlate
+// async callbacks to the outbox row.
+func (s *Store) SetOutboxProviderRef(ctx context.Context, id int64, providerRef string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE message_outbox SET provider_ref=$2 WHERE id=$1`, id, providerRef)
+	return err
+}
+
+// MarkOutboxDelivery reconciles an outbound message from a provider
+// delivery-status callback keyed by the provider message identifier.
+// delivered=true marks the row delivered; false marks it failed with the
+// provider's reason. It returns whether an outbox row matched so callers can
+// log unmatched callbacks. Unrecognized status strings are ignored.
+func (s *Store) MarkOutboxDelivery(ctx context.Context, providerRef, status, reason string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "delivered", "sent", "success", "ok":
+		tag, err := s.pool.Exec(ctx, `UPDATE message_outbox SET status='delivered' WHERE provider_ref=$1`, providerRef)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	case "failed", "undelivered", "rejected", "error", "canceled", "cancelled", "expired":
+		tag, err := s.pool.Exec(ctx, `UPDATE message_outbox SET status='failed',last_error=$2 WHERE provider_ref=$1`, providerRef, redact.Error(reason, redact.DefaultMaxLen))
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	}
+	return false, nil
 }
 
 // Metrics returns a compact operational summary.

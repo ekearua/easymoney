@@ -20,10 +20,7 @@ import (
 
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/ports"
-	dataprovider "whatsapp-payment-demo/internal/providers/data"
-	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/instagram"
-	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/providers/tiktok"
 	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/service"
@@ -40,9 +37,9 @@ func newChannelWebhookApp(t *testing.T, ctx context.Context, repository *store.S
 		service.ProviderInterswitch:  &simGateway{store: repository},
 		service.ProviderBankTransfer: &simGateway{store: repository},
 	}, service.NewProviderRouter(nil, logger), logger)
-	data := service.NewDataService(repository, payments, dataprovider.NewSimulator())
+	data := service.NewDataService(repository, payments, stubDataProvider{})
 	convo := service.NewConversationService(cfg, repository, payments, data, messengers,
-		nil, identityprovider.NewSimulator(), screeningprovider.NewSimulator())
+		nil, stubIdentityVerifier{}, stubSanctionsScreener{})
 	a := &App{
 		cfg: cfg, logger: logger, store: repository,
 		payments: payments, data: data, conversation: convo,

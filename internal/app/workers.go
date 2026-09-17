@@ -12,6 +12,7 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/service"
+	"whatsapp-payment-demo/internal/store"
 )
 
 func (a *App) runWorkers(ctx context.Context) {
@@ -220,7 +221,9 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			if err := json.Unmarshal(message.Payload, &payload); err != nil {
 				sendErr = err
 			} else {
-				sendErr = a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
+				providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
+				sendErr = err
+				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
 			}
 		case "image":
 			var payload struct {
@@ -230,7 +233,9 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			if err := json.Unmarshal(message.Payload, &payload); err != nil {
 				sendErr = err
 			} else {
-				sendErr = a.sendOutboxImage(ctx, message.Channel, message.Recipient, payload.ImageData, payload.Caption)
+				providerRef, err := a.sendOutboxImage(ctx, message.Channel, message.Recipient, payload.ImageData, payload.Caption)
+				sendErr = err
+				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
 			}
 		case "template":
 			var payload struct {
@@ -242,7 +247,9 @@ func (a *App) deliverOutbox(ctx context.Context) {
 			} else if message.Channel == service.ChannelWhatsApp {
 				sendErr = a.whatsapp.SendTemplate(ctx, message.Recipient, payload.Name, payload.Parameters)
 			} else {
-				sendErr = a.sendOutboxText(ctx, message.Channel, message.Recipient, strings.Join(payload.Parameters, "\n"))
+				providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, strings.Join(payload.Parameters, "\n"))
+				sendErr = err
+				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
 			}
 		default:
 			sendErr = fmt.Errorf("unsupported outbox kind %q", message.Kind)
@@ -255,56 +262,80 @@ func (a *App) deliverOutbox(ctx context.Context) {
 	}
 }
 
-func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body string) error {
-	switch channel {
-	case service.ChannelSMS:
-		// The SMS MVP returns replies synchronously from /webhooks/sms. A live SMS
-		// sender can be wired here later without changing order fulfilment logic.
-		return nil
-	case service.ChannelTelegram:
-		if a.telegram == nil {
-			return errors.New("Telegram is not configured")
+// persistOutboxProviderRef records the provider message identifier returned by
+// a successful send so delivery-status webhooks can reconcile the row later.
+func (a *App) persistOutboxProviderRef(ctx context.Context, message store.OutboxMessage, sent bool, providerRef string) {
+	if sent && providerRef != "" {
+		if err := a.store.SetOutboxProviderRef(ctx, message.ID, providerRef); err != nil {
+			a.logger.WarnContext(ctx, "set outbox provider ref", "id", message.ID, "error", err)
 		}
-		return a.telegram.SendText(ctx, recipient, body)
-	case service.ChannelInstagram:
-		if a.instagram == nil {
-			return errors.New("Instagram is not configured")
-		}
-		return a.instagram.SendText(ctx, recipient, body)
-	case service.ChannelTikTok:
-		if a.tiktok == nil {
-			return errors.New("TikTok is not configured")
-		}
-		return a.tiktok.SendText(ctx, recipient, body)
-	default:
-		return a.whatsapp.SendText(ctx, recipient, body)
 	}
 }
 
-func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageDataB64, caption string) error {
+func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body string) (string, error) {
+	switch channel {
+	case service.ChannelSMS:
+		// Webhook mode (SMS_PROVIDER unset/webhook) never enqueues SMS rows,
+		// so a nil sender is a safe no-op. With SMS_PROVIDER=http the sender
+		// delivers outbound SMS and returns the provider message identifier
+		// for lifecycle tracking; the SMS gateway then reports delivery
+		// status to /webhooks/sms/status.
+		if a.smsSender == nil {
+			return "", nil
+		}
+		return a.smsSender.Send(ctx, recipient, body)
+	case service.ChannelTelegram:
+		if a.telegram == nil {
+			return "", errors.New("Telegram is not configured")
+		}
+		return "", a.telegram.SendText(ctx, recipient, body)
+	case service.ChannelInstagram:
+		if a.instagram == nil {
+			return "", errors.New("Instagram is not configured")
+		}
+		return "", a.instagram.SendText(ctx, recipient, body)
+	case service.ChannelTikTok:
+		if a.tiktok == nil {
+			return "", errors.New("TikTok is not configured")
+		}
+		return "", a.tiktok.SendText(ctx, recipient, body)
+	default:
+		return "", a.whatsapp.SendText(ctx, recipient, body)
+	}
+}
+
+func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageDataB64, caption string) (string, error) {
 	imageData, err := base64.StdEncoding.DecodeString(imageDataB64)
 	if err != nil {
-		return fmt.Errorf("decode image data: %w", err)
+		return "", fmt.Errorf("decode image data: %w", err)
 	}
 	switch channel {
 	case service.ChannelSMS:
-		return nil
+		// SMS has no image support; deliver a text notice instead.
+		if a.smsSender == nil {
+			return "", nil
+		}
+		text := caption
+		if text == "" {
+			text = "Receipt/document sent. Check the app."
+		}
+		return a.smsSender.Send(ctx, recipient, text)
 	case service.ChannelTelegram:
 		if a.telegram == nil {
-			return errors.New("Telegram is not configured")
+			return "", errors.New("Telegram is not configured")
 		}
-		return a.telegram.SendImage(ctx, recipient, imageData, caption)
+		return "", a.telegram.SendImage(ctx, recipient, imageData, caption)
 	case service.ChannelInstagram:
 		if a.instagram == nil {
-			return errors.New("Instagram is not configured")
+			return "", errors.New("Instagram is not configured")
 		}
-		return a.instagram.SendImage(ctx, recipient, imageData, caption)
+		return "", a.instagram.SendImage(ctx, recipient, imageData, caption)
 	case service.ChannelTikTok:
 		if a.tiktok == nil {
-			return errors.New("TikTok is not configured")
+			return "", errors.New("TikTok is not configured")
 		}
-		return a.tiktok.SendImage(ctx, recipient, imageData, caption)
+		return "", a.tiktok.SendImage(ctx, recipient, imageData, caption)
 	default:
-		return a.whatsapp.SendImage(ctx, recipient, imageData, caption)
+		return "", a.whatsapp.SendImage(ctx, recipient, imageData, caption)
 	}
 }

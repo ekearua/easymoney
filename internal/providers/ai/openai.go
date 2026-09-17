@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/redact"
 )
 
 // OpenAI implements ports.ChatAI, ports.ImageReader, and ports.SpeechToText
@@ -213,7 +214,7 @@ func (o *OpenAI) Transcribe(ctx context.Context, audioData []byte, mimeType stri
 		return "", fmt.Errorf("whisper read: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("whisper returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		return "", fmt.Errorf("whisper returned %s: %s", resp.Status, redact.Error(string(respBody), redact.DefaultMaxLen))
 	}
 	return strings.TrimSpace(string(respBody)), nil
 }
@@ -225,9 +226,16 @@ type chatMessage struct {
 	Content any    `json:"content"` // string or []any for multimodal
 }
 
+// chatResponseFormat requests a strict JSON object from OpenAI-compatible
+// endpoints. Only sent for JSON-mode calls (intent classification).
+type chatResponseFormat struct {
+	Type string `json:"type"`
+}
+
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model          string              `json:"model"`
+	Messages       []chatMessage       `json:"messages"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
 }
 
 type chatResponse struct {
@@ -240,6 +248,9 @@ type chatResponse struct {
 
 func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMode bool) (string, error) {
 	body := chatRequest{Model: o.chatModel, Messages: msgs}
+	if jsonMode {
+		body.ResponseFormat = &chatResponseFormat{Type: "json_object"}
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return "", err
@@ -250,9 +261,6 @@ func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMod
 	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	if jsonMode {
-		req.Header.Set("OpenAI-Response-Format", `{"type":"json_object"}`)
-	}
 
 	resp, err := o.httpClient.Do(req)
 	if err != nil {
@@ -264,7 +272,7 @@ func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMod
 		return "", fmt.Errorf("chat read: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("chat returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+		return "", fmt.Errorf("chat returned %s: %s", resp.Status, redact.Error(string(respBody), redact.DefaultMaxLen))
 	}
 	var chatResp chatResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {

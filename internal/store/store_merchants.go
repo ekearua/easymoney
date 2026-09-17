@@ -496,95 +496,6 @@ func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) 
 	return collectMerchants(rows)
 }
 
-// ListActiveBankTransferAccounts returns collection banks customers can choose.
-func (s *Store) ListActiveBankTransferAccounts(ctx context.Context) ([]BankTransferAccount, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, bank_name, account_name, account_number, active, search_keywords, sort_order, created_at
-		FROM bank_transfer_accounts
-		WHERE active=true
-		ORDER BY sort_order, bank_name`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var accounts []BankTransferAccount
-	for rows.Next() {
-		account, err := scanBankTransferAccount(rows)
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, account)
-	}
-	return accounts, rows.Err()
-}
-
-// BankTransferAccountByID resolves one active demo collection account.
-func (s *Store) BankTransferAccountByID(ctx context.Context, id uuid.UUID) (BankTransferAccount, error) {
-	var account BankTransferAccount
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, bank_name, account_name, account_number, active, search_keywords, sort_order, created_at
-		FROM bank_transfer_accounts
-		WHERE id=$1 AND active=true`, id).Scan(
-		&account.ID, &account.BankName, &account.AccountName, &account.AccountNumber,
-		&account.Active, &account.SearchKeywords, &account.SortOrder, &account.CreatedAt,
-	)
-	return account, err
-}
-
-// RecommendedBankTransferAccount returns the default collection bank promoted first.
-func (s *Store) RecommendedBankTransferAccount(ctx context.Context) (BankTransferAccount, error) {
-	var account BankTransferAccount
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, bank_name, account_name, account_number, active, search_keywords, sort_order, created_at
-		FROM bank_transfer_accounts
-		WHERE active=true
-		ORDER BY sort_order, bank_name
-		LIMIT 1`).Scan(
-		&account.ID, &account.BankName, &account.AccountName, &account.AccountNumber,
-		&account.Active, &account.SearchKeywords, &account.SortOrder, &account.CreatedAt,
-	)
-	return account, err
-}
-
-// SearchBankTransferAccounts returns one customer-facing page of active banks.
-func (s *Store) SearchBankTransferAccounts(ctx context.Context, query string, offset, limit int) ([]BankTransferAccount, bool, error) {
-	offset, limit = normalizePageBounds(offset, limit)
-	search := strings.ToLower(strings.TrimSpace(query))
-	args := []any{limit + 1, offset}
-	sql := `
-		SELECT id, bank_name, account_name, account_number, active, search_keywords, sort_order, created_at
-		FROM bank_transfer_accounts
-		WHERE active=true`
-	if search != "" {
-		args = append(args, "%"+search+"%")
-		sql += ` AND (
-			lower(bank_name) LIKE $3 OR lower(account_name) LIKE $3 OR
-			lower(account_number) LIKE $3 OR lower(search_keywords) LIKE $3
-		)`
-	}
-	sql += ` ORDER BY sort_order, bank_name LIMIT $1 OFFSET $2`
-	rows, err := s.pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	var accounts []BankTransferAccount
-	for rows.Next() {
-		account, err := scanBankTransferAccount(rows)
-		if err != nil {
-			return nil, false, err
-		}
-		accounts = append(accounts, account)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(accounts) > limit
-	if hasMore {
-		accounts = accounts[:limit]
-	}
-	return accounts, hasMore, nil
-}
 
 func collectMerchants(rows pgx.Rows) ([]Merchant, error) {
 	var merchants []Merchant
@@ -612,14 +523,6 @@ func scanMerchant(rows pgx.Rows) (Merchant, error) {
 	return merchant, err
 }
 
-func scanBankTransferAccount(rows pgx.Rows) (BankTransferAccount, error) {
-	var account BankTransferAccount
-	err := rows.Scan(
-		&account.ID, &account.BankName, &account.AccountName, &account.AccountNumber,
-		&account.Active, &account.SearchKeywords, &account.SortOrder, &account.CreatedAt,
-	)
-	return account, err
-}
 
 // MerchantByID returns a single merchant by its ID.
 func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error) {

@@ -74,7 +74,7 @@ func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel
 				return err
 			}
 			return s.sendText(ctx, channel, recipient,
-				fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+				fmt.Sprintf("%s ΓÇö %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
 		}
 		evt := events[n-len(services)-1]
 		tiers, err := s.store.ActiveTiersByEventID(ctx, evt.ID)
@@ -100,7 +100,7 @@ func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel
 				return err
 			}
 			return s.sendText(ctx, channel, recipient,
-				fmt.Sprintf("%s — %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
+				fmt.Sprintf("%s ΓÇö %s each\n\nHow many? (Enter a number, default is 1)", svc.Name, domain.FormatNGN(svc.UnitPriceKobo)))
 		}
 	}
 	for _, evt := range events {
@@ -134,7 +134,7 @@ func (s *ConversationService) handleServiceQuantity(ctx context.Context, channel
 	total := int64(qty) * unitPrice
 	if total < s.cfg.PaymentMinKobo || total > s.cfg.PaymentMaxKobo {
 		return s.sendText(ctx, channel, recipient,
-			fmt.Sprintf("Total is %s which is outside the allowed range (%s–%s). Try a different quantity.",
+			fmt.Sprintf("Total is %s which is outside the allowed range (%sΓÇô%s). Try a different quantity.",
 				domain.FormatNGN(total), domain.FormatNGN(s.cfg.PaymentMinKobo), domain.FormatNGN(s.cfg.PaymentMaxKobo)))
 	}
 	serviceID := session.Data["service_id"]
@@ -232,7 +232,7 @@ func (s *ConversationService) handleEventTierSelection(ctx context.Context, chan
 			return s.sendText(ctx, channel, recipient, "Sorry, that tier is sold out. Choose another tier.")
 		}
 		session.Data["event_tier_id"] = tier.ID.String()
-		session.Data["service_name"] = session.Data["event_name"] + " — " + tier.Name
+		session.Data["service_name"] = session.Data["event_name"] + " ΓÇö " + tier.Name
 		session.Data["unit_price_kobo"] = strconv.FormatInt(tier.PriceKobo, 10)
 		delete(session.Data, "event_id")
 		delete(session.Data, "event_name")
@@ -241,14 +241,14 @@ func (s *ConversationService) handleEventTierSelection(ctx context.Context, chan
 			return err
 		}
 		return s.sendText(ctx, channel, recipient,
-			fmt.Sprintf("%s — %s each\n\nHow many tickets? (Enter a number, default is 1)", session.Data["service_name"], domain.FormatNGN(tier.PriceKobo)))
+			fmt.Sprintf("%s ΓÇö %s each\n\nHow many tickets? (Enter a number, default is 1)", session.Data["service_name"], domain.FormatNGN(tier.PriceKobo)))
 	}
 	return s.sendEventTierPicker(ctx, channel, recipient, store.MerchantEvent{ID: eventID, Name: session.Data["event_name"]}, tiers)
 }
 
 func (s *ConversationService) sendEventTierPicker(ctx context.Context, channel, recipient string, evt store.MerchantEvent, tiers []store.EventTicketTier) error {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🎫 %s — choose a ticket tier:\n", evt.Name))
+	sb.WriteString(fmt.Sprintf("≡ƒÄ½ %s ΓÇö choose a ticket tier:\n", evt.Name))
 	for i, tier := range tiers {
 		availText := ""
 		if tier.Capacity >= 0 {
@@ -259,7 +259,7 @@ func (s *ConversationService) sendEventTierPicker(ctx context.Context, channel, 
 				availText = fmt.Sprintf(" [%d left]", remaining)
 			}
 		}
-		sb.WriteString(fmt.Sprintf("\n%d. %s — %s%s", i+1, tier.Name, domain.FormatNGN(tier.PriceKobo), availText))
+		sb.WriteString(fmt.Sprintf("\n%d. %s ΓÇö %s%s", i+1, tier.Name, domain.FormatNGN(tier.PriceKobo), availText))
 	}
 	sb.WriteString("\n\nSend the number of your choice, or type BACK to go back.")
 	return s.sendText(ctx, channel, recipient, sb.String())
@@ -294,7 +294,7 @@ func buildCustomFieldsPrompt(fields []store.ServiceCustomField) string {
 		if f.IsRequired {
 			req = " (required)"
 		}
-		sb.WriteString(fmt.Sprintf("\n• %s%s", f.FieldName, req))
+		sb.WriteString(fmt.Sprintf("\nΓÇó %s%s", f.FieldName, req))
 	}
 	return sb.String()
 }
@@ -328,7 +328,7 @@ func buildEventCustomFieldsPrompt(fields []store.EventCustomField) string {
 		if f.IsRequired {
 			req = " (required)"
 		}
-		sb.WriteString(fmt.Sprintf("\n• %s%s", f.FieldName, req))
+		sb.WriteString(fmt.Sprintf("\nΓÇó %s%s", f.FieldName, req))
 	}
 	return sb.String()
 }
@@ -563,69 +563,6 @@ func (s *ConversationService) recordEventTicketPurchase(ctx context.Context, pay
 	return nil
 }
 
-func (s *ConversationService) handleTransferBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if session.Data == nil {
-		session.Data = map[string]string{}
-	}
-	merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
-	if err != nil {
-		session.State = "select_merchant"
-		_ = s.saveSession(ctx, session)
-		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
-	}
-	switch {
-	case input == "bank_choose_other":
-		session.Data["bank_query"] = ""
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case strings.HasPrefix(input, "bank_page:"):
-		page := parsePickerPage(strings.TrimPrefix(input, "bank_page:"))
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], page)
-	case !strings.HasPrefix(input, "bank:"):
-		query := strings.TrimSpace(input)
-		session.Data["bank_query"] = query
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, query, 0)
-	}
-	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	account, err := s.store.BankTransferAccountByID(ctx, accountID)
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
-	if err != nil {
-		return err
-	}
-	eventTierIDStr := session.Data["event_tier_id"]
-	if eventTierIDStr != "" {
-		if err := s.recordEventTicketPurchase(ctx, payment.ID, eventTierIDStr, session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
-			return err
-		}
-	} else {
-		if err := s.recordServicePurchase(ctx, payment.ID, session.Data["service_id"], session.Data["service_quantity"], session.Data["custom_data_json"]); err != nil {
-			return err
-		}
-	}
-	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
-	if err != nil {
-		return err
-	}
-	session.State = "await_bank_transfer"
-	session.Data["payment_id"] = payment.ID.String()
-	delete(session.Data, "bank_query")
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
-}
-
 func (s *ConversationService) sendCardReview(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
 	fee := XegoCollectionFee(s.cfg, "card", amount).FeeKobo
 	charge := amount + fee
@@ -679,7 +616,7 @@ func (s *ConversationService) sendWalletReview(ctx context.Context, channel, rec
 	}
 	balanceLine := fmt.Sprintf("\nWallet balance: %s", domain.FormatNGN(balance))
 	if balance < charge {
-		balanceLine += "\n⚠️ Not enough in your wallet — top up or choose another payment method."
+		balanceLine += "\nΓÜá∩╕Å Not enough in your wallet ΓÇö top up or choose another payment method."
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
@@ -718,32 +655,6 @@ func (s *ConversationService) walletBalanceLine(ctx context.Context, user store.
 	return line
 }
 
-func (s *ConversationService) handleBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-	}
-	if _, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment); err != nil {
-		return err
-	}
-	session.State, session.Data = "menu", map[string]string{}
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient, "Thanks. Xego has received your transfer confirmation. You'll receive the final update shortly.")
-}
-
 func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
@@ -754,91 +665,4 @@ func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, r
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 		},
 	})
-}
-
-func (s *ConversationService) sendTransferBanks(ctx context.Context, channel, recipient string) error {
-	accounts, err := s.store.ListActiveBankTransferAccounts(ctx)
-	if err != nil {
-		return err
-	}
-	rows := make([]ports.InteractiveRow, 0, len(accounts))
-	for _, account := range accounts {
-		rows = append(rows, ports.InteractiveRow{
-			ID:          "bank:" + account.ID.String(),
-			Title:       account.BankName,
-			Description: account.AccountName + " · " + account.AccountNumber,
-		})
-	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:          recipient,
-		Body:        "Choose the Xego collection bank you want to transfer to. Pick the bank that is easiest for you to pay into.",
-		ButtonLabel: "Choose bank",
-		Sections:    []ports.InteractiveSection{{Title: "Nigerian banks", Rows: rows}},
-	})
-}
-
-func (s *ConversationService) sendRecommendedTransferBank(ctx context.Context, channel, recipient string) error {
-	account, err := s.store.RecommendedBankTransferAccount(ctx)
-	if err != nil {
-		return err
-	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Recommended collection bank\n\nBank: %s\nAccount name: %s\nAccount number: %s\n\nUse this bank if it is convenient. Xego will generate a unique payment reference after this step; copy that reference into your bank app's narration, remark, or payment reference field.",
-			account.BankName, account.AccountName, account.AccountNumber),
-		Buttons: []ports.InteractiveButton{
-			{ID: "bank:" + account.ID.String(), Title: "Use this bank"},
-			{ID: "bank_choose_other", Title: "Choose another"},
-		},
-	})
-}
-
-func (s *ConversationService) sendTransferBankPicker(ctx context.Context, channel, recipient, query string, page int) error {
-	page = normalizePickerPage(page)
-	query = strings.TrimSpace(query)
-	accounts, hasMore, err := s.store.SearchBankTransferAccounts(ctx, query, page*pickerPageSize, pickerPageSize)
-	if err != nil {
-		return err
-	}
-	if len(accounts) == 0 {
-		if query == "" {
-			return s.sendText(ctx, channel, recipient, "No collection banks are available right now. Please try again shortly.")
-		}
-		return s.sendText(ctx, channel, recipient, "I couldn't find that bank. Type another bank name, or type MENU to return to the main menu.")
-	}
-	rows := make([]ports.InteractiveRow, 0, len(accounts)+2)
-	for _, account := range accounts {
-		rows = append(rows, bankRow(account))
-	}
-	rows = appendPickerNavigation(rows, "bank_page:", page, hasMore)
-	body := "Choose the Xego collection bank you want to transfer to. Pick the bank that is easiest for you to pay into.\n\nAfter choosing, Xego will show the exact amount and a unique reference to enter in your bank app."
-	if query != "" {
-		body = fmt.Sprintf("Bank search results for %q.\n\nChoose a collection bank, or type another bank name to search again.", query)
-	}
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:          recipient,
-		Body:        body,
-		ButtonLabel: "Choose bank",
-		Sections:    []ports.InteractiveSection{{Title: "Collection banks", Rows: rows}},
-	})
-}
-
-func (s *ConversationService) sendBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, instruction store.BankTransferInstruction) error {
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Bank transfer details\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nReference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above to this account.\n3. Put the reference exactly as shown in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nThe reference is how Xego matches your transfer to this payment.",
-			payment.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference),
-		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_bank_transfer", Title: "I have transferred"},
-			{ID: "cancel_payment", Title: "Cancel"},
-		},
-	})
-}
-
-func bankRow(account store.BankTransferAccount) ports.InteractiveRow {
-	return ports.InteractiveRow{
-		ID:          "bank:" + account.ID.String(),
-		Title:       truncateInteractiveTitle(account.BankName),
-		Description: truncateInteractiveDescription(account.AccountName + " - " + account.AccountNumber),
-	}
 }

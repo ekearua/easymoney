@@ -33,9 +33,6 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
-	dataprovider "whatsapp-payment-demo/internal/providers/data"
-	identityprovider "whatsapp-payment-demo/internal/providers/identity"
-	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
@@ -97,12 +94,12 @@ func TestReproWalletWebPayment(t *testing.T) {
 		service.ProviderBankTransfer: &simGateway{store: repository},
 	}
 	payments := service.NewPaymentService(cfg, repository, gateways, service.NewProviderRouter(gateways, logger), logger)
-	data := service.NewDataService(repository, payments, dataprovider.NewSimulator())
+	data := service.NewDataService(repository, payments, stubDataProvider{})
 
 	messenger := &simMessenger{}
 	convo := service.NewConversationService(cfg, repository, payments, data,
 		map[string]ports.Messenger{service.ChannelWhatsApp: messenger},
-		nil, identityprovider.NewSimulator(), screeningprovider.NewSimulator())
+		nil, stubIdentityVerifier{}, stubSanctionsScreener{})
 
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,

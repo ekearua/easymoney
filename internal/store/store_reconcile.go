@@ -1,8 +1,8 @@
-// C17: three-way reconciliation. A run compares the three money-movement legs
-// that exist in the demo — internal payments state, the C16 double-entry
-// ledger, and the simulated bank rail — and persists every discrepancy found.
-// Runs are stored so the CBN paper trail shows automated daily runs plus
-// manual weekly runs.
+// C17: reconciliation. A run compares the two money-movement legs that exist
+// now that bank transfers run through the Interswitch gateway — internal
+// payments state and the C16 double-entry ledger — and persists every
+// discrepancy found. Runs are stored so the CBN paper trail shows automated
+// daily runs plus manual weekly runs.
 package store
 
 import (
@@ -13,7 +13,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ReconciliationRun is one snapshot of a three-way reconciliation.
+// ReconciliationRun is one snapshot of a reconciliation.
 type ReconciliationRun struct {
 	ID               int64
 	RunType          string // "auto" or "manual"
@@ -37,9 +37,9 @@ type ReconciliationItem struct {
 	Detail       string
 }
 
-// RunReconciliation compares internal payments vs ledger money-in postings vs
-// the simulated bank rail and stores the outcome. It returns the run and the
-// discrepancies found (empty slice means clean).
+// RunReconciliation compares internal payments vs ledger money-in postings and
+// stores the outcome. It returns the run and the discrepancies found (empty
+// slice means clean).
 func (s *Store) RunReconciliation(ctx context.Context, runType, createdBy string) (ReconciliationRun, []ReconciliationItem, error) {
 	if runType != "auto" && runType != "manual" {
 		runType = "auto"

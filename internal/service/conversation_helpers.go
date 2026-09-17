@@ -495,37 +495,19 @@ func describeCurrentFlow(session store.Session) string {
 			}
 		}
 		return fmt.Sprintf("confirming a card payment to %s", merchant)
-	case "select_transfer_bank":
-		merchant := session.Data["merchant_slug"]
-		amount := session.Data["amount_kobo"]
-		if amount != "" {
-			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
-				return fmt.Sprintf("selecting a bank for %s transfer to %s", domain.FormatNGN(kobo), merchant)
-			}
-		}
-		return fmt.Sprintf("selecting a bank for transfer to %s", merchant)
-	case "await_bank_transfer":
-		merchant := session.Data["merchant_slug"]
-		amount := session.Data["amount_kobo"]
-		if amount != "" {
-			if kobo, err := strconv.ParseInt(amount, 10, 64); err == nil {
-				return fmt.Sprintf("waiting for your bank transfer of %s to %s", domain.FormatNGN(kobo), merchant)
-			}
-		}
-		return fmt.Sprintf("waiting for your bank transfer to %s", merchant)
-	case "invoice_pay_amount", "invoice_pay_method", "invoice_pay_bank", "await_invoice_bank_transfer":
+	case "invoice_pay_amount", "invoice_pay_method":
 		ref := session.Data["invoice_reference"]
 		if ref != "" {
 			return fmt.Sprintf("paying invoice %s", ref)
 		}
 		return "paying an invoice"
-	case "thrift_pay_method", "thrift_pay_bank", "await_thrift_bank_transfer":
+	case "thrift_pay_method":
 		name := session.Data["thrift_name"]
 		if name != "" {
 			return fmt.Sprintf("paying a thrift contribution to %s", name)
 		}
 		return "paying a thrift contribution"
-	case "select_data_payment_method", "select_data_transfer_bank", "await_data_bank_transfer":
+	case "select_data_payment_method":
 		return "purchasing mobile data"
 	case "pay_individual_method", "await_individual_bank_transfer", "await_individual_payment":
 		phone := session.Data["recipient_phone"]
@@ -594,18 +576,6 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 			return s.sendText(ctx, channel, recipient, "That payment session expired. Please start again.")
 		}
 		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
-	case "select_transfer_bank":
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case "await_bank_transfer":
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 	case "invoice_pay_amount":
 		invoice, err := s.store.InvoiceByReference(ctx, session.Data["invoice_reference"])
 		if err != nil {
@@ -622,18 +592,6 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		}
 		amount, _ := strconv.ParseInt(session.Data["invoice_pay_amount_kobo"], 10, 64)
 		return s.sendInvoicePayMethods(ctx, channel, recipient, invoice, amount)
-	case "invoice_pay_bank":
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case "await_invoice_bank_transfer":
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 	case "thrift_pay_method":
 		contribution, err := s.thriftContributionFromSession(ctx, session)
 		if err != nil {
@@ -650,18 +608,6 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 				{ID: "cancel_payment", Title: "Cancel"},
 			},
 		})
-	case "thrift_pay_bank":
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case "await_thrift_bank_transfer":
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.sendText(ctx, channel, recipient, "That transfer session expired. Please start again.")
-		}
-		return s.sendBankTransferInstructions(ctx, channel, recipient, payment, instruction)
 	case "pay_individual_method":
 		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer or your wallet. Send *bank transfer* or *wallet* to proceed.")
 	case "await_individual_bank_transfer":

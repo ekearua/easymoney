@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
@@ -756,53 +754,6 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 	}
 }
 
-func (s *ConversationService) handleInvoicePayBank(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	invoice, _, err := s.invoicePaymentSession(ctx, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice payment session expired. Please send PAY followed by the invoice reference again.")
-	}
-	switch {
-	case input == "bank_choose_other":
-		session.Data["bank_query"] = ""
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, "", 0)
-	case strings.HasPrefix(input, "bank_page:"):
-		page := parsePickerPage(strings.TrimPrefix(input, "bank_page:"))
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], page)
-	case !strings.HasPrefix(input, "bank:"):
-		query := strings.TrimSpace(input)
-		session.Data["bank_query"] = query
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendTransferBankPicker(ctx, channel, recipient, query, 0)
-	}
-	accountID, err := uuid.Parse(strings.TrimPrefix(input, "bank:"))
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	account, err := s.store.BankTransferAccountByID(ctx, accountID)
-	if err != nil {
-		return s.sendTransferBankPicker(ctx, channel, recipient, session.Data["bank_query"], 0)
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That payment session expired. Please start again.")
-	}
-	payment, instruction, err := s.payments.InitializeBankTransferSimulation(ctx, payment, account)
-	if err != nil {
-		return err
-	}
-	session.State = "await_invoice_bank_transfer"
-	delete(session.Data, "bank_query")
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendInvoiceBankTransferInstructions(ctx, channel, recipient, payment, invoice, instruction)
-}
-
 func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel, recipient string, invoice store.InvoiceView, amount int64) error {
 	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
@@ -828,54 +779,6 @@ func (s *ConversationService) sendInvoiceWalletReview(ctx context.Context, chann
 			s.walletBalanceLine(ctx, user, amount)),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Pay from wallet"},
-			{ID: "cancel_payment", Title: "Cancel"},
-		},
-	})
-}
-
-func (s *ConversationService) handleInvoiceBankTransferConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if input != "confirm_bank_transfer" && !strings.EqualFold(input, "i have transferred") && !strings.EqualFold(input, "transferred") && !strings.EqualFold(input, "done") {
-		payment, err := s.paymentFromSession(ctx, user, session)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		invoice, _, err := s.invoicePaymentSession(ctx, session)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That invoice session expired. Please start again.")
-		}
-		instruction, err := s.store.BankTransferInstructionByPaymentID(ctx, payment.ID)
-		if err != nil {
-			return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-		}
-		return s.sendInvoiceBankTransferInstructions(ctx, channel, recipient, payment, invoice, instruction)
-	}
-	payment, err := s.paymentFromSession(ctx, user, session)
-	if err != nil {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "That transfer session expired. Please start again.")
-	}
-	updated, _, err := s.payments.ConfirmBankTransferSimulation(ctx, payment)
-	if err != nil {
-		return err
-	}
-	session.State, session.Data = "menu", map[string]string{}
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	invoice, err := s.store.InvoiceByPaymentID(ctx, updated.ID)
-	if err != nil {
-		return s.sendText(ctx, channel, recipient, "Thanks. Xego has recorded your transfer confirmation.")
-	}
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thanks. Xego has recorded your transfer confirmation.\n\nInvoice: %s\nPaid now: %s\nInvoice status: %s\nTotal collected: %s of %s",
-		invoice.Reference, domain.FormatNGN(updated.AmountKobo), strings.ToUpper(invoice.Status), domain.FormatNGN(invoice.AmountPaidKobo), domain.FormatNGN(invoice.TotalKobo)))
-}
-
-func (s *ConversationService) sendInvoiceBankTransferInstructions(ctx context.Context, channel, recipient string, payment store.PaymentView, invoice store.InvoiceView, instruction store.BankTransferInstruction) error {
-	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Bank transfer details for invoice %s\n\nMerchant: %s\nAmount: %s\nBank: %s\nAccount name: %s\nAccount number: %s\nPayment reference: %s\n\nWhat to do:\n1. Open your bank app.\n2. Transfer the exact amount above.\n3. Put the payment reference exactly in the narration, remark, or payment reference field.\n4. After sending, tap I have transferred.\n\nXego adds this receipt to the invoice after confirmation. The invoice is fully paid only when total collected reaches %s.",
-			invoice.Reference, invoice.MerchantName, domain.FormatNGN(payment.AmountKobo), instruction.BankName, instruction.AccountName, instruction.AccountNumber, instruction.SimulatedReference, domain.FormatNGN(invoice.TotalKobo)),
-		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_bank_transfer", Title: "I have transferred"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})

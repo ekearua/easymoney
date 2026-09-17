@@ -17,7 +17,6 @@ import (
 
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
-	"whatsapp-payment-demo/internal/providers/payout"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -35,12 +34,11 @@ type SettlementService struct {
 	payoutDailyCount   int
 }
 
-// NewSettlementService constructs the settlement orchestrator. A nil provider
-// defaults to the simulated rail. feeBps is the settlement fee in basis points
-// (250 = 2.5 %) applied at batch-cut time.
+// NewSettlementService constructs the settlement orchestrator. feeBps is the
+// settlement fee in basis points (250 = 2.5%) applied at batch-cut time.
 func NewSettlementService(repository *store.Store, provider ports.PayoutProvider, logger *slog.Logger, feeBps int, opts ...SettlementOption) *SettlementService {
 	if provider == nil {
-		provider = payout.NewSimulatedProvider()
+		panic("settlement service requires a non-nil payout provider")
 	}
 	if logger == nil {
 		logger = slog.Default()

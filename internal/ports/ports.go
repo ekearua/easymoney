@@ -113,6 +113,13 @@ type EmailSender interface {
 	Send(context.Context, string, string, string) error
 }
 
+// SMSSender sends an outbound SMS message and returns the provider's message
+// identifier so a delivery-status webhook can correlate async callbacks. The
+// empty string is returned when the provider does not expose an identifier.
+type SMSSender interface {
+	Send(ctx context.Context, to, body string) (string, error)
+}
+
 // DataFulfilmentRequest contains the data-bundle order details sent to a data provider.
 type DataFulfilmentRequest struct {
 	OrderID           string
@@ -275,6 +282,14 @@ type ImageReader interface {
 // support common voice-note formats (OGG/Opus, MP3, WAV).
 type SpeechToText interface {
 	Transcribe(ctx context.Context, audioData []byte, mimeType string, language string) (string, error)
+}
+
+// MediaDownloader fetches the raw bytes of an inbound chat media message
+// through the channel provider. The returned MIME type may be empty to fall
+// back to the enqueued metadata; implementations must bound the download and
+// surface per-provider errors so the conversation service can degrade.
+type MediaDownloader interface {
+	Download(ctx context.Context, channel, mediaID, mediaURL string) ([]byte, string, error)
 }
 
 // ChatAI classifies free-text input into FSM intents and generates

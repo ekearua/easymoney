@@ -102,7 +102,8 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 					Attachments []struct {
 						Type    string `json:"type"`
 						Payload *struct {
-							URL string `json:"url"`
+							URL      string `json:"url"`
+							MimeType string `json:"mime_type"`
 						} `json:"payload"`
 					} `json:"attachments"`
 				} `json:"message"`
@@ -152,17 +153,24 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 					switch kind {
 					case "image":
 						msg.MediaType = "image"
+						msg.MediaMime = "image/jpeg"
 					case "audio", "voice":
 						msg.MediaType = "audio"
+						msg.MediaMime = "audio/mpeg"
 					case "video":
 						msg.MediaType = "video"
+						msg.MediaMime = "video/mp4"
 					case "file":
 						msg.MediaType = "document"
+						msg.MediaMime = "application/octet-stream"
 					default:
 						continue
 					}
 					if attachment.Payload != nil {
 						msg.MediaURL = attachment.Payload.URL
+						if mime := strings.TrimSpace(attachment.Payload.MimeType); mime != "" {
+							msg.MediaMime = mime
+						}
 					}
 					break // one media per inbound message; the FSM consumes text or one attachment
 				}

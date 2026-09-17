@@ -472,14 +472,14 @@ Invoice demo checks:
 
 Thrift demo checks:
 
-1. Confirm a normal customer can still pay merchants, buy data, and pay invoices after only WhatsApp/Telegram account confirmation.
-2. Choose **Become individual**, verify the email OTP, then enter legal name, date of birth, address, and occupation. Xego marks KYC as `approved_simulated`.
-3. Choose **Create thrift**, enter group name, fixed contribution amount, weekly/monthly frequency, and 2-12 target members.
-4. Share the generated invite code. Members can join with `JOIN XG-THRIFT-...`.
-5. When all members have joined, the creator sends `ACTIVATE XG-THRIFT-...` and enters the payout rotation order.
-6. Members pay the current cycle with `CONTRIBUTE XG-THRIFT-...`, then choose card checkout or bank transfer.
-7. Confirm `/admin/thrift` shows groups, contributions, and pending simulated payouts.
-8. Mark the simulated payout completed in `/admin/thrift`; Xego opens the next cycle until every member has received one payout.
+1. (Any channel, chat) Confirm a normal customer can still pay merchants, buy data, and pay invoices after only WhatsApp/Telegram account confirmation.
+2. (WhatsApp/Instagram: browser flow at `/w/<token>` - chat sends one link, then Email, Verify, Profile, Review, and ID run on the page. Telegram/TikTok: the same steps run as chat turns.) Choose **Become individual**, verify the email OTP, then enter legal name, date of birth, address, and occupation. Xego marks KYC as `approved_simulated`.
+3. (WhatsApp/Instagram: browser flow - Name, Amount, Frequency, Size, Review. Telegram/TikTok: chat steps, or one message `Name, Amount, Frequency, Members`.) Enter the group name, fixed contribution amount, weekly/monthly frequency, and 2-12 target members.
+4. (Any channel, chat) Share the group name (or its `/thrift/<name>` link). Members join with `JOIN <group name>` - for example `JOIN Office Pool`. Thrift groups are addressed by name; Xego issues no invite-code string.
+5. (Any channel, chat - activation stays in chat by design) When all members have joined, the creator sends `START <group name>` (or `ACTIVATE <group name>`) and enters the payout rotation order.
+6. (WhatsApp/Instagram: browser Contribution, Review, Pay. Telegram/TikTok: chat method prompt.) Members pay the current cycle with `CONTRIBUTE <group name>`, then choose card checkout or bank transfer.
+7. (Admin console) Confirm `/admin/thrift` shows groups, contributions, and pending simulated payouts.
+8. (Admin console) Mark the simulated payout completed in `/admin/thrift`; Xego opens the next cycle until every member has received one payout.
 
 ## Security and retention
 

@@ -201,3 +201,40 @@ func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	return transport.RoundTrip(req)
 }
+
+func TestDownloadFile(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-ig-jpeg"))
+	}))
+	defer server.Close()
+
+	client := New("secret", "token", "ig-1", "v23.0")
+	data, mime, err := client.DownloadFile(context.Background(), "", server.URL)
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if string(data) != "fake-ig-jpeg" || mime != "image/jpeg" {
+		t.Fatalf("unexpected download: mime=%q bytes=%q", mime, data)
+	}
+}
+
+func TestDownloadFileErrors(t *testing.T) {
+	t.Parallel()
+	client := New("secret", "token", "ig-1", "v23.0")
+	if _, _, err := client.DownloadFile(context.Background(), "", ""); err == nil {
+		t.Fatal("empty media reference should error")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "expired", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	if _, _, err := client.DownloadFile(context.Background(), "", server.URL); err == nil {
+		t.Fatal("non-2xx media download should error")
+	}
+}

@@ -1,9 +1,13 @@
 package whatsapp
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,5 +47,63 @@ func TestParseInboundTextAndInteractive(t *testing.T) {
 	}
 	if messages[0].Timestamp.Equal(time.Time{}) {
 		t.Fatal("unix timestamp should be parsed")
+	}
+}
+
+func TestDownloadMedia(t *testing.T) {
+	t.Parallel()
+	client := New("app-secret", "token", "1001", "v23.0", "en")
+	client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/v23.0/media-1"):
+			return textResponse(http.StatusOK, `{"url":"https://media.signed/media-1","mime_type":"image/jpeg"}`), nil
+		case r.URL.Host == "media.signed":
+			return responseWith(`image/jpeg`, []byte("fake-jpeg-bytes")), nil
+		}
+		return textResponse(http.StatusInternalServerError, `{"error":{"message":"boom"}}`), nil
+	})}
+
+	data, mime, err := client.DownloadMedia(context.Background(), "media-1")
+	if err != nil {
+		t.Fatalf("download failed: %v", err)
+	}
+	if string(data) != "fake-jpeg-bytes" || mime != "image/jpeg" {
+		t.Fatalf("unexpected download: mime=%q bytes=%q", mime, data)
+	}
+}
+
+func TestDownloadMediaErrors(t *testing.T) {
+	t.Parallel()
+	client := New("app-secret", "token", "1001", "v23.0", "en")
+	client.http = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return textResponse(http.StatusNotFound, `{"error":{"message":"media not found"}}`), nil
+	})}
+	if _, _, err := client.DownloadMedia(context.Background(), "missing"); err == nil {
+		t.Fatal("missing media should error")
+	}
+	if _, _, err := New("app-secret", "", "1001", "v23.0", "en").DownloadMedia(context.Background(), "media-1"); err == nil {
+		t.Fatal("unconfigured client should error")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func textResponse(status int, body string) *http.Response {
+	r := responseWith("application/json", []byte(body))
+	r.StatusCode = status
+	r.Status = http.StatusText(status)
+	return r
+}
+
+func responseWith(contentType string, body []byte) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     http.StatusText(http.StatusOK),
+		Header:     http.Header{"Content-Type": []string{contentType}},
+		Body:       io.NopCloser(strings.NewReader(string(body))),
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"whatsapp-payment-demo/internal/ports"
-	"whatsapp-payment-demo/internal/providers/ai"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -115,14 +114,14 @@ func TestMenuRowIDsCoveredByDispatch(t *testing.T) {
 }
 
 // TestInteractiveSelectionsWouldBeMisclassifiedByAI regresses the root cause
-// of the double menu: the simulated AI classifier matches every menu_* row id
-// as a concrete intent (substring match). The interactive gate
+// of the double menu: a naive substring classifier (the retired simulated AI)
+// matches every menu_* row id as a concrete intent. The interactive gate
 // (message.Interactive == "") is what stops these reaching the classifier, so
 // this documents that removing it would re-introduce the double menu and
 // misrouting of row taps.
 func TestInteractiveSelectionsWouldBeMisclassifiedByAI(t *testing.T) {
 	t.Parallel()
-	sim := ai.NewSimulated()
+	sim := stubChatAI{}
 	var all []ports.InteractiveRow
 	all = append(all, mainMenuRows()...)
 	all = append(all, merchantServicesRows()...)

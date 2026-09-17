@@ -1,7 +1,7 @@
 package service
 
 // Expiry coverage for reports/Payment_Pipeline_Test_Plan.xlsx scenarios B2
-// (unconfirmed simulated bank transfer) and C3 (card checkout abandoned
+// (unconfirmed bank-transfer draft) and C3 (card checkout abandoned
 // before the hosted page). Both walk the real Reconcile worker: Unresolved
 // gateway payments are requeried first, then expireStale terminates drafts
 // and awaiting-confirmation payments older than the session TTL. A terminal
@@ -94,9 +94,9 @@ func TestCardCheckoutExpiry_C3(t *testing.T) {
 	}
 }
 
-// B2: a simulated bank transfer whose customer never sends CONFIRM must
-// expire through Reconcile with the instruction on record, the allowance
-// released, and no ledger postings.
+// B2: a bank-transfer draft whose customer never reaches the hosted DVA
+// checkout must expire through Reconcile with the allowance released and no
+// ledger postings.
 func TestBankTransferExpiry_B2(t *testing.T) {
 	h := newExpiryHarness(t)
 	payer := h.newPayer(t, "+2348012340888")
@@ -107,15 +107,8 @@ func TestBankTransferExpiry_B2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accounts, err := h.repository.ListActiveBankTransferAccounts(h.t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(accounts) == 0 {
-		t.Fatal("no seeded bank transfer accounts")
-	}
-	if _, _, err := h.payments.InitializeBankTransferSimulation(h.t.Context(), payment, accounts[0]); err != nil {
-		t.Fatal(err)
+	if payment.Status != "awaiting_confirmation" {
+		t.Fatalf("draft status = %s, want awaiting_confirmation", payment.Status)
 	}
 	if used := h.allowanceInUse(t, payer); used != payment.AmountKobo {
 		t.Fatalf("allowance in use = %d, want %d", used, payment.AmountKobo)

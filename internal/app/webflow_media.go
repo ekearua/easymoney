@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"whatsapp-payment-demo/internal/store"
 )
@@ -99,6 +100,17 @@ func (a *App) webFlowMediaUpload(w http.ResponseWriter, r *http.Request) {
 	if len(data) > wfMaxMediaBytes {
 		a.wfMediaError(w, r, flow, user, "That file is too large (max 8MB). Try a smaller photo or shorter voice note.")
 		return
+	}
+
+	// AI requests-per-minute cap shared with the chat FSM: the OCR/STT provider
+	// is throttled per client IP so one customer cannot saturate the AI budget.
+	// Starved requests degrade to a friendly retry message, never a 5xx.
+	if a.cfg.AIMaxRPM > 0 {
+		allowed, _ := a.rateLimiter.Allow(r.Context(), "ai:media-upload:"+clientIP(r), a.cfg.AIMaxRPM, time.Minute)
+		if !allowed {
+			a.wfMediaError(w, r, flow, user, "Too many uploads right now. Please try again in a moment.")
+			return
+		}
 	}
 
 	var text string

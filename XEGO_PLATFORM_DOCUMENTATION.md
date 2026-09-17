@@ -1078,7 +1078,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** User completes individual profile (email OTP, legal name, DOB, address, occupation — KYC `approved_simulated`), chooses **Create thrift**.
 - **Actors:** Creator, members, admin.
-- **Process:** 1) name, fixed contribution, weekly/monthly, 2–12 members; 2) invite code (`JOIN XG-THRIFT-...`); 3) `ACTIVATE XG-THRIFT-...` + payout rotation order; 4) members `CONTRIBUTE XG-THRIFT-...` and pay via card/bank; 5) admin completes simulated payout; 6) next cycle until every member paid.
+- **Process:** 1) name, fixed contribution, weekly/monthly, 2–12 members; 2) share the group name - thrift groups are addressed by name, Xego issues no invite-code string (`JOIN <group name>`); 3) `START <group name>` (or `ACTIVATE <group name>`) + payout rotation order; 4) members `CONTRIBUTE <group name>` and pay via card/bank; 5) admin completes simulated payout; 6) next cycle until every member paid.
 - **Data:** thrift_groups, thrift_members, cycles, contributions, payouts; ledger 6100_thrift_pool.
 - **Status:** Implemented (payouts simulated).
 
