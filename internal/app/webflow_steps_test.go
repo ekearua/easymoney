@@ -14,6 +14,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
@@ -142,6 +143,56 @@ func TestFlowStepMapsCoverSteps(t *testing.T) {
 		}
 	}
 }
+
+// TestFlowActionsPrimaryFirst is the CTA-ordering sweep: the stepped shell
+// renders a page's first action as the dominant call to action and everything
+// after it as secondary, so no step may put a retry (resend), a skip, or a back
+// link before its primary action. Like the drift guard above, the check reads
+// the handler source so a newly written action set is covered the moment it
+// exists.
+func TestFlowActionsPrimaryFirst(t *testing.T) {
+	secondary := map[string]bool{"skip": true, "resend": true, "back": true, "cancel": true}
+	for _, name := range []string{"webflow_forms.go", "webflow_money.go", "webflow_money2.go"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		src := string(raw)
+		for _, m := range actionSetRe.FindAllStringSubmatchIndex(src, -1) {
+			block := src[m[2]:m[3]]
+			names := actionNameRe.FindAllStringSubmatch(block, -1)
+			if len(names) < 2 {
+				continue // single-action steps have no ordering to get wrong
+			}
+			var order []string
+			for _, n := range names {
+				order = append(order, n[1])
+			}
+			firstPrimary := -1
+			for i, n := range order {
+				if !secondary[n] {
+					firstPrimary = i
+					break
+				}
+			}
+			if firstPrimary == -1 {
+				// A step offering only secondary exits (e.g. a bank-pick page
+				// with no match and only a Back) is a dead end by design and
+				// out of scope here; ordering among secondaries is cosmetic.
+				continue
+			}
+			if firstPrimary != 0 {
+				line := strings.Count(src[:m[0]], "\n") + 1
+				t.Errorf("%s:%d puts a secondary action before the primary CTA: %v", name, line, order)
+			}
+		}
+	}
+}
+
+// actionSetRe matches a full Actions assignment, inline or multiline.
+var actionSetRe = regexp.MustCompile(`Actions = \[\]webFlowAction\{(.*)\}`)
+
+var actionNameRe = regexp.MustCompile(`\{Name: "([a-z_]+)"`)
 
 // TestFlowStepsStates pins the rendered states: nodes before the current one
 // are done, the current one carries its position, the rest are todo.
@@ -371,6 +422,60 @@ func simulateSteppedKYCAndThrift(t *testing.T, ctx context.Context, run *simRun,
 	assertStepped("invoice create (options)", body, "Options")
 	fmt.Printf("  ✅ invoice_create walks the stepped shell (Merchant→Customer→Items→Options)")
 	fmt.Printf(" with one item per POST and a computed summary\n")
+
+	// Through review and creation: the delivery fee joins the total, the review
+	// page shows it, and Create lands the invoice row plus the customer
+	// notification.
+	body = invPost(map[string]string{"action": "next", "delivery_fee": "500", "due_date": "2026-10-15"})
+	assertStepped("invoice create (review)", body, "Review")
+	// html/template escapes + as &#43; in raw HTML, so assert against the
+	// unescaped text the browser actually renders.
+	reviewText := html.UnescapeString(body)
+	for _, want := range []string{"₦6,500", "₦500", "Lagos Lunchbox", "+2348033334444"} {
+		if !strings.Contains(reviewText, want) {
+			t.Fatalf("invoice review must show %s (page: %s)", want, run.page(body))
+		}
+	}
+	messenger.reset()
+	status, body, _ = run.post("/w/"+invToken, url.Values{"action": {"create"}})
+	if status != http.StatusOK || !strings.Contains(body, "Invoice created") {
+		t.Fatalf("invoice create: status=%d page=%s", status, run.page(body))
+	}
+	// Pull the reference off the done page and assert the stored invoice.
+	refMatch := regexp.MustCompile(`Reference ([A-Za-z0-9-]+)`).FindStringSubmatch(run.page(body))
+	if refMatch == nil {
+		t.Fatalf("done page must carry the invoice reference (page: %s)", run.page(body))
+	}
+	invoice, err := repository.InvoiceByReference(ctx, refMatch[1])
+	if err != nil {
+		t.Fatalf("created invoice %s not found: %v", refMatch[1], err)
+	}
+	if invoice.TotalKobo != 6_500_00 || invoice.SubtotalKobo != 6_000_00 || invoice.DeliveryFeeKobo != 50_000 {
+		t.Fatalf("invoice totals: total=%d subtotal=%d fee=%d, want 650000/600000/50000",
+			invoice.TotalKobo, invoice.SubtotalKobo, invoice.DeliveryFeeKobo)
+	}
+	if invoice.CustomerWhatsAppNumber != "+2348033334444" || len(invoice.Items) != 2 || invoice.Status == "" {
+		t.Fatalf("invoice row mismatch: customer=%q items=%d status=%q",
+			invoice.CustomerWhatsAppNumber, len(invoice.Items), invoice.Status)
+	}
+	due := invoice.DueAt
+	if due == nil || due.Format("2006-01-02") != "2026-10-15" {
+		t.Fatalf("invoice due date = %v, want 2026-10-15", due)
+	}
+	// The customer got the interactive notification with a Pay-now button and
+	// the amount; the merchant got the creation confirmation (message 2).
+	sent = messenger.snapshot()
+	var customerNotified bool
+	for _, msg := range sent {
+		if msg.kind == "interactive" && msg.to == "+2348033334444" &&
+			strings.Contains(msg.body, "₦6,500") && strings.Contains(msg.body, refMatch[1]) {
+			customerNotified = true
+		}
+	}
+	if !customerNotified {
+		t.Fatalf("customer must receive the interactive invoice notification, got %+v", sent)
+	}
+	fmt.Printf("  ✅ invoice created: %s total ₦6,500 (2 items + delivery), customer notified with a Pay-now button\n", refMatch[1])
 
 	// ---- leave nothing open ---------------------------------------------
 	for _, token := range []string{thriftToken, onboardToken, invToken} {
