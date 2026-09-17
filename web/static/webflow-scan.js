@@ -295,6 +295,41 @@
       var hasScan = f.querySelector('.wf-scan-open');
       if (fileInput && hasScan) { enhance(f); }
     });
+
+    // AI search bar (webflow.html .wf-aibar): the bar's file/camera/mic icons
+    // carry the field name they drive and the page holds one hidden backing
+    // /media form per name (data-backing-form). File and mic icons open the
+    // backing form's file picker directly; the camera icon opens the same
+    // scan overlay the stacked upload sections use.
+    document.addEventListener('click', function (e) {
+      var trigger = e.target.closest('[data-ai-open-upload],[data-ai-open-voice],[data-ai-open-scan]');
+      if (!trigger) { return; }
+      var name = trigger.getAttribute('data-ai-open-upload') ||
+        trigger.getAttribute('data-ai-open-voice') ||
+        trigger.getAttribute('data-ai-open-scan');
+      if (!name) { return; }
+      var backing = document.querySelector('form[data-backing-form="' + name + '"]');
+      if (!backing) { return; }
+      if (trigger.hasAttribute('data-ai-open-scan')) {
+        form = backing;
+        if (!overlay) {
+          overlay = document.createElement('div');
+          overlay.innerHTML = OVERLAY_HTML;
+          document.body.appendChild(overlay);
+          video = overlay.querySelector('video');
+          canvas = overlay.querySelector('canvas');
+          note = overlay.querySelector('[data-cam-note]');
+          bind();
+        }
+        if (canvas) { canvas.style.display = 'none'; }
+        if (video) { video.style.display = ''; }
+        overlay.classList.add('open');
+        openCamera();
+      } else {
+        var fileInput = backing.querySelector('input[type="file"]');
+        if (fileInput) { fileInput.click(); }
+      }
+    });
   }
 
   if (document.readyState === 'loading') {

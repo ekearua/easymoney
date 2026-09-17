@@ -38,7 +38,7 @@ type webFlowOption struct {
 type webFlowField struct {
 	Name     string
 	Label    string
-	Type     string // text | email | tel | number | date | amount | textarea | select | radio | hidden | upload | voice
+	Type     string // text | email | tel | number | date | amount | textarea | select | radio | hidden | upload | voice | aisearch
 	Value    string
 	Hint     string
 	Required bool
@@ -46,11 +46,30 @@ type webFlowField struct {
 	// MediaPrompt is the OCR instruction sent with an upload field's image to
 	// ports.ImageReader. Voice fields always transcribe speech to text.
 	MediaPrompt string
+	// BarIcon opts an upload/voice field out of the stacked media sections and
+	// renders it as one icon button (file / camera / mic) inside the AI search
+	// bar the template draws when any field carries this marker. The form that
+	// backs each icon is the ordinary /media form, unchanged.
+	BarIcon string // "" (section) | "file" | "camera" | "mic"
+	// OptionsClass adds a class to a select's <select> element so a step can
+	// restyle it in place (the AI bar reflows the merchant select beneath it).
+	OptionsClass string
 }
 
 type webFlowLine struct {
 	Term string
 	Desc string
+}
+
+// hasAIBar reports whether the page should render the AI search bar: true
+// when any field carries a BarIcon marker.
+func hasAIBar(fields []webFlowField) bool {
+	for _, f := range fields {
+		if f.BarIcon != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // webFlowStepLabel is one node of the horizontal progress stepper rendered

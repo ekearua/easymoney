@@ -23,15 +23,32 @@
         {{range .Review}}<div><dt>{{.Term}}</dt><dd>{{.Desc}}</dd></div>{{end}}
       </dl>
     {{end}}
-    <form method="post" action="/w/{{.Token}}">
+    {{$aibar := false}}{{range .Fields}}{{if .BarIcon}}{{$aibar = true}}{{end}}{{end}}{{if $aibar}}
+      <div class="wf-aibar" data-ai-bar>
+        <span class="wf-aibar-icon wf-aibar-lead" aria-hidden="true">✨</span>
+        <label class="visually-hidden" for="wf-ai-input">Ask Xego</label>
+        {{$ask := ""}}{{range .Fields}}{{if eq .Type "aisearch"}}{{$ask = .Value}}{{end}}{{end}}
+        <input id="wf-ai-input" name="ai_ask" form="wf-main" type="text" autocomplete="off" placeholder="Ask Xego… e.g. pay Ade's Kitchen ₦2,500" aria-label="Ask Xego" value="{{$ask}}">
+        {{range .Fields}}{{if and (eq .Type "upload") (eq .BarIcon "file")}}
+        <button type="button" class="wf-aibar-icon" aria-label="Attach a bill photo" title="Attach a bill photo" data-ai-open-upload="{{.Name}}">📎</button>
+        <button type="button" class="wf-aibar-icon" aria-label="Snap the bill with the camera" title="Snap the bill with the camera" data-ai-open-scan="{{.Name}}">📷</button>
+        {{end}}{{end}}
+        {{range .Fields}}{{if and (eq .Type "voice") (eq .BarIcon "mic")}}
+        <button type="button" class="wf-aibar-icon" aria-label="Say it as a voice note" title="Say it as a voice note" data-ai-open-voice="{{.Name}}">🎤</button>
+        {{end}}{{end}}
+      </div>
+      {{range .Fields}}{{if eq .Type "aisearch"}}{{if .Hint}}<p class="muted wf-ai-hint">{{.Hint}}</p>{{end}}{{end}}{{end}}
+      {{range .Fields}}{{if and .BarIcon .Value}}<p class="muted wf-ai-read">{{if eq .Type "upload"}}Read from your upload:{{else}}Heard:{{end}} <strong>{{.Value}}</strong></p>{{end}}{{end}}
+    {{end}}
+    <form id="wf-main" method="post" action="/w/{{.Token}}">
       {{range .Fields}}
-        {{if and (ne .Type "upload") (ne .Type "voice")}}
+        {{if and (ne .Type "upload") (ne .Type "voice") (ne .Type "aisearch")}}
           {{if eq .Type "hidden"}}
             <input type="hidden" name="{{.Name}}" value="{{.Value}}">
           {{else if eq .Type "select"}}
             {{$field := .}}
             <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
-            <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}>
+            <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}{{if .OptionsClass}} class="{{.OptionsClass}}"{{end}}>
               <option value="" {{if not $field.Value}}selected{{end}} disabled hidden>Choose…</option>
               {{range .Options}}<option value="{{.Value}}"{{if eq .Value $field.Value}} selected{{end}}>{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
             </select>
@@ -57,8 +74,8 @@
           {{end}}
         {{end}}
       {{end}}
-      {{if .Actions}}
-        <div class="actions">
+    {{if .Actions}}
+      <div class="actions">
           {{range .Actions}}
             {{if eq .Kind "link"}}
               <a class="button" href="{{.URL}}">{{.Label}}</a>
@@ -69,8 +86,23 @@
         </div>
       {{end}}
     </form>
+    {{$aibar := false}}{{range .Fields}}{{if .BarIcon}}{{$aibar = true}}{{end}}{{end}}{{if $aibar}}
+      {{range .Fields}}{{if and (eq .Type "upload") (eq .BarIcon "file")}}
+      <form class="wf-ai-backing" method="post" action="/w/{{$.Token}}/media" enctype="multipart/form-data" data-backing-form="{{.Name}}">
+        <input type="file" name="file" accept="image/*" class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <input type="hidden" name="field" value="{{.Name}}">
+        {{if .MediaPrompt}}<input type="hidden" name="prompt" value="{{.MediaPrompt}}">{{end}}
+      </form>
+      {{end}}{{end}}
+      {{range .Fields}}{{if and (eq .Type "voice") (eq .BarIcon "mic")}}
+      <form class="wf-ai-backing" method="post" action="/w/{{$.Token}}/media" enctype="multipart/form-data" data-backing-form="{{.Name}}">
+        <input type="file" name="file" accept="audio/*" capture class="visually-hidden" tabindex="-1" aria-hidden="true">
+        <input type="hidden" name="field" value="{{.Name}}">
+      </form>
+      {{end}}{{end}}
+    {{end}}
     {{range .Fields}}
-      {{if or (eq .Type "upload") (eq .Type "voice")}}
+      {{if and (or (eq .Type "upload") (eq .Type "voice")) (not .BarIcon)}}
         <div class="media-upload">
           <span class="media-label">{{.Label}}{{if .Required}} *{{end}}</span>
           {{if .Value}}<p class="muted">{{if eq .Type "upload"}}Read from your upload:{{else}}Heard:{{end}} <strong>{{.Value}}</strong></p>{{end}}

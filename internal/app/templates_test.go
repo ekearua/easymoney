@@ -295,6 +295,50 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatal("webflow.html must not render the stepped shell for a flow without steps")
 	}
 
+	// AI search bar: a page whose fields carry BarIcon markers renders one
+	// ask-bar with file/camera/mic icons backed by hidden /media forms, and
+	// those fields never render the stacked media sections.
+	buf.Reset()
+	barPage := flowPage
+	barPage.Steps = nil
+	barPage.Fields = []webFlowField{
+		{Name: "ai_ask", Label: "Ask Xego", Type: "aisearch", Hint: "e.g. pay Ade's Kitchen"},
+		{Name: "bill_photo", Label: "Attach a bill", Type: "upload", BarIcon: "file", MediaPrompt: "Read the bill"},
+		{Name: "bill_voice", Label: "Or say it", Type: "voice", BarIcon: "mic"},
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", barPage); err != nil {
+		t.Fatalf("execute webflow.html (ai bar): %v", err)
+	}
+	barHTML := buf.String()
+	if !strings.Contains(barHTML, "wf-aibar") || !strings.Contains(barHTML, "id=\"wf-ai-input\"") {
+		t.Fatal("webflow.html must render the AI ask-bar with its input")
+	}
+	// The typed ask must reach the server: the input carries the ai_ask name
+	// and binds to the main flow form (it renders before the form element).
+	if !strings.Contains(barHTML, `name="ai_ask" form="wf-main"`) {
+		t.Fatal("the ask-bar input must carry name=ai_ask and bind to the main flow form so typed text is submitted")
+	}
+	if !strings.Contains(barHTML, `id="wf-main"`) {
+		t.Fatal("the main flow form must carry id=wf-main for the ask-bar binding")
+	}
+	if !strings.Contains(barHTML, `data-ai-open-upload="bill_photo"`) || !strings.Contains(barHTML, `data-ai-open-scan="bill_photo"`) || !strings.Contains(barHTML, `data-ai-open-voice="bill_voice"`) {
+		t.Fatal("webflow.html must render file/camera/mic icons carrying their backing field names")
+	}
+	if !strings.Contains(barHTML, `data-backing-form="bill_photo"`) || !strings.Contains(barHTML, `data-backing-form="bill_voice"`) {
+		t.Fatal("webflow.html must render one hidden backing /media form per bar icon field")
+	}
+	if !strings.Contains(barHTML, `name="prompt" value="Read the bill"`) {
+		t.Fatal("webflow.html must carry the upload OCR prompt in the backing form")
+	}
+	if strings.Contains(barHTML, "media-upload") {
+		t.Fatal("bar-icon fields must not render the stacked media-upload sections")
+	}
+	// Backing forms must also sit outside the main flow form (no nesting).
+	barMainFormEnd := strings.Index(barHTML, "</form>")
+	if backingAt := strings.Index(barHTML, "data-backing-form"); backingAt < 0 || backingAt < barMainFormEnd {
+		t.Fatal("AI-bar backing forms must render after the main flow form, not nested inside it")
+	}
+
 	// Done pages never show a stepper even for money flows.
 	buf.Reset()
 	donePage := flowPage

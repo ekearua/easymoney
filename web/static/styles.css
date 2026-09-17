@@ -19,6 +19,24 @@
 .wf-stepper .lbl{font-size:10px;font-weight:700;color:var(--muted);white-space:nowrap}
 .wf-stepper li.current .lbl{color:var(--ink)}
 @media(max-width:400px){.wf-stepper .lbl{display:none}.wf-stepper li{gap:0}.wf-stepper .dot{width:14px;height:14px;font-size:10px}.wf-stepper li::before{top:7px}}
+/* AI search bar: one pill (spark icon, free-text ask, file/camera/mic icons)
+   replacing the stacked capture sections on the pay flow's first step. The
+   icons open the hidden backing /media forms; bar fields are skipped from the
+   ordinary field loop and the stacked media sections. */
+.visually-hidden{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.wf-aibar{display:flex;align-items:center;gap:6px;margin:10px 0 4px;padding:8px 10px;border:1.5px solid var(--line);border-radius:16px;background:#fff;box-shadow:0 4px 18px rgba(16,42,42,.06);transition:border-color .12s,box-shadow .12s}
+.wf-aibar:focus-within{border-color:var(--green);box-shadow:0 0 0 3px var(--mint)}
+.wf-aibar-icon{flex:0 0 auto;width:40px;height:40px;display:grid;place-items:center;border:0;border-radius:12px;background:transparent;font-size:18px;cursor:pointer;color:var(--ink)}
+.wf-aibar-icon:hover{background:var(--mint)}
+.wf-aibar-lead{cursor:default}
+.wf-aibar-lead:hover{background:transparent}
+.wf-aibar input{border:0!important;box-shadow:none!important;margin:0!important;flex:1;min-width:0;padding:8px 2px;font:inherit;font-size:15px;background:transparent}
+.wf-aibar input:focus{outline:none}
+.wf-ai-hint{margin:6px 2px 0;font-size:12px}
+.wf-ai-read{margin:8px 2px 0;font-size:13px;word-break:break-word}
+.wf-ai-backing{display:none}
+/* the reflowed merchant select under the bar */
+.wf-ai-merchant{margin-top:6px}
 /* option cards: selects and radios become tappable cards on payment pages */
 .wf select,.wf input[type=number],.wf input[type=tel],.wf input[type=text]:not(.hf-input),.wf input[type=email],.wf textarea{appearance:none;-webkit-appearance:none;border:1.5px solid var(--line);border-radius:12px;background:#fff;font:inherit;padding:12px 14px}
 .wf select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3Epath d='M1 1l5 5 5-5' stroke='%23607272' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center;padding-right:38px;width:100%}

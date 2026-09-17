@@ -19,6 +19,9 @@ import (
 const (
 	wfBillPhotoField = "bill_photo"
 	wfBillVoiceField = "bill_voice"
+	// wfBillAskField stores the free text typed into the AI ask-bar. It flows
+	// through the same parsers as OCR/STT output.
+	wfBillAskField = "ai_ask"
 
 	// wfBillMinKobo / wfBillMaxKobo bound an amount read from OCR/STT text so
 	// a stray phone number or date never becomes the charge. The web flow's
@@ -30,18 +33,25 @@ const (
 // wfBillCaptureFields returns the optional capture fields shown on the pay
 // flow's first step. They are ordinary upload/voice web-flow fields, so the
 // existing media endpoint stores their extracted text under the field name.
+// The BarIcon markers fold the file/camera/voice affordances into the AI
+// ask-bar (webflow.html) instead of rendering stacked media sections.
 func wfBillCaptureFields() []webFlowField {
 	return []webFlowField{
-		{Name: wfBillPhotoField, Label: "Snap the bill instead (optional)", Type: "upload",
+		{Name: wfBillPhotoField, Label: "Snap the bill instead (optional)", Type: "upload", BarIcon: "file",
 			MediaPrompt: "This photo shows a bill or receipt. Reply with the merchant name and the total amount in naira, e.g. \"MERCHANT Ade's Kitchen | AMOUNT 2500\".",
 			Hint:        "Upload a photo of the bill — Xego reads the merchant and amount to prefill the review."},
-		{Name: wfBillVoiceField, Label: "Or say the amount (optional)", Type: "voice",
+		{Name: wfBillVoiceField, Label: "Or say the amount (optional)", Type: "voice", BarIcon: "mic",
 			Hint: "Record a short note, e.g. \"pay Ade's Kitchen two thousand five hundred\"."},
 	}
 }
 
-// wfBillCapturedText joins the OCR/STT text from the pay capture fields.
+// wfBillCapturedText joins the text the customer supplied on the pay capture
+// step. The typed ask-bar text is the most deliberate input and wins when
+// present; otherwise the OCR/STT extracts are joined.
 func wfBillCapturedText(payload map[string]string) string {
+	if ask := strings.TrimSpace(payload[wfBillAskField]); ask != "" {
+		return ask
+	}
 	return strings.TrimSpace(strings.TrimSpace(payload[wfBillPhotoField]) + " " + strings.TrimSpace(payload[wfBillVoiceField]))
 }
 

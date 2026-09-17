@@ -287,8 +287,8 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 			return a.wfPayStep(r, skipped, user)
 		}
 		page.Title = "Who are you paying?"
-		page.Intro = "Choose the merchant, then pick a service, event ticket, or enter a custom amount. You can also snap the bill or say the amount below to prefill the form."
-		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions(merchants)}
+		page.Intro = "Tell Xego who to pay and how much — type it below, snap the bill with the icons, or say it out loud. Xego reads it and prefills the form; you confirm before anything is charged."
+		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions( merchants), OptionsClass: "wf-ai-merchant"}
 		// When a bill photo or voice note was already captured on this step
 		// (the media upload posts back here), pre-select the merchant named in
 		// it so the customer only confirms. The choice stays visible and is
@@ -298,7 +298,13 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 				merchantField.Value = slug
 			}
 		}
-		page.Fields = append([]webFlowField{merchantField}, wfBillCaptureFields()...)
+		// The ask field first: the AI bar renders at the top of the page.
+		askField := webFlowField{
+			Name: wfBillAskField, Label: "Ask Xego to pay", Type: "aisearch",
+			Value: flow.Payload[wfBillAskField],
+			Hint:  "e.g. “pay Ade's Kitchen ₦2,500” — Xego reads it and prefills the form, or use the icons to snap the bill or say it out loud.",
+		}
+		page.Fields = append([]webFlowField{askField, merchantField}, wfBillCaptureFields()...)
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	case "item":
@@ -466,11 +472,43 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 	switch flow.Step {
 	case "", "merchant":
 		slug := strings.TrimSpace(r.FormValue("merchant_slug"))
-		if slug == "" {
-			return a.wfPageWithError(flow, page, "Choose a merchant."), nil
-		}
 		payload := clonePayload(flow.Payload)
+		// Server-side parse of the free text typed into the AI ask-bar: when
+		// the customer types an instruction ("pay Ade's Kitchen ₦2,500") and
+		// the typed text names a seeded merchant, pre-select it and remember
+		// the ask so the amount step can prefill from the same sentence. The
+		// customer still confirms on the next step, so a mis-parse is editable,
+		// never charged.
+		ask := strings.TrimSpace(r.FormValue(wfBillAskField))
+		if ask != "" && len([]rune(ask)) <= wfMaxExtractLen {
+			payload[wfBillAskField] = ask
+		}
+		if slug == "" {
+			merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 60)
+			if err != nil {
+				return a.wfPageWithError(flow, page, "Could not load the merchant list. Please try again."), nil
+			}
+			slug = wfBillMerchantSlug(wfBillCapturedText(payload), merchants)
+			if slug == "" {
+				// Re-render the step with everything kept so the typed ask and
+				// any prefill survive for correction.
+				flow.Payload = payload
+				page, rerr := a.wfRenderStep(r, flow, user)
+				if rerr != nil {
+					return a.wfPageWithError(flow, a.wfPage(flow), "We couldn't tell which merchant you mean. Choose one from the list."), nil
+				}
+				page.Error = "We couldn't tell which merchant you mean — choose one from the list (your text is kept)."
+				page.FlowType = flow.FlowType
+				page.Token = flow.Token
+				page.AppName = a.cfg.AppName
+				page.WhatsAppLink = a.whatsappDeepLink()
+				page.BaseURL = a.cfg.BaseURL
+				return &page, nil
+			}
+		}
 		payload["merchant_slug"] = slug
+		// Persist the ask text with the advance so the amount step's prefill
+		// (wfBillAmountKobo over wfBillCapturedText) sees the typed sentence.
 		a.wfAdvance(w, r, flow, "item", payload)
 		return nil, nil
 	case "item":

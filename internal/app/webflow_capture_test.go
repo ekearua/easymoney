@@ -67,6 +67,38 @@ func TestWFBillMerchantSlugLongestWins(t *testing.T) {
 	}
 }
 
+func TestWFBillCapturedTextPrefersTypedAsk(t *testing.T) {
+	// The typed ask-bar text is the most deliberate input: when present it
+	// wins over the OCR/STT extracts. When absent, the extracts are joined.
+	payload := map[string]string{
+		wfBillAskField:  "pay Ade's Kitchen ₦2,500",
+		wfBillPhotoField: "MERCHANT Lagos Lunchbox | AMOUNT 4000",
+		wfBillVoiceField: "pay Kora Books 2500",
+	}
+	if got := wfBillCapturedText(payload); got != "pay Ade's Kitchen ₦2,500" {
+		t.Fatalf("typed ask must win over OCR/STT text, got %q", got)
+	}
+	onlyMedia := map[string]string{
+		wfBillPhotoField: "MERCHANT Lagos Lunchbox | AMOUNT 4000",
+		wfBillVoiceField: "pay Kora Books 2500",
+	}
+	if got := wfBillCapturedText(onlyMedia); got != "MERCHANT Lagos Lunchbox | AMOUNT 4000 pay Kora Books 2500" {
+		t.Fatalf("media extracts must be joined when no ask is typed, got %q", got)
+	}
+	if got := wfBillCapturedText(map[string]string{}); got != "" {
+		t.Fatalf("empty payload must produce empty text, got %q", got)
+	}
+	// End-to-end through the parsers: the typed sentence prefills both
+	// merchant and amount exactly like an OCR'd bill would.
+	merchants := []store.Merchant{{Slug: "ade", Name: "Ade's Kitchen"}}
+	if slug := wfBillMerchantSlug(wfBillCapturedText(payload), merchants); slug != "ade" {
+		t.Fatalf("typed ask must resolve the merchant, got %q", slug)
+	}
+	if kobo := wfBillAmountKobo(wfBillCapturedText(payload)); kobo != 250_000 {
+		t.Fatalf("typed ask must resolve the amount to 250000 kobo, got %d", kobo)
+	}
+}
+
 func TestWFKoboToNairaInput(t *testing.T) {
 	cases := []struct {
 		kobo int64
