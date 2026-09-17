@@ -13,6 +13,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_refund_amount_immutable ON refunds;
 CREATE TRIGGER trg_refund_amount_immutable
   BEFORE UPDATE ON refunds
   FOR EACH ROW EXECUTE FUNCTION reject_refund_amount_mutation();
@@ -28,6 +29,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_payout_amount_immutable ON payouts;
 CREATE TRIGGER trg_payout_amount_immutable
   BEFORE UPDATE ON payouts
   FOR EACH ROW EXECUTE FUNCTION reject_payout_amount_mutation();
@@ -43,6 +45,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_payment_amount_immutable ON payments;
 CREATE TRIGGER trg_payment_amount_immutable
   BEFORE UPDATE ON payments
   FOR EACH ROW EXECUTE FUNCTION reject_payment_amount_mutation();
