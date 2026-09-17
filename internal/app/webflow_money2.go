@@ -291,7 +291,9 @@ func (a *App) wfDataStep(r *http.Request, flow store.WebFlow, user store.User) (
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	case "plan":
-		plans, _, err := a.store.SearchDataPlans(r.Context(), flow.Payload["data_network"], "", 0, 200)
+		// Page-bounds cap is 100: this was silently truncated to 10 before the
+		// clamp fix, hiding most of the catalog.
+		plans, _, err := a.store.SearchDataPlans(r.Context(), flow.Payload["data_network"], "", 0, 100)
 		if err != nil {
 			return page, err
 		}

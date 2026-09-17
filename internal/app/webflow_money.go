@@ -268,20 +268,12 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "merchant":
-		// Page through the full active-merchant list: SearchMerchants clamps
-		// any single-page limit to 25, so one call would silently hide every
-		// merchant past the first page — including from the ask-bar matcher,
-		// which then "resolved" asks to a merchant it could actually see.
-		var merchants []store.Merchant
-		for offset := 0; ; offset += 25 {
-			pageRows, hasMore, err := a.store.SearchMerchants(r.Context(), "", offset, 25)
-			if err != nil {
-				return page, err
-			}
-			merchants = append(merchants, pageRows...)
-			if !hasMore || len(pageRows) == 0 {
-				break
-			}
+		// One call at the page-bounds ceiling: the picker and the ask-bar
+		// matcher must see the whole active catalog. (The old page-bounds
+		// downgrade truncated both lists to 10 rows silently.)
+		merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 100)
+		if err != nil {
+			return page, err
 		}
 		// Auto-skip: a single active merchant has nothing to choose, so the
 		// flow starts at the item step with the merchant pre-selected. The
@@ -502,18 +494,10 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		if ask != "" && len([]rune(ask)) <= wfMaxExtractLen {
 			payload[wfBillAskField] = ask
 		}
-		// Same pagination as the render path: the matcher must see every
-		// active merchant, not just the first clamped page.
-		var merchants []store.Merchant
-		for offset := 0; ; offset += 25 {
-			pageRows, hasMore, err := a.store.SearchMerchants(r.Context(), "", offset, 25)
-			if err != nil {
-				return a.wfPageWithError(flow, page, "Could not load the merchant list. Please try again."), nil
-			}
-			merchants = append(merchants, pageRows...)
-			if !hasMore || len(pageRows) == 0 {
-				break
-			}
+		// Full active list for the matcher (see the render path's note).
+		merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 100)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not load the merchant list. Please try again."), nil
 		}
 		if slug == "" {
 			parsed, ok := wfBillMerchantSlug(wfBillCapturedText(payload), merchants)

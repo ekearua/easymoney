@@ -428,12 +428,21 @@ func (s *Store) Seed(ctx context.Context) error {
 	return err
 }
 
+// normalizePageBounds sanitizes paging arguments: a non-positive limit gets
+// the 10-row default and a wildly large request is capped, but a caller that
+// explicitly asks for a bigger page now gets it instead of being silently
+// downgraded to 10 — the old >25→10 downgrade truncated the merchant picker,
+// the ask-bar matcher, and the merchant console's Payments/Invoices pages
+// with no way for the caller to notice.
 func normalizePageBounds(offset, limit int) (int, int) {
 	if offset < 0 {
 		offset = 0
 	}
-	if limit <= 0 || limit > 25 {
+	if limit <= 0 {
 		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
 	}
 	return offset, limit
 }
