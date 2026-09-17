@@ -56,26 +56,114 @@ func wfBillCapturedText(payload map[string]string) string {
 }
 
 // wfBillMerchantSlug picks the merchant whose name appears in the captured
-// text. When several names match, the longest (most specific) wins; with no
-// match it returns "" so the customer chooses from the list.
-func wfBillMerchantSlug(text string, merchants []store.Merchant) string {
-	lower := strings.ToLower(text)
-	if lower == "" {
-		return ""
+// text. Matching runs in two passes: an exact substring pass first ("Ade's
+// Kitchen" inside a typed sentence or OCR'd bill), then a normalized token
+// pass that survives apostrophes, punctuation, and word-order ("ade kitchen"
+// → "Ade's Kitchen", "kitchen from ade" → "Ade's Kitchen"). When several
+// names match, the longest (most specific) wins; when the best candidates
+// are indistinguishable (same normalized name), ok=false reports the
+// ambiguity so the caller can make the customer confirm instead of guessing.
+func wfBillMerchantSlug(text string, merchants []store.Merchant) (slug string, ok bool) {
+	if strings.TrimSpace(text) == "" {
+		return "", true
 	}
-	best := ""
-	bestLen := 0
+	// Pass 1: exact substring, longest name wins.
+	lower := strings.ToLower(text)
+	best, bestLen := "", 0
+	bestNorm := ""
 	for _, m := range merchants {
 		name := strings.ToLower(strings.TrimSpace(m.Name))
 		if len(name) < 3 || !strings.Contains(lower, name) {
 			continue
 		}
 		if len(name) > bestLen {
-			best = m.Slug
-			bestLen = len(name)
+			best, bestLen, bestNorm = m.Slug, len(name), wfNormalizeMerchantName(name)
 		}
 	}
-	return best
+	if best != "" {
+		// Tied longest names that normalize identically are the same business;
+		// genuinely different names are ambiguous.
+		for _, m := range merchants {
+			name := strings.ToLower(strings.TrimSpace(m.Name))
+			if m.Slug != best && len(name) == bestLen && wfNormalizeMerchantName(name) == bestNorm {
+				return "", false
+			}
+		}
+		return best, true
+	}
+	// Pass 2: normalized token matching — every word of the merchant name
+	// must match a text token (equality or a ≥3-char prefix, so "ade kitchen"
+	// matches "Ade's Kitchen" and "kora book" matches "Kora Books"). A name
+	// that is itself a subset of another candidate's words loses to it.
+	tokens := wfMerchantTokens(wfNormalizeMerchantName(text))
+	best, bestNorm = "", ""
+	bestWords := 0
+	ambiguous := false
+	for _, m := range merchants {
+		name := strings.TrimSpace(m.Name)
+		words := wfMerchantTokens(wfNormalizeMerchantName(name))
+		if len(words) == 0 || len(words) < 2 || !matchAllTokens(tokens, words) {
+			continue
+		}
+		if len(words) > bestWords {
+			best, bestNorm, bestWords, ambiguous = m.Slug, wfNormalizeMerchantName(name), len(words), false
+		} else if len(words) == bestWords && wfNormalizeMerchantName(name) != bestNorm {
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return "", false
+	}
+	return best, true
+}
+
+// wfNormalizeMerchantName folds a name or sentence to comparable lowercase
+// tokens: apostrophes dropped (ade's → ades), punctuation and diacritic-ish
+// separators folded to spaces. Numbers are kept so "shop 5" stays distinct.
+func wfNormalizeMerchantName(s string) string {
+	s = strings.ToLower(s)
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case r == '\'':
+			return -1 // drop apostrophes: ade's -> ades
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r == '&':
+			return ' '
+		default:
+			if r >= 128 {
+				return -1 // fold non-ascii punctuation like ₦
+			}
+			return ' '
+		}
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// wfMerchantTokens splits a normalized name into word tokens.
+func wfMerchantTokens(s string) []string {
+	return strings.Fields(s)
+}
+
+// matchAllTokens reports whether every merchant-name word matches some text
+// token: either equality or a prefix in either direction of at least three
+// characters. Prefixes let truncated or apostrophe-less typing ("ade",
+// "kora book") resolve to the full name ("Ade's", "Kora Books") without
+// letting one- and two-letter noise match everything.
+func matchAllTokens(textTokens, wanted []string) bool {
+	for _, w := range wanted {
+		matched := false
+		for _, t := range textTokens {
+			if t == w || (len(t) >= 3 && strings.HasPrefix(w, t)) || (len(w) >= 3 && strings.HasPrefix(t, w)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 var (

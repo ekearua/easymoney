@@ -42,17 +42,74 @@ func TestWFBillMerchantSlug(t *testing.T) {
 	cases := []struct {
 		text string
 		want string
+		ok   bool
 	}{
-		{"pay 2500 to Lagos Lunchbox", "lagos-lunchbox"},
-		{"MERCHANT Ade's Kitchen | AMOUNT 2500", ""},
-		{"kora books invoice", "kora-books"},
-		{"", ""},
-		{"nothing here", ""},
+		{"pay 2500 to Lagos Lunchbox", "lagos-lunchbox", true},
+		{"MERCHANT Ade's Kitchen | AMOUNT 2500", "", true},
+		{"kora books invoice", "kora-books", true},
+		{"", "", true},
+		{"nothing here", "", true},
 	}
 	for _, c := range cases {
-		if got := wfBillMerchantSlug(c.text, merchants); got != c.want {
-			t.Errorf("wfBillMerchantSlug(%q) = %q, want %q", c.text, got, c.want)
+		got, ok := wfBillMerchantSlug(c.text, merchants)
+		if got != c.want || ok != c.ok {
+			t.Errorf("wfBillMerchantSlug(%q) = %q,%v want %q,%v", c.text, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+func TestWFBillMerchantSlugFuzzy(t *testing.T) {
+	merchants := []store.Merchant{
+		{Slug: "ades-kitchen", Name: "Ade's Kitchen"},
+		{Slug: "kora-books", Name: "Kora Books"},
+		{Slug: "shop5", Name: "Shop 5 Plaza"},
+	}
+	cases := []struct {
+		text string
+		want string
+		ok   bool
+	}{
+		// Apostrophe-less and partial tokens still resolve.
+		{"pay ade kitchen 2500", "ades-kitchen", true},
+		{"ade's kitchen", "ades-kitchen", true},
+		{"send 3000 to kora book", "kora-books", true},
+		// Word order does not matter.
+		{"kitchen from ade", "ades-kitchen", true},
+		// Numbers are significant: "shop 5" is a real name fragment.
+		{"pay shop 5 plaza 1000", "shop5", true},
+		// A stray short token must not glue itself onto everything.
+		{"pay at the shop 2500", "", true},
+		// Marked amounts survive fuzzy matching too.
+		{"NGN 3000 to Ade's Kitchen", "ades-kitchen", true},
+	}
+	for _, c := range cases {
+		got, ok := wfBillMerchantSlug(c.text, merchants)
+		if got != c.want || ok != c.ok {
+			t.Errorf("wfBillMerchantSlug(%q) = %q,%v want %q,%v", c.text, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestWFBillMerchantSlugAmbiguousAsksForConfirmation(t *testing.T) {
+	// Two distinct merchants whose names both fully fit the text: ok=false
+	// tells the caller to surface a choose-from-list confirmation instead of
+	// silently picking one side.
+	merchants := []store.Merchant{
+		{Slug: "kora-books", Name: "Kora Books"},
+		{Slug: "kora-bookshop", Name: "Kora Bookshop"},
+	}
+	got, ok := wfBillMerchantSlug("pay kora book 2500", merchants)
+	if ok || got != "" {
+		t.Fatalf("expected ambiguity (empty,false), got %q,%v", got, ok)
+	}
+	// With branches named, naming one resolves it outright.
+	branches := []store.Merchant{
+		{Slug: "ades-kitchen-ikeja", Name: "Ade's Kitchen Ikeja"},
+		{Slug: "ades-kitchen-yaba", Name: "Ade's Kitchen Yaba"},
+	}
+	got, ok = wfBillMerchantSlug("pay ade kitchen ikeja 2500", branches)
+	if !ok || got != "ades-kitchen-ikeja" {
+		t.Fatalf("expected the named branch to win, got %q,%v", got, ok)
 	}
 }
 
@@ -62,8 +119,9 @@ func TestWFBillMerchantSlugLongestWins(t *testing.T) {
 		{Slug: "kora", Name: "Kora"},
 		{Slug: "kora-books", Name: "Kora Books"},
 	}
-	if got := wfBillMerchantSlug("Kora Books rocks", merchants); got != "kora-books" {
-		t.Fatalf("expected the longer name to win, got %q", got)
+	got, ok := wfBillMerchantSlug("Kora Books rocks", merchants)
+	if !ok || got != "kora-books" {
+		t.Fatalf("expected the longer name to win, got %q,%v", got, ok)
 	}
 }
 
@@ -91,8 +149,9 @@ func TestWFBillCapturedTextPrefersTypedAsk(t *testing.T) {
 	// End-to-end through the parsers: the typed sentence prefills both
 	// merchant and amount exactly like an OCR'd bill would.
 	merchants := []store.Merchant{{Slug: "ade", Name: "Ade's Kitchen"}}
-	if slug := wfBillMerchantSlug(wfBillCapturedText(payload), merchants); slug != "ade" {
-		t.Fatalf("typed ask must resolve the merchant, got %q", slug)
+	slug, ok := wfBillMerchantSlug(wfBillCapturedText(payload), merchants)
+	if !ok || slug != "ade" {
+		t.Fatalf("typed ask must resolve the merchant, got %q,%v", slug, ok)
 	}
 	if kobo := wfBillAmountKobo(wfBillCapturedText(payload)); kobo != 250_000 {
 		t.Fatalf("typed ask must resolve the amount to 250000 kobo, got %d", kobo)

@@ -205,6 +205,16 @@ func TestWebFlowFormHarness(t *testing.T) {
 	payToken := startFlow("pay")
 	pages["pay_merchant"] = cfg.BaseURL + "/w/" + payToken
 
+	// pay (ambiguous): a second merchant whose name collides with Kora Books
+	// under prefix matching, so a typed "pay kora book …" cannot be resolved
+	// without the customer choosing. The driver asserts the confirmation
+	// banner and that the select stays unselected.
+	if _, err := repository.RawExec(ctx, `INSERT INTO merchants (slug, name, category, description)
+		VALUES ('kora-bookshop', 'Kora Bookshop', 'Books', 'Second branch for ambiguity testing.')
+		ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, active = true`); err != nil {
+		t.Fatal(err)
+	}
+
 	fmt.Printf("FORMS base=%s\n", srv.URL)
 	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note", "invoice_items_summary", "pay_merchant"} {
 		fmt.Printf("FORMS %s=%s\n", name, pages[name])

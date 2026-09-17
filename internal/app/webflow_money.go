@@ -268,9 +268,20 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "merchant":
-		merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 60)
-		if err != nil {
-			return page, err
+		// Page through the full active-merchant list: SearchMerchants clamps
+		// any single-page limit to 25, so one call would silently hide every
+		// merchant past the first page — including from the ask-bar matcher,
+		// which then "resolved" asks to a merchant it could actually see.
+		var merchants []store.Merchant
+		for offset := 0; ; offset += 25 {
+			pageRows, hasMore, err := a.store.SearchMerchants(r.Context(), "", offset, 25)
+			if err != nil {
+				return page, err
+			}
+			merchants = append(merchants, pageRows...)
+			if !hasMore || len(pageRows) == 0 {
+				break
+			}
 		}
 		// Auto-skip: a single active merchant has nothing to choose, so the
 		// flow starts at the item step with the merchant pre-selected. The
@@ -288,13 +299,21 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		}
 		page.Title = "Who are you paying?"
 		page.Intro = "Tell Xego who to pay and how much — type it below, snap the bill with the icons, or say it out loud. Xego reads it and prefills the form; you confirm before anything is charged."
-		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions( merchants), OptionsClass: "wf-ai-merchant"}
+		// The select is not browser-required: the AI bar is the primary input
+		// and a typed ask must be free to submit with the select untouched —
+		// the submit-side parser resolves it, and an unresolvable ask re-renders
+		// with a choose-from-list notice. Server validation covers the empty case.
+		merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Options: merchantSelectOptions(merchants), OptionsClass: "wf-ai-merchant"}
 		// When a bill photo or voice note was already captured on this step
 		// (the media upload posts back here), pre-select the merchant named in
 		// it so the customer only confirms. The choice stays visible and is
 		// required, so nothing is charged without an explicit Continue.
+		// When a bill photo, voice note, or typed ask already named a merchant,
+		// pre-select it so the customer only confirms. Ambiguous matches are
+		// left unselected on purpose: the customer picks from the list rather
+		// than Xego guessing between two businesses.
 		if flow.Payload["merchant_slug"] == "" {
-			if slug := wfBillMerchantSlug(wfBillCapturedText(flow.Payload), merchants); slug != "" {
+			if slug, ok := wfBillMerchantSlug(wfBillCapturedText(flow.Payload), merchants); ok && slug != "" {
 				merchantField.Value = slug
 			}
 		}
@@ -483,21 +502,31 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		if ask != "" && len([]rune(ask)) <= wfMaxExtractLen {
 			payload[wfBillAskField] = ask
 		}
-		if slug == "" {
-			merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 60)
+		// Same pagination as the render path: the matcher must see every
+		// active merchant, not just the first clamped page.
+		var merchants []store.Merchant
+		for offset := 0; ; offset += 25 {
+			pageRows, hasMore, err := a.store.SearchMerchants(r.Context(), "", offset, 25)
 			if err != nil {
 				return a.wfPageWithError(flow, page, "Could not load the merchant list. Please try again."), nil
 			}
-			slug = wfBillMerchantSlug(wfBillCapturedText(payload), merchants)
-			if slug == "" {
-				// Re-render the step with everything kept so the typed ask and
-				// any prefill survive for correction.
+			merchants = append(merchants, pageRows...)
+			if !hasMore || len(pageRows) == 0 {
+				break
+			}
+		}
+		if slug == "" {
+			parsed, ok := wfBillMerchantSlug(wfBillCapturedText(payload), merchants)
+			if !ok {
+				// Confirmation for ambiguity: several merchants match the text,
+				// so the customer — not the parser — picks one. The ask is kept
+				// so the amount still prefills once they choose.
 				flow.Payload = payload
 				page, rerr := a.wfRenderStep(r, flow, user)
 				if rerr != nil {
-					return a.wfPageWithError(flow, a.wfPage(flow), "We couldn't tell which merchant you mean. Choose one from the list."), nil
+					return a.wfPageWithError(flow, a.wfPage(flow), "Several merchants match your text — choose one from the list."), nil
 				}
-				page.Error = "We couldn't tell which merchant you mean — choose one from the list (your text is kept)."
+				page.Error = "Several merchants match your text — choose the right one from the list."
 				page.FlowType = flow.FlowType
 				page.Token = flow.Token
 				page.AppName = a.cfg.AppName
@@ -505,6 +534,41 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 				page.BaseURL = a.cfg.BaseURL
 				return &page, nil
 			}
+			slug = parsed
+			if slug != "" {
+				// Resolved from the ask: keep the customer on this step with the
+				// merchant pre-selected rather than advancing silently — the same
+				// confirm-before-proceed contract the OCR/voice prefill uses.
+				// The next Continue (with the select now filled) advances.
+				flow.Payload = payload
+				if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+					return a.wfPageWithError(flow, page, err.Error()), nil
+				}
+				page, rerr := a.wfRenderStep(r, flow, user)
+				if rerr != nil {
+					return a.wfPageWithError(flow, a.wfPage(flow), ""), nil
+				}
+				page.FlowType = flow.FlowType
+				page.Token = flow.Token
+				page.AppName = a.cfg.AppName
+				page.WhatsAppLink = a.whatsappDeepLink()
+				page.BaseURL = a.cfg.BaseURL
+				return &page, nil
+			}
+			// Unresolvable ask: re-render with everything kept so the typed
+			// text and any prefill survive for correction.
+			flow.Payload = payload
+			page, rerr := a.wfRenderStep(r, flow, user)
+			if rerr != nil {
+				return a.wfPageWithError(flow, a.wfPage(flow), "We couldn't tell which merchant you mean. Choose one from the list."), nil
+			}
+			page.Error = "We couldn't tell which merchant you mean — choose one from the list (your text is kept)."
+			page.FlowType = flow.FlowType
+			page.Token = flow.Token
+			page.AppName = a.cfg.AppName
+			page.WhatsAppLink = a.whatsappDeepLink()
+			page.BaseURL = a.cfg.BaseURL
+			return &page, nil
 		}
 		payload["merchant_slug"] = slug
 		// Persist the ask text with the advance so the amount step's prefill
