@@ -498,6 +498,52 @@ func (s *Store) ConfirmTikTokAccount(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// MarkChannelOnboarded durably stamps a channel as introduced for a customer
+// whose GLOBAL identity already cleared the money-out tier, so the per-channel
+// onboarding gate never fires again on that channel. It is deliberately KYC-
+// neutral: it sets ONLY the channel's confirmed timestamp (COALESCE, so it is
+// idempotent and never back-dates an already-stamped channel) and leaves
+// verification_level, account_level, and the phone number untouched. Unlike
+// the Confirm*Account family it does NOT downgrade the verification level, so
+// an approved individual carries their global tier onto a fresh channel.
+func (s *Store) MarkChannelOnboarded(ctx context.Context, id uuid.UUID, channel string) error {
+	var statement string
+	switch channel {
+	case "whatsapp":
+		statement = `
+			UPDATE users SET
+				number_confirmed_at=COALESCE(number_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	case "telegram":
+		statement = `
+			UPDATE users SET
+				telegram_confirmed_at=COALESCE(telegram_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	case "instagram":
+		statement = `
+			UPDATE users SET
+				instagram_confirmed_at=COALESCE(instagram_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	case "tiktok":
+		statement = `
+			UPDATE users SET
+				tiktok_confirmed_at=COALESCE(tiktok_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
+	default:
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, statement, id)
+	return err
+}
+
 // GetOrCreateInstagramUser resolves an Instagram customer by stable IGSID.
 func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username string) (User, error) {
 	const query = `

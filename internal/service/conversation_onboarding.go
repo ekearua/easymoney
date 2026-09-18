@@ -62,6 +62,7 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return s.handleAccountConfirmation(ctx, channel, recipient, user, session, input)
 	}
 	if user.OnboardingComplete && !s.onboardingCompleteForChannel(user, channel) &&
+		!s.userIsApprovedIndividual(ctx, user) &&
 		session.State != "onboard_confirm_account" && session.State != "onboard_email" && session.State != "onboard_email_code" {
 		session.State, session.Data = "onboard_confirm_account", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
@@ -120,6 +121,26 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return err
 	}
 	return s.sendAccountConfirmation(ctx, channel, recipient)
+}
+
+// handleNewChannelForApprovedUser is the non-blocking cross-channel handoff
+// for a customer whose GLOBAL identity already cleared the approved/money-out
+// tier. Their KYC tier is global, so a fresh channel is never a wall: they get
+// a one-time, non-blocking intro and then the menu (money-out rendered from
+// global fields). The channel is durably stamped via MarkChannelOnboarded
+// (channel's *_confirmed_at only, KYC-neutral) so onboardingCompleteForChannel
+// goes true and the gate in Handle stays closed — the intro fires exactly once,
+// not on every subsequent message from that channel.
+func (s *ConversationService) handleNewChannelForApprovedUser(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
+	if err := s.sendText(ctx, channel, recipient, "It's the same you — your "+channelDisplayName(channel)+" is now linked to your Xego account, so there's nothing to sign up for again. Type MENU to see what you can do."); err != nil {
+		return err
+	}
+	// Durable channel stamp *after* the intro so a transient send failure leaves
+	// the gate open and the intro retries on the next message.
+	if err := s.store.MarkChannelOnboarded(ctx, user.ID, channel); err != nil {
+		return err
+	}
+	return s.sendMenu(ctx, channel, recipient, user)
 }
 
 func (s *ConversationService) handleAccountConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {

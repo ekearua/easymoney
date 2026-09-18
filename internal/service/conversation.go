@@ -212,7 +212,17 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	if strings.EqualFold(input, "help") || strings.EqualFold(input, "/help") {
 		return s.sendHelp(ctx, message.Channel, recipient)
 	}
+	// Cross-channel identity carry-over: a customer whose global identity
+	// already cleared the money-out tier is never re-hijacked into per-channel
+	// onboarding on a fresh channel (telegram/instagram/tiktok). Their KYC
+	// tier is global, so a new channel gets a one-time non-blocking intro and
+	// the menu, instead of being forced through account confirmation again.
+	// Only users who have NOT yet reached an approved global tier still go
+	// through per-channel onboarding.
 	if !s.onboardingCompleteForChannel(user, message.Channel) {
+		if s.userIsApprovedIndividual(ctx, user) {
+			return s.handleNewChannelForApprovedUser(ctx, message.Channel, recipient, user, session)
+		}
 		return s.handleOnboarding(ctx, message.Channel, recipient, user, session, input)
 	}
 	// A brand-new service request while another session is already active
