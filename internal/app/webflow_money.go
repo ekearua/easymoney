@@ -446,6 +446,14 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 }
 
 func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage) (webFlowPage, error) {
+	// A wallet attempt that failed leaves the chosen rail in the payload, so a
+	// fresh GET of the review — a reload, a browser back, or a checkout
+	// reopened for retry — still explains the wallet's state inline instead of
+	// silently offering a rail that cannot work yet. A specific failure message
+	// set by the caller (the immediate error re-render) wins over it.
+	if page.Error == "" {
+		page.Error = a.wfWalletStatePreview(r, flow)
+	}
 	merchant, err := a.wfLoadMerchant(r, flow.Payload["merchant_slug"])
 	if err != nil {
 		return page, err

@@ -427,6 +427,102 @@ func TestParkedCheckoutRendersEveryMoneyFlow(t *testing.T) {
 	}
 }
 
+// TestWalletReviewNoticeOnReopenedReview pins the inline wallet notice on the
+// pay review. Once the wallet rail has been chosen the payload records it, so
+// any later render of the review — a reload, a browser back, or the review a
+// damaged checkout reopens on — has to explain that the wallet cannot pay yet
+// instead of silently offering the rail again. A review with no recorded rail
+// stays clean, so the notice never leaks onto a first visit.
+func TestWalletReviewNoticeOnReopenedReview(t *testing.T) {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("set TEST_DATABASE_URL to run the web-flow retry test against a real PostgreSQL")
+	}
+	if testing.Short() {
+		t.Skip("skipping DB-gated web-flow retry test in short mode")
+	}
+	ctx := context.Background()
+	databaseURL := simTestDBURL(t, base)
+	repository, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{
+		AppName: "Xego", BaseURL: "https://demo.xego.ng",
+		InterswitchCheckoutRender: "hosted_fields",
+		PaymentMinKobo:            10_000,
+		PaymentMaxKobo:            10_000_000,
+		SessionTTL:                30 * time.Minute,
+		RateLimitPublicPerMinute:  6000,
+	}
+	_, srv := newWebFlowRetryApp(t, ctx, repository, cfg)
+
+	user, err := repository.GetOrCreateUser(ctx, "+2348091000021")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// L0 opens the pending individual wallet; activating it is what makes the
+	// rail usable at all, so what the notice has to report here is the empty
+	// balance rather than an inactive account.
+	if _, err := repository.EnsureKYCProfile(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ActivateUserWallet(ctx, user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	reviewPayload := map[string]string{
+		"merchant_slug": "lagos-lunchbox",
+		"item_name":     "Custom amount",
+		"amount_kobo":   "250000",
+	}
+	parkReview := func(payload map[string]string) string {
+		t.Helper()
+		flow, err := repository.MintWebFlow(ctx, user.ID, "whatsapp", service.WebFlowPay, payload, "", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.SaveWebFlowProgress(ctx, flow.Token, "review", payload); err != nil {
+			t.Fatal(err)
+		}
+		return flow.Token
+	}
+
+	// First visit: no rail chosen yet, so the page carries no wallet copy.
+	clean := retryGET(t, retryNoFollowClient(), srv.URL+"/w/"+parkReview(reviewPayload))
+	if !strings.Contains(clean, "Review your payment") {
+		t.Fatalf("review step did not render\n%s", clean[:min2(len(clean), 600)])
+	}
+	if strings.Contains(clean, "which is less than") {
+		t.Fatalf("a review with no recorded rail must not show wallet copy\n%s", clean[:min2(len(clean), 600)])
+	}
+
+	// Reopened with the wallet rail recorded: the empty active wallet is named.
+	walletPayload := map[string]string{}
+	for k, v := range reviewPayload {
+		walletPayload[k] = v
+	}
+	walletPayload["method"] = service.ProviderWallet
+	body := retryGET(t, retryNoFollowClient(), srv.URL+"/w/"+parkReview(walletPayload))
+	if !strings.Contains(body, "which is less than") {
+		t.Fatalf("reopened review should explain the wallet balance\n%s", body[:min2(len(body), 900)])
+	}
+	// Every rail is still offered, so the customer can switch and retry.
+	for _, method := range []string{service.ProviderInterswitch, service.ProviderBankTransfer, service.ProviderWallet} {
+		if !strings.Contains(body, `value="`+method+`"`) {
+			t.Fatalf("reopened review is missing the %s option button\n%s", method, body[:min2(len(body), 900)])
+		}
+	}
+}
+
 // retryNoFollowClient returns an HTTP client that never follows redirects so
 // tests can assert the exact 303 destinations.
 func retryNoFollowClient() *http.Client {

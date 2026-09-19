@@ -143,10 +143,11 @@ var paymentPlanScenarios = []planScenario{
 		id:   "W5",
 		desc: "Wallet on inactive account",
 		tests: map[string]string{
-			"TestFriendlyWebPaymentError":          "internal/app/webflow_media_test.go",
-			"TestFriendlyWebPaymentErrorAllowance": "internal/app/webflow_media_test.go",
+			"TestFriendlyWebPaymentError":            "internal/app/webflow_media_test.go",
+			"TestFriendlyWebPaymentErrorAllowance":   "internal/app/webflow_media_test.go",
+			"TestWalletReviewNoticeOnReopenedReview": "internal/app/webflow_retry_test.go",
 		},
-		region: "webflow_media_test.go:92; wfWalletStatePreview guard",
+		region: "webflow_media_test.go:92 (error copy) + webflow_retry_test.go (wfWalletStatePreview renders on the review)",
 	},
 	{
 		id:   "R1",
