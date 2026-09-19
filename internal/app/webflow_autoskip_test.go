@@ -102,8 +102,8 @@ func simulateAutoSkippedItemStep(t *testing.T, ctx context.Context, run *simRun,
 	if status != http.StatusOK {
 		t.Fatalf("review page: status=%d", status)
 	}
-	if got := stepperCurrentLabel(body); got != "Review" {
-		t.Errorf("stepper current after amount = %q, want %q (page: %s)", got, "Review", run.page(body))
+	if got := stepperCurrentLabel(body); got != "Pay" {
+		t.Errorf("stepper current after amount = %q, want %q (page: %s)", got, "Pay", run.page(body))
 	}
 	fmt.Printf("  ✅ amount → review: stepper=%s\n", stepperCurrentLabel(body))
 

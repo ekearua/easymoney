@@ -116,13 +116,31 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 			fmt.Sprintf("✅ Paid from your Xego wallet.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s/receipts/%s",
 				payment.MerchantName, domain.FormatNGN(payment.AmountKobo), s.cfg.BaseURL, payment.ReceiptToken))
 	}
+	// Non-wallet rails route straight to the secure payment page: the
+	// gateway (Interswitch hosted fields for cards, DVA instructions for
+	// transfers) is initialized right now so the button opens the real
+	// gateway, not an extra intermediate review hop. The review was already
+	// shown before the customer tapped Continue.
 	session.State, session.Data = "menu", map[string]string{}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendCheckout(ctx, channel, recipient,
-		fmt.Sprintf("Your secure checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo)),
-		s.payments.HostedCheckoutURL(payment))
+	return s.sendPaymentCheckoutLink(ctx, channel, recipient, payment)
+}
+
+// sendPaymentCheckoutLink initializes the gateway for a drafted payment and
+// sends the chat message whose button opens the real payment page: the
+// Interswitch hosted-fields page for cards, or the DVA transfer instructions
+// for bank transfers. On an initialize failure it falls back to the hosted
+// review page, which offers the retry affordance.
+func (s *ConversationService) sendPaymentCheckoutLink(ctx context.Context, channel, recipient string, payment store.PaymentView) error {
+	body := fmt.Sprintf("Your secure checkout is ready.\n\nMerchant: %s\nAmount: %s\n\nXego will verify the result before issuing your receipt.", payment.MerchantName, domain.FormatNGN(payment.AmountKobo))
+	updated, err := s.payments.InitializeCheckout(ctx, payment)
+	if err != nil {
+		slog.Warn("checkout initialize for chat payment failed", "payment_id", payment.ID, "provider", payment.Provider, "error", err)
+		return s.sendCheckout(ctx, channel, recipient, body, s.payments.HostedCheckoutURL(payment))
+	}
+	return s.sendCheckout(ctx, channel, recipient, body, updated.CheckoutURL)
 }
 
 func (s *ConversationService) sendAccountConfirmation(ctx context.Context, channel, recipient string) error {

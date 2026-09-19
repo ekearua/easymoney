@@ -1042,12 +1042,12 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 ### Workflow: Conversational card payment
 
-- **Trigger:** Customer chooses **Make payment**, selects merchant, enters amount (₦100–₦100,000), chooses **Card checkout**.
+- **Trigger:** Customer chooses **Make payment**, selects merchant, enters amount (₦100–₦100,000), then taps a payment-option button (card, bank transfer, or wallet) on the review page.
 - **Actors:** Customer, engine, PaymentService, Interswitch, background workers.
 - **Process:**
   1. Conversation captures merchant, amount, channel.
-  2. Draft payment created (`awaiting_confirmation` → `initialized`/`pending`).
-  3. Interswitch Web Checkout redirect form prepared; the customer clicks **Continue to Interswitch** on the platform page and the form posts to Interswitch `/collections/w/pay` (card only).
+  2. On the review page each payment option is a link button; tapping one creates the draft payment (`awaiting_confirmation` → `initialized`/`pending`) for that rail.
+  3. The gateway is initialized immediately and the chat button opens the live payment page: Interswitch hosted fields for cards, DVA transfer instructions for bank transfers, or an inline wallet confirmation.
   4. Customer completes the card flow on the Interswitch hosted page.
   5. Callback `/payments/return` or the outbound webhook (`TRANSACTION.COMPLETED`) triggers `VerifyAndApply` — an authoritative Interswitch requery (`gettransaction.json`) of reference/amount/currency/test-mode.
   6. On confirmation: payment → `succeeded`; ledger money-in pair; `payment.succeeded` into outbox.

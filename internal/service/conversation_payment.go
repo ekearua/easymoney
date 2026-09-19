@@ -452,12 +452,10 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 				return err
 			}
 		}
-		session.State = "confirm_payment"
-		session.Data["payment_id"] = payment.ID.String()
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendCardReview(ctx, channel, recipient, merchant, amount)
+		// Method chosen == review accepted: the review (with the full amount
+		// + collection fee) was shown in the method message. Go straight to
+		// the payment page instead of a second confirmation hop.
+		return s.finishAndSendCheckout(ctx, channel, recipient, session, payment)
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderBankTransfer, channel, recipient)
 		if err != nil {
@@ -472,12 +470,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 				return err
 			}
 		}
-		session.State = "confirm_payment"
-		session.Data["payment_id"] = payment.ID.String()
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
-		}
-		return s.sendBankTransferReview(ctx, channel, recipient, merchant, amount)
+		return s.finishAndSendCheckout(ctx, channel, recipient, session, payment)
 	case "method_wallet", "wallet", "pay from wallet":
 		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderWallet, channel, recipient)
 		if err != nil {
@@ -501,6 +494,14 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
+}
+
+func (s *ConversationService) finishAndSendCheckout(ctx context.Context, channel, recipient string, session store.Session, payment store.PaymentView) error {
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendPaymentCheckoutLink(ctx, channel, recipient, payment)
 }
 
 func (s *ConversationService) recordServicePurchase(ctx context.Context, paymentID uuid.UUID, serviceIDStr, qtyStr, customDataJSON string) error {

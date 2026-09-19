@@ -8,7 +8,7 @@
 .receipt button.hf-back{display:block;width:100%;margin-top:6px;background:transparent;color:var(--muted);font:inherit;font-weight:700;font-size:14px;border:0;padding:8px;cursor:pointer}
 #cardinal-container:not(:empty){min-height:320px;margin-top:14px}
 /* ===== stepped flow layer (any web flow with steps; scoped under main.wf) ===== */
-.wf-stepper{display:flex;align-items:flex-start;list-style:none;margin:0 0 18px;padding:0;text-align:left}
+.wf-stepper{display:flex;align-items:flex-start;list-style:none;margin:0 0 14px;padding:0;text-align:left}
 .wf-stepper li{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;position:relative;min-width:0}
 .wf-stepper li::before{content:"";position:absolute;top:12px;left:-50%;width:100%;height:2px;background:var(--line)}
 .wf-stepper li:first-child::before{display:none}
@@ -48,16 +48,26 @@
 .wf .radio small{font-size:12px}
 .wf .radio label{display:none}
 .wf .radio span strong{font-size:14px}
+/* web-flow pages use the full viewport height and anchor to the top instead of
+   floating a small centered card: the stepper and CTA are visible immediately
+   and long steps simply scroll naturally. */
+.receipt-body:has(>main.wf){display:block;padding:0}
+main.wf{width:min(100%,560px);min-height:100vh;min-height:100dvh;margin:0 auto;border:0;border-left:1px solid var(--line);border-right:1px solid var(--line);border-radius:0;box-shadow:none;padding:20px 20px 24px}
+/* step pages stay compact so every payment option is on screen at 360x667
+   without scrolling to reach it */
+.wf h1{font-size:26px;letter-spacing:-.03em;margin:8px 0 2px}
+.wf .eyebrow{font-size:11px}
+.wf .fee-breakdown div{padding:9px 0}
 /* sticky action bar with the big pay CTA */
-.wf .actions{position:sticky;bottom:0;display:flex;flex-direction:column;gap:8px;margin:18px -38px -38px;padding:16px 38px 30px;background:linear-gradient(to top,var(--paper) 78%,transparent)}
+.wf .actions{position:sticky;bottom:0;display:flex;flex-direction:column;gap:7px;margin:14px -20px -24px;padding:14px 20px 20px;background:linear-gradient(to top,var(--paper) 78%,transparent)}
 .wf .actions button[type=submit],.wf .actions .button{display:block;width:100%;min-height:56px;border:0;border-radius:15px;background:linear-gradient(180deg,#0a9c6f,var(--green));color:#fff;font:inherit;font-weight:800;font-size:17px;padding:15px;cursor:pointer;box-shadow:0 10px 26px rgba(8,127,91,.4),inset 0 2px 0 rgba(255,255,255,.22);text-align:center;text-decoration:none}
 .wf .actions button[type=submit]:active{transform:translateY(1px)}
 /* everything after the first action is secondary, so a step with a retry or a
    skip link keeps exactly one dominant CTA no matter the action order */
-.wf .actions button:not(:first-child),.wf .actions a.button:not(:first-child),.wf .actions button[value=back],.wf .actions button[value=cancel]{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none;min-height:52px;font-size:15px}
+.wf .actions button:not(:first-child),.wf .actions a.button:not(:first-child),.wf .actions button[value=back],.wf .actions button[value=cancel]{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none;min-height:46px;font-size:15px}
 .wf .actions a.button{background:#fff;color:var(--ink);border:1px solid var(--line);box-shadow:none}
 .wf .amount-input{font-size:26px;font-weight:800;letter-spacing:-.02em}
-@media(max-width:800px){.wf .actions{margin:18px -26px -26px;padding:16px 26px 24px}}
+@media(max-width:800px){.wf .actions{margin:14px -20px -18px;padding:14px 20px 18px}}
 /* hosted-fields sub-step dots (details → pin → otp within one gateway page) */
 .hf-dots{display:flex;justify-content:center;gap:8px;margin:2px 0 14px}
 .hf-dots span{width:8px;height:8px;border-radius:50%;background:#d3dfda;transition:all .18s ease}

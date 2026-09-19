@@ -218,13 +218,16 @@ func TestChangeMethodRewindsCheckout(t *testing.T) {
 		t.Fatalf("abandoned payment attempt should be superseded after change_method")
 	}
 
-	// The review page renders with the abandoned method preselected.
+	// The reopened review is the payment step again: every rail renders as its
+	// own option button, so the customer can retry the same rail or switch.
 	body = retryGET(t, client, srv.URL+"/w/"+flow.Token)
 	if !strings.Contains(body, "Review your payment") {
 		t.Fatalf("reopened flow did not render the review step\n%s", body[:min2(len(body), 600)])
 	}
-	if !strings.Contains(body, `value="interswitch" checked`) {
-		t.Fatalf("review should preselect the abandoned card method\n%s", body[:min2(len(body), 600)])
+	for _, method := range []string{service.ProviderInterswitch, service.ProviderBankTransfer, service.ProviderWallet} {
+		if !strings.Contains(body, `value="`+method+`"`) {
+			t.Fatalf("reopened review is missing the %s option button\n%s", method, body[:min2(len(body), 900)])
+		}
 	}
 }
 

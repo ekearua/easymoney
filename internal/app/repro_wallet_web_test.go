@@ -210,9 +210,9 @@ func TestReproWalletWebPayment(t *testing.T) {
 		t.Fatalf("amount step: %d", status)
 	}
 
-	// 3. Review: pay from wallet, the failing path
-	fmt.Printf("\n— Browser confirms: method=wallet, action=pay —\n")
-	status, body, _ = run.post("/w/"+token, url.Values{"method": {service.ProviderWallet}, "action": {"pay"}})
+	// 3. Review: the payment options are link buttons — tap "Pay from wallet".
+	fmt.Printf("\n— Browser taps: action=wallet —\n")
+	status, body, _ = run.post("/w/"+token, url.Values{"action": {service.ProviderWallet}})
 	if status != http.StatusOK {
 		t.Fatalf("wallet payment step: status=%d body=%s", status, run.page(body))
 	}

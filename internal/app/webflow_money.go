@@ -446,9 +446,6 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 }
 
 func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage) (webFlowPage, error) {
-	if preview := a.wfWalletStatePreview(r, flow); preview != "" {
-		page.Error = preview
-	}
 	merchant, err := a.wfLoadMerchant(r, flow.Payload["merchant_slug"])
 	if err != nil {
 		return page, err
@@ -463,18 +460,23 @@ func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage)
 		{Term: "Merchant", Desc: merchant.Name},
 		{Term: "Item", Desc: item},
 		{Term: "Amount", Desc: domain.FormatNGN(amount)},
-		{Term: "Method", Desc: "Choose below"},
 	}
 	// Show where the amount came from when a bill/voice note supplied it.
 	if read := wfBillAmountKobo(wfBillCapturedText(flow.Payload)); read > 0 && read == amount {
 		page.Review = append(page.Review, webFlowLine{Term: "Read from your bill/voice", Desc: domain.FormatNGN(read)})
 	}
-	methodField := webFlowField{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}
-	if m := flow.Payload["method"]; wfProviderValid(m, true) {
-		methodField.Value = m
+	// Review is the final step: each payment option is its own link button,
+	// so tapping one routes straight to that rail (card/DVA leave for the
+	// Interswitch page, wallet debits inline). The button labels carry the
+	// charge including the collection fee, mirroring the chat reviews.
+	charge := amount + service.XegoCollectionFee(a.cfg, "card", amount).FeeKobo
+	page.Fields = nil
+	page.Actions = []webFlowAction{
+		{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(charge) + " with card"},
+		{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+		{Name: service.ProviderWallet, Label: "Pay from wallet"},
+		{Name: "back", Label: "Back"},
 	}
-	page.Fields = []webFlowField{methodField}
-	page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(amount)}, {Name: "back", Label: "Back"}}
 	return page, nil
 }
 
@@ -687,13 +689,15 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			a.wfAdvance(w, r, flow, "item", flow.Payload)
 			return nil, nil
 		}
-		method := r.FormValue("method")
+		// Each payment option is its own link button (review = final step), so
+		// the tapped button's name IS the method. Card and bank transfer leave
+		// for the Interswitch page via wfRoutePayment; wallet debits inline.
+		method := action
 		if !wfProviderValid(method, true) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
-		// Persist the chosen method so a reopened review step (after a cancelled/
-		// declined hosted checkout) can pre-select it instead of forcing the customer
-		// to pick again.
+		// Record the chosen method so the wallet-state notice and a reopened
+		// review after a cancelled hosted checkout reflect it.
 		payPayload := clonePayload(flow.Payload)
 		payPayload["method"] = method
 		if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payPayload); err != nil {
@@ -771,15 +775,16 @@ func friendlyWebAllowanceError(err error) string {
 	return "Payment could not be created: " + err.Error()
 }
 
-// wfWalletStatePreview returns a short inline note shown above the pay-review
-// radio when the customer chose wallet and the wallet is not active or cannot
-// cover the amount yet. It only attaches to the pay flow (the one with a
-// method-selector radio); other payment flows keep their own review copy.
+// wfWalletStatePreview returns a short inline notice shown on the pay-review
+// page when the recorded method is wallet and the wallet is not active or
+// cannot cover the amount yet. With link-button options the chosen method
+// lives in the flow payload (a failed wallet attempt persists it before the
+// error re-render), so the notice is derived from there, not the request.
 func (a *App) wfWalletStatePreview(r *http.Request, flow store.WebFlow) string {
 	if flow.FlowType != service.WebFlowPay {
 		return ""
 	}
-	method := r.FormValue("method")
+	method := flow.Payload["method"]
 	if !strings.EqualFold(method, service.ProviderWallet) {
 		return ""
 	}

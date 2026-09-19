@@ -48,8 +48,14 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 			{Term: "Paying now", Desc: domain.FormatNGN(amount)},
 			{Term: "Remaining after", Desc: domain.FormatNGN(remaining - amount)},
 		}
-		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
-		page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(amount)}, {Name: "back", Label: "Back"}}
+		page.Fields = nil
+		charge := amount + service.XegoCollectionFee(a.cfg, "card", amount).FeeKobo
+		page.Actions = []webFlowAction{
+			{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(charge) + " with card"},
+			{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+			{Name: service.ProviderWallet, Label: "Pay from wallet"},
+			{Name: "back", Label: "Back"},
+		}
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
@@ -95,7 +101,7 @@ func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow st
 			a.wfAdvance(w, r, flow, "amount", flow.Payload)
 			return nil, nil
 		}
-		method := r.FormValue("method")
+		method := action
 		if !wfProviderValid(method, true) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
@@ -216,8 +222,14 @@ func (a *App) wfThriftContributeStep(r *http.Request, flow store.WebFlow, user s
 		{Term: "Cycle", Desc: strconv.FormatInt(int64(contribution.CycleNumber), 10)},
 		{Term: "Amount", Desc: domain.FormatNGN(contribution.AmountKobo)},
 	}
-	page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
-	page.Actions = []webFlowAction{{Name: "pay", Label: "Pay " + domain.FormatNGN(contribution.AmountKobo)}}
+	page.Fields = nil
+	charge := contribution.AmountKobo + service.XegoCollectionFee(a.cfg, "card", contribution.AmountKobo).FeeKobo
+	page.Actions = []webFlowAction{
+		{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(charge) + " with card"},
+		{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+		{Name: service.ProviderWallet, Label: "Pay from wallet"},
+		{Name: "back", Label: "Back"},
+	}
 	return page, nil
 }
 
@@ -245,10 +257,11 @@ func (a *App) wfThriftContributeSubmit(w http.ResponseWriter, r *http.Request, f
 	if err != nil {
 		return a.wfPageWithError(flow, page, err.Error()), nil
 	}
-	if action != "pay" {
-		return a.wfPageWithError(flow, page, "Choose a payment method and tap Pay."), nil
+	if action == "back" {
+		a.wfAdvance(w, r, flow, "group", flow.Payload)
+		return nil, nil
 	}
-	method := r.FormValue("method")
+	method := action
 	if !wfProviderValid(method, true) {
 		return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 	}
@@ -325,8 +338,13 @@ func (a *App) wfDataStep(r *http.Request, flow store.WebFlow, user store.User) (
 			{Term: "Data", Desc: plan.DisplayName},
 			{Term: "Phone", Desc: flow.Payload["data_phone"]},
 		}
-		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
-		page.Actions = []webFlowAction{{Name: "pay", Label: "Pay and activate"}}
+		page.Fields = nil
+		page.Actions = []webFlowAction{
+			{Name: service.ProviderInterswitch, Label: "Pay with card"},
+			{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+			{Name: service.ProviderWallet, Label: "Pay from wallet"},
+			{Name: "back", Label: "Back"},
+		}
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
@@ -365,10 +383,11 @@ func (a *App) wfDataSubmit(w http.ResponseWriter, r *http.Request, flow store.We
 		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "review":
-		if action != "pay" {
-			return a.wfPageWithError(flow, page, "Choose a payment method and tap Pay."), nil
+		if action == "back" {
+			a.wfAdvance(w, r, flow, "phone", flow.Payload)
+			return nil, nil
 		}
-		method := r.FormValue("method")
+		method := action
 		if !wfProviderValid(method, true) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
@@ -411,8 +430,13 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 	case "review":
 		page.Title = "Review wallet top-up"
 		page.Review = []webFlowLine{{Term: "Amount to add", Desc: domain.FormatNGN(wfInt(flow.Payload["amount_kobo"]))}}
-		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(false)}}
-		page.Actions = []webFlowAction{{Name: "pay", Label: "Continue to payment"}}
+		page.Fields = nil
+		charge := wfInt(flow.Payload["amount_kobo"]) + service.XegoCollectionFee(a.cfg, "card", wfInt(flow.Payload["amount_kobo"])).FeeKobo
+		page.Actions = []webFlowAction{
+			{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(charge) + " with card"},
+			{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+			{Name: "back", Label: "Back"},
+		}
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
@@ -433,10 +457,11 @@ func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.W
 		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "review":
-		if action != "pay" {
-			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+		if action == "back" {
+			a.wfAdvance(w, r, flow, "amount", flow.Payload)
+			return nil, nil
 		}
-		method := r.FormValue("method")
+		method := action
 		if !wfProviderValid(method, false) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
@@ -520,8 +545,13 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 			{Term: "Total you pay", Desc: domain.FormatNGN(amount + collectionFee.FeeKobo)},
 			{Term: "Recipient receives", Desc: domain.FormatNGN(amount-nipFee) + " (after NIP fee)"},
 		}
-		page.Fields = []webFlowField{{Name: "method", Label: "Payment method", Type: "radio", Required: true, Options: wfMethodOptions(true)}}
-		page.Actions = []webFlowAction{{Name: "pay", Label: "Send " + domain.FormatNGN(amount+collectionFee.FeeKobo)}}
+		page.Fields = nil
+		page.Actions = []webFlowAction{
+			{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(amount+collectionFee.FeeKobo) + " with card"},
+			{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+			{Name: service.ProviderWallet, Label: "Pay from wallet"},
+			{Name: "back", Label: "Back"},
+		}
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
@@ -600,10 +630,8 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "review":
-		if action != "pay" {
-			return a.wfPageWithError(flow, page, "Choose a payment method and confirm."), nil
-		}
-		method := r.FormValue("method")
+		// Payment options are link buttons; the tapped button's name is the method.
+		method := action
 		if !wfProviderValid(method, true) {
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}

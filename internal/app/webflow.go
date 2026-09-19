@@ -127,7 +127,7 @@ type wfFlowLayout struct {
 // split into an add-one-item page and an items summary so each step carries a
 // single primary action.
 var wfFlowLayouts = map[string]wfFlowLayout{
-	service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Review", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 4, "done": 4}},
+	service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 3, "done": 3}},
 	service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
 	service.WebFlowThriftContribute: {[]string{"Contribution", "Review", "Pay"}, map[string]int{"": 0, "group": 0, "review": 1, "checkout": 2, "done": 2}},
 	service.WebFlowData:             {[]string{"Network", "Plan", "Phone", "Review", "Pay"}, map[string]int{"": 0, "network": 0, "plan": 1, "phone": 2, "review": 3, "checkout": 4, "done": 4}},

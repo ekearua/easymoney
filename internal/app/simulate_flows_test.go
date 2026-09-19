@@ -444,10 +444,10 @@ func simulateMakePayment(t *testing.T, ctx context.Context, run *simRun, convo *
 	status, body, _ = run.get(loc)
 	fmt.Printf("  Step: %s\n", run.page(body))
 
-	// 4. review: choosing a method pays — the flow initializes the gateway
-	// and redirects straight to it (the checkout hub is bypassed).
+	// 4. review: the payment options are link buttons — tapping "card" drafts
+	// the payment, initializes the gateway, and redirects straight to it.
 	fee := service.XegoCollectionFee(cfg, "card", 250_000).FeeKobo
-	status, body, loc = run.post("/w/"+token, url.Values{"method": {service.ProviderInterswitch}, "action": {"pay"}})
+	status, body, loc = run.post("/w/"+token, url.Values{"action": {service.ProviderInterswitch}})
 	if status != http.StatusSeeOther {
 		t.Fatalf("review step: %d body=%s", status, run.page(body))
 	}
@@ -522,7 +522,7 @@ func simulatePayIndividual(t *testing.T, ctx context.Context, run *simRun, convo
 	amount := int64(500_000)
 	collectionFee := service.XegoCollectionFee(cfg, "transfer", amount).FeeKobo
 	nipFee := service.XegoPayoutFee(cfg, amount)
-	status, body, loc := run.post("/w/"+token, url.Values{"method": {service.ProviderBankTransfer}, "action": {"pay"}})
+	status, body, loc := run.post("/w/"+token, url.Values{"action": {service.ProviderBankTransfer}})
 	if status != http.StatusSeeOther {
 		t.Fatalf("review step: %d body=%s", status, run.page(body))
 	}
