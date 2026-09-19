@@ -115,10 +115,19 @@ func (m *simMessenger) SendImage(_ context.Context, to string, _ []byte, caption
 
 type simGateway struct {
 	store *store.Store
+	// baseURL, when set, points the simulated checkout page at the harness's
+	// own host so a browser driver can open it and walk the hosted→return leg
+	// the real gateway owns. Empty keeps the off-host example URL used by the
+	// in-process simulations.
+	baseURL string
 }
 
 func (g *simGateway) Initialize(_ context.Context, in ports.InitializePayment) (ports.Checkout, error) {
-	return ports.Checkout{Reference: in.Reference, URL: "https://checkout.sim.example/x/" + in.Reference}, nil
+	url := "https://checkout.sim.example/x/" + in.Reference
+	if g.baseURL != "" {
+		url = g.baseURL + simGatewayPath + in.Reference
+	}
+	return ports.Checkout{Reference: in.Reference, URL: url}, nil
 }
 
 func (g *simGateway) Verify(ctx context.Context, reference string, _ int64) (ports.Verification, error) {

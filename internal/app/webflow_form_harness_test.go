@@ -71,6 +71,13 @@ func TestWebFlowFormHarness(t *testing.T) {
 	var appHandler http.Handler
 	var appMu sync.RWMutex
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The simulated hosted gateway page is served by the harness itself,
+		// in front of the app: production has no such route, and the real
+		// Interswitch page is off-host. Everything else goes to the app.
+		if strings.HasPrefix(r.URL.Path, simGatewayPath) {
+			simGatewayPage(w, r, repository)
+			return
+		}
 		appMu.RLock()
 		h := appHandler
 		appMu.RUnlock()
@@ -95,9 +102,10 @@ func TestWebFlowFormHarness(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
+	// Both rails park on the harness's own host page (see simGateway.baseURL).
 	gateways := map[string]ports.PaymentGateway{
-		service.ProviderInterswitch:  &simGateway{store: repository},
-		service.ProviderBankTransfer: &simGateway{store: repository},
+		service.ProviderInterswitch:  &simGateway{store: repository, baseURL: srv.URL},
+		service.ProviderBankTransfer: &simGateway{store: repository, baseURL: srv.URL},
 	}
 	payments := service.NewPaymentService(cfg, repository, gateways, service.NewProviderRouter(gateways, logger), logger)
 	data := service.NewDataService(repository, payments, stubDataProvider{})
@@ -311,6 +319,29 @@ func TestWebFlowFormHarness(t *testing.T) {
 		t.Fatalf("wallet payment sent no absolute receipt link (%s…); captured %+v", receiptLink, messenger.snapshot())
 	}
 
+	// The full wallet loop, in the order a browser must walk it: a fresh
+	// customer tops the wallet up through this browser flow (card checkout on
+	// the simulated hosted page, which returns through the app's real
+	// /payments/return requery), and then pays a merchant from the funded
+	// wallet through a second flow. The driver walks the two links in order,
+	// so the credit has to be committed before the wallet payment starts.
+	loopUser := newIndividual("+2348012340555")
+	topupToken := startFlowAs(loopUser, "fund wallet")
+	if err := repository.SaveWebFlowProgress(ctx, topupToken, "amount", map[string]string{}); err != nil {
+		t.Fatal(err)
+	}
+	pages["wallet_topup"] = cfg.BaseURL + "/w/" + topupToken
+
+	walletPayToken := startFlowAs(loopUser, "pay")
+	if err := repository.SaveWebFlowProgress(ctx, walletPayToken, "review", map[string]string{
+		"merchant_slug": "lagos-lunchbox",
+		"item_name":     "Custom amount",
+		"amount_kobo":   "250000",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pages["wallet_pay"] = cfg.BaseURL + "/w/" + walletPayToken
+
 	// Everything printed below is fed straight to a browser driver, so it has
 	// to be a real URL a driver can open without guessing the host.
 	for name, page := range pages {
@@ -320,7 +351,7 @@ func TestWebFlowFormHarness(t *testing.T) {
 	}
 
 	fmt.Printf("FORMS base=%s\n", srv.URL)
-	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note", "invoice_items_summary", "pay_merchant", "pay_review_wallet_short"} {
+	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note", "invoice_items_summary", "pay_merchant", "pay_review_wallet_short", "wallet_topup", "wallet_pay"} {
 		fmt.Printf("FORMS %s=%s\n", name, pages[name])
 	}
 	if out := os.Getenv("FORMS_META_FILE"); out != "" {
@@ -330,11 +361,45 @@ func TestWebFlowFormHarness(t *testing.T) {
 		}
 	}
 
+	// The park window is the driver's whole budget: a long browser walk (the
+	// wallet loop runs two flows back to back) must never race the server
+	// shutting down mid-drive, so PARK_MINUTES is honored up to 30.
 	park := 5 * time.Minute
 	if v := os.Getenv("PARK_MINUTES"); v != "" {
-		if mins, ok := atoi(v); ok && mins > 0 && mins < 9 {
+		if mins, ok := atoi(v); ok && mins > 0 && mins <= 30 {
 			park = time.Duration(mins) * time.Minute
 		}
 	}
 	time.Sleep(park)
+}
+
+// simGatewayPath is where the harness's simulated hosted checkout page lives.
+const simGatewayPath = "/sim-gateway/"
+
+// simGatewayPage stands in for the hosted Interswitch checkout page: it shows
+// the amount and reference the customer would see and its single button does
+// what completing the real page does — hand the transaction reference back to
+// the app's own return endpoint, which requeries the gateway and settles the
+// payment. Only the gateway is simulated; the requery, the flow completion,
+// the WhatsApp confirmation, and the receipt are all the app's real code.
+func simGatewayPage(w http.ResponseWriter, r *http.Request, repository *store.Store) {
+	reference := strings.TrimPrefix(r.URL.Path, simGatewayPath)
+	amount := "—"
+	if payment, err := repository.PaymentByReference(r.Context(), reference); err == nil {
+		amount = domain.FormatNGN(payment.AmountKobo)
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure checkout (simulated)</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body class="receipt-body"><main class="receipt">
+  <p class="eyebrow">Simulated Interswitch checkout</p>
+  <h1>Complete your payment</h1>
+  <p class="receipt-amount">%s</p>
+  <dl><div><dt>Reference</dt><dd class="mono">%s</dd></div></dl>
+  <form method="post" action="/payments/return">
+    <input type="hidden" name="txnref" value="%s">
+    <button class="button" type="submit" id="sim-complete">Complete payment</button>
+  </form>
+</main></body></html>`, amount, reference, reference)
 }

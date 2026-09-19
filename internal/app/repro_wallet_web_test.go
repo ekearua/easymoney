@@ -241,6 +241,15 @@ func TestReproWalletWebPayment(t *testing.T) {
 	if balance != 1_000_000-found.AmountKobo {
 		t.Fatalf("wallet balance = %d, want %d (wallet was not debited by the payment)", balance, 1_000_000-found.AmountKobo)
 	}
+	// The page the customer just paid on must hand them the receipt — the
+	// checkout page already did for a succeeded payment — and the link has to
+	// be this payment's own receipt, not a generic one.
+	if want := "/receipts/" + found.ReceiptToken; !strings.Contains(body, want) {
+		t.Fatalf("wallet done page must link the receipt %q; body=%s", want, run.page(body))
+	}
+	if !strings.Contains(body, "View receipt") {
+		t.Fatalf("wallet done page must label the receipt link; body=%s", run.page(body))
+	}
 	fmt.Printf("  ✅ Wallet payment settled: %s for %s (wallet balance %s)\n",
 		found.ID.String()[:8], domain.FormatNGN(found.AmountKobo), domain.FormatNGN(balance))
 	fmt.Printf("  WhatsApp confirmation: %s\n", func() string {

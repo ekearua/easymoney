@@ -11,6 +11,7 @@
     <h1>{{.DoneTitle}}</h1>
     {{if .DoneBody}}<p>{{.DoneBody}}</p>{{end}}
     {{if .DoneAction.URL}}<p><a class="button" href="{{.DoneAction.URL}}">{{.DoneAction.Label}}</a></p>{{end}}
+    {{if .Actions}}<p class="actions muted">{{range .Actions}}{{if .URL}}<a href="{{.URL}}">{{.Label}}</a>{{end}}{{end}}</p>{{end}}
   {{else if .Expired}}
     <h1>{{.Title}}</h1>
     <p>{{.Intro}}</p>

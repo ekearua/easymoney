@@ -755,7 +755,11 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			done.Done = true
 			done.DoneTitle = "Payment sent"
 			done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
-			done.DoneAction = webFlowAction{Kind: "link", Label: "Open WhatsApp", URL: a.whatsappDeepLink()}
+			// The customer paid on this page, so the receipt is one tap away —
+			// the same affordance the checkout page already gives a succeeded
+			// payment. Returning to WhatsApp stays available as a secondary link.
+			done.DoneAction = webFlowAction{Kind: "link", Label: "View receipt", URL: a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken}
+			done.Actions = []webFlowAction{{Kind: "link", Label: "Back to WhatsApp", URL: a.whatsappDeepLink()}}
 			return &done, nil
 		}
 		return nil, nil
