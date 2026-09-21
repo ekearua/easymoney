@@ -201,8 +201,8 @@ func TestChangeMethodRewindsCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reopened.Step != "review" {
-		t.Fatalf("after change_method the flow step = %q, want review", reopened.Step)
+	if reopened.Step != "" {
+		t.Fatalf("after change_method the flow step = %q, want the one-page start (empty)", reopened.Step)
 	}
 	if reopened.Payload["payment_id"] != "" || reopened.Payload["provider"] != "" {
 		t.Fatalf("reopened flow must clear payment_id/provider, got %#v", reopened.Payload)
@@ -218,11 +218,12 @@ func TestChangeMethodRewindsCheckout(t *testing.T) {
 		t.Fatalf("abandoned payment attempt should be superseded after change_method")
 	}
 
-	// The reopened review is the payment step again: every rail renders as its
-	// own option button, so the customer can retry the same rail or switch.
+	// The reopened one-page start is the payment step again: every rail
+	// renders as its own option button, so the customer can retry the same
+	// rail or switch, with their merchant and amount still prefilled.
 	body = retryGET(t, client, srv.URL+"/w/"+flow.Token)
-	if !strings.Contains(body, "Review your payment") {
-		t.Fatalf("reopened flow did not render the review step\n%s", body[:min2(len(body), 600)])
+	if !strings.Contains(body, "Pay a merchant") {
+		t.Fatalf("reopened flow did not render the one-page start\n%s", body[:min2(len(body), 600)])
 	}
 	for _, method := range []string{service.ProviderInterswitch, service.ProviderBankTransfer, service.ProviderWallet} {
 		if !strings.Contains(body, `value="`+method+`"`) {

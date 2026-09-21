@@ -208,8 +208,8 @@ func TestTemplatesParse(t *testing.T) {
 	buf.Reset()
 	flowPage := webFlowPage{
 		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",
-		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",
-		Steps:  []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
+		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",			Steps:  []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
+			Shell:  true,
 		Review: []webFlowLine{{Term: "Merchant", Desc: "Ade's Kitchen"}},
 		Error:  "Choose a payment method.",
 		Fields: []webFlowField{
@@ -286,6 +286,7 @@ func TestTemplatesParse(t *testing.T) {
 	buf.Reset()
 	plainPage := flowPage
 	plainPage.Steps = nil
+	plainPage.Shell = false
 	plainPage.FlowType = "invoice_create"
 	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", plainPage); err != nil {
 		t.Fatalf("execute webflow.html (unstepped): %v", err)
@@ -301,6 +302,7 @@ func TestTemplatesParse(t *testing.T) {
 	buf.Reset()
 	barPage := flowPage
 	barPage.Steps = nil
+	barPage.Shell = false
 	barPage.Fields = []webFlowField{
 		{Name: "ai_ask", Label: "Ask Xego", Type: "aisearch", Hint: "e.g. pay Ade's Kitchen"},
 		{Name: "bill_photo", Label: "Attach a bill", Type: "upload", BarIcon: "file", MediaPrompt: "Read the bill"},

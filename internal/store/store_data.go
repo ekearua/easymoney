@@ -124,6 +124,29 @@ func (s *Store) DataNetworkByCode(ctx context.Context, code string) (DataNetwork
 	return network, err
 }
 
+// ListAllActiveDataPlans returns every active plan across all networks,
+// ordered by network sort order then plan sort order. The web flow's one-page
+// data order uses it to offer the whole catalog as one grouped select — plan
+// codes are unique, so the posted plan alone resolves the network.
+func (s *Store) ListAllActiveDataPlans(ctx context.Context) ([]DataPlan, error) {
+	rows, err := s.pool.Query(ctx, dataPlanSelect()+`
+		WHERE n.active=true AND p.active=true
+		ORDER BY n.sort_order, n.name, p.sort_order, p.price_kobo`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var plans []DataPlan
+	for rows.Next() {
+		plan, err := scanDataPlan(rows)
+		if err != nil {
+			return nil, err
+		}
+		plans = append(plans, plan)
+	}
+	return plans, rows.Err()
+}
+
 // ListActiveDataPlans returns active plans for one network.
 func (s *Store) ListActiveDataPlans(ctx context.Context, networkCode string) ([]DataPlan, error) {
 	rows, err := s.pool.Query(ctx, dataPlanSelect()+`

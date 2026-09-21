@@ -28,6 +28,9 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
 	switch flow.Step {
 	case "", "amount":
+		if flow.Step == "" {
+			return a.wfPayInvoiceOnePage(flow, invoice, remaining), nil
+		}
 		page.Title = "Pay invoice " + invoice.Reference
 		page.Review = []webFlowLine{
 			{Term: "Merchant", Desc: invoice.MerchantName},
@@ -63,6 +66,63 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 	return page, fmt.Errorf("unknown pay_invoice step %q", flow.Step)
 }
 
+// wfPayInvoiceOnePage is the invoice flow's single-page fresh path: invoice
+// facts, the amount field (prefilled with the remaining balance for a one-tap
+// pay-in-full), and the payment rails together. Nothing is charged until a
+// method button is tapped — the submit validates the amount first.
+func (a *App) wfPayInvoiceOnePage(flow store.WebFlow, invoice store.InvoiceView, remaining int64) webFlowPage {
+	page := a.wfPage(flow)
+	page.Title = "Pay invoice " + invoice.Reference
+	page.Review = []webFlowLine{
+		{Term: "Merchant", Desc: invoice.MerchantName},
+		{Term: "Total", Desc: domain.FormatNGN(invoice.TotalKobo)},
+		{Term: "Paid so far", Desc: domain.FormatNGN(invoice.AmountPaidKobo)},
+		{Term: "Remaining", Desc: domain.FormatNGN(remaining)},
+	}
+	page.Intro = "Enter the full remaining balance or a partial amount for split payments, then choose how to pay below. Nothing is charged until you tap a payment method."
+	amount := wfInt(flow.Payload["invoice_pay_amount_kobo"])
+	field := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true, Hint: "Send the remaining balance to pay in full"}
+	if amount > 0 {
+		field.Value = wfKoboToNairaInput(amount)
+	} else {
+		// The balance is the overwhelmingly common case — prefill it so paying
+		// in full is one tap. The customer can still edit it for a split.
+		field.Value = wfKoboToNairaInput(remaining)
+	}
+	page.Fields = []webFlowField{field}
+	page.Actions = a.wfMethodButtons(true)
+	return page
+}
+
+// wfPayInvoiceRuleError carries a merchant installment-rule violation so the
+// one-page submit can render it as the form error.
+type wfPayInvoiceRuleError struct{ msg string }
+
+func (e *wfPayInvoiceRuleError) Error() string { return e.msg }
+
+// wfPayInvoiceCreatePayment validates the merchant installment rules for the
+// requested amount, drafts the collection payment against the chosen rail,
+// and attaches it to the invoice. Both the legacy review step and the
+// one-page fresh path draft payments through here so the rules cannot be
+// bypassed by a reopened flow posting straight at the rail buttons.
+func (a *App) wfPayInvoiceCreatePayment(r *http.Request, flow store.WebFlow, user store.User, invoice store.InvoiceView, amount int64, method string) (store.PaymentView, error) {
+	merchant, err := a.store.MerchantBySlug(r.Context(), invoice.MerchantSlug)
+	if err != nil {
+		return store.PaymentView{}, errors.New("The merchant for this invoice is no longer available.")
+	}
+	if msg := a.wfInvoicePayRuleCheck(r, merchant, invoice, amount); msg != "" {
+		return store.PaymentView{}, &wfPayInvoiceRuleError{msg: msg}
+	}
+	payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	if err != nil {
+		return store.PaymentView{}, errors.New(friendlyWebAllowanceError(err))
+	}
+	if err := a.store.CreateInvoicePayment(r.Context(), invoice.ID, payment.ID, user.ID, amount); err != nil {
+		return store.PaymentView{}, errors.New("Could not attach this payment to the invoice.")
+	}
+	return payment, nil
+}
+
 func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
 	invoice, err := a.store.InvoiceByReference(r.Context(), flow.Payload["invoice_reference"])
@@ -94,6 +154,23 @@ func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow st
 		}
 		payload := clonePayload(flow.Payload)
 		payload["invoice_pay_amount_kobo"] = strconv.FormatInt(amount, 10)
+		if flow.Step == "" {
+			// One-page fresh path: the tapped button is also the rail. The
+			// amount is validated, so this step's only failure is the rail
+			// itself (the buttons always post one).
+			method := action
+			if !wfProviderValid(method, true) {
+				return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+			}
+			payment, err := a.wfPayInvoiceCreatePayment(r, flow, user, invoice, amount, method)
+			if err != nil {
+				return a.wfPageWithError(flow, page, err.Error()), nil
+			}
+			if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
+				return a.wfRoutePaymentFailed(r, flow, user, err)
+			}
+			return nil, nil
+		}
 		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "review":
@@ -106,16 +183,9 @@ func (a *App) wfPayInvoiceSubmit(w http.ResponseWriter, r *http.Request, flow st
 			return a.wfPageWithError(flow, page, "Choose a payment method."), nil
 		}
 		amount := wfInt(flow.Payload["invoice_pay_amount_kobo"])
-		merchant, err := a.store.MerchantBySlug(r.Context(), invoice.MerchantSlug)
+		payment, err := a.wfPayInvoiceCreatePayment(r, flow, user, invoice, amount, method)
 		if err != nil {
-			return a.wfPageWithError(flow, page, "The merchant for this invoice is no longer available."), nil
-		}
-		payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
-		if err != nil {
-			return a.wfAllowancePageError(flow, page, err), nil
-		}
-		if err := a.store.CreateInvoicePayment(r.Context(), invoice.ID, payment.ID, user.ID, amount); err != nil {
-			return a.wfPageWithError(flow, page, "Could not attach this payment to the invoice."), nil
+			return a.wfPageWithError(flow, page, err.Error()), nil
 		}
 		if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
 			return a.wfRoutePaymentFailed(r, flow, user, err)
@@ -190,6 +260,9 @@ func (a *App) wfThriftContribution(r *http.Request, flow store.WebFlow) (store.T
 func (a *App) wfThriftContributeStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
 	page := a.wfPage(flow)
 	if flow.Step == "" || flow.Step == "group" {
+		if flow.Step == "" {
+			return a.wfThriftOnePage(r, flow, user)
+		}
 		opts, err := a.wfActiveContributionOptions(r, user)
 		if err != nil {
 			return page, err
@@ -233,6 +306,42 @@ func (a *App) wfThriftContributeStep(r *http.Request, flow store.WebFlow, user s
 	return page, nil
 }
 
+// wfThriftOnePage is the thrift-contribution flow's single-page fresh path:
+// the group picker, the contribution summary once one is selected, and the
+// payment rails together. A stored selection (reopened flows) prefills the
+// select and its summary; the submit validates the choice before drafting.
+func (a *App) wfThriftOnePage(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
+	page := a.wfPage(flow)
+	opts, err := a.wfActiveContributionOptions(r, user)
+	if err != nil {
+		return page, err
+	}
+	if len(opts) == 0 {
+		page.Title = "No active contributions"
+		page.Intro = "You have no unpaid thrift contributions right now. When a group activates and your turn is due, Xego will let you know."
+		page.Done = true
+		return page, nil
+	}
+	page.Title = "Pay a thrift contribution"
+	page.Intro = "Choose the contribution, confirm it below, then tap how you'd like to pay — nothing is charged until you tap a payment method."
+	field := webFlowField{Name: "thrift_name", Label: "Contribution", Type: "select", Required: true, Options: opts}
+	if name := flow.Payload["thrift_name"]; name != "" {
+		field.Value = name
+	}
+	page.Fields = []webFlowField{field}
+	page.Actions = a.wfMethodButtons(true)
+	if field.Value != "" {
+		if contribution, err := a.wfThriftContribution(r, flow); err == nil {
+			page.Review = []webFlowLine{
+				{Term: "Group", Desc: contribution.GroupName},
+				{Term: "Cycle", Desc: strconv.FormatInt(int64(contribution.CycleNumber), 10)},
+				{Term: "Amount", Desc: domain.FormatNGN(contribution.AmountKobo)},
+			}
+		}
+	}
+	return page, nil
+}
+
 func (a *App) wfThriftContributeSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
 	if flow.Step == "checkout" || flow.Step == "done" {
@@ -244,6 +353,42 @@ func (a *App) wfThriftContributeSubmit(w http.ResponseWriter, r *http.Request, f
 		return nil, nil
 	}
 	if flow.Step == "" || flow.Step == "group" {
+		if flow.Step == "" {
+			// One-page fresh path: the tapped button is also the rail.
+			method := action
+			if !wfProviderValid(method, true) {
+				return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+			}
+			name := strings.TrimSpace(r.FormValue("thrift_name"))
+			if name == "" {
+				return a.wfPageWithError(flow, page, "Choose a contribution."), nil
+			}
+			payload := clonePayload(flow.Payload)
+			payload["thrift_name"] = name
+			if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+				return a.wfPageWithError(flow, page, err.Error()), nil
+			}
+			flow.Payload = payload
+			contribution, err := a.wfThriftContribution(r, flow)
+			if err != nil {
+				return a.wfPageWithError(flow, page, err.Error()), nil
+			}
+			merchant, err := a.store.ThriftSystemMerchant(r.Context())
+			if err != nil {
+				return a.wfPageWithError(flow, page, "Thrift payments are unavailable right now."), nil
+			}
+			payment, err := a.payments.CreateDraftForProvider(r.Context(), user, merchant, contribution.AmountKobo, method, flow.Channel, user.WhatsAppNumber)
+			if err != nil {
+				return a.wfAllowancePageError(flow, page, err), nil
+			}
+			if err := a.store.LinkThriftContributionPayment(r.Context(), contribution.ID, payment.ID); err != nil {
+				return a.wfPageWithError(flow, page, "Could not link your contribution."), nil
+			}
+			if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
+				return a.wfRoutePaymentFailed(r, flow, user, err)
+			}
+			return nil, nil
+		}
 		name := strings.TrimSpace(r.FormValue("thrift_name"))
 		if name == "" {
 			return a.wfPageWithError(flow, page, "Choose a contribution."), nil
@@ -290,6 +435,9 @@ func (a *App) wfDataStep(r *http.Request, flow store.WebFlow, user store.User) (
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "network":
+		if flow.Step == "" {
+			return a.wfDataOnePage(r, flow)
+		}
 		networks, err := a.store.ListActiveDataNetworks(r.Context())
 		if err != nil {
 			return page, err
@@ -352,10 +500,75 @@ func (a *App) wfDataStep(r *http.Request, flow store.WebFlow, user store.User) (
 	return page, fmt.Errorf("unknown data step %q", flow.Step)
 }
 
+// wfDataOnePage is the data flow's single-page fresh path: every network's
+// plans as one grouped select, the beneficiary phone, and the payment rails
+// together. Nothing is ordered or charged until a method button is tapped —
+// the submit resolves the plan and validates the phone first.
+func (a *App) wfDataOnePage(r *http.Request, flow store.WebFlow) (webFlowPage, error) {
+	page := a.wfPage(flow)
+	plans, err := a.store.ListAllActiveDataPlans(r.Context())
+	if err != nil {
+		return page, err
+	}
+	page.Title = "Buy mobile data"
+	page.Intro = "Pick a plan, enter the recipient's number, then choose how to pay below — nothing is charged until you tap a payment method."
+	opts := make([]webFlowOption, 0, len(plans))
+	for _, plan := range plans {
+		opts = append(opts, webFlowOption{Value: plan.Code, Label: plan.DisplayName + " — " + domain.FormatNGN(plan.PriceKobo), Group: plan.NetworkName})
+	}
+	field := webFlowField{Name: "data_plan", Label: "Plan", Type: "select", Required: true, Options: opts, Group: true}
+	if code := flow.Payload["data_plan"]; code != "" {
+		field.Value = code
+	}
+	phoneField := webFlowField{Name: "data_phone", Label: "Beneficiary phone", Type: "tel", Required: true, Hint: "Nigerian number, e.g. 08031234567"}
+	if phone := flow.Payload["data_phone"]; phone != "" {
+		phoneField.Value = phone
+	}
+	page.Fields = []webFlowField{field, phoneField}
+	page.Actions = a.wfMethodButtons(true)
+	return page, nil
+}
+
 func (a *App) wfDataSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "network":
+		if flow.Step == "" {
+			// One-page fresh path: the posted plan code identifies both the
+			// plan and its network; the beneficiary phone validates here too.
+			method := action
+			if !wfProviderValid(method, true) {
+				return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+			}
+			code := strings.TrimSpace(r.FormValue("data_plan"))
+			plan, err := a.store.DataPlanByCode(r.Context(), code)
+			if err != nil {
+				return a.wfPageWithError(flow, page, "Choose a data plan."), nil
+			}
+			phone, err := domain.NormalizeNigerianPhone(strings.TrimSpace(r.FormValue("data_phone")))
+			if err != nil {
+				return a.wfPageWithError(flow, page, err.Error()), nil
+			}
+			payload := clonePayload(flow.Payload)
+			payload["data_plan"] = plan.Code
+			payload["data_phone"] = phone
+			if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+				return a.wfPageWithError(flow, page, err.Error()), nil
+			}
+			flow.Payload = payload
+			order, err := a.data.CreateOrder(r.Context(), user, flow.Channel, user.WhatsAppNumber, plan.Code, phone)
+			if err != nil {
+				return a.wfPageWithError(flow, page, "The data order could not be created: "+err.Error()), nil
+			}
+			payment, _, err := a.data.CreatePaymentForOrder(r.Context(), user, order, method, flow.Channel, user.WhatsAppNumber)
+			if err != nil {
+				return a.wfAllowancePageError(flow, page, err), nil
+			}
+			if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
+				return a.wfRoutePaymentFailed(r, flow, user, err)
+			}
+			return nil, nil
+		}
 		code := strings.TrimSpace(r.FormValue("data_network"))
 		if code == "" {
 			return a.wfPageWithError(flow, page, "Choose a network."), nil
@@ -422,6 +635,9 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "amount":
+		if flow.Step == "" {
+			return a.wfTopupOnePage(flow), nil
+		}
 		page.Title = "Top up your wallet"
 		page.Intro = fmt.Sprintf("How much would you like to add? Between %s and %s.", domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(a.cfg.PaymentMaxKobo))
 		page.Fields = []webFlowField{{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true}}
@@ -444,6 +660,22 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 	return page, fmt.Errorf("unknown topup step %q", flow.Step)
 }
 
+// wfTopupOnePage is the top-up flow's single-page fresh path: the amount
+// field and the payment rails together. Nothing is charged until a method
+// button is tapped — the submit validates the amount first.
+func (a *App) wfTopupOnePage(flow store.WebFlow) webFlowPage {
+	page := a.wfPage(flow)
+	page.Title = "Top up your wallet"
+	page.Intro = fmt.Sprintf("How much would you like to add? Between %s and %s. Choose how to pay below — nothing is charged until you tap a payment method.", domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(a.cfg.PaymentMaxKobo))
+	field := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true}
+	if amount := wfInt(flow.Payload["amount_kobo"]); amount > 0 {
+		field.Value = wfKoboToNairaInput(amount)
+	}
+	page.Fields = []webFlowField{field}
+	page.Actions = a.wfMethodButtons(false)
+	return page
+}
+
 func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
 	switch flow.Step {
@@ -454,6 +686,21 @@ func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.W
 		}
 		payload := clonePayload(flow.Payload)
 		payload["amount_kobo"] = strconv.FormatInt(amount, 10)
+		if flow.Step == "" {
+			// One-page fresh path: the tapped button is also the rail.
+			method := action
+			if !wfProviderValid(method, false) {
+				return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+			}
+			payment, err := a.payments.CreateWalletTopupDraft(r.Context(), user, flow.Channel, user.WhatsAppNumber, amount, method)
+			if err != nil {
+				return a.wfAllowancePageError(flow, page, err), nil
+			}
+			if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
+				return a.wfRoutePaymentFailed(r, flow, user, err)
+			}
+			return nil, nil
+		}
 		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "review":
@@ -493,9 +740,14 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "phone":
+		// Two-page shape: recipient (phone + amount + bank) here, then the
+		// account number, summary, and payment rails on the review page.
 		page.Title = "Send money to an individual"
-		page.Intro = "Enter the recipient's phone number."
-		page.Fields = []webFlowField{{Name: "recipient_phone", Label: "Recipient phone", Type: "tel", Required: true, Hint: "e.g. 08012345678"}}
+		page.Intro = "Who are you paying, and how much? The recipient receives the amount less the NIP fee — nothing is charged until you tap a payment method on the next page."
+		phoneField := webFlowField{Name: "recipient_phone", Label: "Recipient phone", Type: "tel", Required: true, Hint: "e.g. 08012345678", Value: flow.Payload["recipient_phone"]}
+		amountField := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true, Value: wfKoboToNairaInput(wfInt(flow.Payload["amount_kobo"]))}
+		bankField := webFlowField{Name: "bank_code", Label: "Recipient's bank", Type: "text", Required: true, Hint: "e.g. GTBank or 058", Value: flow.Payload["bank_code"]}
+		page.Fields = []webFlowField{phoneField, amountField, bankField}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	case "amount":
@@ -539,19 +791,14 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 		page.Title = "Review your transfer"
 		page.Review = []webFlowLine{
 			{Term: "Recipient", Desc: flow.Payload["recipient_phone"]},
-			{Term: "Bank", Desc: wfBankLabel(flow.Payload) + " · " + flow.Payload["account_number"]},
+			{Term: "Bank", Desc: wfBankLabel(flow.Payload)},
 			{Term: "Amount", Desc: domain.FormatNGN(amount)},
 			{Term: "Collection fee", Desc: domain.FormatNGN(collectionFee.FeeKobo)},
 			{Term: "Total you pay", Desc: domain.FormatNGN(amount + collectionFee.FeeKobo)},
 			{Term: "Recipient receives", Desc: domain.FormatNGN(amount-nipFee) + " (after NIP fee)"},
 		}
-		page.Fields = nil
-		page.Actions = []webFlowAction{
-			{Name: service.ProviderInterswitch, Label: "Pay " + domain.FormatNGN(amount+collectionFee.FeeKobo) + " with card"},
-			{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
-			{Name: service.ProviderWallet, Label: "Pay from wallet"},
-			{Name: "back", Label: "Back"},
-		}
+		page.Fields = []webFlowField{{Name: "account_number", Label: "Recipient's account number", Type: "text", Required: true, Hint: "10 digits", Value: flow.Payload["account_number"]}}
+		page.Actions = append(a.wfMethodButtons(true), webFlowAction{Name: "back", Label: "Back"})
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
@@ -563,47 +810,60 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 	page := a.wfPage(flow)
 	switch flow.Step {
 	case "", "phone":
-		raw := strings.TrimSpace(r.FormValue("recipient_phone"))
-		phone := domain.CanonicalE164Phone(raw)
+		// Two-page fresh path: validate phone, amount, and bank together, then
+		// advance to review (account number + rails). Bank resolution keeps
+		// the legacy ambiguous-name picker for a multi-match query.
+		phone := domain.CanonicalE164Phone(strings.TrimSpace(r.FormValue("recipient_phone")))
 		if len(strings.TrimPrefix(phone, "+")) < 10 {
 			return a.wfPageWithError(flow, page, "That doesn't look like a valid phone number. Try again (e.g. 08012345678)."), nil
 		}
 		if phone == user.WhatsAppNumber {
 			return a.wfPageWithError(flow, page, "You cannot send money to yourself."), nil
 		}
-		payload := clonePayload(flow.Payload)
-		payload["recipient_phone"] = phone
-		a.wfAdvance(w, r, flow, "amount", payload)
-		return nil, nil
-	case "amount":
 		amount, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("amount_kobo")), a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Enter a valid amount in naira."), nil
 		}
-		payload := clonePayload(flow.Payload)
-		payload["amount_kobo"] = strconv.FormatInt(amount, 10)
-		a.wfAdvance(w, r, flow, "bank", payload)
-		return nil, nil
-	case "bank":
 		raw := strings.TrimSpace(r.FormValue("bank_code"))
-		resolution, err := service.ResolveBank(r.Context(), a.store, raw)
-		if errors.Is(err, service.ErrBankAmbiguous) {
-			payload := clonePayload(flow.Payload)
+		resolution, rerr := service.ResolveBank(r.Context(), a.store, raw)
+		payload := clonePayload(flow.Payload)
+		payload["recipient_phone"] = phone
+		payload["amount_kobo"] = strconv.FormatInt(amount, 10)
+		if errors.Is(rerr, service.ErrBankAmbiguous) {
 			payload["bank_query"] = raw
 			a.wfAdvance(w, r, flow, "bank_pick", payload)
 			return nil, nil
 		}
-		if errors.Is(err, service.ErrBankNotFound) {
+		if errors.Is(rerr, service.ErrBankNotFound) {
 			return a.wfPageWithError(flow, page, "We couldn't find that bank. Type the bank name (e.g. Access, GTBank, Zenith) or code (e.g. 044)."), nil
 		}
-		if err != nil {
+		if rerr != nil {
 			return a.wfPageWithError(flow, page, "Could not resolve the bank. Try again."), nil
 		}
-		payload := clonePayload(flow.Payload)
 		payload["bank_code"] = resolution.Code
 		payload["bank_name"] = resolution.Name
 		delete(payload, "bank_query")
-		a.wfAdvance(w, r, flow, "account", payload)
+		a.wfAdvance(w, r, flow, "review", payload)
+		return nil, nil
+	case "amount", "bank", "account":
+		// In-flight flows minted before the two-page cut: carry the entered
+		// value forward and land on review, which completes the flow.
+		payload := clonePayload(flow.Payload)
+		switch flow.Step {
+		case "amount":
+			if v, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("amount_kobo")), a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo); err == nil {
+				payload["amount_kobo"] = strconv.FormatInt(v, 10)
+			}
+		case "bank":
+			if v := strings.TrimSpace(r.FormValue("bank_code")); v != "" {
+				payload["bank_code"] = v
+			}
+		case "account":
+			if v := strings.NewReplacer(" ", "", "-", "").Replace(strings.TrimSpace(r.FormValue("account_number"))); len(v) == 10 && digitsOnly(v) {
+				payload["account_number"] = v
+			}
+		}
+		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
 	case "bank_pick":
 		code := strings.TrimSpace(r.FormValue("bank_pick"))
@@ -618,18 +878,19 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		payload["bank_code"] = bank.Code
 		payload["bank_name"] = bank.Name
 		delete(payload, "bank_query")
-		a.wfAdvance(w, r, flow, "account", payload)
+		a.wfAdvance(w, r, flow, "review", payload)
 		return nil, nil
-	case "account":
+	case "review":
+		if action == "back" {
+			a.wfAdvance(w, r, flow, "phone", flow.Payload)
+			return nil, nil
+		}
+		// The account number is the review page's one field: validate it here
+		// so the customer lands back on this page with their entry kept.
 		account := strings.NewReplacer(" ", "", "-", "").Replace(strings.TrimSpace(r.FormValue("account_number")))
 		if len(account) != 10 || !digitsOnly(account) {
 			return a.wfPageWithError(flow, page, "Account number must be exactly 10 digits."), nil
 		}
-		payload := clonePayload(flow.Payload)
-		payload["account_number"] = account
-		a.wfAdvance(w, r, flow, "review", payload)
-		return nil, nil
-	case "review":
 		// Payment options are link buttons; the tapped button's name is the method.
 		method := action
 		if !wfProviderValid(method, true) {
@@ -643,12 +904,15 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 		recipientPhone := flow.Payload["recipient_phone"]
 		bankCode := flow.Payload["bank_code"]
 		bankName := flow.Payload["bank_name"]
-		accountNumber := flow.Payload["account_number"]
+		accountNumber := account
 		// Resolve the recipient user + destination so the post-success hook
 		// can settle without any session state, exactly like the chat flow.
 		recipientUser, err := a.store.GetOrCreateUser(r.Context(), recipientPhone)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not resolve the recipient. Please go back and try again."), nil
+		}
+		if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payloadWith(flow.Payload, "account_number", accountNumber)); err != nil {
+			return a.wfPageWithError(flow, page, err.Error()), nil
 		}
 		if _, err := a.store.GetOrCreateUserPayoutDestination(r.Context(), recipientUser.ID, bankCode, bankName, accountNumber, ""); err != nil {
 			return a.wfPageWithError(flow, page, "Could not save the recipient's bank details."), nil

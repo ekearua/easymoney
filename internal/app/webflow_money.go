@@ -161,6 +161,13 @@ func clonePayload(payload map[string]string) map[string]string {
 	return out
 }
 
+// payloadWith returns a clone of the payload with one key set.
+func payloadWith(payload map[string]string, key, value string) map[string]string {
+	out := clonePayload(payload)
+	out[key] = value
+	return out
+}
+
 // --- shared builders -----------------------------------------------------
 
 func merchantSelectOptions(merchants []store.Merchant) []webFlowOption {
@@ -249,13 +256,13 @@ func (a *App) wfChangeMethod(w http.ResponseWriter, r *http.Request, flow store.
 				http.Redirect(w, r, "/receipts/"+payment.ReceiptToken, http.StatusSeeOther)
 				return
 			}
-			if _, err := a.store.ReopenWebFlowForRetry(r.Context(), flow.Token, pid, "review", payload); err != nil {
+			if _, err := a.store.ReopenWebFlowForRetry(r.Context(), flow.Token, pid, wfPaymentStepKey(flow.FlowType), payload); err != nil {
 				a.logger.WarnContext(r.Context(), "change_method reopen failed", "flow_id", flow.ID, "payment_id", rawPID, "error", err)
 			}
 		}
 	} else {
-		// No payment in flight — just advance to review.
-		_ = a.store.SaveWebFlowProgress(r.Context(), flow.Token, "review", payload)
+		// No payment in flight — just advance to the payment step.
+		_ = a.store.SaveWebFlowProgress(r.Context(), flow.Token, wfPaymentStepKey(flow.FlowType), payload)
 	}
 	http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
 }
@@ -263,6 +270,110 @@ func (a *App) wfChangeMethod(w http.ResponseWriter, r *http.Request, flow store.
 // =========================================================================
 // pay — merchant collection (services, events, custom amount)
 // =========================================================================
+
+// wfMethodButtons builds the one-page payment actions: one submit button per
+// rail whose name IS the method, the card button labeled with the live charge
+// (amount + collection fee) exactly as the chat reviews quote it. The fee
+// attributes let webflow-onepage.js re-label the buttons as the amount is
+// edited on a one-page flow; they are display-only, the server always
+// recomputes from the posted amount.
+func (a *App) wfMethodButtons(includeWallet bool) []webFlowAction {
+	buttons := []webFlowAction{
+		{
+			Name:     service.ProviderInterswitch,
+			Label:    "Pay with card",
+			FeeBPS:   a.cfg.FeeCardBPS,
+			FeeFixed: a.cfg.FeeCardFixedKobo,
+			FeeCap:   a.cfg.FeeCardCapKobo,
+		},
+		{Name: service.ProviderBankTransfer, Label: "Bank transfer"},
+	}
+	if includeWallet {
+		buttons = append(buttons, webFlowAction{Name: service.ProviderWallet, Label: "Pay from wallet", FeeBPS: a.cfg.FeeCardBPS, FeeFixed: a.cfg.FeeCardFixedKobo, FeeCap: a.cfg.FeeCardCapKobo})
+	}
+	return buttons
+}
+
+// wfMerchantHasCatalog reports whether the merchant sells services or event
+// tickets — the item page's data. A catalog merchant's pay flow keeps an item
+// step (what is bought, and for fixed-price items the amount) between the
+// combined start and the payment step.
+func (a *App) wfMerchantHasCatalog(r *http.Request, merchant store.Merchant) bool {
+	services, err := a.store.ListActiveMerchantServices(r.Context(), merchant.ID)
+	if err == nil && len(services) > 0 {
+		return true
+	}
+	events, err := a.store.ListActiveEventsByMerchantID(r.Context(), merchant.ID)
+	if err == nil && len(events) > 0 {
+		return true
+	}
+	return false
+}
+
+// wfPayOnePage renders the pay flow's single-page start: who to pay (AI bar,
+// merchant select), how much (amount), and the payment rails together. The
+// submit validates merchant and amount and drafts the payment against the
+// tapped rail — no separate review hop. Existing review payloads (reopened
+// flows, retries) keep their stored values prefilled.
+func (a *App) wfPayOnePage(r *http.Request, flow store.WebFlow, user store.User, merchants []store.Merchant) (webFlowPage, error) {
+	page := a.wfPage(flow)
+	page.Title = "Pay a merchant"
+	page.Intro = "Tell Xego who to pay and how much — type it below, snap the bill with the icons, or say it out loud. Nothing is charged until you tap a payment method."
+	// The select is not browser-required: the AI bar is the primary input and
+	// a typed ask must be free to submit with the select untouched — the
+	// submit-side parser resolves it, and an unresolvable ask re-renders with
+	// a choose-from-list notice. Server validation covers the empty case.
+	merchantField := webFlowField{Name: "merchant_slug", Label: "Merchant", Type: "select", Options: merchantSelectOptions(merchants), OptionsClass: "wf-ai-merchant"}
+	if flow.Payload["merchant_slug"] != "" {
+		merchantField.Value = flow.Payload["merchant_slug"]
+	} else if slug, ok := wfBillMerchantSlug(wfBillCapturedText(flow.Payload), merchants); ok && slug != "" {
+		merchantField.Value = slug
+	}
+	// The ask field first: the AI bar renders at the top of the page.
+	askField := webFlowField{
+		Name: wfBillAskField, Label: "Ask Xego to pay", Type: "aisearch",
+		Value: flow.Payload[wfBillAskField],
+		Hint:  "e.g. “pay Ade's Kitchen ₦2,500” — Xego reads it and prefills the form, or use the icons to snap the bill or say it out loud.",
+	}
+	amountField := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true, Value: wfKoboToNairaInput(wfInt(flow.Payload["amount_kobo"]))}
+	if flow.Payload["amount_kobo"] == "" {
+		// A bill photo or voice note captured earlier supplies the amount;
+		// the customer confirms it here before the charge is created.
+		if read := wfBillAmountKobo(wfBillCapturedText(flow.Payload)); read >= a.cfg.PaymentMinKobo && read <= a.cfg.PaymentMaxKobo {
+			amountField.Value = wfKoboToNairaInput(read)
+			amountField.Hint = "Read from your bill or voice note — confirm or edit before paying."
+		}
+	}
+	page.Fields = append([]webFlowField{askField, merchantField, amountField}, wfBillCaptureFields()...)
+	page.Actions = a.wfMethodButtons(true)
+	// Inline summary: once a merchant is known, confirm the payee above the
+	// rails — the review contract the old flow had, kept without the hop.
+	if merchantField.Value != "" {
+		if merchant, err := a.wfLoadMerchant(r, merchantField.Value); err == nil {
+			page.Review = []webFlowLine{{Term: "Merchant", Desc: merchant.Name}}
+			if amount := wfInt(flow.Payload["amount_kobo"]); amount > 0 {
+				page.Review = append(page.Review, webFlowLine{Term: "Amount", Desc: domain.FormatNGN(amount)})
+			}
+			// A catalog merchant sells named services and tickets: what is
+			// bought (and for fixed-price items, how much) is decided on the
+			// item page, so this page asks only who and hands off — no rails
+			// here to tap into a charge for an unchosen item.
+			if a.wfMerchantHasCatalog(r, merchant) {
+				page.Fields = append([]webFlowField{askField, merchantField}, wfBillCaptureFields()...)
+				page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
+				page.Intro = "Tell Xego who to pay — type it below, snap the bill with the icons, or say it out loud. You'll pick what you're paying for on the next page."
+				return page, nil
+			}
+		}
+	}
+	// A wallet attempt that failed leaves the chosen rail in the payload, so
+	// a fresh GET of the page explains the wallet's state inline instead of
+	// silently offering a rail that cannot work yet.
+	if page.Error == "" {
+		page.Error = a.wfWalletStatePreview(r, flow)
+	}
+	return page, nil
+}
 
 func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
 	page := a.wfPage(flow)
@@ -275,20 +386,14 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		if err != nil {
 			return page, err
 		}
-		// Auto-skip: a single active merchant has nothing to choose, so the
-		// flow starts at the item step with the merchant pre-selected. The
-		// merchant stays editable via the stepper-adjacent summary on later
-		// steps, and the legacy "merchant" step keeps working for in-flight
-		// flows created before this cut.
-		if flow.Step == "" && len(merchants) == 1 {
-			payload := clonePayload(flow.Payload)
-			payload["merchant_slug"] = merchants[0].Slug
-			skipped, err := a.wfSkipStep(r, flow, "item", payload)
-			if err != nil {
-				return page, err
-			}
-			return a.wfPayStep(r, skipped, user)
+		// One-page start: merchant + amount + payment method together, with
+		// an inline summary above the buttons. Nothing is charged until a
+		// method button is tapped — the submit validates everything first.
+		if flow.Step == "" {
+			return a.wfPayOnePage(r, flow, user, merchants)
 		}
+		// Legacy "merchant" step (in-flight flows minted before the cut):
+		// the choose-merchant page as it was, still advancing to "item".
 		page.Title = "Who are you paying?"
 		page.Intro = "Tell Xego who to pay and how much — type it below, snap the bill with the icons, or say it out loud. Xego reads it and prefills the form; you confirm before anything is charged."
 		// The select is not browser-required: the AI bar is the primary input
@@ -491,7 +596,9 @@ func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage)
 func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
 	switch flow.Step {
-	case "", "merchant":
+	case "":
+		return a.wfPayOnePageSubmit(w, r, flow, user, action)
+	case "merchant":
 		slug := strings.TrimSpace(r.FormValue("merchant_slug"))
 		payload := clonePayload(flow.Payload)
 		// Server-side parse of the free text typed into the AI ask-bar: when
@@ -774,6 +881,121 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 		return nil, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
+}
+
+// wfPayOnePageSubmit handles the one-page pay post: merchant (or a resolvable
+// typed ask), amount, and the tapped payment rail in one form. Validation
+// order mirrors the old split steps exactly — resolve merchant, validate
+// amount — then drafts the payment against the chosen rail and routes it.
+// A catalog merchant short-circuits to the item page instead: what is bought
+// is still undecided, so no rail tap there can charge anything yet. On any
+// validation error the page re-renders with the submitted values kept (they
+// are merged into the stored payload before re-render), so a mistyped amount
+// never costs the customer their whole form.
+func (a *App) wfPayOnePageSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
+	page := a.wfPage(flow)
+	payload := clonePayload(flow.Payload)
+	// Server-side parse of the free text typed into the AI ask-bar: when the
+	// customer types an instruction ("pay Ade's Kitchen ₦2,500") and the
+	// typed text names a merchant, resolve it. The customer still confirms
+	// via the method tap, so a mis-parse is editable, never charged.
+	ask := strings.TrimSpace(r.FormValue(wfBillAskField))
+	if ask != "" && len([]rune(ask)) <= wfMaxExtractLen {
+		payload[wfBillAskField] = ask
+	}
+	slug := strings.TrimSpace(r.FormValue("merchant_slug"))
+	if rawAmount := strings.TrimSpace(r.FormValue("amount_kobo")); rawAmount != "" {
+		payload["amount_input"] = rawAmount
+	}
+	if slug == "" {
+		merchants, _, err := a.store.SearchMerchants(r.Context(), "", 0, 100)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not load the merchant list. Please try again."), nil
+		}
+		parsed, ok := wfBillMerchantSlug(wfBillCapturedText(payload), merchants)
+		if !ok || parsed == "" {
+			msg := "We couldn't tell which merchant you mean — choose one from the list (your text is kept)."
+			if !ok {
+				msg = "Several merchants match your text — choose the right one from the list."
+			}
+			return a.wfPayOnePageReRender(r, flow, user, payload, msg)
+		}
+		slug = parsed
+	}
+	// Validate the merchant before anything else can fail on it.
+	merchant, err := a.wfLoadMerchant(r, slug)
+	if err != nil {
+		return a.wfPayOnePageReRender(r, flow, user, payload, "Choose a merchant from the list.")
+	}
+	// Amount: the one-page form posts naira directly. On a parse failure the
+	// typed text is kept (payload["amount_input"]) so the re-render shows it.
+	rawAmount := strings.TrimSpace(r.FormValue("amount_kobo"))
+	amount, err := domain.ParseNGNAmount(rawAmount, a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo)
+	if err != nil {
+		payload["merchant_slug"] = slug
+		payload["amount_input"] = rawAmount
+		msg := "Enter a valid amount between " + domain.FormatNGN(a.cfg.PaymentMinKobo) + " and " + domain.FormatNGN(a.cfg.PaymentMaxKobo) + "."
+		return a.wfPayOnePageReRender(r, flow, user, payload, msg)
+	}
+	payload["merchant_slug"] = slug
+	payload["amount_kobo"] = strconv.FormatInt(amount, 10)
+	// Persist what the customer entered so far before anything else — a
+	// wallet-short reload of this page still shows the inline wallet notice.
+	if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+		return a.wfPageWithError(flow, page, err.Error()), nil
+	}
+	flow.Payload = payload
+	// Catalog merchant: what is bought (item, quantity, custom fields) is
+	// still undecided — the one-page start asked only who and how much, so
+	// hand off to the item page, which adjusts the amount and continues to
+	// the review page where the rails render. No rail tap happened here, so
+	// nothing was drafted; the method check below is unreachable on this path.
+	if a.wfMerchantHasCatalog(r, merchant) {
+		a.wfAdvance(w, r, flow, "item", payload)
+		return nil, nil
+	}
+	method := action
+	if !wfProviderValid(method, true) {
+		return a.wfPageWithError(flow, page, "Choose a payment method."), nil
+	}
+	payload["method"] = method
+	if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+		return a.wfPageWithError(flow, page, err.Error()), nil
+	}
+	flow.Payload = payload
+	payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	if err != nil {
+		return a.wfAllowancePageError(flow, page, err), nil
+	}
+	if err := a.wfRoutePayment(w, r, flow, payment, method); err != nil {
+		return a.wfRoutePaymentFailed(r, flow, user, err)
+	}
+	if method == service.ProviderWallet {
+		done := a.wfPage(flow)
+		done.Done = true
+		done.DoneTitle = "Payment sent"
+		done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
+		done.DoneAction = webFlowAction{Kind: "link", Label: "View receipt", URL: a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken}
+		done.Actions = []webFlowAction{{Kind: "link", Label: "Back to WhatsApp", URL: a.whatsappDeepLink()}}
+		return &done, nil
+	}
+	return nil, nil
+}
+
+// wfPayOnePageReRender re-renders the one-page pay form with an error, first
+// merging the submitted values into the stored payload so the customer's
+// typed ask, merchant choice, and raw amount survive the round-trip.
+func (a *App) wfPayOnePageReRender(r *http.Request, flow store.WebFlow, user store.User, payload map[string]string, msg string) (*webFlowPage, error) {
+	if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, flow.Step, payload); err != nil {
+		return nil, err
+	}
+	flow.Payload = payload
+	page, rerr := a.wfRenderStep(r, flow, user)
+	if rerr != nil {
+		return nil, rerr
+	}
+	page.Error = msg
+	return &page, nil
 }
 
 func (a *App) wfAllowancePageError(flow store.WebFlow, page webFlowPage, err error) *webFlowPage {

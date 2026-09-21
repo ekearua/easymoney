@@ -123,10 +123,17 @@ func TestFlowStepMapsCoverSteps(t *testing.T) {
 	}
 
 	// Every layout has to be internally consistent: real nodes, and a node for
-	// the empty step a freshly created flow renders.
+	// the empty step a freshly created flow renders. One-page flows are exempt
+	// from the two-node rule on purpose: their single-page fresh path hides the
+	// stepper entirely, and the one-node layout exists only so legacy step keys
+	// of in-flight flows keep mapping to a node.
 	for flowType, layout := range wfFlowLayouts {
-		if len(layout.labels) < 2 {
+		onePage := wfOnePageFlows[flowType]
+		if len(layout.labels) < 2 && !onePage {
 			t.Errorf("%s: a stepped flow needs at least two nodes, got %d", flowType, len(layout.labels))
+		}
+		if onePage && len(layout.labels) != 1 {
+			t.Errorf("%s: a one-page flow's layout should be a single placeholder node, got %d", flowType, len(layout.labels))
 		}
 		for _, label := range layout.labels {
 			if strings.TrimSpace(label) == "" {
@@ -196,6 +203,18 @@ var actionNameRe = regexp.MustCompile(`\{Name: "([a-z_]+)"`)
 
 // TestFlowStepsStates pins the rendered states: nodes before the current one
 // are done, the current one carries its position, the rest are todo.
+// stepperCurrentLabel returns the label of the stepper's current node, which is
+// what the customer reads as "you are here".
+func stepperCurrentLabel(body string) string {
+	match := stepperCurrentRe.FindStringSubmatch(body)
+	if match == nil {
+		return ""
+	}
+	return match[1]
+}
+
+var stepperCurrentRe = regexp.MustCompile(`<li class="current"><span class="dot">[^<]*</span><span class="lbl">([^<]*)</span></li>`)
+
 func TestFlowStepsStates(t *testing.T) {
 	steps, ok := wfFlowSteps(service.WebFlowThriftCreate, "frequency")
 	if !ok {

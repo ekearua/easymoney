@@ -454,8 +454,8 @@ Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret,
 2. Enter a name and email.
 3. Confirm the WhatsApp number or Telegram account.
 4. Choose **Register merchant**, complete the 6-digit email OTP, enter business name, category, and description, then confirm the request appears in `/admin/merchants`.
-5. Choose **Make payment**, select a merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search or use the page controls. Recently selected merchants appear first.
-6. On the review page, tap one of the payment-option buttons — **Pay … with card**, **Bank transfer**, or **Pay from wallet**.
+5. Choose **Make payment**. The flow opens on one page: type an instruction into the AI bar (or use the file/camera/mic icons), pick the merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search. Recently selected merchants appear first. If the merchant sells named services or tickets, tapping a payment option continues to an item page first — nothing is charged for an unchosen item.
+6. Tap one of the payment-option buttons on the page — **Pay … with card**, **Bank transfer**, or **Pay from wallet** — the amount and rails render together, no separate review hop.
 7. For card checkout, the button opens the secure Interswitch payment page directly; complete the provider flow there.
 8. For bank transfer, the button opens the Interswitch checkout (or the one-time virtual-account instructions); Xego verifies the result before issuing your receipt.
 9. Confirm that the chat reports the final result and the receipt URL displays the same status and provider.

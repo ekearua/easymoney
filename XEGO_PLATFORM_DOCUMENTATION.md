@@ -1042,11 +1042,11 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 ### Workflow: Conversational card payment
 
-- **Trigger:** Customer chooses **Make payment**, selects merchant, enters amount (₦100–₦100,000), then taps a payment-option button (card, bank transfer, or wallet) on the review page.
+- **Trigger:** Customer chooses **Make payment**; the flow opens on a single page — AI ask-bar, merchant select, amount (₦100–₦100,000), and the payment-option buttons (card, bank transfer, wallet) together. Tapping a payment option submits the page. A merchant with a catalog (services/tickets) continues to an item page first, where the item and quantity set the amount before the rails render.
 - **Actors:** Customer, engine, PaymentService, Interswitch, background workers.
 - **Process:**
-  1. Conversation captures merchant, amount, channel.
-  2. On the review page each payment option is a link button; tapping one creates the draft payment (`awaiting_confirmation` → `initialized`/`pending`) for that rail.
+  1. The page's submit validates merchant and amount, then the tapped rail creates the draft payment (`awaiting_confirmation` → `initialized`/`pending`) for that rail; the chosen rail persists in the flow payload so a wallet-short reload explains itself inline.
+  2. Each payment option is a submit button quoting the live charge (amount + collection fee); the catalog-merchant item handoff drafts nothing.
   3. The gateway is initialized immediately and the chat button opens the live payment page: Interswitch hosted fields for cards, DVA transfer instructions for bank transfers, or an inline wallet confirmation.
   4. Customer completes the card flow on the Interswitch hosted page.
   5. Callback `/payments/return` or the outbound webhook (`TRANSACTION.COMPLETED`) triggers `VerifyAndApply` — an authoritative Interswitch requery (`gettransaction.json`) of reference/amount/currency/test-mode.
@@ -1087,7 +1087,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** Chat **Buy Data** or SMS `DATA <NETWORK> <PLAN> <PHONE>`.
 - **Actors:** Customer, DataService, fulfilment provider.
-- **Process:** 1) select network/plan (paged/searchable in chat; SMS code); 2) beneficiary phone; 3) pay (card/bank); 4) order → `paid` → `fulfilling` → `fulfilled` (simulated or VTPass); 5) SMS reply returns request code + checkout URL.
+- **Process:** 1) select network/plan (paged/searchable in chat; SMS code; the browser flow offers every network's plans as one grouped select); 2) beneficiary phone; 3) pay (card/bank; the browser flow takes plan, phone, and rail on one page); 4) order → `paid` → `fulfilling` → `fulfilled` (simulated or VTPass); 5) SMS reply returns request code + checkout URL.
 - **Data:** data_orders, payments.
 - **External systems:** VTPass (sandbox) or simulator.
 - **Status:** Implemented (fulfilment simulated by default).
@@ -1134,15 +1134,11 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 - **Trigger:** Customer chooses **Pay individual** from the payment menu.
 - **Actors:** Customer, conversational engine, store.
 - **Prerequisites:** Customer must have KYC Level 2 (identity on file) verified.
-- **Process (8-step WhatsApp conversation):**
-  1. Enter recipient phone number.
-  2. Enter payout amount (₦100–₦100,000).
-  3. Select recipient bank (browsable/searchable list of NIP-enabled banks).
-  4. Enter recipient account number; system validates via bank API.
-  5. Review summary (recipient name, bank, account, amount, ₦100 NIP fee, total).
-  6. Confirm — draft payment created.
-  7. Customer pays via bank transfer (completed on the Interswitch checkout).
-  8. On confirmation: payment → `succeeded`; split posting applies (`CustomerFloat → UserPayable` + `CustomerFloat → XegoPayable`); payout record created in `user_payout_destinations`.
+- **Process (two-page browser flow / 8-step chat conversation):**
+  1. Page 1: recipient phone, payout amount (₦100–₦100,000), and recipient bank (browsable/searchable list of NIP-enabled banks) together; an ambiguous bank name opens the legacy disambiguation picker.
+  2. Page 2 (review): recipient account number with the summary (recipient name, bank, account, amount, ₦100 NIP fee, total) and the payment rails on the same page — tapping a rail drafts the payment.
+  3. Customer pays via the chosen rail (bank transfer completes on the Interswitch checkout).
+  4. On confirmation: payment → `succeeded`; split posting applies (`CustomerFloat → UserPayable` + `CustomerFloat → XegoPayable`); payout record created in `user_payout_destinations`.
 - **Fee model:** Collection fee deducted from sender (sender pays amount + collection fee). NIP flat fee ₦100 deducted from payout amount (recipient receives amount − ₦100). Bank transfer only (no card option for individual pay).
 - **Data created/updated:** payment + payment_events, ledger_entries (split posting), business_event_outbox, user_payout_destinations, payout record.
 - **Success path:** Chat reports success; receipt shows payout details.

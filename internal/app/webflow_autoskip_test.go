@@ -1,20 +1,18 @@
 package app
 
-// The pay flow's render path can advance past a step the customer never sees
-// (a merchant with an empty catalog has nothing to choose on the item step).
-// Such a skip is a real flow transition: if it only mutates the in-memory flow,
-// the page renders the amount step while the stored flow row still says "item",
-// so the stepper lags a step behind the page and the amount form's submit is
-// dispatched as an item submission that dead-ends on a page with no fields.
-// simulateAutoSkippedItemStep drives that exact sequence through the real HTTP
-// routes and asserts the page, the stepper, and the stored step all agree.
+// The pay flow's one-page start renders merchant, amount, and payment rails
+// together, and its submit is the charge boundary: a merchant with a catalog
+// (named services/tickets) must be routed to the item page instead of being
+// charged a rail-tap for an unchosen item, while a merchant with an empty
+// catalog pays straight from the page. simulateOnePagePayBoundary drives both
+// branches through the real HTTP routes and asserts the page, the stored
+// step, and the absence or presence of a drafted payment all agree.
 
 import (
 	"context"
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -23,19 +21,11 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
-// stepperCurrentLabel returns the label of the stepper's current node, which is
-// what the customer reads as "you are here".
-func stepperCurrentLabel(body string) string {
-	match := stepperCurrentRe.FindStringSubmatch(body)
-	if match == nil {
-		return ""
-	}
-	return match[1]
-}
-
-var stepperCurrentRe = regexp.MustCompile(`<li class="current"><span class="dot">[^<]*</span><span class="lbl">([^<]*)</span></li>`)
-
-func simulateAutoSkippedItemStep(t *testing.T, ctx context.Context, run *simRun, convo *service.ConversationService, repository *store.Store, messenger *simMessenger, cfg config.Config, payer store.User) {
+// simulateOnePagePayBoundary walks the one-page pay flow for an empty-catalog
+// merchant: the page renders everything, the submit drafts against the tapped
+// rail in one hop — no item page ever renders, and the stored step moves
+// straight onto checkout/done territory (the flow is now owned by a payment).
+func simulateOnePagePayBoundary(t *testing.T, ctx context.Context, run *simRun, convo *service.ConversationService, repository *store.Store, messenger *simMessenger, cfg config.Config, payer store.User) {
 	t.Helper()
 	messenger.reset()
 	resetChatSession(t, ctx, repository, payer.ID)
@@ -52,8 +42,8 @@ func simulateAutoSkippedItemStep(t *testing.T, ctx context.Context, run *simRun,
 		t.Fatalf("unexpected web-flow token %q", token)
 	}
 
-	// A seeded merchant without a catalog: the item step offers only
-	// "Custom amount", which the render path skips.
+	// A seeded merchant without a catalog: nothing sits between the one-page
+	// start and the charge.
 	const slug = "bright-fix-ng"
 	merchant, err := repository.MerchantBySlug(ctx, slug)
 	if err != nil {
@@ -71,41 +61,42 @@ func simulateAutoSkippedItemStep(t *testing.T, ctx context.Context, run *simRun,
 		t.Fatalf("fixture expects an empty catalog for %s (services=%d events=%d)", slug, len(services), len(events))
 	}
 
-	// 1. merchant: confirming it lands on the auto-skipped item step.
-	status, _, loc := run.post("/w/"+token, url.Values{"merchant_slug": {slug}})
-	if status != http.StatusSeeOther {
-		t.Fatalf("merchant step: status=%d", status)
-	}
-	status, body, _ := run.get(loc)
+	// One page: ask-bar, merchant select, amount field, and one submit button
+	// per rail all render together.
+	status, body, _ := run.get("/w/" + token)
 	if status != http.StatusOK {
-		t.Fatalf("auto-skipped step page: status=%d", status)
+		t.Fatalf("one-page start: status=%d", status)
 	}
-	flow, err := repository.WebFlowByToken(ctx, token)
-	if err != nil {
-		t.Fatalf("load flow: %v", err)
-	}
-	if flow.Step != "amount" {
-		t.Errorf("auto-skipped flow step = %q, want %q — the following submit is dispatched against this step", flow.Step, "amount")
-	}
-	if got := stepperCurrentLabel(body); got != "Amount" {
-		t.Errorf("stepper current = %q, want %q (page: %s)", got, "Amount", run.page(body))
-	} else {
-		fmt.Printf("  ✅ auto-skipped item: page=Amount stepper=%s stored_step=%s\n", got, flow.Step)
+	for _, want := range []string{`name="amount_kobo"`, `name="merchant_slug"`, "data-fee-bps"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("one-page start missing %s\n%s", want, run.page(body))
+		}
 	}
 
-	// 2. amount: must advance to review, not dead-end on the stale step.
-	status, body, loc = run.post("/w/"+token, url.Values{"amount_kobo": {"2500"}})
+	// The submit is the charge boundary: one post validates merchant and
+	// amount, drafts the payment against the tapped rail, and routes to the
+	// gateway — no intermediate page.
+	paymentsBefore, err := repository.ListPayments(ctx, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body, loc := run.post("/w/"+token, url.Values{
+		"merchant_slug": {slug}, "amount_kobo": {"2500"}, "action": {service.ProviderInterswitch},
+	})
 	if status != http.StatusSeeOther {
-		t.Fatalf("amount step after auto-skip: status=%d loc=%s page=%s", status, loc, run.page(body))
+		t.Fatalf("one-page card submit: status=%d page=%s", status, run.page(body))
 	}
-	status, body, _ = run.get(loc)
-	if status != http.StatusOK {
-		t.Fatalf("review page: status=%d", status)
+	paymentsAfter, err := repository.ListPayments(ctx, 200)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := stepperCurrentLabel(body); got != "Pay" {
-		t.Errorf("stepper current after amount = %q, want %q (page: %s)", got, "Pay", run.page(body))
+	if len(paymentsAfter) != len(paymentsBefore)+1 {
+		t.Fatalf("one-page card submit must draft exactly one payment: %d before, %d after", len(paymentsBefore), len(paymentsAfter))
 	}
-	fmt.Printf("  ✅ amount → review: stepper=%s\n", stepperCurrentLabel(body))
+	if !strings.HasPrefix(loc, "https://") {
+		t.Fatalf("one-page card submit should route straight to the gateway, got %q", loc)
+	}
+	fmt.Printf("  ✅ one-page pay (no catalog): one post drafts and routes to %s\n", loc)
 
 	// Leave nothing behind: close the flow so a later run starts clean.
 	if _, _, err := repository.CompleteWebFlow(ctx, token); err != nil {

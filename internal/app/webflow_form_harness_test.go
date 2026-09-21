@@ -99,6 +99,16 @@ func TestWebFlowFormHarness(t *testing.T) {
 		PaymentMinKobo:           10_000,
 		PaymentMaxKobo:           10_000_000,
 		RateLimitPublicPerMinute: 6000,
+		// Production-shaped fees: the one-page rails carry data-fee-* attributes
+		// (the live charge-label enhancement reads them) and the card button's
+		// label quotes amount + fee exactly as production renders it.
+		FeeCardBPS:           200,
+		FeeCardFixedKobo:     10_000,
+		FeeCardCapKobo:       200_000,
+		FeeTransferBPS:       150,
+		FeeTransferFixedKobo: 10_000,
+		FeeTransferCapKobo:   200_000,
+		FeeNIPPayoutFlatKobo: 5_000,
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -253,8 +263,15 @@ func TestWebFlowFormHarness(t *testing.T) {
 	kybToken := startFlow("request kyb upgrade")
 	pages["kyb_note"] = cfg.BaseURL + "/w/" + kybToken
 
-	// pay, parked on the merchant step: the AI search bar (ask input plus
-	// file/camera/mic icons) with the reflowed merchant select beneath.
+	// pay, parked on the one-page start: AI bar, merchant select, amount
+	// field, and payment rails together. A catalog service is seeded onto the
+	// walk's merchant so the browser also exercises the item-handoff branch:
+	// a rail tap for a catalog merchant routes to the item page, not a charge.
+	if _, err := repository.RawExec(ctx, `INSERT INTO merchant_services (merchant_id, name, description, unit_price_kobo, is_active)
+		SELECT id, 'Jollof Combo', 'journey fixture', 250000, true FROM merchants WHERE slug='lagos-lunchbox'
+		ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatal(err)
+	}
 	payToken := startFlow("pay")
 	pages["pay_merchant"] = cfg.BaseURL + "/w/" + payToken
 

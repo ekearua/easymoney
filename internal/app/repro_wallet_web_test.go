@@ -188,33 +188,21 @@ func TestReproWalletWebPayment(t *testing.T) {
 		t.Fatalf("unexpected web-flow token %q", token)
 	}
 
-	// 2. Browser wizard: merchant -> amount -> review. The seeded demo
-	// merchants have no catalog, so the item step has nothing to choose: the
-	// redirect target renders the amount step directly, and the browser
-	// follows it before the customer can enter an amount.
+	// 2. Browser wizard: the seeded demo merchants have no catalog, so the
+	// flow's fresh path is the one-page start — merchant, amount, and the
+	// payment rails together. The wallet tap validates, drafts, and confirms
+	// the payment in that single post.
 	status, body, _ := run.get("/w/" + token)
 	if status != http.StatusOK {
 		t.Fatalf("web flow page: %d", status)
 	}
-	status, _, loc := run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}})
-	if status != http.StatusSeeOther || !strings.HasSuffix(loc, "/w/"+token) {
-		t.Fatalf("merchant step: status=%d loc=%s", status, loc)
+	if !strings.Contains(body, `name="amount_kobo"`) || !strings.Contains(body, `data-fee-bps`) {
+		t.Fatalf("one-page start must render the amount field and payment rails\n%s", body[:min2(len(body), 900)])
 	}
-	// The page after the merchant must be the amount step itself: the item
-	// step is auto-skipped, not silently rendered under an amount title.
-	status, body, _ = run.get(loc)
-	if status != http.StatusOK || !strings.Contains(body, `name="amount_kobo"`) {
-		t.Fatalf("auto-skipped item step page: status=%d body=%s", status, run.page(body))
-	}
-	if status, _, _ = run.post("/w/"+token, url.Values{"amount_kobo": {"2500"}}); status != http.StatusSeeOther {
-		t.Fatalf("amount step: %d", status)
-	}
-
-	// 3. Review: the payment options are link buttons — tap "Pay from wallet".
-	fmt.Printf("\n— Browser taps: action=wallet —\n")
-	status, body, _ = run.post("/w/"+token, url.Values{"action": {service.ProviderWallet}})
+	fmt.Printf("\n— Browser taps: amount=2500 + action=wallet —\n")
+	status, body, _ = run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}, "amount_kobo": {"2500"}, "action": {service.ProviderWallet}})
 	if status != http.StatusOK {
-		t.Fatalf("wallet payment step: status=%d body=%s", status, run.page(body))
+		t.Fatalf("one-page wallet payment: status=%d body=%s", status, run.page(body))
 	}
 	fmt.Printf("  Wallet step responds: %s\n", run.page(body))
 

@@ -27,12 +27,24 @@ type webFlowAction struct {
 	Name  string
 	Label string
 	URL   string
+	// FeeBPS/FeeFixed/FeeCap carry the card collection-fee parameters so the
+	// one-page JS can re-label the buttons live as the amount is edited. Zero
+	// FeeBPS leaves the label static (fine on review-only pages where the
+	// amount cannot change). FeeSkip marks buttons whose fee channel differs
+	// (bank transfer), so the JS leaves them alone.
+	FeeBPS   int64
+	FeeFixed int64
+	FeeCap   int64
+	FeeSkip  bool
 }
 
 type webFlowOption struct {
 	Value       string
 	Label       string
 	Description string
+	// Group labels an optgroup when the field's Group flag is set (cascading
+	// selects); options must be built consecutively per group.
+	Group string
 }
 
 type webFlowField struct {
@@ -54,11 +66,40 @@ type webFlowField struct {
 	// OptionsClass adds a class to a select's <select> element so a step can
 	// restyle it in place (the AI bar reflows the merchant select beneath it).
 	OptionsClass string
+	// Group marks the field's options with an optgroup heading (cascading
+	// selects): with Type "select" and Group set, each option's Group value
+	// names its <optgroup label="…">. The data flow uses this to offer every
+	// network's plans on one page without a server round-trip between network
+	// and plan.
+	Group bool
 }
 
 type webFlowLine struct {
 	Term string
 	Desc string
+}
+
+// wfOnePageFlows lists the flows whose fresh path is a single page. Legacy
+// step keys ("amount", "review", …) keep rendering for in-flight flows
+// created before the cut — the one-page marker changes only where a fresh
+// flow starts.
+var wfOnePageFlows = map[string]bool{
+	service.WebFlowPay:              true,
+	service.WebFlowPayInvoice:       true,
+	service.WebFlowThriftContribute: true,
+	service.WebFlowData:             true,
+	service.WebFlowTopup:            true,
+}
+
+// wfPaymentStepKey names the step where a money flow's payment-method buttons
+// render: the combined start page for one-page flows, the review step for the
+// rest. Reopen-for-retry and change-method target it so a cancelled gateway
+// attempt always lands the customer back on the page where they can pay again.
+func wfPaymentStepKey(flowType string) string {
+	if wfOnePageFlows[flowType] {
+		return ""
+	}
+	return "review"
 }
 
 // hasAIBar reports whether the page should render the AI search bar: true
@@ -98,11 +139,15 @@ type webFlowPage struct {
 	// auto-skip advances the flow past a step the customer never sees, so the
 	// stepper follows this rather than the caller's pre-skip flow row.
 	Step string
-	// Steps renders the horizontal progress stepper. A non-empty Steps also
-	// switches the page to the stepped flow CSS layer (card inputs, sticky
-	// action bar, stepper) — money, KYC/onboarding, and thrift flows all walk
-	// through the same shell, so there is no separate flag to keep in sync.
+	// Steps renders the horizontal progress stepper. A non-empty Steps with
+	// more than one node renders the stepper; the stepped CSS layer itself is
+	// switched on by Shell.
 	Steps []webFlowStepLabel
+	// Shell switches the page to the stepped flow CSS layer (card inputs,
+	// sticky action bar, stepper styles) without implying a stepper: one-page
+	// flows walk the same shell but hide the progress bar, so the two concerns
+	// must not share one field.
+	Shell bool
 	// Done renders the completion state instead of a form.
 	Done       bool
 	DoneTitle  string
@@ -116,7 +161,8 @@ type webFlowPage struct {
 // flow's step and submit switches handle belongs here — an unmapped key parks
 // the stepper on the last node, which is exactly the disagreement between page
 // and progress bar this map exists to prevent (TestFlowStepMapsCoverSteps
-// pins that).
+// pins that). One-page flows (wfOnePageFlows) keep a layout record for their
+// legacy step keys but never render the stepper.
 type wfFlowLayout struct {
 	labels []string
 	at     map[string]int
@@ -127,12 +173,16 @@ type wfFlowLayout struct {
 // split into an add-one-item page and an items summary so each step carries a
 // single primary action.
 var wfFlowLayouts = map[string]wfFlowLayout{
-	service.WebFlowPay:              {[]string{"Merchant", "Item", "Amount", "Pay"}, map[string]int{"": 0, "merchant": 0, "item": 1, "qty": 1, "custom_fields": 1, "amount": 2, "review": 3, "checkout": 3, "done": 3}},
-	service.WebFlowPayInvoice:       {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
-	service.WebFlowThriftContribute: {[]string{"Contribution", "Review", "Pay"}, map[string]int{"": 0, "group": 0, "review": 1, "checkout": 2, "done": 2}},
-	service.WebFlowData:             {[]string{"Network", "Plan", "Phone", "Review", "Pay"}, map[string]int{"": 0, "network": 0, "plan": 1, "phone": 2, "review": 3, "checkout": 4, "done": 4}},
-	service.WebFlowTopup:            {[]string{"Amount", "Review", "Pay"}, map[string]int{"": 0, "amount": 0, "review": 1, "checkout": 2, "done": 2}},
-	service.WebFlowIndividualPay:    {[]string{"Phone", "Amount", "Bank", "Account", "Review", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 2, "bank_pick": 2, "account": 3, "review": 4, "checkout": 5, "done": 5}},
+	// One-page flows (wfOnePageFlows): the fresh path is a single page —
+	// fields and payment-method buttons together — so the stepper hides.
+	// The maps keep every legacy step key rendering for in-flight flows
+	// minted before the cut; those flows walk the same nodes as before.
+	service.WebFlowPay:              {[]string{"Pay"}, map[string]int{"": 0, "merchant": 0, "item": 0, "qty": 0, "custom_fields": 0, "amount": 0, "review": 0, "checkout": 0, "done": 0}},
+	service.WebFlowPayInvoice:       {[]string{"Pay"}, map[string]int{"": 0, "amount": 0, "review": 0, "checkout": 0, "done": 0}},
+	service.WebFlowThriftContribute: {[]string{"Pay"}, map[string]int{"": 0, "group": 0, "review": 0, "checkout": 0, "done": 0}},
+	service.WebFlowData:             {[]string{"Pay"}, map[string]int{"": 0, "network": 0, "plan": 0, "phone": 0, "review": 0, "checkout": 0, "done": 0}},
+	service.WebFlowTopup:            {[]string{"Pay"}, map[string]int{"": 0, "amount": 0, "review": 0, "checkout": 0, "done": 0}},
+	service.WebFlowIndividualPay:    {[]string{"Recipient", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 1, "bank_pick": 1, "account": 1, "review": 1, "checkout": 1, "done": 1}},
 	// KYC / onboarding: identity and profile setup walk the same shell.
 	service.WebFlowOnboard:           {[]string{"Name", "Email", "Verify", "Confirm"}, map[string]int{"": 0, "name": 0, "email": 1, "code": 2, "confirm": 3, "done": 3}},
 	service.WebFlowIndividualUpgrade: {[]string{"Email", "Verify", "Profile", "Review", "ID"}, map[string]int{"": 0, "email": 0, "code": 1, "profile": 2, "review": 3, "result": 4, "done": 4}},
@@ -184,6 +234,11 @@ func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
 	if page.Done || page.Expired {
 		return
 	}
+	// Every flow with a stepper layout walks the stepped shell — including
+	// one-page flows, whose Steps are cleared below.
+	if _, ok := wfFlowLayouts[flow.FlowType]; ok {
+		page.Shell = true
+	}
 	// Handlers that never set a step (KYC/onboarding pages, error re-renders of
 	// a step that did not advance) keep the flow's own step.
 	if page.Step == "" {
@@ -191,6 +246,11 @@ func (a *App) wfDecorate(page *webFlowPage, flow store.WebFlow) {
 	}
 	if steps, ok := wfFlowSteps(flow.FlowType, page.Step); ok {
 		page.Steps = steps
+	}
+	// One-page flows keep the stepped CSS shell but drop the stepper: a
+	// single-node progress bar is noise, not orientation.
+	if wfOnePageFlows[flow.FlowType] && len(page.Steps) <= 1 {
+		page.Steps = nil
 	}
 }
 
@@ -445,7 +505,7 @@ func (a *App) wfReopenForPaymentRetry(ctx context.Context, payment store.Payment
 	payload := clonePayload(flow.Payload)
 	delete(payload, "payment_id")
 	delete(payload, "provider")
-	if _, err := a.store.ReopenWebFlowForRetry(ctx, flow.Token, payment.ID, "review", payload); err != nil {
+	if _, err := a.store.ReopenWebFlowForRetry(ctx, flow.Token, payment.ID, wfPaymentStepKey(flow.FlowType), payload); err != nil {
 		a.logger.WarnContext(ctx, "web flow reopen for retry failed", "flow_id", flow.ID, "error", err)
 		return ""
 	}

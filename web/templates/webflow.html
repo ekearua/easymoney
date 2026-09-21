@@ -1,11 +1,11 @@
-{{define "webflow.html"}}{{$stepped := and .Steps (not .Done) (not .Expired)}}
+{{define "webflow.html"}}{{$stepped := and .Shell (not .Done) (not .Expired)}}{{$multi := gt (len .Steps) 1}}
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title>
 <link rel="stylesheet" href="/static/styles.css"></head>
 <body class="receipt-body"><main class="receipt{{if $stepped}} wf{{end}}">
-  {{if $stepped}}<ol class="wf-stepper">{{range .Steps}}<li class="{{.State}}"><span class="dot">{{.Dot}}</span><span class="lbl">{{.Label}}</span></li>{{end}}</ol>{{end}}
+  {{if and $stepped $multi}}<ol class="wf-stepper">{{range .Steps}}<li class="{{.State}}"><span class="dot">{{.Dot}}</span><span class="lbl">{{.Label}}</span></li>{{end}}</ol>{{end}}
   <p class="eyebrow">Xego · {{.FlowType}}</p>
   {{if .Done}}
     <h1>{{.DoneTitle}}</h1>
@@ -51,7 +51,8 @@
             <label for="{{.Name}}">{{.Label}}{{if .Required}} *{{end}}</label>
             <select id="{{.Name}}" name="{{.Name}}" {{if .Required}}required{{end}}{{if .OptionsClass}} class="{{.OptionsClass}}"{{end}}>
               <option value="" {{if not $field.Value}}selected{{end}} disabled hidden>Choose…</option>
-              {{range .Options}}<option value="{{.Value}}"{{if eq .Value $field.Value}} selected{{end}}>{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}
+              {{if .Group}}{{/* Grouped options: every option whose Group label differs from the previous renders a new optgroup; options are built consecutively per group. */}}{{$g := ""}}{{range .Options}}{{if ne .Group $g}}{{$g = .Group}}{{if $g}}</optgroup>{{end}}<optgroup label="{{$g}}">{{end}}<option value="{{.Value}}"{{if eq .Value $field.Value}} selected{{end}}>{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}</optgroup>
+              {{else}}{{range .Options}}<option value="{{.Value}}"{{if eq .Value $field.Value}} selected{{end}}>{{.Label}}{{if .Description}} — {{.Description}}{{end}}</option>{{end}}{{end}}
             </select>
           {{else if eq .Type "radio"}}
             {{$field := .}}
@@ -81,7 +82,7 @@
             {{if eq .Kind "link"}}
               <a class="button" href="{{.URL}}">{{.Label}}</a>
             {{else}}
-              <button type="submit" name="action" value="{{.Name}}">{{.Label}}</button>
+              <button type="submit" name="action" value="{{.Name}}"{{if .FeeBPS}} data-fee-bps="{{.FeeBPS}}" data-fee-fixed="{{.FeeFixed}}" data-fee-cap="{{.FeeCap}}"{{if .FeeSkip}} data-fee-skip="1"{{end}}{{end}}>{{.Label}}</button>
             {{end}}
           {{end}}
         </div>
@@ -129,6 +130,7 @@
   <p class="muted">Xego completes every payment only after it is verified on our side.</p>
 </main>
 <script src="/static/webflow-scan.js" defer></script>
+<script src="/static/webflow-onepage.js" defer></script>
 <script src="/static/date-picker.js" defer></script>
 </body></html>
 {{end}}

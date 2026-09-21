@@ -383,8 +383,8 @@ func TestSimulateMakePaymentAndPayIndividual(t *testing.T) {
 	fmt.Printf("\n========== SIMULATION 2: PAY AN INDIVIDUAL ==========\n")
 	simulatePayIndividual(t, ctx, run, convo, repository, messenger, cfg, payer, recipientPhone)
 	// =====================================================================
-	fmt.Printf("\n========== SIMULATION 3: MERCHANT WITH AN EMPTY CATALOG ==========\n")
-	simulateAutoSkippedItemStep(t, ctx, run, convo, repository, messenger, cfg, payer)
+	fmt.Printf("\n========== SIMULATION 3: ONE-PAGE PAY, EMPTY-CATALOG MERCHANT ==========\n")
+	simulateOnePagePayBoundary(t, ctx, run, convo, repository, messenger, cfg, payer)
 	// =====================================================================
 	fmt.Printf("\n========== SIMULATION 4: KYC AND THRIFT WALK THE STEPPED SHELL ==========\n")
 	simulateSteppedKYCAndThrift(t, ctx, run, convo, repository, messenger, cfg, payer)
@@ -428,12 +428,27 @@ func simulateMakePayment(t *testing.T, ctx context.Context, run *simRun, convo *
 	}
 	fmt.Printf("  Step: %s\n", run.page(body))
 
-	// 1. merchant
-	status, body, loc := run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}})
+	// 1. one-page start: the fresh page cannot know the merchant yet (no
+	// payload), so it renders the amount field and rails by default. Tapping
+	// a rail against a catalog merchant like lagos-lunchbox hands off to the
+	// item page — what is bought is still undecided, so nothing was drafted
+	// or charged.
+	if !strings.Contains(body, `name="amount_kobo"`) || !strings.Contains(body, "data-fee-bps") {
+		t.Fatalf("one-page start must render the amount field and payment rails\n%s", body[:min2(len(body), 900)])
+	}
+	paymentsBefore, err := repository.ListPayments(ctx, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body, loc := run.post("/w/"+token, url.Values{"merchant_slug": {"lagos-lunchbox"}, "amount_kobo": {"2500"}, "action": {"next"}})
 	if status != http.StatusSeeOther || !strings.HasSuffix(loc, "/w/"+token) {
-		t.Fatalf("merchant step: status=%d loc=%s", status, loc)
+		t.Fatalf("one-page start: status=%d loc=%s", status, loc)
 	}
 	status, body, _ = run.get(loc)
+	paymentsAfter, _ := repository.ListPayments(ctx, 200)
+	if len(paymentsAfter) != len(paymentsBefore) {
+		t.Fatalf("the item handoff must not draft a payment: %d rows before, %d after", len(paymentsBefore), len(paymentsAfter))
+	}
 	fmt.Printf("  Step: %s\n", run.page(body))
 
 	// 2. item -> custom amount (the item page is real: the fixture service
@@ -506,32 +521,24 @@ func simulatePayIndividual(t *testing.T, ctx context.Context, run *simRun, convo
 	}
 
 	fmt.Printf("\n— Browser: /w/%s… —\n", token[:8])
-	steps := []struct {
-		name  string
-		form  url.Values
-		check string
-	}{
-		{"recipient phone", url.Values{"recipient_phone": {recipientPhone}}, "Amount to send"},
-		{"amount (NGN 5,000)", url.Values{"amount_kobo": {"5000"}}, "Recipient's bank"},
-		{"bank code (GTBank 058)", url.Values{"bank_code": {"058"}}, "Recipient's account"},
-		{"account number", url.Values{"account_number": {"0123456789"}}, "Review your transfer"},
+	// Two-page shape: page 1 takes recipient phone, amount, and bank
+	// together; page 2 is the review — account number plus the rails.
+	status, body, loc := run.post("/w/"+token, url.Values{
+		"recipient_phone": {recipientPhone}, "amount_kobo": {"5000"}, "bank_code": {"058"}, "action": {"next"},
+	})
+	if status != http.StatusSeeOther {
+		t.Fatalf("recipient page: %d body=%s", status, run.page(body))
 	}
-	for _, step := range steps {
-		status, body, loc := run.post("/w/"+token, step.form)
-		if status != http.StatusSeeOther {
-			t.Fatalf("%s step: %d body=%s", step.name, status, run.page(body))
-		}
-		status, body, _ = run.get(loc)
-		if status != http.StatusOK || !strings.Contains(run.page(body), step.check) {
-			t.Fatalf("%s step: status=%d page=%s", step.name, status, run.page(body))
-		}
-		fmt.Printf("  ✅ %s → %s\n", step.name, run.page(body))
+	status, body, _ = run.get(loc)
+	if status != http.StatusOK || !strings.Contains(run.page(body), "Review your transfer") {
+		t.Fatalf("recipient page: status=%d page=%s", status, run.page(body))
 	}
+	fmt.Printf("  ✅ phone + amount + bank → %s\n", run.page(body))
 
 	amount := int64(500_000)
 	collectionFee := service.XegoCollectionFee(cfg, "transfer", amount).FeeKobo
 	nipFee := service.XegoPayoutFee(cfg, amount)
-	status, body, loc := run.post("/w/"+token, url.Values{"action": {service.ProviderBankTransfer}})
+	status, body, loc = run.post("/w/"+token, url.Values{"account_number": {"0123456789"}, "action": {service.ProviderBankTransfer}})
 	if status != http.StatusSeeOther {
 		t.Fatalf("review step: %d body=%s", status, run.page(body))
 	}
