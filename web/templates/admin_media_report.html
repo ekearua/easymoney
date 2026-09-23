@@ -1,0 +1,48 @@
+{{define "admin_media_report.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Operations</p><h1>Channel media extraction</h1>
+<p>OCR and speech-to-text outcomes for inbound customer media since {{.Report.Since.Format "02 Jan 2006 15:04"}}. Attempts are every image or voice message received; failures are provider errors and empty extractions. AI tokens are the provider's reported usage for the extraction calls.</p></div></header>
+<section class="metrics">
+  <article><span>Extraction attempts</span><strong>{{.Report.TotalAttempts}}</strong></article>
+  <article><span>AI tokens (7d)</span><strong>{{.Report.TotalTokens}}</strong></article>
+  {{range .Report.Totals}}
+  <article><span>{{.Channel}} · {{.MediaKind}}</span><strong>{{.Successes}}/{{.Attempts}}</strong></article>
+  {{end}}
+</section>
+<section class="panel">
+  <h2>AI tokens per day</h2>
+  {{if .TokenTrend}}{{.TokenTrend}}{{else}}<p class="muted">No extraction window to chart yet.</p>{{end}}
+  <p class="muted">Bars are per-day AI token usage; highlighted bars are near-peak spikes. Hover a bar for the exact count.</p>
+</section>
+<section class="panel">
+  <h2>Per channel · last 7 days</h2>
+  <div class="table-wrap"><table><thead><tr><th>Channel</th><th>Media</th><th>Attempts</th><th>Successes</th><th>Failures</th><th>Success rate</th><th>AI tokens</th></tr></thead><tbody>
+  {{range .Report.Totals}}
+    <tr>
+      <td><strong>{{.Channel}}</strong></td><td>{{.MediaKind}}</td><td>{{.Attempts}}</td>
+      <td>{{.Successes}}</td><td>{{.Failures}}</td><td>{{.SuccessRatePct}}</td><td>{{.AITokens}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7" class="muted">No media extractions recorded yet in this window.</td></tr>
+  {{end}}
+  </tbody></table></div>
+</section>
+<section class="panel">
+  <h2>Per day</h2>
+  <div class="table-wrap"><table><thead><tr><th>Day</th><th>Channel</th><th>Media</th><th>Attempts</th><th>Successes</th><th>Failures</th><th>AI tokens</th></tr></thead><tbody>
+  {{range .Report.PerChannelDay}}
+    <tr>
+      <td>{{.Day.Format "02 Jan"}}</td><td>{{.Channel}}</td><td>{{.MediaKind}}</td>
+      <td>{{.Attempts}}</td><td>{{.Successes}}</td><td>{{.Failures}}</td><td>{{.AITokens}}</td>
+    </tr>
+  {{else}}
+    <tr><td colspan="7" class="muted">Nothing yet.</td></tr>
+  {{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

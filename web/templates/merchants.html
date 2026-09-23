@@ -1,7 +1,7 @@
 {{define "merchants.html"}}
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant operations</p><h1>Merchants</h1></div></header>
 {{if index . "PasswordSet"}}<div class="alert success">Merchant password updated.</div>{{end}}
 {{if index . "TermsSet"}}<div class="alert success">Payment terms updated.</div>{{end}}

@@ -206,10 +206,59 @@ func TestTemplatesParse(t *testing.T) {
 	}
 
 	buf.Reset()
+	execMedia := map[string]any{
+		"AppName":   "Xego",
+		"Title":     "Channel media",
+		"CSRF":      "x",
+		"AdminRole": "admin",
+		"Report": store.ChannelMediaReport{
+			Since:         time.Now(),
+			TotalAttempts: 2,
+			TotalTokens:   390,
+			Totals: []store.ChannelMediaStat{
+				{Channel: "whatsapp", MediaKind: "image", Attempts: 2, Successes: 1, Failures: 1, AITokens: 390},
+			},
+			PerChannelDay: []store.ChannelMediaDayStat{
+				{Day: time.Now(), Channel: "whatsapp", MediaKind: "image", Attempts: 2, Successes: 1, Failures: 1, AITokens: 390},
+			},
+		},
+		"TokenTrend": mediaTokenTrendSVG([]store.TokenDayStat{
+			{Day: time.Now().AddDate(0, 0, -1), Tokens: 90},
+			{Day: time.Now(), Tokens: 300},
+		}),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMedia); err != nil {
+		t.Fatalf("execute admin_media_report.html: %v", err)
+	}
+	mediaRendered := buf.String()
+	if !strings.Contains(mediaRendered, "whatsapp") || !strings.Contains(mediaRendered, "50%") {
+		t.Fatal("admin_media_report.html must render the per-channel success rate")
+	}
+	if !strings.Contains(mediaRendered, `class="token-trend"`) || !strings.Contains(mediaRendered, "tt-bar") {
+		t.Fatal("admin_media_report.html must render the per-day AI token trend sparkline")
+	}
+	// The spike day (300 of a 300 peak) must get the spike highlight class.
+	if !strings.Contains(mediaRendered, "tt-spike") {
+		t.Fatal("token trend must highlight near-peak spike days")
+	}
+	buf.Reset()
+	execMediaEmpty := map[string]any{
+		"AppName": "Xego", "Title": "Channel media", "CSRF": "x", "AdminRole": "admin",
+		"Report":     store.ChannelMediaReport{Since: time.Now()},
+		"TokenTrend": mediaTokenTrendSVG(nil),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMediaEmpty); err != nil {
+		t.Fatalf("execute empty admin_media_report.html: %v", err)
+	}
+	if strings.Contains(buf.String(), "token-trend\" viewBox") {
+		t.Fatal("empty window must not render a trend sparkline")
+	}
+
+	buf.Reset()
 	flowPage := webFlowPage{
 		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",
-		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080",			Steps:  []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
-			Shell:  true,
+		WhatsAppLink: "https://wa.me/234", BaseURL: "http://localhost:8080", Steps: []webFlowStepLabel{{Label: "Merchant", State: "done", Dot: "✓"}, {Label: "Review", State: "current", Dot: "4"}},
+		Shell:  true,
 		Review: []webFlowLine{{Term: "Merchant", Desc: "Ade's Kitchen"}},
 		Error:  "Choose a payment method.",
 		Fields: []webFlowField{

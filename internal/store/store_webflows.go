@@ -32,9 +32,9 @@ type WebFlow struct {
 
 // WebFlow statuses.
 const (
-	WebFlowOpen     = "open"
-	WebFlowComplete = "complete"
-	WebFlowExpired  = "expired"
+	WebFlowOpen      = "open"
+	WebFlowComplete  = "complete"
+	WebFlowExpired   = "expired"
 	WebFlowCancelled = "cancelled"
 )
 
@@ -344,6 +344,213 @@ func (s *Store) RecordMessage(ctx context.Context, entry MessageLogEntry) error 
 		VALUES ($1,$2,$3,$4)`,
 		entry.Channel, entry.Recipient, entry.Flow, entry.MessageType)
 	return err
+}
+
+// MediaUsageRecord is one OCR/STT extraction outcome to tally in the
+// channel media report.
+type MediaUsageRecord struct {
+	Channel   string
+	MediaKind string // image | voice
+	Success   bool
+	AITokens  int64
+}
+
+// RecordMediaUsage tallies one web-flow media extraction into the
+// media_usage_log table the channel media report unions with the chat-side
+// inbound_messages outcomes. Rows carry the kind and the AI provider's
+// reported token usage when known.
+func (s *Store) RecordMediaUsage(ctx context.Context, rec MediaUsageRecord) error {
+	if rec.Channel == "" {
+		rec.Channel = "web"
+	}
+	if rec.MediaKind != "voice" {
+		rec.MediaKind = "image"
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO media_usage_log (channel, media_kind, success, ai_tokens)
+		VALUES ($1,$2,$3,$4)`, rec.Channel, rec.MediaKind, rec.Success, rec.AITokens)
+	return err
+}
+
+// RecordChatMediaOutcome stamps the OCR/STT outcome of one chat media message
+// onto its inbound_messages row so the channel media report can separate
+// successes from failures without reading the (encrypted) payload. A nil
+// success means the message was never extracted (AI disabled, unsupported
+// type). best-effort errors are returned for the worker to log.
+func (s *Store) RecordChatMediaOutcome(ctx context.Context, mediaID string, success bool, aiTokens int64) error {
+	if mediaID == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE inbound_messages SET media_ok = $2, media_ai_tokens = $3
+		WHERE provider_message_id = $1`, mediaID, success, aiTokens)
+	return err
+}
+
+// ChannelMediaStat is one channel × media-kind cell of the extraction report.
+type ChannelMediaStat struct {
+	Channel   string
+	MediaKind string // image | voice
+	Attempts  int64  // every inbound media message of that kind
+	Successes int64  // OCR/STT returned non-empty text
+	Failures  int64  // provider errors and empty extractions
+	AITokens  int64  // reported token usage from the AI provider (0 when unknown)
+}
+
+// SuccessRate returns the extraction success ratio (0 when no attempts).
+func (m ChannelMediaStat) SuccessRate() float64 {
+	if m.Attempts == 0 {
+		return 0
+	}
+	return float64(m.Successes) / float64(m.Attempts)
+}
+
+// SuccessRatePct renders the success rate as a whole-percent string.
+func (m ChannelMediaStat) SuccessRatePct() string {
+	return fmt.Sprintf("%.0f%%", m.SuccessRate()*100)
+}
+
+// ChannelMediaReport aggregates channel media extraction over the last days.
+type ChannelMediaReport struct {
+	Since         time.Time
+	PerChannelDay []ChannelMediaDayStat
+	Totals        []ChannelMediaStat
+	TotalAttempts int64
+	TotalTokens   int64
+}
+
+// ChannelMediaDayStat is one channel × media-kind × calendar-day bucket.
+type ChannelMediaDayStat struct {
+	Day       time.Time
+	Channel   string
+	MediaKind string
+	Attempts  int64
+	Successes int64
+	Failures  int64
+	AITokens  int64
+}
+
+// ChannelMediaStats reports OCR/STT extraction outcomes per chat channel over
+// the last days window. Attempts count every inbound image/photo/document or
+// audio/voice message; successes are extractions that yielded non-empty text;
+// failures are provider errors and empty results. AI token usage is reported
+// by the AI provider via RecordMediaAIUsage; channels without a reporting
+// provider show 0.
+func (s *Store) ChannelMediaStats(ctx context.Context, days int) (ChannelMediaReport, error) {
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	report := ChannelMediaReport{Since: since}
+	rows, err := s.pool.Query(ctx, `
+		SELECT day, channel, media_kind, attempts, successes, failures, ai_tokens
+		FROM (
+		    SELECT date_trunc('day', received_at) AS day, channel,
+		           CASE WHEN media_type IN ('image','photo','document') THEN 'image'
+		                WHEN media_type IN ('audio','voice') THEN 'voice'
+		                ELSE 'other' END AS media_kind,
+		           count(*) AS attempts,
+		           count(*) FILTER (WHERE status = 'processed' AND media_ok) AS successes,
+		           count(*) FILTER (WHERE status = 'processed' AND media_ok = false) AS failures,
+		           sum(media_ai_tokens)::bigint AS ai_tokens
+		    FROM inbound_messages
+		    WHERE received_at >= $1 AND media_type <> ''
+		    GROUP BY day, channel, media_kind
+		    UNION ALL
+		    SELECT date_trunc('day', created_at) AS day, channel, media_kind,
+		           count(*) AS attempts,
+		           count(*) FILTER (WHERE success) AS successes,
+		           count(*) FILTER (WHERE NOT success) AS failures,
+		           sum(ai_tokens)::bigint AS ai_tokens
+		    FROM media_usage_log
+		    WHERE created_at >= $1
+		    GROUP BY day, channel, media_kind
+		) merged
+		ORDER BY day DESC, channel, media_kind`, since)
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var stat ChannelMediaDayStat
+		if err := rows.Scan(&stat.Day, &stat.Channel, &stat.MediaKind, &stat.Attempts, &stat.Successes, &stat.Failures, &stat.AITokens); err != nil {
+			return report, err
+		}
+		report.PerChannelDay = append(report.PerChannelDay, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+	report.Totals = ChannelMediaTotals(report.PerChannelDay)
+	for _, stat := range report.Totals {
+		report.TotalAttempts += stat.Attempts
+		report.TotalTokens += stat.AITokens
+	}
+	return report, nil
+}
+
+// TokenDayStat is one calendar-day slice of the AI token spend, so the admin
+// media report can chart extraction cost over the window.
+type TokenDayStat struct {
+	Day    time.Time
+	Tokens int64
+}
+
+// DailyTokens buckets total reported AI token usage per calendar day over the
+// window, merging both extraction rails (chat inbound_messages and the
+// web-flow media_usage_log) and filling gaps with zero-token days so the
+// trend chart shows a continuous timeline.
+func (s *Store) DailyTokens(ctx context.Context, days int) ([]TokenDayStat, error) {
+	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	rows, err := s.pool.Query(ctx, `
+		SELECT d::date AS day, COALESCE(sum(t.tokens),0)::bigint AS tokens
+		FROM generate_series(date_trunc('day', $1::timestamptz), date_trunc('day', now()), interval '1 day') d
+		LEFT JOIN (
+		    SELECT received_at AS at, sum(media_ai_tokens) AS tokens
+		    FROM inbound_messages
+		    WHERE received_at >= $1 AND media_type <> ''
+		    GROUP BY received_at
+		    UNION ALL
+		    SELECT created_at AS at, sum(ai_tokens)
+		    FROM media_usage_log
+		    WHERE created_at >= $1
+		    GROUP BY created_at
+		) t ON date_trunc('day', t.at) = d
+		GROUP BY d ORDER BY d`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TokenDayStat
+	for rows.Next() {
+		var stat TokenDayStat
+		if err := rows.Scan(&stat.Day, &stat.Tokens); err != nil {
+			return nil, err
+		}
+		out = append(out, stat)
+	}
+	return out, rows.Err()
+}
+
+// ChannelMediaTotals folds per-day buckets into per channel × media-kind totals.
+func ChannelMediaTotals(days []ChannelMediaDayStat) []ChannelMediaStat {
+	order := []string{}
+	byKey := map[string]*ChannelMediaStat{}
+	for _, day := range days {
+		k := day.Channel + "|" + day.MediaKind
+		stat, ok := byKey[k]
+		if !ok {
+			stat = &ChannelMediaStat{Channel: day.Channel, MediaKind: day.MediaKind}
+			byKey[k] = stat
+			order = append(order, k)
+		}
+		stat.Attempts += day.Attempts
+		stat.Successes += day.Successes
+		stat.Failures += day.Failures
+		stat.AITokens += day.AITokens
+	}
+	totals := make([]ChannelMediaStat, 0, len(order))
+	for _, k := range order {
+		totals = append(totals, *byKey[k])
+	}
+	return totals
 }
 
 // MessageFlowStat aggregates message_log rows per flow over a window, with

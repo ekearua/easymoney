@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -114,6 +115,7 @@ func (a *App) webFlowMediaUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var text string
+	var aiTokens int64
 	switch kind {
 	case "image":
 		if a.imageReader == nil {
@@ -122,22 +124,43 @@ func (a *App) webFlowMediaUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		prompt := strings.TrimSpace(r.FormValue("prompt"))
 		text, err = a.imageReader.ReadImage(r.Context(), data, mime, prompt)
+		if reporter, ok := a.imageReader.(service.AIUsageReporter); ok {
+			aiTokens = reporter.LastPromptTokens()
+		}
 	case "audio":
 		if a.speechToText == nil {
 			a.wfMediaError(w, r, flow, user, "Voice notes are not enabled on this server.")
 			return
 		}
 		text, err = a.speechToText.Transcribe(r.Context(), data, mime, "en")
+		if reporter, ok := a.speechToText.(service.AIUsageReporter); ok {
+			aiTokens = reporter.LastPromptTokens()
+		}
 	}
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "web flow media extract failed", "flow", flow.ID, "kind", kind, "error", err)
+		if err := a.store.RecordMediaUsage(r.Context(), store.MediaUsageRecord{
+			Channel: flow.Channel, MediaKind: kind, Success: false, AITokens: aiTokens,
+		}); err != nil {
+			a.logger.WarnContext(r.Context(), "record media usage failed", "error", err)
+		}
 		a.wfMediaError(w, r, flow, user, "We couldn't read that file. Try a clearer photo or a shorter voice note.")
 		return
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
+		if err := a.store.RecordMediaUsage(r.Context(), store.MediaUsageRecord{
+			Channel: flow.Channel, MediaKind: kind, Success: false, AITokens: aiTokens,
+		}); err != nil {
+			a.logger.WarnContext(r.Context(), "record media usage failed", "error", err)
+		}
 		a.wfMediaError(w, r, flow, user, "We couldn't read any text from that file. Try again with a clearer photo or louder recording.")
 		return
+	}
+	if err := a.store.RecordMediaUsage(r.Context(), store.MediaUsageRecord{
+		Channel: flow.Channel, MediaKind: kind, Success: true, AITokens: aiTokens,
+	}); err != nil {
+		a.logger.WarnContext(r.Context(), "record media usage failed", "error", err)
 	}
 	if len([]rune(text)) > wfMaxExtractLen {
 		text = truncateRunes(text, wfMaxExtractLen)

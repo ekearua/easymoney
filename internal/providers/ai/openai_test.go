@@ -125,3 +125,50 @@ func TestOpenAIEmptyChoices(t *testing.T) {
 		t.Fatalf("expected empty answer for no choices, got %q", answer)
 	}
 }
+
+func TestLastPromptTokensReportsUsage(t *testing.T) {
+	provider, _ := newTestOpenAI(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"08039999900"}}],"usage":{"prompt_tokens":150,"completion_tokens":12}}`) // nosec: test fixture
+	})
+	if got := provider.LastPromptTokens(); got != 0 {
+		t.Fatalf("tokens before any call = %d, want 0", got)
+	}
+	if _, err := provider.ReadImage(context.Background(), []byte("img"), "image/png", "extract"); err != nil {
+		t.Fatal(err)
+	}
+	if got := provider.LastPromptTokens(); got != 162 {
+		t.Fatalf("tokens after vision call = %d, want 162 (150 prompt + 12 completion)", got)
+	}
+}
+
+func TestTranscribeReportsUsageWhenPresent(t *testing.T) {
+	provider, _ := newTestOpenAI(t, func(w http.ResponseWriter, r *http.Request) {
+		// Upstream honored a JSON response_format: text plus usage block.
+		io.WriteString(w, `{"text":"hello from whisper","usage":{"prompt_tokens":40,"completion_tokens":5}}`) // nosec: test fixture
+	})
+	text, err := provider.Transcribe(context.Background(), []byte("audio"), "audio/ogg", "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "hello from whisper" {
+		t.Fatalf("transcription = %q, want the parsed text", text)
+	}
+	if got := provider.LastPromptTokens(); got != 45 {
+		t.Fatalf("tokens after whisper call = %d, want 45 (parsed usage)", got)
+	}
+
+	// Plain-text bodies stay the default behavior and report no usage.
+	plain, _ := newTestOpenAI(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `just words`) // nosec: test fixture
+	})
+	text, err = plain.Transcribe(context.Background(), []byte("audio"), "audio/ogg", "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "just words" {
+		t.Fatalf("plain transcription = %q, want raw text", text)
+	}
+	if got := plain.LastPromptTokens(); got != 0 {
+		t.Fatalf("tokens after plain whisper call = %d, want 0 (no usage reported)", got)
+	}
+}

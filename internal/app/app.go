@@ -541,6 +541,7 @@ func (a *App) routes() http.Handler {
 		})
 		admin.Get("/admin/metrics", a.adminMetrics)
 		admin.Get("/admin/messaging", a.adminMessaging)
+		admin.Get("/admin/media-report", a.adminMediaReport)
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
 		admin.Get("/admin/payments", a.adminPayments)

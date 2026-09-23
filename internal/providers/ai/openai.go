@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"whatsapp-payment-demo/internal/ports"
@@ -27,6 +28,12 @@ type OpenAI struct {
 	chatModel  string
 	whisperMod string
 	httpClient *http.Client
+
+	// Token usage of the last AI call (prompt + completion). Guarded by mu:
+	// the conversation engine reads it after each OCR/STT call to attribute
+	// AI spend per channel in the media report.
+	mu           sync.Mutex
+	promptTokens int64
 }
 
 // NewOpenAI creates the OpenAI-compatible adapter.
@@ -57,7 +64,7 @@ func NewOpenAI(apiKey, baseURL, chatModel, whisperModel string, timeout time.Dur
 
 // knownIntents enumerates the FSM intents the classifier can return.
 var knownIntents = []string{
-	"pay", "buy_data", "invoice", "thrift", "become_individual", "verify_id",
+	"pay", "pay_individual", "buy_data", "invoice", "thrift", "become_individual", "verify_id",
 	"status", "help", "menu", "cancel", "skip", "ai", "none",
 }
 
@@ -66,7 +73,8 @@ func (o *OpenAI) ClassifyIntent(ctx context.Context, userMessage string, context
 Given the user message and conversation context, classify it into exactly one intent and extract any entities.
 
 Known intents:
-- pay: user wants to send money or make a payment (extract: amount, recipient/merchant_name)
+- pay: user wants to pay a merchant (extract: amount, merchant_name)
+- pay_individual: user wants to send money to a person (extract: amount, recipient_phone, bank, account_number, recipient_name)
 - buy_data: user wants to buy mobile data (extract: network, plan_size)
 - invoice: user wants to create or pay an invoice
 - thrift: user wants to create, join, or manage a thrift group (extract: thrift_name)
@@ -216,6 +224,21 @@ func (o *OpenAI) Transcribe(ctx context.Context, audioData []byte, mimeType stri
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("whisper returned %s: %s", resp.Status, redact.Error(string(respBody), redact.DefaultMaxLen))
 	}
+	// Upstreams that honor a JSON response_format return {"text":..., "usage":...}.
+	// Parse that when present so token usage is attributed; plain-text bodies
+	// (response_format=text, the default request) are returned as-is and report
+	// no usage.
+	var parsed struct {
+		Text  string `json:"text"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(respBody, &parsed) == nil && parsed.Text != "" {
+		recordTokens(&o.mu, &o.promptTokens, parsed.Usage.PromptTokens+parsed.Usage.CompletionTokens)
+		return strings.TrimSpace(parsed.Text), nil
+	}
 	return strings.TrimSpace(string(respBody)), nil
 }
 
@@ -244,6 +267,10 @@ type chatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMode bool) (string, error) {
@@ -278,6 +305,7 @@ func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMod
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		return "", fmt.Errorf("chat decode: %w", err)
 	}
+	recordTokens(&o.mu, &o.promptTokens, chatResp.Usage.PromptTokens+chatResp.Usage.CompletionTokens)
 	if len(chatResp.Choices) == 0 {
 		return "", nil
 	}
@@ -287,4 +315,24 @@ func (o *OpenAI) chatCompletion(ctx context.Context, msgs []chatMessage, jsonMod
 // ProviderName returns the adapter identifier for logging.
 func (o *OpenAI) ProviderName() string {
 	return "openai"
+}
+
+// LastPromptTokens reports the total token usage (prompt + completion) of the
+// most recent completed AI call. It is the per-call usage hook the conversation
+// engine reads after OCR/STT to attribute AI spend in the channel media report;
+// it is not cumulative.
+func (o *OpenAI) LastPromptTokens() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.promptTokens
+}
+
+// recordTokens stores the usage of the last completed AI call.
+func recordTokens(mu *sync.Mutex, dst *int64, total int64) {
+	if total <= 0 {
+		return
+	}
+	mu.Lock()
+	*dst = total
+	mu.Unlock()
 }

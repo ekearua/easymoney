@@ -97,3 +97,16 @@ form.inline{display:inline;margin:0}
 .date-picker select.dp-year,.date-picker select.dp-minute{min-width:76px}
 .date-picker select:focus{outline:2px solid var(--green);outline-offset:1px;border-color:var(--green)}
 input.dp-orig{display:none}
+/* admin media report: server-side SVG token trend (no JS, CSP-safe) */
+.token-trend{width:100%;max-width:640px;height:auto;display:block;margin-top:6px}
+.token-trend .tt-bar{fill:var(--green,#2e7d32);opacity:.55;rx:3}
+.token-trend .tt-bar:hover{opacity:.9}
+.token-trend .tt-spike{fill:#c0392b;opacity:.85}
+.token-trend .tt-peak{stroke:var(--line,#ccc);stroke-dasharray:4 4;stroke-width:1}
+.token-trend .tt-label{font-size:10px;fill:#666}
+.token-trend .tt-end{text-anchor:end}
+/* htmx request indicators: styles moved out of the runtime-injected <style>
+   tag (blocked by style-src 'self') into the served stylesheet */
+.htmx-indicator{opacity:0;transition:opacity 200ms ease-in}
+.htmx-request .htmx-indicator{opacity:1}
+.htmx-request.htmx-indicator{opacity:1}

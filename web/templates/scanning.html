@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Receipt scanning - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><script src="/static/htmx.min.js" defer></script></head>
+<title>Receipt scanning - {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
 <body>{{template "nav" .}}<main class="dashboard">
   <h1>Receipt scanning</h1>
   <p class="muted">QR scanning is active. NFC can reuse the same scan URL/token later without changing the reader validation API.</p>
