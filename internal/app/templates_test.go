@@ -206,6 +206,36 @@ func TestTemplatesParse(t *testing.T) {
 	}
 
 	buf.Reset()
+	execMetrics := map[string]any{
+		"AppName": "Xego", "Title": "Metrics", "CSRF": "x", "AdminRole": "admin", "Metrics": store.Metrics{Users: 3, Payments: 5, Succeeded: 4, SuccessRate: 0.8, VolumeKobo: 250_000},
+		// Priced week: 4493 tokens at 250/₦ ≈ ₦17.97 → kobo math, not template math.
+		"AITokens7d":     int64(4493),
+		"AITokensPerNGN": int64(250),
+		"AISpendKobo":    int64(1797),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "metrics.html", execMetrics); err != nil {
+		t.Fatalf("execute metrics.html: %v", err)
+	}
+	metricsRendered := buf.String()
+	if !strings.Contains(metricsRendered, "AI extraction spend (7d)") || !strings.Contains(metricsRendered, "4493 tokens at 250/₦") {
+		t.Fatal("metrics.html must surface the 7-day AI token spend with its pricing basis")
+	}
+
+	buf.Reset()
+	execMetricsUnpriced := map[string]any{
+		"AppName": "Xego", "Title": "Metrics", "CSRF": "x", "AdminRole": "admin", "Metrics": store.Metrics{},
+		"AITokens7d":     int64(900),
+		"AITokensPerNGN": int64(0),
+		"AISpendKobo":    int64(0),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "metrics.html", execMetricsUnpriced); err != nil {
+		t.Fatalf("execute unpriced metrics.html: %v", err)
+	}
+	if !strings.Contains(buf.String(), "AI tokens (7d)") || strings.Contains(buf.String(), "AI extraction spend") {
+		t.Fatal("an unpriced week must render the token count without a naira estimate")
+	}
+
+	buf.Reset()
 	execMedia := map[string]any{
 		"AppName":   "Xego",
 		"Title":     "Channel media",

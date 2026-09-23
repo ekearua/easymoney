@@ -20,7 +20,29 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{"Metrics": metrics, "TOTPEnabled": a.cfg.TOTPEnabled})
+	// The dashboard surfaces the same 7-day AI extraction spend the media
+	// report charts, so the operations headline carries the cost without a
+	// detour: tokens summed across both rails, priced with AI_TOKENS_PER_NGN.
+	tokenDays, err := a.store.DailyTokens(r.Context(), 7)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "daily token stats failed", "error", err)
+		// The dashboard still renders; the tile just shows the zero state.
+	}
+	var weekTokens int64
+	for _, day := range tokenDays {
+		weekTokens += day.Tokens
+	}
+	// Kobo math keeps sub-naira weeks honest (100 tokens at 250/₦ ≈ ₦0.40);
+	// the money template func takes kobo like everywhere else.
+	var spendKobo int64
+	if a.cfg.AITokensPerNGN > 0 {
+		spendKobo = weekTokens * 100 / a.cfg.AITokensPerNGN
+	}
+	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{
+		"Metrics": metrics, "TOTPEnabled": a.cfg.TOTPEnabled,
+		"AITokens7d": weekTokens, "AITokensPerNGN": a.cfg.AITokensPerNGN,
+		"AISpendKobo": spendKobo,
+	})
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {

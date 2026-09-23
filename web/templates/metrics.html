@@ -15,6 +15,9 @@
   <article><span>Data fulfilled</span><strong>{{.Metrics.DataFulfilled}}</strong></article>
   <article><span>Data failures</span><strong>{{.Metrics.DataFailures}}</strong></article>
   <article><span>SMS requests</span><strong>{{.Metrics.SMSRequests}}</strong></article>
+  {{if .AISpendKobo}}<article><span>AI extraction spend (7d)</span><strong>≈ {{money .AISpendKobo}}</strong><em class="small-text">{{.AITokens7d}} tokens at {{.AITokensPerNGN}}/₦</em></article>
+  {{else if .AITokens7d}}<article><span>AI tokens (7d)</span><strong>{{.AITokens7d}}</strong></article>
+  {{end}}
 </section>
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
 <section class="panel"><h2>Two-factor authentication</h2>
