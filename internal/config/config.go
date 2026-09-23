@@ -199,6 +199,12 @@ type Config struct {
 	MessageCostServiceNGN   int64
 	MessageCostMarketingNGN int64
 
+	// AITokensPerNGN prices the AI extraction spend shown in the admin media
+	// report so token totals read as an estimated naira cost. It mirrors the
+	// message-cost fields: a display estimate driven by an env knob, not a
+	// billing value.
+	AITokensPerNGN int64
+
 	RedisURL string
 
 	// EventBus selects the Phase 3 event backbone: "memory" (default, the
@@ -245,7 +251,7 @@ func Load() (Config, error) {
 		LinkDemoCodeInChat:              envBool("LINK_DEMO_CODE_IN_CHAT", false),
 		LinkCodeTTL:                     envDuration("LINK_CODE_TTL", 10*time.Minute),
 		SMTPHost:                        strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:                        int(envInt64("SMTP_PORT", 587)),
+		SMTPPort:                        int(EnvInt64("SMTP_PORT", 587)),
 		SMTPUsername:                    os.Getenv("SMTP_USERNAME"),
 		SMTPPassword:                    os.Getenv("SMTP_PASSWORD"),
 		SMTPFrom:                        strings.TrimSpace(os.Getenv("SMTP_FROM")),
@@ -270,16 +276,16 @@ func Load() (Config, error) {
 		BankTransferMode:                strings.ToLower(env("BANK_TRANSFER_MODE", "interswitch")),
 		PayoutProvider:                  strings.ToLower(env("PAYOUT_PROVIDER", "interswitch")),
 		RefundProvider:                  strings.ToLower(env("REFUND_PROVIDER", "interswitch")),
-		FeeCardBPS:                      envInt64("XEGO_FEE_CARD_BPS", 200),
-		FeeCardFixedKobo:                envInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
-		FeeCardCapKobo:                  envInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
-		FeeDVABPS:                       envInt64("XEGO_FEE_DVA_BPS", 150),
-		FeeDVAFixedKobo:                 envInt64("XEGO_FEE_DVA_FIXED_KOBO", 0),
-		FeeDVACapKobo:                   envInt64("XEGO_FEE_DVA_CAP_KOBO", 150000),
-		FeeTransferBPS:                  envInt64("XEGO_FEE_TRANSFER_BPS", 180),
-		FeeTransferFixedKobo:            envInt64("XEGO_FEE_TRANSFER_FIXED_KOBO", 0),
-		FeeTransferCapKobo:              envInt64("XEGO_FEE_TRANSFER_CAP_KOBO", 250000),
-		FeeNIPPayoutFlatKobo:            envInt64("XEGO_FEE_NIP_PAYOUT_FLAT_KOBO", 10000),
+		FeeCardBPS:                      EnvInt64("XEGO_FEE_CARD_BPS", 200),
+		FeeCardFixedKobo:                EnvInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
+		FeeCardCapKobo:                  EnvInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
+		FeeDVABPS:                       EnvInt64("XEGO_FEE_DVA_BPS", 150),
+		FeeDVAFixedKobo:                 EnvInt64("XEGO_FEE_DVA_FIXED_KOBO", 0),
+		FeeDVACapKobo:                   EnvInt64("XEGO_FEE_DVA_CAP_KOBO", 150000),
+		FeeTransferBPS:                  EnvInt64("XEGO_FEE_TRANSFER_BPS", 180),
+		FeeTransferFixedKobo:            EnvInt64("XEGO_FEE_TRANSFER_FIXED_KOBO", 0),
+		FeeTransferCapKobo:              EnvInt64("XEGO_FEE_TRANSFER_CAP_KOBO", 250000),
+		FeeNIPPayoutFlatKobo:            EnvInt64("XEGO_FEE_NIP_PAYOUT_FLAT_KOBO", 10000),
 		WhatsAppVerifyToken:             os.Getenv("WHATSAPP_VERIFY_TOKEN"),
 		WhatsAppAppSecret:               os.Getenv("WHATSAPP_APP_SECRET"),
 		WhatsAppAccessToken:             os.Getenv("WHATSAPP_ACCESS_TOKEN"),
@@ -324,47 +330,48 @@ func Load() (Config, error) {
 		AIAPIKey:                        os.Getenv("AI_API_KEY"),
 		AIAIModel:                       env("AI_MODEL", ""),
 		AITimeout:                       envDuration("AI_TIMEOUT", 30*time.Second),
-		AIMaxRPM:                        int(envInt64("AI_MAX_REQUESTS_PER_MINUTE", 30)),
+		AIMaxRPM:                        int(EnvInt64("AI_MAX_REQUESTS_PER_MINUTE", 30)),
 		VTPassBaseURL:                   strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
 		VTPassAPIKey:                    os.Getenv("VTPASS_API_KEY"),
 		VTPassPublicKey:                 os.Getenv("VTPASS_PUBLIC_KEY"),
 		VTPassSecretKey:                 os.Getenv("VTPASS_SECRET_KEY"),
 		VTPassWebhookSecret:             os.Getenv("VTPASS_WEBHOOK_SECRET"),
 		VTPassTimeout:                   envDuration("VTPASS_TIMEOUT", 45*time.Second),
-		PaymentMinKobo:                  envInt64("PAYMENT_MIN_KOBO", 10_000),
-		PaymentMaxKobo:                  envInt64("PAYMENT_MAX_KOBO", 10_000_000),
+		PaymentMinKobo:                  EnvInt64("PAYMENT_MIN_KOBO", 10_000),
+		PaymentMaxKobo:                  EnvInt64("PAYMENT_MAX_KOBO", 10_000_000),
 		RetentionPeriod:                 envDuration("RETENTION_PERIOD", 90*24*time.Hour),
 		KYCRescreenPeriod:               envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		MonitorVelocityWindow:           envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
-		MonitorVelocityLimit:            int(envInt64("MONITOR_VELOCITY_LIMIT", 10)),
+		MonitorVelocityLimit:            int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
 		MonitorStructuringWindow:        envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
-		MonitorStructuringCount:         int(envInt64("MONITOR_STRUCTURING_COUNT", 3)),
-		MonitorStructuringFloor:         envInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
-		MonitorStructuringCeil:          envInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
-		MonitorRoundAmountStep:          envInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
-		MonitorRoundAmountMin:           envInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
-		ReportCTRThresholdKobo:          envInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
+		MonitorStructuringCount:         int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
+		MonitorStructuringFloor:         EnvInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
+		MonitorStructuringCeil:          EnvInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
+		MonitorRoundAmountStep:          EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
+		MonitorRoundAmountMin:           EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
+		ReportCTRThresholdKobo:          EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
 		SessionTTL:                      envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                      envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		WebFlowsEnabled:                 envBool("WEB_FLOWS_ENABLED", true),
 		MessageLogEnabled:               envBool("MESSAGE_LOG_ENABLED", true),
-		MessageCostServiceNGN:           envInt64("MESSAGE_COST_SERVICE_NGN", 14),
-		MessageCostMarketingNGN:         envInt64("MESSAGE_COST_MARKETING_NGN", 84),
+		MessageCostServiceNGN:           EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
+		MessageCostMarketingNGN:         EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
+		AITokensPerNGN:                  EnvInt64("AI_TOKENS_PER_NGN", 250),
 		RedisURL:                        strings.TrimSpace(os.Getenv("REDIS_URL")),
 		EventBus:                        strings.ToLower(env("EVENT_BUS", "memory")),
-		EventBusPartitions:              int(envInt64("EVENT_BUS_PARTITIONS", 4)),
+		EventBusPartitions:              int(EnvInt64("EVENT_BUS_PARTITIONS", 4)),
 		KafkaGroupID:                    env("KAFKA_GROUP_ID", "xego"),
-		RateLimitWebhooksPerMinute:      int(envInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
-		RateLimitPublicPerMinute:        int(envInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
-		RateLimitScanPerMinute:          int(envInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
-		RateLimitAPIKeysPerMinute:       int(envInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
+		RateLimitWebhooksPerMinute:      int(EnvInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
+		RateLimitPublicPerMinute:        int(EnvInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
+		RateLimitScanPerMinute:          int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
+		RateLimitAPIKeysPerMinute:       int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
-		SettlementFeeBps: int(envInt64("SETTLEMENT_FEE_BPS", 250)),
+		SettlementFeeBps: int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
 
-		PayoutMinKobo:         envInt64("PAYOUT_MIN_KOBO", 100_00),
-		PayoutMaxKobo:         envInt64("PAYOUT_MAX_KOBO", 10_000_00),
-		PayoutDailyCapKobo:    envInt64("PAYOUT_DAILY_CAP_KOBO", 50_000_00),
-		PayoutDailyCountLimit: int(envInt64("PAYOUT_DAILY_COUNT_LIMIT", 10)),
+		PayoutMinKobo:         EnvInt64("PAYOUT_MIN_KOBO", 100_00),
+		PayoutMaxKobo:         EnvInt64("PAYOUT_MAX_KOBO", 10_000_00),
+		PayoutDailyCapKobo:    EnvInt64("PAYOUT_DAILY_CAP_KOBO", 50_000_00),
+		PayoutDailyCountLimit: int(EnvInt64("PAYOUT_DAILY_COUNT_LIMIT", 10)),
 
 		AuthSessionTTL: envDuration("AUTH_SESSION_TTL", 12*time.Hour),
 	}
@@ -483,6 +490,9 @@ func Load() (Config, error) {
 	if cfg.SMTPPort <= 0 {
 		cfg.SMTPPort = 587
 	}
+	if cfg.AITokensPerNGN < 0 {
+		return Config{}, fmt.Errorf("AI_TOKENS_PER_NGN must not be negative")
+	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
 		cfg.WhatsAppGraphVersion = "v23.0"
 	}
@@ -573,11 +583,11 @@ func Load() (Config, error) {
 		if cfg.SMSEnabled && cfg.SMSWebhookSecret == "" {
 			return Config{}, fmt.Errorf("SMS_WEBHOOK_SECRET is required when SMS_ENABLED=true")
 		}
-if cfg.AIEnabled {
-		if cfg.AIMaxRPM <= 0 {
-			return Config{}, errors.New("AI_MAX_REQUESTS_PER_MINUTE must be > 0 in production when AI_ENABLED=true")
+		if cfg.AIEnabled {
+			if cfg.AIMaxRPM <= 0 {
+				return Config{}, errors.New("AI_MAX_REQUESTS_PER_MINUTE must be > 0 in production when AI_ENABLED=true")
+			}
 		}
-	}
 		if cfg.DataProvider == "vtpass" {
 			for name, value := range map[string]string{
 				"VTPASS_API_KEY":    cfg.VTPassAPIKey,
@@ -631,7 +641,9 @@ func env(name, fallback string) string {
 	return fallback
 }
 
-func envInt64(name string, fallback int64) int64 {
+// EnvInt64 reads an integer env var with a fallback; exported so test
+// harnesses that build Config literally honor the same env knobs.
+func EnvInt64(name string, fallback int64) int64 {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {
 		return fallback

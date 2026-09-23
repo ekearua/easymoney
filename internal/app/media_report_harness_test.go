@@ -99,6 +99,7 @@ func TestMediaReportHarness(t *testing.T) {
 		Environment:              "test", // non-production → session cookie not Secure
 		SessionTTL:               30 * time.Minute,
 		RateLimitPublicPerMinute: 6000,
+		AITokensPerNGN:           config.EnvInt64("AI_TOKENS_PER_NGN", 250), // naira estimate on the trend hover labels
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 

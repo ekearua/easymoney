@@ -225,7 +225,7 @@ func TestTemplatesParse(t *testing.T) {
 		"TokenTrend": mediaTokenTrendSVG([]store.TokenDayStat{
 			{Day: time.Now().AddDate(0, 0, -1), Tokens: 90},
 			{Day: time.Now(), Tokens: 300},
-		}),
+		}, 250),
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMedia); err != nil {
 		t.Fatalf("execute admin_media_report.html: %v", err)
@@ -245,7 +245,7 @@ func TestTemplatesParse(t *testing.T) {
 	execMediaEmpty := map[string]any{
 		"AppName": "Xego", "Title": "Channel media", "CSRF": "x", "AdminRole": "admin",
 		"Report":     store.ChannelMediaReport{Since: time.Now()},
-		"TokenTrend": mediaTokenTrendSVG(nil),
+		"TokenTrend": mediaTokenTrendSVG(nil, 0),
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMediaEmpty); err != nil {
 		t.Fatalf("execute empty admin_media_report.html: %v", err)

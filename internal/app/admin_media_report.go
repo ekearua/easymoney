@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -29,15 +30,18 @@ func (a *App) adminMediaReport(w http.ResponseWriter, r *http.Request) {
 	}
 	a.renderAdmin(w, "admin_media_report.html", r, "Channel media", map[string]any{
 		"Report":     report,
-		"TokenTrend": mediaTokenTrendSVG(tokenDays),
+		"TokenTrend": mediaTokenTrendSVG(tokenDays, a.cfg.AITokensPerNGN),
 	})
 }
 
 // mediaTokenTrendSVG builds a small server-side SVG area sparkline of AI
-// tokens per day: no JS dependency, works under the strict CSP, and scales
-// bars against the window's peak so a cost spike is visible at a glance.
-// Days render newest-to-oldest right-to-left like the per-day table above it.
-func mediaTokenTrendSVG(days []store.TokenDayStat) template.HTML {
+// extraction spend per day: no JS dependency, works under the strict CSP, and
+// scales bars against the window's peak so a cost spike is visible at a
+// glance. Tokens are converted to an estimated naira cost with the configured
+// tokens-per-naira rate so bars read as money; when the rate is unset the
+// labels fall back to raw token counts. Days render newest-to-oldest
+// right-to-left like the per-day table above it.
+func mediaTokenTrendSVG(days []store.TokenDayStat, tokensPerNGN int64) template.HTML {
 	const (
 		w      = 560
 		h      = 90
@@ -61,7 +65,7 @@ func mediaTokenTrendSVG(days []store.TokenDayStat) template.HTML {
 	}
 	var b strings.Builder
 	b.WriteString(`<svg class="token-trend" viewBox="0 0 ` + fmt.Sprint(w) + ` ` + fmt.Sprint(h) +
-		`" role="img" aria-label="AI tokens per day over the last ` + fmt.Sprint(n) + ` days">`)
+		`" role="img" aria-label="AI extraction cost per day over the last ` + fmt.Sprint(n) + ` days">`)
 	// Peak reference line so relative scale is readable.
 	if peak > 0 {
 		y := fmt.Sprintf("%.1f", float64(pad))
@@ -81,9 +85,8 @@ func mediaTokenTrendSVG(days []store.TokenDayStat) template.HTML {
 		if peak > 0 && d.Tokens > 0 && float64(d.Tokens) >= float64(peak)*0.8 {
 			cls += " tt-spike" // near-peak days highlighted as spikes
 		}
-		label := fmt.Sprintf("%s: %d tokens", d.Day.Format("02 Jan"), d.Tokens)
-		b.WriteString(`<rect class="` + cls + `" x="` + bx + `" y="` + by + `" width="` +
-			fmt.Sprintf("%.1f", barW) + `" height="` + fmt.Sprintf("%.1f", bh) +
+		label := fmt.Sprintf("%s: %s", d.Day.Format("02 Jan"), tokenSpendLabel(d.Tokens, tokensPerNGN))
+		b.WriteString(`<rect class="` + cls + `" x="` + bx + `" y="` + by + `" width="` + fmt.Sprintf("%.1f", barW) + `" height="` + fmt.Sprintf("%.1f", bh) +
 			`"><title>` + label + `</title></rect>`)
 	}
 	// Day labels under the first and last bars anchor the timeline.
@@ -93,4 +96,15 @@ func mediaTokenTrendSVG(days []store.TokenDayStat) template.HTML {
 	b.WriteString(`<text class="tt-label tt-end" x="` + fmt.Sprint(w) + `" y="` + fmt.Sprint(h-1) + `">` + last + `</text>`)
 	b.WriteString(`</svg>`)
 	return template.HTML(b.String())
+}
+
+// tokenSpendLabel renders one day's token usage as an estimated naira cost
+// using the configured tokens-per-naira rate; zero-token days and an unset
+// rate fall back to a plain token count so the label never lies. Kobo math
+// keeps sub-naira days visible (100 tokens at 250/₦ ≈ ₦0.40).
+func tokenSpendLabel(tokens, tokensPerNGN int64) string {
+	if tokensPerNGN > 0 && tokens > 0 {
+		return "≈ " + domain.FormatNGN(tokens*100/tokensPerNGN) + " (" + fmt.Sprint(tokens) + " tokens)"
+	}
+	return fmt.Sprint(tokens) + " tokens"
 }
