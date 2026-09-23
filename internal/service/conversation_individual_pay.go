@@ -42,12 +42,11 @@ func (s *ConversationService) handlePayIndividualPhone(ctx context.Context, chan
 		return s.sendText(ctx, channel, recipient, "You cannot send money to yourself. Enter a different phone number.")
 	}
 	session.Data["recipient_phone"] = normalized
-	session.State = "pay_individual_amount"
+	session.State = firstMissingIndividualPayStep(session.Data)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Recipient: %s\n\nEnter the amount in Naira (e.g. 5000):", normalized))
+	return s.promptPayIndividualStep(ctx, channel, recipient, session.Data)
 }
 
 func (s *ConversationService) handlePayIndividualAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -56,12 +55,11 @@ func (s *ConversationService) handlePayIndividualAmount(ctx context.Context, cha
 		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Invalid amount: %s. Enter a valid amount in Naira.", err))
 	}
 	session.Data["amount_kobo"] = fmt.Sprintf("%d", amountKobo)
-	session.State = "pay_individual_bank_code"
+	session.State = firstMissingIndividualPayStep(session.Data)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Amount: %s\n\nEnter the recipient's bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044):", domain.FormatNGN(amountKobo)))
+	return s.promptPayIndividualStep(ctx, channel, recipient, session.Data)
 }
 
 func (s *ConversationService) handlePayIndividualBankCode(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -93,12 +91,11 @@ func (s *ConversationService) handlePayIndividualBankCode(ctx context.Context, c
 	}
 	session.Data["bank_code"] = resolution.Code
 	session.Data["bank_name"] = resolution.Name
-	session.State = "pay_individual_account"
+	session.State = firstMissingIndividualPayStep(session.Data)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Bank: %s (%s)\n\nEnter the recipient's 10-digit bank account number:", resolution.Name, resolution.Code))
+	return s.promptPayIndividualStep(ctx, channel, recipient, session.Data)
 }
 
 // handlePayIndividualBankPick handles the reply to the bank-name picker shown
@@ -137,12 +134,11 @@ func (s *ConversationService) selectPayIndividualBank(ctx context.Context, chann
 	}
 	session.Data["bank_code"] = bank.Code
 	session.Data["bank_name"] = bank.Name
-	session.State = "pay_individual_account"
+	session.State = firstMissingIndividualPayStep(session.Data)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Bank: %s (%s)\n\nEnter the recipient's 10-digit bank account number:", bank.Name, bank.Code))
+	return s.promptPayIndividualStep(ctx, channel, recipient, session.Data)
 }
 
 // sendPayBankNamePicker renders the bank directory as an interactive list,
@@ -196,7 +192,7 @@ func (s *ConversationService) handlePayIndividualAccount(ctx context.Context, ch
 		return s.sendText(ctx, channel, recipient, "Account number must be exactly 10 digits. Try again.")
 	}
 	session.Data["account_number"] = account
-	session.State = "pay_individual_confirm"
+	session.State = firstMissingIndividualPayStep(session.Data)
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
@@ -410,4 +406,178 @@ func isDigitsOnly(s string) bool {
 		}
 	}
 	return true
+}
+
+// routePaymentHint dispatches a parsed payment instruction: a matched merchant
+// goes to merchant pay, everything else (phone/account/name) goes to the
+// individual flow.
+func (s *ConversationService) routePaymentHint(ctx context.Context, channel, recipient string, user store.User, session store.Session, hint IndividualPayHint) error {
+	if hint.MerchantTarget() || hint.AmbiguousMerchant() {
+		return s.startMerchantFromHint(ctx, channel, recipient, user, session, hint)
+	}
+	return s.startPayIndividualFromHint(ctx, channel, recipient, user, session, hint)
+}
+
+// startMerchantFromHint routes a merchant instruction seeded from a parsed
+// hint. Web-flow channels open the browser flow with the merchant and amount
+// prefilled; chat channels carry the merchant picker like the AI "pay" route.
+func (s *ConversationService) startMerchantFromHint(ctx context.Context, channel, recipient string, user store.User, session store.Session, hint IndividualPayHint) error {
+	query := ""
+	if hint.MerchantSlug != "" {
+		if merchant, err := s.store.MerchantBySlug(ctx, hint.MerchantSlug); err == nil {
+			query = merchant.Name
+		}
+	} else if hint.Name != "" {
+		query = hint.Name
+	}
+	payload := map[string]string{}
+	if hint.MerchantSlug != "" {
+		payload["merchant_slug"] = hint.MerchantSlug
+	}
+	if hint.AmountKobo > 0 {
+		payload["amount_kobo"] = fmt.Sprintf("%d", hint.AmountKobo)
+	}
+	if s.WebFlowEnabled(channel, WebFlowPay) {
+		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowPay, "", "", payload)
+	}
+	session.State = "select_merchant"
+	session.Data = map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendMerchantPicker(ctx, channel, recipient, user, query, 0)
+}
+
+// startPayIndividualFromHint routes a parsed individual instruction, seeding
+// the prefill and asking only for what is missing. The KYC-L2 gate is
+// identical to startPayIndividual: unapproved senders get the upgrade web flow
+// (where supported) or the chat gate message.
+func (s *ConversationService) startPayIndividualFromHint(ctx context.Context, channel, recipient string, user store.User, session store.Session, hint IndividualPayHint) error {
+	if user.AccountLevel != "individual" || !s.userIsApprovedIndividual(ctx, user) {
+		if s.WebFlowEnabled(channel, WebFlowIndividualUpgrade) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
+				"", "Verify profile", nil)
+		}
+		return s.sendText(ctx, channel, recipient,
+			"You need to complete individual verification (KYC Level 2) before sending money to other individuals. Send *menu* to go back.")
+	}
+	data := hintSessionData(hint)
+	if s.WebFlowEnabled(channel, WebFlowIndividualPay) {
+		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualPay, "", "", data)
+	}
+	session.State = firstMissingIndividualPayStep(data)
+	session.Data = data
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.promptPayIndividualStep(ctx, channel, recipient, data)
+}
+
+// hintSessionData maps the parsed fields into the FSM/web-flow prefill keys.
+func hintSessionData(h IndividualPayHint) map[string]string {
+	data := map[string]string{}
+	if h.RecipientPhone != "" {
+		data["recipient_phone"] = h.RecipientPhone
+	}
+	if h.AmountKobo > 0 {
+		data["amount_kobo"] = fmt.Sprintf("%d", h.AmountKobo)
+	}
+	if h.BankCode != "" {
+		data["bank_code"] = h.BankCode
+		data["bank_name"] = h.BankName
+	}
+	if h.AccountNumber != "" {
+		data["account_number"] = h.AccountNumber
+	}
+	if h.Name != "" {
+		data["recipient_name"] = h.Name
+	}
+	return data
+}
+
+// firstMissingIndividualPayStep returns the earliest step that still needs
+// data. Steps are ordered phone → amount → bank → account → confirm, and each
+// depends on the fields before it, so continuing from the first gap is always
+// correct regardless of how the prefill arrived.
+func firstMissingIndividualPayStep(data map[string]string) string {
+	if strings.TrimSpace(data["recipient_phone"]) == "" {
+		return "pay_individual_phone"
+	}
+	if strings.TrimSpace(data["amount_kobo"]) == "" {
+		return "pay_individual_amount"
+	}
+	if strings.TrimSpace(data["bank_code"]) == "" {
+		return "pay_individual_bank_code"
+	}
+	if strings.TrimSpace(data["account_number"]) == "" {
+		return "pay_individual_account"
+	}
+	return "pay_individual_confirm"
+}
+
+// promptPayIndividualStep sends the prompt for the next missing field,
+// reproducing the exact copy the previous hard-coded transitions used so the
+// prefilled flow feels identical to the typed flow.
+func (s *ConversationService) promptPayIndividualStep(ctx context.Context, channel, recipient string, data map[string]string) error {
+	switch firstMissingIndividualPayStep(data) {
+	case "pay_individual_phone":
+		return s.sendText(ctx, channel, recipient,
+			"Send money to an individual\n\nEnter the recipient's phone number (e.g. 08012345678):")
+	case "pay_individual_amount":
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Recipient: %s\n\nEnter the amount in Naira (e.g. 5000):", data["recipient_phone"]))
+	case "pay_individual_bank_code":
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Amount: %s\n\nEnter the recipient's bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044):",
+				domain.FormatNGN(parseAmountKobo(data["amount_kobo"]))))
+	case "pay_individual_account":
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Bank: %s\n\nEnter the recipient's 10-digit bank account number:", sessionBankLabel(data)))
+	case "pay_individual_confirm":
+		return s.sendText(ctx, channel, recipient, s.individualPayReviewMessage(data))
+	}
+	return nil
+}
+
+// individualPayReviewMessage renders the confirm-step review for the current
+// prefill, matching the message the typed flow has always shown.
+func (s *ConversationService) individualPayReviewMessage(data map[string]string) string {
+	amountKobo := parseAmountKobo(data["amount_kobo"])
+	collectionFee := XegoCollectionFee(s.cfg, "transfer", amountKobo)
+	nipFee := XegoPayoutFee(s.cfg, amountKobo)
+	totalPay := amountKobo + collectionFee.FeeKobo
+	recipientGets := amountKobo - nipFee
+	return fmt.Sprintf("*Review your transfer*\n\nRecipient phone: %s\nBank: %s\nAccount: %s\n\nAmount: %s\nCollection fee: %s\nTotal you pay: %s\n\nRecipient receives: %s (after NIP fee)\n\nSend *1* to pay by bank transfer, *2* to pay from your wallet, or *cancel* to abort.",
+		data["recipient_phone"], sessionBankLabel(data), data["account_number"],
+		domain.FormatNGN(amountKobo), domain.FormatNGN(collectionFee.FeeKobo),
+		domain.FormatNGN(totalPay), domain.FormatNGN(recipientGets))
+}
+
+// intentToHint converts AI-extracted entities into the individual-flow
+// prefill. Bad values are left empty so the FSM asks for them; the amount is
+// validated against the configured payment bounds.
+func (s *ConversationService) intentToHint(ctx context.Context, entities map[string]string) IndividualPayHint {
+	hint := IndividualPayHint{SendIntent: true}
+	if p := strings.TrimSpace(entities["recipient_phone"]); p != "" {
+		hint.RecipientPhone = domain.CanonicalE164Phone(p)
+	}
+	if acc := strings.NewReplacer(" ", "", "-", "").Replace(strings.TrimSpace(entities["account_number"])); len(acc) == 10 && isDigitsOnly(acc) {
+		hint.AccountNumber = acc
+	}
+	if raw := strings.TrimSpace(entities["amount"]); raw != "" {
+		if k, err := domain.ParseNGNAmount(raw, s.cfg.PaymentMinKobo, s.cfg.PaymentMaxKobo); err == nil {
+			hint.AmountKobo = k
+		}
+	}
+	bankText := strings.TrimSpace(entities["bank"])
+	if bankText == "" {
+		bankText = strings.TrimSpace(entities["bank_name"])
+	}
+	if bankText != "" {
+		if res, err := ResolveBank(ctx, s.store, bankText); err == nil {
+			hint.BankCode, hint.BankName = res.Code, res.Name
+		}
+	}
+	hint.Name = strings.TrimSpace(entities["recipient_name"])
+	return hint
 }

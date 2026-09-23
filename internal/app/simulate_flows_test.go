@@ -388,6 +388,10 @@ func TestSimulateMakePaymentAndPayIndividual(t *testing.T) {
 	// =====================================================================
 	fmt.Printf("\n========== SIMULATION 4: KYC AND THRIFT WALK THE STEPPED SHELL ==========\n")
 	simulateSteppedKYCAndThrift(t, ctx, run, convo, repository, messenger, cfg, payer)
+	// =====================================================================
+	fmt.Printf("\n========== SIMULATION 5: INDIVIDUAL PAY FROM A PARSED INSTRUCTION ==========\n")
+	recipient2 := fmt.Sprintf("0803%07d", time.Now().UnixNano()%10000000)
+	simulateParsedIndividualPay(t, ctx, run, convo, repository, messenger, cfg, payer, recipient2)
 
 	// =====================================================================
 	fmt.Printf("\n========== MESSAGING COST METER ==========\n")
@@ -588,10 +592,125 @@ func simulatePayIndividual(t *testing.T, ctx context.Context, run *simRun, convo
 	verifyWhatsAppCompletion(t, messenger, "Pay an individual")
 }
 
+func simulateParsedIndividualPay(t *testing.T, ctx context.Context, run *simRun, convo *service.ConversationService, repository *store.Store, messenger *simMessenger, cfg config.Config, payer store.User, recipientPhone string) {
+	t.Helper()
+	messenger.reset()
+	resetChatSession(t, ctx, repository, payer.ID)
+
+	fmt.Printf("\n— Customer on WhatsApp types a free-text instruction: “faya 5000 to %s GTBank 0123456789” —\n", recipientPhone)
+	// The deterministic parser routes the instruction to the individual-pay
+	// web flow seeded with the parsed recipient, amount, bank, and account —
+	// message 1 of the two-message pattern (budget: 1 link ≤ 3).
+	if err := convo.Handle(ctx, store.InboundMessage{Channel: service.ChannelWhatsApp, Sender: payer.WhatsAppNumber,
+		Text: "faya 5000 to " + recipientPhone + " gtbank 0123456789"}); err != nil {
+		t.Fatalf("handle parsed instruction: %v", err)
+	}
+	sent := messenger.snapshot()
+	if len(sent) != 1 || sent[0].kind != "link" {
+		t.Fatalf("expected exactly one link message (message 1) from a parsed instruction, got %+v", sent)
+	}
+	fmt.Printf("  📲 WhatsApp → customer:\n     %q\n     [%s] %s\n", sent[0].body, sent[0].label, sent[0].url)
+	token := strings.TrimPrefix(sent[0].url, cfg.BaseURL+"/w/")
+	if len(token) < 32 {
+		t.Fatalf("unexpected web-flow token %q", token)
+	}
+
+	fmt.Printf("\n— Browser: /w/%s… —\n", token[:8])
+	// The warrant page already knows who, how much, the bank, and the account:
+	// the fields render prefilled from the parsed payload, so the customer only
+	// taps Continue and then the payment method.
+	status, body, _ := run.get("/w/" + token)
+	if status != http.StatusOK {
+		t.Fatalf("web flow page: %d", status)
+	}
+	phoneE164 := domain.CanonicalE164Phone(recipientPhone)
+	if !strings.Contains(run.page(body), "Send money to an individual") ||
+		!strings.Contains(body, `name="recipient_phone"`) ||
+		!strings.Contains(html.UnescapeString(body), `value="`+phoneE164+`"`) {
+		idx := strings.Index(body, "recipient_phone")
+		ctx2 := "absent"
+		if idx >= 0 {
+			lo := idx - 80
+			if lo < 0 {
+				lo = 0
+			}
+			hi := idx + 160
+			if hi > len(body) {
+				hi = len(body)
+			}
+			ctx2 = strings.ReplaceAll(body[lo:hi], "\n", " ")
+		}
+		t.Fatalf("the first step should prefill the parsed recipient\n  near=%s\n  page=%s", ctx2, run.page(body))
+	}
+
+	// One tap: Continue. The phone/amount/bank fall back to the parsed seeds.
+	status, body, loc := run.post("/w/"+token, url.Values{"action": {"next"}})
+	if status != http.StatusSeeOther || !strings.HasSuffix(loc, "/w/"+token) {
+		t.Fatalf("first step (prefilled): status=%d loc=%s body=%s", status, loc, run.page(body))
+	}
+	status, body, _ = run.get(loc)
+	if status != http.StatusOK || !strings.Contains(run.page(body), "Review your transfer") {
+		t.Fatalf("prefilled first step should land on review, status=%d page=%s", status, run.page(body))
+	}
+	fmt.Printf("  ✅ parsed recipient+amount+bank+account prefilled the flow → %s\n", run.page(body))
+
+	// The review account field is still prefilled; submit the rail.
+	amount := int64(500_000)
+	status, body, loc = run.post("/w/"+token, url.Values{"account_number": {"0123456789"}, "action": {service.ProviderBankTransfer}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("review step: %d body=%s", status, run.page(body))
+	}
+	if !strings.HasPrefix(loc, "https://") {
+		t.Fatalf("review should route straight to the gateway, got %q", loc)
+	}
+	fmt.Printf("  🔀 Browser leaves for the gateway page (no hub hop): %s\n", loc)
+	payment, err := repository.PaymentByReference(ctx, strings.TrimPrefix(loc, "https://checkout.sim.example/x/"))
+	if err != nil {
+		t.Fatalf("load payment by gateway reference: %v", err)
+	}
+
+	fmt.Printf("\n— Interswitch calls back: GET /payments/return?reference=%s… —\n", payment.ProviderReference[:12])
+	status, _, loc = run.get("/payments/return?reference=" + url.QueryEscape(payment.ProviderReference))
+	if status != http.StatusSeeOther {
+		t.Fatalf("payment return: %d", status)
+	}
+	fmt.Printf("  → %s\n", loc)
+
+	verifyPaymentSucceeded(t, ctx, repository, payment.ID)
+	verifyLedgerForPayment(t, ctx, repository, payment.ID, "Parsed individual pay")
+
+	recipient, err := repository.GetOrCreateUser(ctx, phoneE164)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wallet, err := repository.WalletByOwner(ctx, store.WalletOwnerUser, recipient.ID)
+	if err != nil {
+		t.Fatalf("recipient wallet: %v", err)
+	}
+	balance, err := repository.WalletBalance(ctx, wallet.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nipFee := service.XegoPayoutFee(cfg, amount)
+	if balance != amount-nipFee {
+		t.Fatalf("recipient wallet balance = %d, want %d", balance, amount-nipFee)
+	}
+	fmt.Printf("  👛 Recipient %s wallet balance: %s (expected %s)\n", recipient.WhatsAppNumber,
+		domain.FormatNGN(balance), domain.FormatNGN(amount-nipFee))
+
+	// Budget parity with the typed path: the parsed instruction still spends
+	// exactly 2 WhatsApp messages (link + confirmation) — well under the 3 cap.
+	verifyWhatsAppCompletion(t, messenger, "Parsed individual pay")
+}
+
 // simTestDBURL returns a database URL dedicated to the app package's
 // simulation so it never shares tables with the store/service suites when the
 // whole test run happens in parallel. The database is dropped and recreated on
 // every run: the simulations assert exact sums over users, payments, and
+// wallets (e.g. TestReproWalletWebPayment's wallet balance), so a reused
+// database from an earlier run would double-count stale rows and fail
+// spuriously — most visibly when a single simulation is re-run in isolation
+// after the full suite already populated the derived database.
 // wallets (e.g. TestReproWalletWebPayment's wallet balance), so a reused
 // database from an earlier run would double-count stale rows and fail
 // spuriously — most visibly when a single simulation is re-run in isolation

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,6 +54,78 @@ func wfBillCapturedText(payload map[string]string) string {
 		return ask
 	}
 	return strings.TrimSpace(strings.TrimSpace(payload[wfBillPhotoField]) + " " + strings.TrimSpace(payload[wfBillVoiceField]))
+}
+
+// wfIndPhotoField / wfIndVoiceField / wfIndAskField store the extracted text
+// of the individual-pay capture step under the same PRG keys the bill flow
+// uses (upload/voice handled by the media endpoint, the typed ask-bar flowing
+// straight into the same parsers).
+const (
+	wfIndPhotoField = "ind_photo"
+	wfIndVoiceField = "ind_voice"
+	wfIndAskField   = "ind_ask"
+)
+
+// wfIndividualAskField returns the AI ask-bar field shown first on the
+// individual-pay capture step; its typed text flows into the same parsers as
+// the OCR/STT extracts below it.
+func wfIndividualAskField(payload map[string]string) webFlowField {
+	return webFlowField{
+		Name: wfIndAskField, Label: "Who to pay", Type: "aisearch",
+		Value: payload[wfIndAskField],
+		Hint:  "e.g. “send 5000 to 08012345678 GTBank 0123456789” — Xego reads it and prefills the fields below, or use the icons to snap or say it.",
+	}
+}
+
+// wfIndividualCaptureFields returns the optional upload/voice controls shown
+// after the individual-pay form fields: snapping a transfer slip or saying the
+// instruction supplies the same free text as the ask-bar, handled by the same
+// media endpoint as the bill flow.
+func wfIndividualCaptureFields() []webFlowField {
+	return []webFlowField{
+		{Name: wfIndPhotoField, Label: "Snap the instruction instead (optional)", Type: "upload", BarIcon: "file",
+			MediaPrompt: "This photo shows a money-transfer instruction. Reply with the recipient phone number, the amount in naira, the bank name, and the 10-digit account number, e.g. \"PHONE 08012345678 | AMOUNT 2500 | BANK GTBank | ACCOUNT 0123456789\".",
+			Hint:        "Upload a photo — Xego reads recipient, amount, bank, and account to prefill the form."},
+		{Name: wfIndVoiceField, Label: "Or say the instruction (optional)", Type: "voice", BarIcon: "mic",
+			Hint: "Record it, e.g. \"send five thousand to 08012345678 GTBank account 0123456789\"."},
+	}
+}
+
+// wfIndividualCapturedText joins the customer-supplied instruction on the
+// individual-pay capture step, preferring the typed ask-bar like the bill flow.
+func wfIndividualCapturedText(payload map[string]string) string {
+	if ask := strings.TrimSpace(payload[wfIndAskField]); ask != "" {
+		return ask
+	}
+	return strings.TrimSpace(strings.TrimSpace(payload[wfIndPhotoField]) + " " + strings.TrimSpace(payload[wfIndVoiceField]))
+}
+
+// wfIndividualPrefill merges a parsed instruction into the current flow
+// payload so the recipient/amount/bank/account fields prefill. Parsing runs on
+// the captured text (typed, OCR'd, or transcribed); explicit form entries that
+// the customer typed directly always win over the read text.
+func (a *App) wfIndividualPrefill(r *http.Request, flow store.WebFlow, payload map[string]string) {
+	captured := wfIndividualCapturedText(flow.Payload)
+	if captured == "" {
+		return
+	}
+	hint, err := a.conversation.ParseIndividualPayText(r.Context(), captured)
+	if err != nil || !hint.SendIntent {
+		return
+	}
+	if strings.TrimSpace(r.FormValue("recipient_phone")) == "" && hint.RecipientPhone != "" {
+		payload["recipient_phone"] = hint.RecipientPhone
+	}
+	if strings.TrimSpace(r.FormValue("amount_kobo")) == "" && hint.AmountKobo > 0 {
+		payload["amount_kobo"] = fmt.Sprintf("%d", hint.AmountKobo)
+	}
+	if strings.TrimSpace(r.FormValue("bank_code")) == "" && hint.BankCode != "" {
+		payload["bank_code"] = hint.BankCode
+		payload["bank_name"] = hint.BankName
+	}
+	if hint.AccountNumber != "" {
+		payload["account_number"] = hint.AccountNumber
+	}
 }
 
 // wfBillMerchantSlug picks the merchant whose name appears in the captured

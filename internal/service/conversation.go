@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,13 @@ func (s *ConversationService) SetScreeningProviderName(name string) {
 	if strings.TrimSpace(name) != "" {
 		s.screeningProviderName = name
 	}
+}
+
+// AIUsageReporter is implemented by AI providers that can report the token
+// usage of their most recent call (e.g. the OpenAI adapter), so extraction
+// spend can be attributed per channel in the admin media report.
+type AIUsageReporter interface {
+	LastPromptTokens() int64
 }
 
 // SetMediaProviders configures the optional AI/media providers for image-to-text,
@@ -416,6 +424,22 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	case "link_code":
 		return s.handleLinkCode(ctx, message.Channel, recipient, user, session, input)
 	default:
+		// Deterministic payment-instruction parsing first: free-text
+		// instructions ("send 5000 to 08039999900 GTBank 0123456789",
+		// "faya 2000 to Ada") arrive as chat text, OCR'd photo text, or a
+		// transcribed voice note and are routed without the AI provider.
+		// Interactive selections carry explicit IDs and must never be parsed;
+		// per-step media is consumed by the state-specific cases above, so
+		// only a fresh whole instruction reaches this branch.
+		if message.Interactive == "" {
+			hint, err := s.ParseIndividualPayText(ctx, input)
+			if err != nil {
+				return err
+			}
+			if hint.Routeable() {
+				return s.routePaymentHint(ctx, message.Channel, recipient, user, session, hint)
+			}
+		}
 		// AI intent routing: when enabled and a chat AI is available,
 		// try to classify free-text input before falling back to keyword
 		// matching.  Interactive selections (list row taps, button presses)
@@ -597,23 +621,45 @@ func normalizeChannel(channel string) string {
 // Returns empty string if the media cannot be fetched or processed — the
 // caller then falls back to keyword handling.
 func (s *ConversationService) processMedia(ctx context.Context, message store.InboundMessage, rateKey string) string {
+	// Every inbound media message of a supported kind counts as one extraction
+	// attempt in the admin channel-media report, whether or not the AI floor
+	// let it through. Rows without a provider media identity still get a row,
+	// keyed by the synthetic ID the enqueue path would have carried.
+	mediaID := message.MediaID
+	if mediaID == "" && message.MediaURL != "" {
+		mediaID = message.MediaURL
+	}
+	if mediaID == "" {
+		mediaID = "media-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	reportOutcome := func(ok bool, tokens int64) {
+		// Best-effort observability write: a failed tally never blocks the
+		// customer's message from being processed.
+		if s.store != nil {
+			_ = s.store.RecordChatMediaOutcome(ctx, mediaID, ok, tokens)
+		}
+	}
 	switch message.MediaType {
 	case "image", "photo", "document":
 		if s.imageReader == nil || !s.aiAllowed(ctx, rateKey) {
+			reportOutcome(false, 0)
 			return ""
 		}
 	case "audio", "voice":
 		if s.speechToText == nil || !s.aiAllowed(ctx, rateKey) {
+			reportOutcome(false, 0)
 			return ""
 		}
 	default:
 		return ""
 	}
 	if s.mediaDownloader == nil {
+		reportOutcome(false, 0)
 		return ""
 	}
 	data, mime, err := s.mediaDownloader.Download(ctx, message.Channel, message.MediaID, message.MediaURL)
 	if err != nil || len(data) == 0 {
+		reportOutcome(false, 0)
 		return ""
 	}
 	if mime == "" {
@@ -623,6 +669,7 @@ func (s *ConversationService) processMedia(ctx context.Context, message store.In
 	case "image", "photo", "document":
 		// For documents, we still try OCR if it looks like an image MIME type.
 		if message.MediaType == "document" && !strings.HasPrefix(mime, "image/") {
+			reportOutcome(false, 0)
 			return ""
 		}
 		prompt := "Extract all readable text from this image."
@@ -632,14 +679,34 @@ func (s *ConversationService) processMedia(ctx context.Context, message store.In
 			prompt = "Extract the NIN or BVN number from this identity slip."
 		}
 		text, err := s.imageReader.ReadImage(ctx, data, mime, prompt)
+		tokens := int64(0)
+		if reporter, ok := s.imageReader.(AIUsageReporter); ok {
+			tokens = reporter.LastPromptTokens()
+		}
 		if err != nil {
+			reportOutcome(false, tokens)
+			return ""
+		}
+		text = strings.TrimSpace(text)
+		reportOutcome(text != "", tokens)
+		if text == "" {
 			return ""
 		}
 		return text
 
 	case "audio", "voice":
 		text, err := s.speechToText.Transcribe(ctx, data, mime, "en")
+		tokens := int64(0)
+		if reporter, ok := s.speechToText.(AIUsageReporter); ok {
+			tokens = reporter.LastPromptTokens()
+		}
 		if err != nil {
+			reportOutcome(false, tokens)
+			return ""
+		}
+		text = strings.TrimSpace(text)
+		reportOutcome(text != "", tokens)
+		if text == "" {
 			return ""
 		}
 		return text
@@ -682,6 +749,11 @@ func (s *ConversationService) routeAIIntent(ctx context.Context, channel, recipi
 			return err
 		}
 		return s.sendMerchantPicker(ctx, channel, recipient, user, "", 0)
+	case "pay_individual":
+		// AI-fallback route for instructions the deterministic parser could
+		// not classify: carry any extracted entities into the individual
+		// flow's prefill and prompt only for what is still missing.
+		return s.startPayIndividualFromHint(ctx, channel, recipient, user, session, s.intentToHint(ctx, intent.Entities))
 	case "buy_data":
 		session.State = "select_data_network"
 		session.Data = map[string]string{}

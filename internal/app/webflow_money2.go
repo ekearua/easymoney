@@ -741,13 +741,22 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 	switch flow.Step {
 	case "", "phone":
 		// Two-page shape: recipient (phone + amount + bank) here, then the
-		// account number, summary, and payment rails on the review page.
+		// account number, summary, and payment rails on the review page. The
+		// AI ask-bar/upload/voice capture fields let a typed, photographed,
+		// or dictated instruction prefill the three fields below.
 		page.Title = "Send money to an individual"
 		page.Intro = "Who are you paying, and how much? The recipient receives the amount less the NIP fee — nothing is charged until you tap a payment method on the next page."
 		phoneField := webFlowField{Name: "recipient_phone", Label: "Recipient phone", Type: "tel", Required: true, Hint: "e.g. 08012345678", Value: flow.Payload["recipient_phone"]}
 		amountField := webFlowField{Name: "amount_kobo", Label: "Amount (naira)", Type: "amount", Required: true, Value: wfKoboToNairaInput(wfInt(flow.Payload["amount_kobo"]))}
+		amountField.Hint = "e.g. 5000"
+		if flow.Payload["amount_kobo"] == "" {
+			if read := wfBillAmountKobo(wfIndividualCapturedText(flow.Payload)); read >= a.cfg.PaymentMinKobo && read <= a.cfg.PaymentMaxKobo {
+				amountField.Value = wfKoboToNairaInput(read)
+				amountField.Hint = "Read from your instruction — confirm or edit before continuing."
+			}
+		}
 		bankField := webFlowField{Name: "bank_code", Label: "Recipient's bank", Type: "text", Required: true, Hint: "e.g. GTBank or 058", Value: flow.Payload["bank_code"]}
-		page.Fields = []webFlowField{phoneField, amountField, bankField}
+		page.Fields = append([]webFlowField{wfIndividualAskField(flow.Payload), phoneField, amountField, bankField}, wfIndividualCaptureFields()...)
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
 	case "amount":
@@ -812,21 +821,37 @@ func (a *App) wfIndividualPaySubmit(w http.ResponseWriter, r *http.Request, flow
 	case "", "phone":
 		// Two-page fresh path: validate phone, amount, and bank together, then
 		// advance to review (account number + rails). Bank resolution keeps
-		// the legacy ambiguous-name picker for a multi-match query.
-		phone := domain.CanonicalE164Phone(strings.TrimSpace(r.FormValue("recipient_phone")))
+		// the legacy ambiguous-name picker for a multi-match query. A captured
+		// instruction (ask-bar / photo / voice) is parsed first so whatever the
+		// customer typed directly still wins, while parsed fields fill in the
+		// blanks — including the account number, prefilled on review.
+		payload := clonePayload(flow.Payload)
+		a.wfIndividualPrefill(r, flow, payload)
+
+		phoneRaw := strings.TrimSpace(r.FormValue("recipient_phone"))
+		if phoneRaw == "" {
+			phoneRaw = strings.TrimSpace(payload["recipient_phone"])
+		}
+		phone := domain.CanonicalE164Phone(phoneRaw)
 		if len(strings.TrimPrefix(phone, "+")) < 10 {
 			return a.wfPageWithError(flow, page, "That doesn't look like a valid phone number. Try again (e.g. 08012345678)."), nil
 		}
 		if phone == user.WhatsAppNumber {
 			return a.wfPageWithError(flow, page, "You cannot send money to yourself."), nil
 		}
-		amount, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("amount_kobo")), a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo)
+		amountRaw := strings.TrimSpace(r.FormValue("amount_kobo"))
+		if amountRaw == "" {
+			amountRaw = wfKoboToNairaInput(wfInt(payload["amount_kobo"]))
+		}
+		amount, err := domain.ParseNGNAmount(amountRaw, a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Enter a valid amount in naira."), nil
 		}
 		raw := strings.TrimSpace(r.FormValue("bank_code"))
+		if raw == "" {
+			raw = strings.TrimSpace(payload["bank_code"])
+		}
 		resolution, rerr := service.ResolveBank(r.Context(), a.store, raw)
-		payload := clonePayload(flow.Payload)
 		payload["recipient_phone"] = phone
 		payload["amount_kobo"] = strconv.FormatInt(amount, 10)
 		if errors.Is(rerr, service.ErrBankAmbiguous) {

@@ -20,9 +20,9 @@ package app
 import (
 	"context"
 	"crypto/hmac"
-	"encoding/json"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -546,6 +546,50 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		if dest.BankCode != "058" || dest.BankName != "Guaranty Trust Bank" || dest.AccountNumber != "0123456789" {
 			t.Fatalf("payout destination should match the media-collected details, got bank=%s/%s account=%s", dest.BankCode, dest.BankName, dest.AccountNumber)
 		}
+
+		// -------------------------------------------------------------
+		// Deterministic instruction parsing: free text (typed or OCR'd from a
+		// photo) routes without the AI classifier. A merchant instruction lands
+		// on the merchant picker pre-searched by name; a full individual
+		// instruction seeds the chat FSM straight at the confirm step.
+		// -------------------------------------------------------------
+		resetChatSession(t, ctx, repository, waUser.ID)
+		waMessenger.reset()
+		waText("sm-wa-14", "send 2000 to Kora Books")
+		waSession, err = repository.LoadSession(ctx, waUser.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waSession.State != "select_merchant" {
+			t.Fatalf("a parsed merchant instruction should land on merchant selection, state is %q", waSession.State)
+		}
+		lastSent := waMessenger.snapshot()
+		if len(lastSent) == 0 || lastSent[len(lastSent)-1].kind != "interactive" || !strings.Contains(lastSent[len(lastSent)-1].body, "Kora Books") {
+			got := "none"
+			if len(lastSent) > 0 {
+				got = lastSent[len(lastSent)-1].kind + ": " + lastSent[len(lastSent)-1].body
+			}
+			t.Fatalf("the merchant picker should pre-search the parsed merchant, got %q", got)
+		}
+
+		resetChatSession(t, ctx, repository, waUser.ID)
+		waMessenger.reset()
+		ocrQueue.mu.Lock()
+		ocrQueue.items = []string{"send 5000 to 08039999900 gtbank 0123456789"}
+		ocrQueue.mu.Unlock()
+		waImagePost("sm-wa-15", "wa-img-5")
+		a.processInboundMessages(ctx)
+		waSession, err = repository.LoadSession(ctx, waUser.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waSession.State != "pay_individual_confirm" {
+			t.Fatalf("a full individual instruction should prefill straight to confirm, state is %q", waSession.State)
+		}
+		if waSession.Data["recipient_phone"] != "+2348039999900" || waSession.Data["amount_kobo"] != "500000" ||
+			waSession.Data["bank_code"] != "058" || waSession.Data["account_number"] != "0123456789" {
+			t.Fatalf("parsed individual instruction should prefill recipient, amount, bank, and account, data=%v", waSession.Data)
+		}
 	})
 
 	// -----------------------------------------------------------------
@@ -611,6 +655,21 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		if got := downloader.requests(); got[len(got)-1] != "telegram:tg-voice-1" {
 			t.Fatalf("Telegram voice download should carry the file id, got %v", got)
 		}
+
+		// Deterministic parsing still routes on Telegram, but a not-yet-L2
+		// sender meets the same individual-pay KYC gate as the typed flow —
+		// proof the fresh image instruction was understood as "pay an
+		// individual" and gated, not silently reclassified.
+		resetChatSession(t, ctx, repository, tgUser.ID)
+		tgMessenger.reset()
+		ocrQueue.mu.Lock()
+		ocrQueue.items = []string{"send 5000 to 08039999900 gtbank 0123456789"}
+		ocrQueue.mu.Unlock()
+		tgPost(`{"update_id":9104,"message":{"message_id":4,"chat":{"id":552001},"from":{"id":552001,"username":"smoke_tg"},"photo":[{"file_id":"tg-photo-2","width":100,"height":100}]}}`)
+		a.processInboundMessages(ctx)
+		if body := lastTextReply(t, tgMessenger); !strings.Contains(body, "Level 2") {
+			t.Fatalf("an individual instruction for an unapproved Telegram user should hit the L2 gate, got %q", body)
+		}
 	})
 
 	// -----------------------------------------------------------------
@@ -672,6 +731,19 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		}
 		if got := downloader.requests(); got[len(got)-1] != "instagram:https://media.example/ig-voice-1" {
 			t.Fatalf("Instagram voice download should carry the attachment URL, got %v", got)
+		}
+
+		// Deterministic parsing still routes on Instagram, but the unapproved
+		// sender meets the individual-pay L2 gate like any other channel.
+		resetChatSession(t, ctx, repository, igUser.ID)
+		igMessenger.reset()
+		ocrQueue.mu.Lock()
+		ocrQueue.items = []string{"send 5000 to 08039999900 gtbank 0123456789"}
+		ocrQueue.mu.Unlock()
+		igPost(`{"object":"instagram","entry":[{"id":"ig-business-1","messaging":[{"sender":{"id":"igsid-smoke-1"},"recipient":{"id":"ig-business-1"},"timestamp":1700000003,"message":{"mid":"sm-ig-4","attachments":[{"type":"image","payload":{"url":"https://media.example/ig-img-2"}}]}}]}]}`)
+		a.processInboundMessages(ctx)
+		if body := lastTextReply(t, igMessenger); !strings.Contains(body, "Level 2") {
+			t.Fatalf("an individual instruction for an unapproved Instagram user should hit the L2 gate, got %q", body)
 		}
 	})
 
@@ -738,7 +810,7 @@ func TestChannelWebhookSmoke(t *testing.T) {
 
 	// All media extraction must have gone through the one downloader, carrying
 	// the channel-correct identity (id for WhatsApp/Telegram, URL for IG/TikTok).
-	if got := downloader.requests(); len(got) != 13 {
-		t.Fatalf("expected 13 media downloads (2 WA walk + 6 WA individual + 2 TG + 2 IG + 1 TT), got %d: %v", len(got), got)
+	if got := downloader.requests(); len(got) != 16 {
+		t.Fatalf("expected 16 media downloads (2 WA walk + 6 WA individual + 1 WA parse + 2 TG + 1 TG parse + 2 IG + 1 IG parse + 1 TT), got %d: %v", len(got), got)
 	}
 }

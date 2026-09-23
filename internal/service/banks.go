@@ -22,8 +22,9 @@ var ErrBankAmbiguous = errors.New("bank name matches multiple banks")
 
 // BankResolution is the canonical outcome of resolving a bank input.
 type BankResolution struct {
-	Code string
-	Name string
+	Code      string
+	Name      string
+	ShortName string
 }
 
 // ResolveBank turns a user-typed bank code or name into a canonical directory
@@ -35,7 +36,7 @@ func ResolveBank(ctx context.Context, st *store.Store, input string) (BankResolu
 	if looksNumeric(input) {
 		b, err := st.BankByCode(ctx, input)
 		if err == nil {
-			return BankResolution{Code: b.Code, Name: b.Name}, nil
+			return BankResolution{Code: b.Code, Name: b.Name, ShortName: b.ShortName}, nil
 		}
 		return BankResolution{}, ErrBankNotFound
 	}
@@ -49,14 +50,14 @@ func ResolveBank(ctx context.Context, st *store.Store, input string) (BankResolu
 	}
 	for _, candidate := range candidates {
 		if compactBankNameInput(candidate.Name) == norm || compactBankNameInput(candidate.ShortName) == norm {
-			return BankResolution{Code: candidate.Code, Name: candidate.Name}, nil
+			return BankResolution{Code: candidate.Code, Name: candidate.Name, ShortName: candidate.ShortName}, nil
 		}
 	}
 	switch len(candidates) {
 	case 0:
 		return BankResolution{}, ErrBankNotFound
 	case 1:
-		return BankResolution{Code: candidates[0].Code, Name: candidates[0].Name}, nil
+		return BankResolution{Code: candidates[0].Code, Name: candidates[0].Name, ShortName: candidates[0].ShortName}, nil
 	default:
 		return BankResolution{}, ErrBankAmbiguous
 	}
