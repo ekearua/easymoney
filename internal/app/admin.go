@@ -38,11 +38,12 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.AITokensPerNGN > 0 {
 		spendKobo = weekTokens * 100 / a.cfg.AITokensPerNGN
 	}
-	a.renderAdmin(w, "metrics.html", r, "Metrics", map[string]any{
-		"Metrics": metrics, "TOTPEnabled": a.cfg.TOTPEnabled,
-		"AITokens7d": weekTokens, "AITokensPerNGN": a.cfg.AITokensPerNGN,
-		"AISpendKobo": spendKobo,
-	})
+	data := a.securitySummaryData(r.Context(), store.MFAScopeAdmin, adminIDFromContext(r.Context()))
+	data["Metrics"] = metrics
+	data["AITokens7d"] = weekTokens
+	data["AITokensPerNGN"] = a.cfg.AITokensPerNGN
+	data["AISpendKobo"] = spendKobo
+	a.renderAdmin(w, "metrics.html", r, "Metrics", data)
 }
 
 func (a *App) adminUsers(w http.ResponseWriter, r *http.Request) {

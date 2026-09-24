@@ -2,30 +2,17 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
-	"errors"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
-	qrcode "github.com/skip2/go-qrcode"
 	"golang.org/x/crypto/bcrypt"
 
 	"whatsapp-payment-demo/internal/store"
-	"whatsapp-payment-demo/internal/totp"
 )
-
-type totpPending struct {
-	Token        string
-	Scope        string
-	SubjectID    *uuid.UUID
-	SecretCipher []byte
-}
 
 type loginAttempt struct {
 	failures int
@@ -36,6 +23,11 @@ type loginLimiter struct {
 	mu       sync.Mutex
 	attempts map[string]loginAttempt
 }
+
+// mfaChallengeMaxAttempts bounds how many wrong codes or assertions one
+// second-factor step accepts before it is discarded and the subject must sign
+// in again.
+const mfaChallengeMaxAttempts = 5
 
 func (a *App) loginPage(w http.ResponseWriter, r *http.Request) {
 	a.render(w, "login.html", map[string]any{"AppName": a.cfg.AppName})
@@ -55,278 +47,141 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		a.renderStatus(w, "login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
 		return
 	}
-	if a.cfg.TOTPEnabled {
-		a.beginTOTPLogin(w, r, "admin", &admin.ID, admin.Email, "/admin/login")
+	if a.secondFactorRequired(r.Context(), store.MFAScopeAdmin, admin.ID) {
+		a.beginSecondFactor(w, r, store.MFAScopeAdmin, admin.ID, admin.Email)
 		return
 	}
 	a.completeAdminLogin(w, r, admin.ID)
 }
 
-// beginTOTPLogin starts the second factor of a login. When no TOTP secret is
-// enrolled for the scope/subject it starts enrollment instead. The redirect
-// carries an opaque single-use token; the pending row holds the enrollment
-// secret cipher so the QR page can render after a refresh.
-func (a *App) beginTOTPLogin(w http.ResponseWriter, r *http.Request, scope string, subjectID *uuid.UUID, account, fallbackPath string) {
-	pending, err := a.newTOTPPending(r.Context(), scope, subjectID)
-	if err != nil {
-		a.logger.ErrorContext(r.Context(), "start totp login", "scope", scope, "error", err)
-		http.Error(w, "security setup error", http.StatusInternalServerError)
-		return
-	}
-	next := "/admin/login/totp"
-	if scope == "merchant" {
-		next = "/merchant/login/totp"
-	}
-	q := url.Values{"token": {pending.Token}, "scope": {scope}, "account": {account}}
-	http.Redirect(w, r, next+"?"+q.Encode(), http.StatusSeeOther)
+// totpAvailable reports whether authenticator codes can be checked on this
+// deployment: the encryption key is what seals and opens a stored shared secret.
+func (a *App) totpAvailable() bool {
+	return len(a.totpKey) > 0
 }
 
-// completeAdminLogin issues the admin session cookie.
-func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID uuid.UUID) {
+// secondFactorRequired reports whether a sign-in must pass a second step. The
+// deployment flag arms the requirement for everyone; an account that has
+// enrolled a factor is challenged even when the flag is off, so switching the
+// flag cannot silently strip protection a subject already has.
+func (a *App) secondFactorRequired(ctx context.Context, scope string, subjectID uuid.UUID) bool {
+	if a.cfg.TOTPEnabled {
+		return true
+	}
+	factors, err := a.usableFactors(ctx, scope, subjectID)
+	if err != nil {
+		a.logger.ErrorContext(ctx, "load second factors", "scope", scope, "error", err)
+		return false
+	}
+	return len(factors) > 0
+}
+
+// issueSession creates the portal session for a subject, sets its cookie, and
+// returns the page the subject lands on. Callers answering in HTML redirect;
+// callers answering in JSON hand the path to the browser.
+func (a *App) issueSession(w http.ResponseWriter, r *http.Request, scope string, subjectID uuid.UUID) (string, error) {
+	ttl := a.cfg.AuthSessionTTL
+	if ttl <= 0 {
+		ttl = 12 * time.Hour
+	}
 	token, err := randomToken(32)
 	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
+		return "", err
 	}
 	csrf, err := randomToken(24)
 	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
+		return "", err
 	}
-	if err := a.store.CreateAdminSession(r.Context(), adminID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
+	expiry := time.Now().Add(ttl)
+	if scope == store.MFAScopeMerchant {
+		ownerID, err := a.store.MerchantOwnerID(r.Context(), subjectID)
+		if err != nil {
+			return "", err
+		}
+		if err := a.store.CreateMerchantSession(r.Context(), subjectID, ownerID, token, csrf, expiry); err != nil {
+			return "", err
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name: merchantCookieName, Value: token, Path: "/merchant", HttpOnly: true,
+			Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode,
+			MaxAge: int(ttl.Seconds()),
+		})
+		return "/merchant/scanner", nil
 	}
-	a.limiter.success(clientIP(r))
+	if err := a.store.CreateAdminSession(r.Context(), subjectID, token, csrf, expiry); err != nil {
+		return "", err
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name: adminCookieName, Value: token, Path: "/admin", HttpOnly: true,
-		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
+		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode,
+		MaxAge: int(ttl.Seconds()),
 	})
-	http.Redirect(w, r, "/admin/metrics", http.StatusSeeOther)
+	return "/admin/metrics", nil
 }
 
-// newTOTPPending creates a short-lived second-factor step. The secret cipher
-// is stored in the pending row only when enrolling (no secret exists yet);
-// otherwise verification loads the persisted secret by scope/subject.
-func (a *App) newTOTPPending(ctx context.Context, scope string, subjectID *uuid.UUID) (totpPending, error) {
-	existing, err := a.store.GetTOTPSecret(ctx, scope, subjectID)
+// completeAdminLogin issues the admin session cookie and lands on metrics.
+func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID uuid.UUID) {
+	landing, err := a.issueSession(w, r, store.MFAScopeAdmin, adminID)
 	if err != nil {
-		return totpPending{}, err
-	}
-	var secretCipher []byte
-	if existing == nil {
-		key, err := totp.Generate(a.cfg.AppName, "login")
-		if err != nil {
-			return totpPending{}, err
-		}
-		secretCipher, err = totp.EncryptSecret(a.totpKey, key.Secret())
-		if err != nil {
-			return totpPending{}, err
-		}
-	}
-	token, err := randomToken(32)
-	if err != nil {
-		return totpPending{}, err
-	}
-	hash := sha256.Sum256([]byte(token))
-	if err := a.store.CreateTOTPPendingLogin(ctx, hash[:], scope, subjectID, secretCipher, time.Now().Add(10*time.Minute)); err != nil {
-		return totpPending{}, err
-	}
-	return totpPending{Token: token, Scope: scope, SubjectID: subjectID, SecretCipher: secretCipher}, nil
-}
-
-// totpPage renders the second-factor page: QR + secret during enrollment,
-// code field only when a secret is already enrolled.
-func (a *App) totpPage(w http.ResponseWriter, r *http.Request) {
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
-	account := strings.TrimSpace(r.URL.Query().Get("account"))
-	loginPath := "/admin/login"
-	if token == "" {
-		http.Redirect(w, r, loginPath, http.StatusSeeOther)
-		return
-	}
-	hash := sha256.Sum256([]byte(token))
-	scope, _, secretCipher, found, err := a.store.GetTOTPPendingLogin(r.Context(), hash[:])
-	if err != nil || !found {
-		http.Redirect(w, r, loginPath, http.StatusSeeOther)
-		return
-	}
-	if scope == "merchant" {
-		loginPath = "/merchant/login"
-	}
-	data := map[string]any{
-		"AppName":    a.cfg.AppName,
-		"Title":      "Two-step login",
-		"Token":      token,
-		"Scope":      scope,
-		"Account":    account,
-		"VerifyPath": "/admin/login/totp",
-		"CancelPath": loginPath,
-	}
-	if secretCipher != nil {
-		secret, err := totp.DecryptSecret(a.totpKey, secretCipher)
-		if err != nil {
-			a.logger.ErrorContext(r.Context(), "decrypt totp secret", "error", err)
-			http.Redirect(w, r, loginPath, http.StatusSeeOther)
-			return
-		}
-		keyURI := totp.KeyURI(a.cfg.AppName, account, secret)
-		png, err := qrcode.Encode(keyURI, qrcode.Medium, 220)
-		if err != nil {
-			a.logger.ErrorContext(r.Context(), "encode totp qr", "error", err)
-			http.Redirect(w, r, loginPath, http.StatusSeeOther)
-			return
-		}
-		data["Secret"] = secret
-		data["QR"] = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
-	}
-	if scope == "merchant" {
-		data["VerifyPath"] = "/merchant/login/totp"
-		a.render(w, "merchant_totp.html", data)
-		return
-	}
-	a.render(w, "admin_totp.html", data)
-}
-
-// totpVerify consumes the pending login and issues the session after a valid code.
-func (a *App) totpVerify(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
-		return
-	}
-	token := strings.TrimSpace(r.FormValue("token"))
-	code := strings.TrimSpace(r.FormValue("code"))
-	if token == "" || code == "" {
-		http.Error(w, "missing token or code", http.StatusBadRequest)
-		return
-	}
-	hash := sha256.Sum256([]byte(token))
-	scope, subjectID, secretCipher, found, err := a.store.ConsumeTOTPPendingLogin(r.Context(), hash[:])
-	loginTemplate := "login.html"
-	if scope == "merchant" {
-		loginTemplate = "merchant_login.html"
-	}
-	if err != nil || !found {
-		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "This login step has expired. Please sign in again."}, http.StatusUnauthorized)
-		return
-	}
-	secret := ""
-	if secretCipher != nil {
-		secret, err = totp.DecryptSecret(a.totpKey, secretCipher)
-	} else {
-		var cipher []byte
-		cipher, err = a.store.GetTOTPSecret(r.Context(), scope, subjectID)
-		if err == nil && cipher == nil {
-			err = errors.New("totp secret missing")
-		}
-		if err == nil {
-			secret, err = totp.DecryptSecret(a.totpKey, cipher)
-		}
-	}
-	if err != nil {
-		a.logger.ErrorContext(r.Context(), "load totp secret", "scope", scope, "error", err)
-		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Security error. Please sign in again."}, http.StatusInternalServerError)
-		return
-	}
-	if !totp.Validate(code, secret) {
-		a.limiter.fail(clientIP(r))
-		a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid authentication code."}, http.StatusUnauthorized)
-		return
-	}
-	if secretCipher != nil {
-		if err := a.store.SetTOTPSecret(r.Context(), scope, subjectID, secretCipher); err != nil {
-			a.logger.ErrorContext(r.Context(), "persist totp secret", "scope", scope, "error", err)
-			a.renderStatus(w, loginTemplate, map[string]any{"AppName": a.cfg.AppName, "Error": "Security error. Please sign in again."}, http.StatusInternalServerError)
-			return
-		}
-		a.auditTOTPEnrollment(r, scope, subjectID)
-	}
-	if scope == "merchant" {
-		a.completeMerchantLoginWithTOTP(w, r, subjectID)
-		return
-	}
-	if subjectID == nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	a.completeAdminLogin(w, r, *subjectID)
-}
-
-// completeMerchantLoginWithTOTP issues the merchant session cookie after the
-// second factor passed for the given merchant subject.
-func (a *App) completeMerchantLoginWithTOTP(w http.ResponseWriter, r *http.Request, merchantID *uuid.UUID) {
-	if merchantID == nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	token, err := randomToken(32)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	csrf, err := randomToken(24)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	ownerID, err := a.store.MerchantOwnerID(r.Context(), *merchantID)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	if err := a.store.CreateMerchantSession(r.Context(), *merchantID, ownerID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
 	a.limiter.success(clientIP(r))
-	http.SetCookie(w, &http.Cookie{
-		Name: merchantCookieName, Value: token, Path: "/merchant", HttpOnly: true,
-		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
-	})
-	http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
+	http.Redirect(w, r, landing, http.StatusSeeOther)
 }
 
-// totpDisable removes the enrolled secret, turning TOTP off for the subject.
-func (a *App) totpDisable(w http.ResponseWriter, r *http.Request, scope string, subjectID *uuid.UUID, redirectTo string) {
-	if scope == "admin" && r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
-		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+// completeMerchantLogin issues the merchant session cookie and lands on the
+// scanner.
+func (a *App) completeMerchantLogin(w http.ResponseWriter, r *http.Request, merchantID uuid.UUID) {
+	landing, err := a.issueSession(w, r, store.MFAScopeMerchant, merchantID)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
 		return
 	}
-	if scope == "merchant" && r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
-		http.Error(w, "invalid CSRF token", http.StatusForbidden)
-		return
-	}
-	if err := a.store.DeleteTOTPSecret(r.Context(), scope, subjectID); err != nil {
-		http.Error(w, "security error", http.StatusInternalServerError)
-		return
-	}
-	a.audit(r, scope+".totp_disabled", scope, subjectID.String(), nil)
-	http.Redirect(w, r, redirectTo, http.StatusSeeOther)
+	a.limiter.success(clientIP(r))
+	http.Redirect(w, r, landing, http.StatusSeeOther)
 }
 
-// auditTOTPEnrollment records a first-time TOTP enrollment. It runs during the
-// login flow, before any session exists, so the subject is taken from the
-// pending login rather than the request context.
-func (a *App) auditTOTPEnrollment(r *http.Request, scope string, subjectID *uuid.UUID) {
-	if subjectID == nil {
-		return
-	}
+// auditMFAEvent records a second-factor lifecycle event. Enrollment runs during
+// sign-in, before any session exists, so the subject comes from the step rather
+// than from the request context.
+func (a *App) auditMFAEvent(r *http.Request, scope string, subjectID uuid.UUID, action string, factorID int64) {
 	entry := store.AuditLog{
 		ActorType:  scope,
-		ActorID:    uuid.NullUUID{UUID: *subjectID, Valid: true},
-		Action:     scope + ".totp_enrolled",
+		ActorID:    uuid.NullUUID{UUID: subjectID, Valid: true},
+		Action:     scope + "." + action,
 		ResourceID: sql.NullString{String: subjectID.String(), Valid: true},
 		IP:         sql.NullString{String: clientIP(r), Valid: true},
-		Details:    map[string]any{},
+		Details:    map[string]any{"factor_id": factorID},
 	}
-	if scope == "admin" {
-		if admin, err := a.store.AdminUserByID(r.Context(), *subjectID); err == nil && admin != nil {
-			entry.ActorEmail = sql.NullString{String: admin.Email, Valid: true}
-		}
+	if email := a.subjectEmail(r.Context(), scope, subjectID); email != "" {
+		entry.ActorEmail = sql.NullString{String: email, Valid: true}
 	}
 	if _, err := a.store.AppendAuditLog(r.Context(), entry); err != nil {
 		a.logger.ErrorContext(r.Context(), "audit log write failed", "action", entry.Action, "error", err)
 	}
+}
+
+// subjectEmail reads the address a portal account signs in with, which is also
+// the destination of its emailed codes. It returns "" when the account has no
+// address or cannot be read.
+func (a *App) subjectEmail(ctx context.Context, scope string, subjectID uuid.UUID) string {
+	if scope == store.MFAScopeMerchant {
+		ownerID, err := a.store.MerchantOwnerID(ctx, subjectID)
+		if err != nil {
+			return ""
+		}
+		owner, err := a.store.UserByID(ctx, ownerID)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(owner.Email)
+	}
+	admin, err := a.store.AdminUserByID(ctx, subjectID)
+	if err != nil || admin == nil {
+		return ""
+	}
+	return strings.TrimSpace(admin.Email)
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
@@ -359,35 +214,11 @@ func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
 		a.renderStatus(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
 		return
 	}
-	if a.cfg.TOTPEnabled {
-		a.beginTOTPLogin(w, r, "merchant", &merchant.ID, email, "/merchant/login")
+	if a.secondFactorRequired(r.Context(), store.MFAScopeMerchant, merchant.ID) {
+		a.beginSecondFactor(w, r, store.MFAScopeMerchant, merchant.ID, email)
 		return
 	}
-	token, err := randomToken(32)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	csrf, err := randomToken(24)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	ownerID, err := a.store.MerchantOwnerID(r.Context(), merchant.ID)
-	if err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	if err := a.store.CreateMerchantSession(r.Context(), merchant.ID, ownerID, token, csrf, time.Now().Add(a.cfg.AuthSessionTTL)); err != nil {
-		http.Error(w, "session error", http.StatusInternalServerError)
-		return
-	}
-	a.limiter.success(clientIP(r))
-	http.SetCookie(w, &http.Cookie{
-		Name: merchantCookieName, Value: token, Path: "/merchant", HttpOnly: true,
-		Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode, MaxAge: int((12 * time.Hour).Seconds()),
-	})
-	http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
+	a.completeMerchantLogin(w, r, merchant.ID)
 }
 
 func (a *App) merchantLogout(w http.ResponseWriter, r *http.Request) {

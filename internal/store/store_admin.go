@@ -394,20 +394,51 @@ func (s *Store) CreateTOTPPendingLogin(ctx context.Context, tokenHash []byte, sc
 	return err
 }
 
-// GetTOTPPendingLogin reads a pending login without consuming it, so a page
-// refresh can still render the QR code. The caller must still consume the
-// pending login before issuing a session.
-func (s *Store) GetTOTPPendingLogin(ctx context.Context, tokenHash []byte) (scope string, subjectID *uuid.UUID, secretCipher []byte, found bool, err error) {
+// PeekTOTPPendingLogin reads a pending login without consuming it, returning
+// the current attempt count so a mistyped code can be retried against a step
+// that is still live.
+func (s *Store) PeekTOTPPendingLogin(ctx context.Context, tokenHash []byte) (scope string, subjectID *uuid.UUID, secretCipher []byte, attempts int, found bool, err error) {
 	err = s.pool.QueryRow(ctx, `
-		SELECT scope, subject_id, secret_cipher FROM totp_pending_logins
-		WHERE token_hash=$1 AND expires_at > now()`, tokenHash).Scan(&scope, &subjectID, &secretCipher)
+		SELECT scope, subject_id, secret_cipher, attempts FROM totp_pending_logins
+		WHERE token_hash=$1 AND expires_at > now()`, tokenHash).Scan(&scope, &subjectID, &secretCipher, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, nil, false, nil
+		return "", nil, nil, 0, false, nil
 	}
 	if err != nil {
-		return "", nil, nil, false, err
+		return "", nil, nil, 0, false, err
 	}
-	return scope, subjectID, secretCipher, true, nil
+	return scope, subjectID, secretCipher, attempts, true, nil
+}
+
+// FailTOTPPendingLogin records a wrong code against a pending login and
+// deletes the step once the attempt budget is spent, returning the attempts
+// left. A wrong code leaves the row in place so the customer can retype it
+// instead of signing in again.
+func (s *Store) FailTOTPPendingLogin(ctx context.Context, tokenHash []byte, maxAttempts int) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var attempts int
+	err = tx.QueryRow(ctx, `
+		UPDATE totp_pending_logins SET attempts=attempts+1
+		WHERE token_hash=$1 AND expires_at > now()
+		RETURNING attempts`, tokenHash).Scan(&attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, tx.Commit(ctx)
+	}
+	if err != nil {
+		return 0, err
+	}
+	remaining := maxAttempts - attempts
+	if remaining <= 0 {
+		if _, err := tx.Exec(ctx, `DELETE FROM totp_pending_logins WHERE token_hash=$1`, tokenHash); err != nil {
+			return 0, err
+		}
+		remaining = 0
+	}
+	return remaining, tx.Commit(ctx)
 }
 
 // ConsumeTOTPPendingLogin reads and deletes a pending login in one step.

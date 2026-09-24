@@ -203,7 +203,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | SIEM event log | Unified view of domain events + privileged actions, CSV/JSON export | Admins/compliance | Implemented | `app/siem.go` |
 | Chat guard | Blocks card/PIN/CVV/OTP in chat; records redacted copies | Compliance | Implemented | `app/chatguard.go`; migration 032 |
 | RBAC admin roles | admin/compliance/support/readonly on every admin route | Admins | Implemented | migration 022; `app/auth.go` |
-| TOTP two-factor auth | Admin and merchant login | Admins, merchants | Implemented | migration 021; `app/auth.go` |
+| Two-factor auth (TOTP, emailed codes, passkeys) | Admin and merchant sign-in | Admins, merchants | Implemented | migrations 021/070/071; `app/mfa.go`, `app/passkeys.go`, `app/security.go` |
 | Encryption at rest | Chat payloads + CSRF tokens sealed AES-256-GCM | System | Implemented | migration 024 |
 | Rate limiting | Per-IP fixed windows; per-API-key | System | Implemented | `app.go` (middleware); `.env.example:111-118` |
 
@@ -276,7 +276,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 ### 4.2 Authentication
 
 - **Customers:** Authenticated implicitly by channel identity (WhatsApp number / Telegram account) confirmed at onboarding. Evidence: README:399-400.
-- **Admins and merchants:** Two-step sign-in when TOTP is enabled — password first, then a 6-digit authenticator code. The first successful login after enabling enrolls the account and shows a QR code. The shared secret is stored AES-256-GCM encrypted. Evidence: README:109-118; migration 021.
+- **Admins and merchants:** Two-step sign-in with three factor kinds — authenticator app (TOTP), emailed one-time codes, and WebAuthn passkeys — managed from the per-portal security pages. A QR renders as a scannable PNG data URI; secrets are AES-256-GCM encrypted at rest; a wrong code retries within a per-step attempt budget. Evidence: README:109-131; migrations 021/070/071.
 - **Merchant set-password flow:** A merchant can set a password via `/merchant/set-password`. Evidence: `app/merchant.go`.
 - **Password reset:** Merchant password reset tokens are supported. Evidence: migration 017.
 - **Implementation status:** Implemented. TOTP defaults on in production and production refuses to start with TOTP enabled but no valid key. Evidence: `.env.example:32-33`; README:118.

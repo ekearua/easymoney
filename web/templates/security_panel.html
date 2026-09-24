@@ -1,0 +1,88 @@
+{{define "security_panel"}}
+  <h1>Sign-in security</h1>
+  <p class="muted">One password is not enough on its own. Add the methods you want offered as the second step of signing in.</p>
+  {{if .Notice}}<div class="alert success">{{.Notice}}</div>{{end}}
+  {{if .Enforced}}
+    <p class="muted">Two-step sign-in is required on this deployment, so every account passes a second step after its password.</p>
+  {{else if .Enrolled}}
+    <p class="muted">Two-step sign-in is on for your account.</p>
+  {{else}}
+    <p class="muted">Two-step sign-in is not set up for your account yet.</p>
+  {{end}}
+
+  <section class="panel">
+    <h2>Your sign-in methods</h2>
+    {{if .Factors}}
+    <div class="table-wrap">
+    <table><thead><tr><th>Method</th><th>Name</th><th>Added</th><th>Last used</th><th></th></tr></thead><tbody>
+      {{range .Factors}}
+      <tr>
+        <td>{{.KindLabel}}</td>
+        <td>{{.Label}}{{if not .Confirmed}} <span class="muted">&mdash; not confirmed yet</span>{{end}}</td>
+        <td>{{date .Created}}</td>
+        <td>{{if .LastUsedAt}}{{date .LastUsedAt}}{{else}}never{{end}}</td>
+        <td>
+          <form method="post" action="{{$.Paths.Page}}/factors/{{.ID}}/rename">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="text" name="label" value="{{.Label}}" maxlength="60" aria-label="Name this method" required>
+            <button type="submit">Rename</button>
+          </form>
+          <form method="post" action="{{$.Paths.Page}}/factors/{{.ID}}/revoke">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody></table>
+    </div>
+    {{else}}
+    <p class="muted">No sign-in method is enrolled yet.</p>
+    {{end}}
+  </section>
+
+  <section class="panel">
+    <h2>Add a method</h2>
+    {{if .TotpAvailable}}
+    <form method="post" action="{{.Paths.TOTPStart}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <p class="muted">An authenticator app (Google Authenticator, Authy, 1Password) works offline.</p>
+      <button type="submit">Set up authenticator app</button>
+    </form>
+    {{else}}
+    <p class="muted">Authenticator apps are not configured on this deployment.</p>
+    {{end}}
+
+    {{if .EmailAvailable}}
+    <form method="post" action="{{.Paths.EmailStart}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <p class="muted">We email a one-time code to {{.EmailTo}} when you sign in.</p>
+      <button type="submit">Use emailed codes</button>
+    </form>
+    {{else}}
+    <p class="muted">Emailing codes needs mail delivery, which is not configured.</p>
+    {{end}}
+
+    {{if .PasskeysAvailable}}
+    <div id="passkey-enroll" data-begin="{{.Paths.PasskeyBegin}}" data-finish="{{.Paths.PasskeyFinish}}" data-csrf="{{.CSRF}}">
+      <p class="muted">A passkey uses the fingerprint, face unlock, or security key on this device.</p>
+      <button type="button" id="passkey-enroll-button">Add a passkey</button>
+      <p class="muted" id="passkey-enroll-status" role="status"></p>
+    </div>
+    <script src="/static/passkey.js" defer></script>
+    {{else}}
+    <p class="muted">Passkeys need a deployment base URL that the browser can reach, so they are off here.</p>
+    {{end}}
+  </section>
+
+  {{if .Factors}}
+  <section class="panel">
+    <h2>Lost a device?</h2>
+    <p class="muted">Remove every method and enroll again from a device you still hold.</p>
+    <form method="post" action="{{.Paths.RevokeAll}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit">Remove all methods</button>
+    </form>
+  </section>
+  {{end}}
+{{end}}

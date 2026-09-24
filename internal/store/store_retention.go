@@ -199,6 +199,9 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 	if _, err := s.purgeBatch(ctx, "totp_pending_logins", "token_hash", `expires_at < now()`, batch); err != nil {
 		return report, err
 	}
+	if _, err := s.purgeBatch(ctx, "mfa_challenges", "token_hash", `expires_at < now()`, batch); err != nil {
+		return report, err
+	}
 	if _, err := s.purgeBatch(ctx, "merchant_password_reset_tokens", "token_hash", `expires_at < now()`, batch); err != nil {
 		return report, err
 	}

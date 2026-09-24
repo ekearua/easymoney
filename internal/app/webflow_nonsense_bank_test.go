@@ -58,8 +58,7 @@ func TestPayIndividualNonsenseBankReject(t *testing.T) {
 	messenger := &simMessenger{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	payments := service.NewPaymentService(cfg, repository, map[string]ports.PaymentGateway{
-		service.ProviderBankTransfer: &simGateway{store: repository},
-	}, service.NewProviderRouter(nil, logger), logger)
+		service.ProviderBankTransfer: &simGateway{store: repository}}, service.NewProviderRouter(nil, logger), logger)
 	svc := service.NewConversationService(cfg, repository, payments, nil,
 		map[string]ports.Messenger{service.ChannelWhatsApp: messenger},
 		nil, stubIdentityVerifier{}, stubSanctionsScreener{})

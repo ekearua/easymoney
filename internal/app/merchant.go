@@ -331,10 +331,14 @@ func (a *App) merchantSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", map[string]any{
-		"Merchant": merchant, "Services": services, "QRValidityHours": qrTTL / 3600, "TOTPEnabled": a.cfg.TOTPEnabled,
-		"APIKeys": apiKeys, "WebhookURL": webhookCfg.URL, "WebhookSecretSet": webhookCfg.Secret != "",
-	})
+	data := a.securitySummaryData(r.Context(), store.MFAScopeMerchant, merchantID)
+	data["Merchant"] = merchant
+	data["Services"] = services
+	data["QRValidityHours"] = qrTTL / 3600
+	data["APIKeys"] = apiKeys
+	data["WebhookURL"] = webhookCfg.URL
+	data["WebhookSecretSet"] = webhookCfg.Secret != ""
+	a.renderMerchant(w, "merchant_settings.html", r, "Payment settings", data)
 }
 
 func (a *App) merchantUpdateSettings(w http.ResponseWriter, r *http.Request) {

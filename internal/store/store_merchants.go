@@ -496,7 +496,6 @@ func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) 
 	return collectMerchants(rows)
 }
 
-
 func collectMerchants(rows pgx.Rows) ([]Merchant, error) {
 	var merchants []Merchant
 	for rows.Next() {
@@ -522,7 +521,6 @@ func scanMerchant(rows pgx.Rows) (Merchant, error) {
 	)
 	return merchant, err
 }
-
 
 // MerchantByID returns a single merchant by its ID.
 func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error) {
@@ -600,6 +598,33 @@ func (s *Store) MerchantOwnerID(ctx context.Context, merchantID uuid.UUID) (uuid
 		WHERE merchant_id=$1
 		ORDER BY created_at ASC LIMIT 1`, merchantID).Scan(&userID)
 	return userID, err
+}
+
+// MerchantsIDsWithOwnerEmail lists the active merchants whose owner account
+// carries an email address. Several seeded merchants can share one owner, and
+// sign-in resolves that email to the oldest match, so callers that set up a
+// shared owner (tests, operator resets) must touch every row the lookup can
+// land on.
+func (s *Store) MerchantsIDsWithOwnerEmail(ctx context.Context, email string) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT m.id FROM merchants m
+		JOIN merchant_owners mo ON mo.merchant_id=m.id
+		JOIN users u ON u.id=mo.user_id
+		WHERE LOWER(u.email)=LOWER($1) AND m.active=true
+		ORDER BY mo.created_at ASC`, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // CreateMerchantSession stores a hashed session token and returns the raw token.

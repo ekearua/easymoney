@@ -1,0 +1,87 @@
+{{define "mfa_step.html"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.Title}} · {{.AppName}}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <p class="eyebrow">{{.Eyebrow}}</p>
+    <h1>{{.AppName}}</h1>
+    {{if .Notice}}<div class="alert success">{{.Notice}}</div>{{end}}
+    {{if .Error}}<div class="alert">{{.Error}}</div>{{end}}
+
+    {{if .Enrolling}}
+      <p class="muted">Scan this QR code with your authenticator app, then enter the {{.CodeLength}}-digit code it shows to finish setting up.</p>
+      <p class="center"><img src="{{.QR}}" width="220" height="220" alt="Authenticator QR code"></p>
+      {{if .Secret}}
+      <p class="muted center font-mono break-all">{{.Secret}}</p>
+      <p class="muted">Can't scan? Enter the secret above in your authenticator app by hand.</p>
+      {{end}}
+    {{else if .LockedOut}}
+      <p class="muted">No sign-in method is usable for this account right now. Ask an operator to reset it.</p>
+    {{else if .ChooseMethod}}
+      <p class="muted">Choose how to confirm it's you.</p>
+    {{end}}
+
+    {{if .ChooseMethod}}
+      <form method="post" action="{{.StepPath}}">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <input type="hidden" name="action" value="method">
+        {{range .Methods}}<button type="submit" name="method" value="{{.Kind}}">Use {{.Label}}</button>{{end}}
+      </form>
+    {{else if .LockedOut}}
+    {{else if eq .Method "webauthn"}}
+      <p class="muted">Confirm with the passkey saved on this device.</p>
+      <form method="post" action="{{.StepPath}}" id="passkey-form">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <button type="submit" id="passkey-signin"
+                data-endpoint="{{.StepPath}}/passkey"
+                data-token="{{.Token}}"
+                data-account="{{.Account}}">Use my passkey</button>
+      </form>
+      <p class="muted" id="passkey-status" role="status"></p>
+      <script src="/static/passkey.js" defer></script>
+    {{else if eq .Method "email"}}
+      <p class="muted">Enter the {{.CodeLength}}-digit code we sent to {{if .EmailTo}}{{.EmailTo}}{{else}}your email address{{end}}.</p>
+      <form method="post" action="{{.StepPath}}">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <label>Emailed code<input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="{{.CodeLength}}" autocomplete="one-time-code" autofocus required></label>
+        <button type="submit">Continue</button>
+      </form>
+      <form method="post" action="{{.StepPath}}">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <input type="hidden" name="action" value="resend">
+        <button type="submit">Send a new code</button>
+      </form>
+    {{else}}
+      <p class="muted">Enter the {{.CodeLength}}-digit code from your authenticator app.</p>
+      <form method="post" action="{{.StepPath}}">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <label>Authentication code<input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="{{.CodeLength}}" autocomplete="one-time-code" autofocus required></label>
+        <button type="submit">{{if .Enrolling}}Verify and set up{{else}}Verify{{end}}</button>
+      </form>
+    {{end}}
+
+    {{if and .Switchable .MultiMethod}}
+      <form method="post" action="{{.StepPath}}">
+        <input type="hidden" name="token" value="{{.Token}}">
+        <input type="hidden" name="account" value="{{.Account}}">
+        <input type="hidden" name="action" value="method">
+        <input type="hidden" name="method" value="">
+        <button type="submit">Use another sign-in method</button>
+      </form>
+    {{end}}
+    <p class="muted"><a href="{{.CancelPath}}">{{.CancelLabel}}</a></p>
+  </main>
+</body>
+</html>
+{{end}}

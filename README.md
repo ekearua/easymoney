@@ -111,7 +111,13 @@ For a local or investor-demo rehearsal before SMTP is ready, set `EMAIL_DEMO_COD
 
 ### Two-factor authentication (admin & merchant login)
 
-Admin and merchant sign-in is two-step when TOTP is enabled: password first, then a 6-digit authenticator code. The first successful login after enabling enrolls the account and shows a QR code; the shared secret is stored AES-256-GCM encrypted (never in plaintext) and can be reset from the admin metrics page or merchant settings page.
+Admin and merchant sign-in supports three second factors, managed per account from `/admin/security` and `/merchant/security`:
+
+- **Authenticator app (TOTP)** — password first, then a 6-digit code. Enrollment shows a QR code and a manual secret; the shared secret is stored AES-256-GCM encrypted (never in plaintext).
+- **Emailed one-time codes** — a 6-digit code is sent to the account's address at each sign-in. Needs SMTP configured.
+- **Passkeys (WebAuthn)** — fingerprint, face unlock, or a security key on the device. Enabled when `BASE_URL` is a browsable origin; several passkeys can be registered per account.
+
+A sign-in that has enrolled a factor always steps up after the password, even when `TOTP_ENABLED=false` (the flag only makes the second step mandatory for accounts that have not enrolled anything — such accounts enroll an authenticator on first sign-in). A mistyped code keeps the step alive for a bounded number of retries instead of forcing a fresh sign-in. An operator can reset a merchant's factors from `/admin/merchants` when a device is lost.
 
 ```env
 TOTP_ENABLED=true
@@ -124,7 +130,7 @@ TOTP_ENCRYPTION_KEY=replace-with-64-hex-chars-32-bytes
 
 The admin console uses named accounts with roles instead of a single fixed admin. `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` bootstrap the primary `admin` account on `migrate` (and are re-synced at server start), and additional operators are managed at `/admin/admins`:
 
-- **admin** — full console control (payment terms, thrift payouts, scanning config, webhooks, TOTP reset, operator management)
+- **admin** — full console control (payment terms, thrift payouts, scanning config, webhooks, MFA reset, operator management)
 - **compliance** — read dashboards + approve merchant registrations
 - **support** — read dashboards + reset merchant passwords
 - **readonly** — view dashboards only

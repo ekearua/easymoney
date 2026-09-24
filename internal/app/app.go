@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
 
 	kafkabus "whatsapp-payment-demo/internal/bus/kafka"
@@ -80,6 +82,13 @@ type App struct {
 	refunds               *service.RefundService
 	disputes              *service.DisputeService
 	workerWg              sync.WaitGroup
+
+	// Transactional email, used for merchant confirmation and for emailed
+	// second-factor codes.
+	email ports.EmailSender
+
+	// Passkeys (nil when BASE_URL cannot give the ceremonies an origin).
+	webAuthn *webauthn.WebAuthn
 
 	// AI providers (nil when AI_ENABLED=false).
 	imageReader  ports.ImageReader
@@ -266,6 +275,25 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("parse templates: %w", err)
 	}
+	// A passkey ceremony is bound to this origin, so the relying party comes
+	// from BASE_URL and stays off when BASE_URL is not an origin.
+	var webAuthn *webauthn.WebAuthn
+	if strings.TrimSpace(cfg.BaseURL) != "" {
+		if origin, err := url.Parse(cfg.BaseURL); err == nil && origin.Host != "" {
+			party, err := webauthn.New(&webauthn.Config{
+				RPDisplayName: cfg.AppName,
+				RPID:          origin.Hostname(),
+				RPOrigins:     []string{strings.TrimSuffix(cfg.BaseURL, "/")},
+			})
+			if err != nil {
+				logger.Warn("passkeys disabled: unusable WebAuthn relying party", "error", err)
+			} else {
+				webAuthn = party
+			}
+		} else {
+			logger.Warn("passkeys disabled: BASE_URL is not an absolute origin", "base_url", cfg.BaseURL)
+		}
+	}
 	var totpKey []byte
 	if cfg.TOTPEnabled {
 		totpKey, err = hex.DecodeString(cfg.TOTPEncryptionKey)
@@ -304,7 +332,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	convo.SetScreeningProviderName(screeningProviderName)
 	convo.SetAIRateLimiter(rateLimiter, cfg.AIMaxRPM)
 	// Settlement payouts and refunds ride the Interswitch NIP single transfer /
-// refund API (the only supported real rails).
+	// refund API (the only supported real rails).
 	payoutProvider := ports.PayoutProvider(interswitchClient)
 	refundProvider := ports.RefundProvider(interswitchClient)
 	app := &App{
@@ -324,6 +352,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		imageReader:      imageReader,
 		speechToText:     speechToText,
 		chatAI:           chatAI,
+		email:            emailSender,
+		webAuthn:         webAuthn,
 	}
 	convo.SetMediaDownloader(app)
 	return app, nil
@@ -531,8 +561,9 @@ func (a *App) routes() http.Handler {
 
 	router.Get("/admin/login", a.loginPage)
 	router.With(a.limitLogin).Post("/admin/login", a.login)
-	router.Get("/admin/login/totp", a.totpPage)
-	router.With(a.limitLogin).Post("/admin/login/totp", a.totpVerify)
+	router.Get("/admin/login/2fa", a.secondFactorPage)
+	router.With(a.limitLogin).Post("/admin/login/2fa", a.secondFactorVerify)
+	router.With(a.limitLogin).Post("/admin/login/2fa/passkey", a.secondFactorPasskey)
 	router.Group(func(admin chi.Router) {
 		admin.Use(a.requireAdmin)
 		admin.Use(a.rateLimit("admin", 120))
@@ -550,6 +581,7 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/accepted-numbers", a.adminAcceptedNumbers)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/mfa-reset", a.adminResetMerchantFactors)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/accepted-numbers", a.adminUpdateAcceptedNumbers)
@@ -560,10 +592,16 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/webhooks", a.adminWebhooks)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/dead-letter", a.adminDeadLetter)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/dead-letter/{id}/replay", a.adminDeadLetterReplay)
-		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/totp/disable", func(w http.ResponseWriter, r *http.Request) {
-			adminID := adminIDFromContext(r.Context())
-			a.totpDisable(w, r, "admin", &adminID, "/admin/metrics")
-		})
+		admin.Get("/admin/security", a.securityPage(store.MFAScopeAdmin))
+		admin.Post("/admin/security/totp", a.securityStartTOTP(store.MFAScopeAdmin))
+		admin.Post("/admin/security/totp/verify", a.securityVerifyFactor(store.MFAScopeAdmin))
+		admin.Post("/admin/security/email", a.securityStartEmail(store.MFAScopeAdmin))
+		admin.Post("/admin/security/email/verify", a.securityVerifyFactor(store.MFAScopeAdmin))
+		admin.Post("/admin/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeAdmin))
+		admin.Post("/admin/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeAdmin))
+		admin.Post("/admin/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeAdmin))
+		admin.Post("/admin/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeAdmin))
+		admin.Post("/admin/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeAdmin))
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/audit", a.adminAuditLog)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports", a.adminReports)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports/{kind}/download", a.adminReportDownload)
@@ -613,8 +651,9 @@ func (a *App) routes() http.Handler {
 	})
 	router.Get("/merchant/login", a.merchantLogin)
 	router.With(a.limitLogin).Post("/merchant/login", a.merchantLoginPost)
-	router.Get("/merchant/login/totp", a.totpPage)
-	router.With(a.limitLogin).Post("/merchant/login/totp", a.totpVerify)
+	router.Get("/merchant/login/2fa", a.secondFactorPage)
+	router.With(a.limitLogin).Post("/merchant/login/2fa", a.secondFactorVerify)
+	router.With(a.limitLogin).Post("/merchant/login/2fa/passkey", a.secondFactorPasskey)
 	router.Get("/merchant/set-password", a.merchantSetPasswordPage)
 	router.Post("/merchant/set-password", a.merchantSetPasswordPost)
 	router.Group(func(m chi.Router) {
@@ -649,10 +688,16 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/events/{id}/toggle", a.merchantEventToggle)
 		m.Get("/merchant/events/{id}/tickets", a.merchantEventTickets)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
-		m.Post("/merchant/totp/disable", func(w http.ResponseWriter, r *http.Request) {
-			merchantID := merchantIDFromContext(r.Context())
-			a.totpDisable(w, r, "merchant", &merchantID, "/merchant/settings")
-		})
+		m.Get("/merchant/security", a.securityPage(store.MFAScopeMerchant))
+		m.Post("/merchant/security/totp", a.securityStartTOTP(store.MFAScopeMerchant))
+		m.Post("/merchant/security/totp/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/email", a.securityStartEmail(store.MFAScopeMerchant))
+		m.Post("/merchant/security/email/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeMerchant))
+		m.Post("/merchant/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeMerchant))
+		m.Post("/merchant/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeMerchant))
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
 	return router

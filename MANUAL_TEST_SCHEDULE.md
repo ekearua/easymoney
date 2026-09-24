@@ -1535,8 +1535,8 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-10-001 | Merchant Reg | Individual | WhatsApp | Register merchant — email OTP + business details | P0 |
 | TC-10-002 | Merchant Reg | Admin | Console | Admin approves merchant registration | P0 |
 | TC-10-003 | Auth | Merchant | Console | Merchant set password flow | P1 |
-| TC-10-004 | Auth | Merchant | Console | Merchant TOTP enrollment (QR display) | P0 |
-| TC-10-005 | Auth | Merchant | Console | Merchant login with TOTP | P0 |
+| TC-10-004 | Auth | Merchant | Console | Merchant two-factor enrollment (QR display) | P0 |
+| TC-10-005 | Auth | Merchant | Console | Merchant login with authenticator code | P0 |
 | TC-10-006 | Settings | Merchant | Console | Merchant profile update | P2 |
 | TC-10-007 | Settings | Merchant | Console | Settings update | P1 |
 | TC-10-008 | API Keys | Merchant | Console | Create API key — one-time plaintext view | P0 |
@@ -1595,18 +1595,19 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-10-004 - Merchant TOTP enrollment (QR display)
+#### TC-10-004 - Merchant two-factor enrollment (QR display)
 
 - **Module:** Auth
 - **Actor:** Merchant   **Channel:** Console   **Priority:** P0
-- **Preconditions:** TOTP_ENABLED=true; merchant account with password.
+- **Preconditions:** Merchant account with password. With TOTP_ENABLED=true the second step is required; an account can also enroll a method at any time from `/merchant/security`.
 
 **Steps**
 
-1. Log in with password.
-2. Observe QR/enrollment on first successful login.
+1. Log in with password; the second-factor step opens.
+2. On first enrollment a QR code and manual secret are shown once — the QR must render as a scannable image.
+3. Scan with an authenticator app and enter the 6-digit code.
 
-**Expected Result:** A QR code / secret is shown once for the authenticator app; subsequent logins require the 6-digit code.
+**Expected Result:** The QR renders (a broken image or `#ZgotmplZ` placeholder is a fail). A mistyped code keeps the step alive with attempts remaining instead of forcing a fresh sign-in. Subsequent logins require the code.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2435,7 +2436,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 | ID | Module | Actor | Channel | Title | Priority |
 |---|---|---|---|---|---|
-| TC-14-001 | Auth | Admin | Console | Admin login with TOTP | P0 |
+| TC-14-001 | Auth | Admin | Console | Admin two-step login (TOTP) | P0 |
 | TC-14-002 | RBAC | Admin | Console | Readonly role — view only, no actions | P0 |
 | TC-14-003 | RBAC | Admin | Console | Compliance role — dashboards + merchant approval | P0 |
 | TC-14-004 | RBAC | Admin | Console | Support role — password reset only | P1 |
@@ -2454,7 +2455,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-14-017 | Data | Admin | Console | Data orders list | P2 |
 | TC-14-018 | Messaging | Admin | Console | Messaging cost meter | P2 |
 | TC-14-019 | Operators | Admin | Console | Operator management (create/role/enable/password) | P1 |
-| TC-14-020 | Auth | Admin | Console | Admin TOTP disable | P2 |
+| TC-14-020 | Auth | Admin | Console | Admin factor revoke + merchant MFA reset | P2 |
 
 <details>
 <summary>Step-by-step details for Phase 14</summary>
@@ -2738,18 +2739,19 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-14-020 - Admin TOTP disable
+#### TC-14-020 - Admin factor revoke + merchant MFA reset
 
 - **Module:** Auth
 - **Actor:** Admin   **Channel:** Console   **Priority:** P2
-- **Preconditions:** Admin with TOTP enabled.
+- **Preconditions:** Admin with an enrolled factor; a merchant with an enrolled factor.
 
 **Steps**
 
-1. POST /admin/totp/disable.
-2. Confirm the next login skips TOTP.
+1. Open /admin/security, remove one method, and confirm the next sign-in skips it (or steps up with another method).
+2. From /admin/merchants, run the merchant MFA reset for a merchant with a lost device.
+3. Sign in as that merchant and confirm enrollment starts over.
 
-**Expected Result:** TOTP disabled for the account and recorded in the audit log.
+**Expected Result:** Removal and reset are recorded in the audit log; the reset merchant enrolls again at next sign-in.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

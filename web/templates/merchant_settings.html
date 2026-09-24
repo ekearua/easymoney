@@ -51,9 +51,10 @@
 
   <section class="panel">
     <h2>Two-factor authentication</h2>
-    {{if .TOTPEnabled}}<p>Two-factor authentication is <strong>on</strong> for your account. Sign out and sign back in to reset it.</p>
-      <form method="post" action="/merchant/totp/disable"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button type="submit">Turn off two-factor authentication</button></form>
-    {{else}}<p>Two-factor authentication is off. Sign out and sign back in to enroll.</p>{{end}}
+    {{if .MFAEnforced}}<p>Two-step sign-in is <strong>required</strong> on this deployment, so every account passes a second step after its password.</p>{{end}}
+    {{if .MFAEnrolled}}<p>Enrolled methods for your account: {{range $i, $method := .MFAMethods}}{{if $i}}, {{end}}{{$method.KindLabel}}{{end}}.</p>
+    {{else}}<p>No second factor is enrolled for your account yet.</p>{{end}}
+    <p><a href="{{.MFAPath}}">Manage sign-in security</a></p>
   </section>
 
   <section class="panel">
