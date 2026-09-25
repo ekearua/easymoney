@@ -35,17 +35,17 @@ func TestMenuProfileRowShownOnlyWhenProfileIncomplete(t *testing.T) {
 	if !containsRowID(t, rows, "menu_profile") {
 		t.Fatalf("expected 'Complete profile' row when name/email missing, got %#v", rows)
 	}
-	if containsRowID(t, rows, "menu_my_limits") {
-		t.Fatalf("'My limits' must yield its slot to 'Complete profile' when the profile is incomplete")
+	if containsRowID(t, rows, "menu_my_details") {
+		t.Fatalf("'My details' must yield its slot to 'Complete profile' when the profile is incomplete")
 	}
 
 	complete := store.User{DisplayName: "Ada", Email: "ada@example.com"}
 	rows = menuRowsFor(complete)
-	if !containsRowID(t, rows, "menu_my_limits") {
-		t.Fatalf("expected 'My limits' row when the profile is complete, got %#v", rows)
+	if !containsRowID(t, rows, "menu_my_details") {
+		t.Fatalf("expected 'My details' row when the profile is complete, got %#v", rows)
 	}
 	if containsRowID(t, rows, "menu_profile") {
-		t.Fatalf("'Complete profile' must not displace 'My limits' for a complete profile")
+		t.Fatalf("'Complete profile' must not displace 'My details' for a complete profile")
 	}
 }
 
@@ -61,7 +61,7 @@ func containsRowID(t *testing.T, rows []ports.InteractiveRow, id string) bool {
 
 func TestNestedMenuRowsExposeExpectedActions(t *testing.T) {
 	t.Parallel()
-	assertRowsContain(t, mainMenuRows(), "menu_merchant_services", "menu_thrift_services", "menu_pay_individual", "menu_fund_wallet", "menu_history", "menu_help")
+	assertRowsContain(t, mainMenuRows(), "menu_merchant_services", "menu_thrift_services", "menu_pay_individual", "menu_fund_wallet", "menu_my_details", "menu_help")
 	assertRowsContain(t, merchantServicesRows(), "menu_register_merchant", "menu_generate_invoice", "menu_merchant_dashboard", "menu_main")
 	assertRowsContain(t, thriftMenuRows(), "menu_become_individual", "menu_create_thrift", "menu_join_thrift", "menu_thrift_dashboard", "menu_main")
 }

@@ -15,26 +15,6 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
-// handleMyLimits shows the caller's KYC tier and how much of their allowance
-// remains for the current day and month. It is reachable from the main menu.
-func (s *ConversationService) handleMyLimits(ctx context.Context, channel, recipient string, user store.User) error {
-	profile, err := s.store.EnsureKYCProfile(ctx, user.ID)
-	if err != nil {
-		return err
-	}
-	lines := []string{fmt.Sprintf("Your Xego limits\n\nVerification tier: %s", profile.Tier)}
-	lines = append(lines, s.individualLimitLines(ctx, user.ID, profile.Tier)...)
-	merchants, err := s.store.ApprovedMerchantsForUser(ctx, user.ID)
-	if err != nil {
-		return err
-	}
-	for _, merchant := range merchants {
-		lines = append(lines, s.merchantLimitLines(ctx, merchant.ID, merchant.Name)...)
-	}
-	lines = append(lines, "\nComplete more verification to raise your limits (menu → Become individual, or contact support for a merchant KYB upgrade).")
-	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
-}
-
 // handleMerchantKYBStatus shows a merchant owner their KYB tier, review state,
 // payout limits, and what the next tier unlocks.
 func (s *ConversationService) handleMerchantKYBStatus(ctx context.Context, channel, recipient string, user store.User) error {
@@ -56,30 +36,6 @@ func (s *ConversationService) handleMerchantKYBStatus(ctx context.Context, chann
 		"• B3: enhanced due diligence (B2 → B3)",
 		"\nChoose 'Request KYB upgrade' from the merchant menu to submit an upgrade request for review.")
 	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
-}
-
-func (s *ConversationService) individualLimitLines(ctx context.Context, userID uuid.UUID, tier string) []string {
-	now := time.Now()
-	limits, err := s.store.TierLimits(ctx, store.AccountIndividual, tier, kyc.DirIn)
-	if err != nil {
-		return []string{"Could not load your limit settings."}
-	}
-	usedDay, err := s.store.AllowanceUsage(ctx, store.AccountIndividual, userID, kyc.DirIn, kyc.DayWindowStart(now))
-	if err != nil {
-		return []string{"Could not load today's usage."}
-	}
-	usedMonth, err := s.store.AllowanceUsage(ctx, store.AccountIndividual, userID, kyc.DirIn, kyc.MonthWindowStart(now))
-	if err != nil {
-		return []string{"Could not load this month's usage."}
-	}
-	return []string{
-		"Paying limits (money in):",
-		fmt.Sprintf("• Per payment: %s", domain.FormatNGN(limits.SingleLimitKobo)),
-		fmt.Sprintf("• Per day: %s", domain.FormatNGN(limits.DailyLimitKobo)),
-		fmt.Sprintf("• Per month: %s", domain.FormatNGN(limits.MonthlyLimitKobo)),
-		fmt.Sprintf("\nToday: %s used, %s left", domain.FormatNGN(usedDay), domain.FormatNGN(kyc.RemainingDaily(limits, usedDay))),
-		fmt.Sprintf("This month: %s used, %s left", domain.FormatNGN(usedMonth), domain.FormatNGN(kyc.RemainingMonthly(limits, usedMonth))),
-	}
 }
 
 // merchantLimitLines renders one merchant's KYB tier and payout ceilings.

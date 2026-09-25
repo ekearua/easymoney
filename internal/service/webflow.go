@@ -35,6 +35,7 @@ const (
 	WebFlowIndividualUpgrade = "individual_upgrade"
 	WebFlowMerchantRegister  = "merchant_register"
 	WebFlowKYBRequest        = "kyb_request"
+	WebFlowMyDetails         = "my_details"
 )
 
 // webFlowMeta is the message-1 copy and catalog for each web flow.
@@ -57,6 +58,7 @@ var webFlowCatalog = map[string]webFlowMeta{
 	WebFlowIndividualUpgrade: {intro: "Verify your Xego individual profile in your browser.", label: "Verify profile"},
 	WebFlowMerchantRegister:  {intro: "Register your business with Xego in your browser.", label: "Register business"},
 	WebFlowKYBRequest:        {intro: "Request a higher business tier in your browser.", label: "Request upgrade"},
+	WebFlowMyDetails:         {intro: "Your Xego account, wallet, and limits in one place.", label: "View my details"},
 }
 
 // WebFlowEnabled reports whether the given channel+flow pair should use the

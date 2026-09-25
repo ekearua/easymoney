@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatsapp-payment-demo/internal/chatguard"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -163,11 +164,17 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 		if err != nil {
 			return err
 		}
+		// Completing onboarding reaches the base KYC tier (L1: channel + email
+		// confirmed), which activates the wallet and unlocks every wallet
+		// option. Idempotent — a user already at a higher tier is untouched.
+		if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+			return err
+		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed for Xego payments."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed (Level 1) and your Xego wallet is now active."); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, channel, recipient, user)

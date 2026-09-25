@@ -16,9 +16,14 @@ import (
 // an amount (plus collection fee) which is disbursed to the recipient's bank
 // account (minus NIP flat fee).
 func (s *ConversationService) startPayIndividual(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
-	if user.AccountLevel != "individual" || !s.userIsApprovedIndividual(ctx, user) {
-		return s.sendText(ctx, channel, recipient,
-			"You need to complete individual verification (KYC Level 2) before sending money to other individuals. Send *menu* to go back.")
+	if !s.userIsApprovedIndividual(ctx, user) {
+		// Level 2 is required to send money to individuals: offer the
+		// verification flow instead of a dead-end message.
+		if s.WebFlowEnabled(channel, WebFlowIndividualUpgrade) {
+			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
+				"Complete individual verification (Level 2) before sending money to other individuals.", "Verify profile", nil)
+		}
+		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
 	}
 	session.State = "pay_individual_phone"
 	session.Data = map[string]string{}
@@ -451,15 +456,16 @@ func (s *ConversationService) startMerchantFromHint(ctx context.Context, channel
 // startPayIndividualFromHint routes a parsed individual instruction, seeding
 // the prefill and asking only for what is missing. The KYC-L2 gate is
 // identical to startPayIndividual: unapproved senders get the upgrade web flow
-// (where supported) or the chat gate message.
+// (where supported) or the chat-side upgrade flow.
 func (s *ConversationService) startPayIndividualFromHint(ctx context.Context, channel, recipient string, user store.User, session store.Session, hint IndividualPayHint) error {
 	if user.AccountLevel != "individual" || !s.userIsApprovedIndividual(ctx, user) {
 		if s.WebFlowEnabled(channel, WebFlowIndividualUpgrade) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
 				"", "Verify profile", nil)
 		}
-		return s.sendText(ctx, channel, recipient,
-			"You need to complete individual verification (KYC Level 2) before sending money to other individuals. Send *menu* to go back.")
+		// No web flow (Telegram/TikTok): run the chat-side upgrade instead of a
+		// dead-end message, matching startPayIndividual.
+		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
 	}
 	data := hintSessionData(hint)
 	if s.WebFlowEnabled(channel, WebFlowIndividualPay) {

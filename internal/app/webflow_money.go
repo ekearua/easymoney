@@ -43,6 +43,8 @@ func (a *App) wfRenderStep(r *http.Request, flow store.WebFlow, user store.User)
 		return a.wfMerchantRegisterStep(r, flow, user)
 	case service.WebFlowKYBRequest:
 		return a.wfKYBRequestStep(r, flow, user)
+	case service.WebFlowMyDetails:
+		return a.wfMyDetailsStep(r, flow, user)
 	}
 	return webFlowPage{}, fmt.Errorf("unknown web flow %q", flow.FlowType)
 }
@@ -77,6 +79,8 @@ func (a *App) wfHandleStep(w http.ResponseWriter, r *http.Request, flow store.We
 		return a.wfMerchantRegisterSubmit(w, r, flow, user, action)
 	case service.WebFlowKYBRequest:
 		return a.wfKYBRequestSubmit(w, r, flow, user, action)
+	case service.WebFlowMyDetails:
+		return a.wfMyDetailsSubmit(w, r, flow, user, action)
 	}
 	return nil, fmt.Errorf("unknown web flow %q", flow.FlowType)
 }

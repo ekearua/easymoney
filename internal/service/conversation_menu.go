@@ -166,10 +166,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendMerchantDashboard(ctx, channel, recipient, user)
 	case "status", "menu_status", "check payment status":
 		return s.sendLatestStatus(ctx, channel, recipient, user)
-	case "history", "menu_history", "recent transactions":
-		return s.sendHistory(ctx, channel, recipient, user)
-	case "my limits", "menu_my_limits", "limits":
-		return s.handleMyLimits(ctx, channel, recipient, user)
+	case "history", "menu_history", "recent transactions", "my details", "menu_my_details", "my limits", "menu_my_limits", "limits":
+		return s.handleMyDetails(ctx, channel, recipient, user, session)
 	case "link accounts", "menu_link_accounts", "connect accounts", "link":
 		return s.startLinkAccounts(ctx, channel, recipient, user, session)
 	case "complete profile", "menu_profile", "profile":
@@ -192,13 +190,13 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 
 // sendMenu shows the main menu. When the user's profile still needs a name or
 // email, the "Complete profile" row is surfaced in place of the rarely-used
-// "My limits" item (WhatsApp list messages cap at 10 rows), so a brand-new
+// "My details" item (WhatsApp list messages cap at 10 rows), so a brand-new
 // user onboards through the menu instead of a blocking first-contact gate.
 func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient string, user store.User) error {
 	rows := menuRowsFor(user)
 	if link := linkAccountsRowFor(s.cfg.LinkAccountsEnabled); link != nil {
 		for i, row := range rows {
-			if row.ID == "menu_my_limits" {
+			if row.ID == "menu_my_details" {
 				rows[i] = *link
 				break
 			}
@@ -218,12 +216,12 @@ func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient s
 func menuRowsFor(user store.User) []ports.InteractiveRow {
 	rows := mainMenuRows()
 	// Optional rows swap into a fixed slot so WhatsApp's 10-row cap is
-	// preserved: "Complete profile" replaces "My limits" until profile is
+	// preserved: "Complete profile" replaces "My details" until profile is
 	// done; "Link accounts" replaces it once linked channels can be merged
 	// into a WhatsApp account.
 	if user.DisplayName == "" || user.Email == "" {
 		for i, row := range rows {
-			if row.ID == "menu_my_limits" {
+			if row.ID == "menu_my_details" {
 				rows[i] = ports.InteractiveRow{ID: "menu_profile", Title: "Complete profile", Description: "Set your name and email for receipts"}
 				break
 			}
@@ -234,7 +232,7 @@ func menuRowsFor(user store.User) []ports.InteractiveRow {
 }
 
 // linkAccountsRowFor surfaces the account-linking row in place of the rarely
-// used "My limits" item when the feature is enabled and the profile is filled.
+// used "My details" item when the feature is enabled and the profile is filled.
 func linkAccountsRowFor(enabled bool) *ports.InteractiveRow {
 	if !enabled {
 		return nil
@@ -274,8 +272,7 @@ func mainMenuRows() []ports.InteractiveRow {
 		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
 		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
-		{ID: "menu_history", Title: "Recent payments", Description: "View your latest attempts"},
-		{ID: "menu_my_limits", Title: "My limits", Description: "Tier and remaining allowance"},
+		{ID: "menu_my_details", Title: "My details", Description: "Account, wallet, limits, recent payments"},
 		{ID: "menu_ai", Title: "Ask Xego", Description: "Chat with our AI assistant"},
 		{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
 	}
@@ -322,9 +319,7 @@ func menuRowCovers(id string) bool {
 		return true
 	case "menu_thrift_services":
 		return true
-	case "menu_history":
-		return true
-	case "menu_my_limits":
+	case "menu_my_details":
 		return true
 	case "menu_link_accounts":
 		return true

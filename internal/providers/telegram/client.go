@@ -192,12 +192,12 @@ func (c *Client) SendInteractive(ctx context.Context, message ports.InteractiveM
 			}
 		}
 	} else {
-		var line []map[string]string
+		// One button per row: an inline keyboard with several buttons in a
+		// single row clips long titles on narrow screens, and Telegram renders
+		// a row of four identical-width split buttons that cut the last one
+		// off entirely.
 		for _, button := range message.Buttons {
-			line = append(line, map[string]string{"text": truncateButton(button.Title), "callback_data": button.ID})
-		}
-		if len(line) > 0 {
-			keyboard = append(keyboard, line)
+			keyboard = append(keyboard, []map[string]string{{"text": truncateButton(button.Title), "callback_data": button.ID}})
 		}
 	}
 	return c.send(ctx, "sendMessage", map[string]any{

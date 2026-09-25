@@ -776,7 +776,7 @@ func resetChatSession(t *testing.T, ctx context.Context, repository *store.Store
 		service.WebFlowPay, service.WebFlowIndividualPay, service.WebFlowTopup, service.WebFlowPayInvoice,
 		service.WebFlowInvoiceCreate, service.WebFlowThriftCreate, service.WebFlowThriftJoin, service.WebFlowThriftContribute,
 		service.WebFlowData, service.WebFlowOnboard, service.WebFlowIndividualUpgrade,
-		service.WebFlowMerchantRegister, service.WebFlowKYBRequest,
+		service.WebFlowMerchantRegister, service.WebFlowKYBRequest, service.WebFlowMyDetails,
 	} {
 		if flow, found, err := repository.OpenWebFlowForUser(ctx, userID, flowType); err == nil && found {
 			_, _, _ = repository.CompleteWebFlow(ctx, flow.Token)

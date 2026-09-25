@@ -179,21 +179,6 @@ func (s *ConversationService) sendLatestStatus(ctx context.Context, channel, rec
 			s.cfg.BaseURL, payment.ReceiptToken))
 }
 
-func (s *ConversationService) sendHistory(ctx context.Context, channel, recipient string, user store.User) error {
-	payments, err := s.store.RecentPaymentsForUser(ctx, user.ID, 5)
-	if err != nil {
-		return err
-	}
-	if len(payments) == 0 {
-		return s.sendText(ctx, channel, recipient, "You don't have any Xego payments yet.")
-	}
-	lines := []string{"Your recent Xego payments:"}
-	for _, payment := range payments {
-		lines = append(lines, fmt.Sprintf("• %s — %s — %s", payment.MerchantName, domain.FormatNGN(payment.AmountKobo), strings.ToUpper(string(payment.Status))))
-	}
-	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
-}
-
 func (s *ConversationService) rejectedPhoneMessage() string {
 	numbers := s.AcceptedInvoiceNumbers()
 	if len(numbers) == 0 {
@@ -445,10 +430,8 @@ func serviceSwitchIntent(input string) (string, string) {
 		return "kyb_status", ""
 	case "request kyb upgrade", "request upgrade", "menu_kyb_request":
 		return "kyb_request", ""
-	case "history", "recent transactions", "menu_history":
-		return "history", ""
-	case "my limits", "limits", "menu_my_limits":
-		return "limits", ""
+	case "history", "recent transactions", "my details", "menu_history", "menu_my_details", "my limits", "limits", "menu_my_limits":
+		return "my_details", ""
 	case "link accounts", "connect accounts", "menu_link_accounts", "link":
 		return "link_accounts", ""
 	case "ask xego", "ai", "assistant", "menu_ai":

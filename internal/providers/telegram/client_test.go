@@ -59,6 +59,8 @@ func TestSendInteractiveUsesInlineKeyboard(t *testing.T) {
 		Body: "Choose an option",
 		Buttons: []ports.InteractiveButton{
 			{ID: "menu_pay", Title: "Make payment"},
+			{ID: "confirm_account", Title: "Confirm this account"},
+			{ID: "menu_ai", Title: "Ask Xego"},
 		},
 	})
 	if err != nil {
@@ -67,8 +69,22 @@ func TestSendInteractiveUsesInlineKeyboard(t *testing.T) {
 	if requestBody["chat_id"] != "12345" {
 		t.Fatalf("unexpected chat_id: %#v", requestBody["chat_id"])
 	}
-	if _, ok := requestBody["reply_markup"].(map[string]any)["inline_keyboard"]; !ok {
+	markup, ok := requestBody["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply_markup missing: %#v", requestBody)
+	}
+	keyboard, ok := markup["inline_keyboard"].([]any)
+	if !ok {
 		t.Fatalf("inline keyboard missing: %#v", requestBody)
+	}
+	if len(keyboard) != 3 {
+		t.Fatalf("expected one inline-keyboard row per button, got %d rows: %#v", len(keyboard), keyboard)
+	}
+	for i, row := range keyboard {
+		buttons, ok := row.([]any)
+		if !ok || len(buttons) != 1 {
+			t.Fatalf("row %d must hold exactly one button (clipping fix), got %#v", i, row)
+		}
 	}
 }
 

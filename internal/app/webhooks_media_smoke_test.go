@@ -657,7 +657,8 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		}
 
 		// Deterministic parsing still routes on Telegram, but a not-yet-L2
-		// sender meets the same individual-pay KYC gate as the typed flow —
+		// sender meets the same individual-pay gate as the typed flow — they are
+		// routed into the chat-side individual upgrade instead of the transfer,
 		// proof the fresh image instruction was understood as "pay an
 		// individual" and gated, not silently reclassified.
 		resetChatSession(t, ctx, repository, tgUser.ID)
@@ -667,7 +668,7 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		ocrQueue.mu.Unlock()
 		tgPost(`{"update_id":9104,"message":{"message_id":4,"chat":{"id":552001},"from":{"id":552001,"username":"smoke_tg"},"photo":[{"file_id":"tg-photo-2","width":100,"height":100}]}}`)
 		a.processInboundMessages(ctx)
-		if body := lastTextReply(t, tgMessenger); !strings.Contains(body, "Level 2") {
+		if body := lastTextReply(t, tgMessenger); !strings.Contains(strings.ToLower(body), "individual") {
 			t.Fatalf("an individual instruction for an unapproved Telegram user should hit the L2 gate, got %q", body)
 		}
 	})
@@ -734,7 +735,8 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		}
 
 		// Deterministic parsing still routes on Instagram, but the unapproved
-		// sender meets the individual-pay L2 gate like any other channel.
+		// sender meets the individual-pay gate like any other channel: routed
+		// into the chat-side individual upgrade instead of the transfer.
 		resetChatSession(t, ctx, repository, igUser.ID)
 		igMessenger.reset()
 		ocrQueue.mu.Lock()
@@ -742,7 +744,7 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		ocrQueue.mu.Unlock()
 		igPost(`{"object":"instagram","entry":[{"id":"ig-business-1","messaging":[{"sender":{"id":"igsid-smoke-1"},"recipient":{"id":"ig-business-1"},"timestamp":1700000003,"message":{"mid":"sm-ig-4","attachments":[{"type":"image","payload":{"url":"https://media.example/ig-img-2"}}]}}]}]}`)
 		a.processInboundMessages(ctx)
-		if body := lastTextReply(t, igMessenger); !strings.Contains(body, "Level 2") {
+		if body := lastTextReply(t, igMessenger); !strings.Contains(strings.ToLower(body), "individual") {
 			t.Fatalf("an individual instruction for an unapproved Instagram user should hit the L2 gate, got %q", body)
 		}
 	})

@@ -611,7 +611,13 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if err := a.store.ConfirmUserNumber(r.Context(), user.ID); err != nil {
 			return a.wfPageWithError(flow, page, "Could not confirm your account. Please try again."), nil
 		}
-		msg := "You're all set. Your account is confirmed for " + a.cfg.AppName + " payments. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
+		// Completing onboarding reaches the base KYC tier (L1: channel + email
+		// confirmed), which activates the wallet and unlocks every wallet
+		// option. Idempotent — a user already at a higher tier is untouched.
+		if _, err := a.store.AdvanceKYCTierTo(r.Context(), user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+			return a.wfPageWithError(flow, page, "Could not finish confirming your account. Please try again."), nil
+		}
+		msg := "You're all set. Your account is confirmed (Level 1) and your Xego wallet is now active. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Your account is confirmed."), nil
 		}

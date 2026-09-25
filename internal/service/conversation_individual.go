@@ -14,10 +14,10 @@ import (
 
 func (s *ConversationService) startIndividualUpgrade(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
 	if user.AccountLevel == "merchant" {
-		return s.sendText(ctx, channel, recipient, "This account is currently approved as a merchant. For this demo, thrift creation is only available to individual accounts.")
+		return s.sendText(ctx, channel, recipient, "This account is currently approved as a merchant. For this demo, sending money to individuals and creating thrift groups are only available to individual accounts.")
 	}
 	if kycProfile, err := s.store.KYCProfileByUser(ctx, user.ID); err == nil && kyc.Order(kycProfile.Tier) >= kyc.Order(kyc.TierL2) {
-		return s.sendText(ctx, channel, recipient, "Your Xego individual profile is already approved for the demo. Choose Create thrift to start a contribution group.")
+		return s.sendText(ctx, channel, recipient, "Your Xego individual profile is already approved for the demo. You can send money to individuals and create thrift groups.")
 	}
 	if !s.cfg.EmailConfirmationEnabled {
 		return s.sendText(ctx, channel, recipient, "Individual onboarding is not accepting email-verified upgrades right now. Please try again later.")
@@ -29,7 +29,7 @@ func (s *ConversationService) startIndividualUpgrade(ctx context.Context, channe
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "Let's set up your Xego individual profile for thrift contributions.\n\nFirst, send the email address we should verify.")
+		return s.sendText(ctx, channel, recipient, "Let's set up your Xego individual profile.\n\nIt lets you send money to individuals and run thrift groups.\n\nFirst, send the email address we should verify.")
 	}
 	session.State = "individual_email_code"
 	session.Data["email"] = email
@@ -199,7 +199,7 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "No problem. Your Xego individual profile is Level 2 (identity on file) and approved for this demo.\n\nYou can create thrift contribution groups."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "No problem. Your Xego individual profile is Level 2 (identity on file) and approved for this demo.\n\nYou can send money to individuals and create thrift groups."); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, channel, recipient, user)
@@ -250,7 +250,7 @@ func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, chan
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nRisk profile: %s.\n\nYou can now create thrift contribution groups.", strings.ToUpper(riskProfile.RiskBand))); err != nil {
+		if err := s.sendText(ctx, channel, recipient, fmt.Sprintf("Your NIN/BVN verified. Your Xego individual profile is now Level 3 (NIN/BVN verified).\n\nRisk profile: %s.\n\nYou can now send money to individuals and create thrift groups.", strings.ToUpper(riskProfile.RiskBand))); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, channel, recipient, user)
