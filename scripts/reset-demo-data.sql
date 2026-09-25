@@ -68,11 +68,20 @@ DELETE FROM keep_users ku
 USING users u
 WHERE u.id = ku.id AND u.whatsapp_number = '+2348000000001';
 
+-- psql interpolates :'var' only OUTSIDE dollar-quoted bodies, so the survivor
+-- identifiers are materialised here and the DO block below reads them back.
+CREATE TEMP TABLE survivor_ident (slug text, name text);
+INSERT INTO survivor_ident (slug, name) VALUES (:'survivor_slug', :'survivor_name');
+
 DO $$
+DECLARE
+    v_survivor_slug text;
+    v_survivor_name text;
 BEGIN
+    SELECT slug, name INTO v_survivor_slug, v_survivor_name FROM survivor_ident LIMIT 1;
     IF NOT EXISTS (SELECT 1 FROM keep_merchants) THEN
         RAISE EXCEPTION 'survivor merchant %/% not found; aborting without changes',
-            :'survivor_slug', :'survivor_name';
+            v_survivor_slug, v_survivor_name;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM keep_users) THEN
         RAISE WARNING 'no non-admin user is retained: the survivor merchant has no ownerless chat account after the reset';
