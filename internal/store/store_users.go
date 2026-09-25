@@ -46,6 +46,11 @@ type User struct {
 	LastInboundAt time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
+	// FirstContact is set only by GetOrCreateUser when the WhatsApp number was
+	// INSERTed on this call (not found). Handle uses it to start onboarding on
+	// the account's very first message. It is not persisted; all other reads
+	// leave it false.
+	FirstContact bool
 }
 
 // Session persists a user's current conversation state.
@@ -63,6 +68,11 @@ type Session struct {
 // user's first MENU opens the real main menu instead of an onboarding
 // gate.  Onboarding name/email is optional (the "Complete profile" menu row),
 // and L2+ flows collect profile details when they are actually needed.
+//
+// FirstContact reports whether this call INSERTED the row vs resolved an
+// existing one. Handle uses it to kick off the onboarding flow on a WhatsApp
+// account's very first message (before any AI intent routing), while keeping
+// the auto-confirm semantics above for every later message.
 func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error) {
 	const query = `
 		INSERT INTO users (whatsapp_number, whatsapp_verified_at, verification_level, onboarding_complete, number_confirmed_at)
@@ -81,7 +91,8 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
-			last_inbound_at, created_at, updated_at`
+			last_inbound_at, created_at, updated_at,
+			(xmax = 0) AS first_contact`
 	var user User
 	err := s.pool.QueryRow(ctx, query, number).Scan(
 		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
@@ -94,6 +105,7 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 		&user.MergedIntoID,
 		&user.LastInboundAt,
 		&user.CreatedAt, &user.UpdatedAt,
+		&user.FirstContact,
 	)
 	return user, err
 }

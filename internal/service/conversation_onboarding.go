@@ -72,9 +72,12 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	}
 	// Two-message onboarding: a fresh WhatsApp user gets the browser profile
 	// link (message 1); completing it confirms the account and the welcome
-	// message follows (message 2). Users already mid-chat in onboarding keep
-	// the chat flow.
-	if !user.OnboardingComplete && s.WebFlowEnabled(channel, WebFlowOnboard) && (session.State == "" || session.State == "menu") {
+	// message follows (message 2). A user INSERTed on this very message
+	// (FirstContact — set only by GetOrCreateUser) is treated the same even
+	// though auto-confirm already stamped their account, so a brand-new
+	// number's first text initiates onboarding instead of reaching AI routing.
+	// Users already mid-chat in onboarding keep the chat flow.
+	if (!user.OnboardingComplete || user.FirstContact) && s.WebFlowEnabled(channel, WebFlowOnboard) && (session.State == "" || session.State == "menu") {
 		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowOnboard, "", "", nil)
 	}
 	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" && session.State != "onboard_confirm_account" {

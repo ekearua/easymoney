@@ -227,7 +227,11 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	// the menu, instead of being forced through account confirmation again.
 	// Only users who have NOT yet reached an approved global tier still go
 	// through per-channel onboarding.
-	if !s.onboardingCompleteForChannel(user, message.Channel) {
+	//
+	// A WhatsApp number INSERTed for the very first time (FirstContact) goes
+	// straight into onboarding too — starting a conversation must never land
+	// a brand-new account in AI intent routing before it has been welcomed.
+	if user.FirstContact || !s.onboardingCompleteForChannel(user, message.Channel) {
 		if s.userIsApprovedIndividual(ctx, user) {
 			return s.handleNewChannelForApprovedUser(ctx, message.Channel, recipient, user, session)
 		}
