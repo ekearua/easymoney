@@ -132,10 +132,22 @@ func (s *Store) RecordStandingCredit(ctx context.Context, userID uuid.UUID, acco
 }
 
 // ApplyStandingCredit applies a recorded credit to the user wallet exactly once
-// and flips the record to 'applied'. It reports whether this call performed the
-// credit; an already-applied reference is a no-op.
+// and flips the record to 'applied' in one transaction: the wallet posting and
+// the status flip commit together, so a failed posting leaves the credit
+// pending and retryable instead of permanently marked applied. The debit
+// side is the operating bank — the same book every other inbound rail posts
+// from. It reports whether this call performed the credit; an already-applied
+// reference is a no-op.
 func (s *Store) ApplyStandingCredit(ctx context.Context, userID uuid.UUID, providerReference string, amountKobo int64, description string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
+	if amountKobo <= 0 {
+		return false, errors.New("standing credit requires a positive amount")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE standing_credits
 		SET status='applied'
 		WHERE provider_reference=$1 AND status='pending'`, providerReference)
@@ -145,7 +157,10 @@ func (s *Store) ApplyStandingCredit(ctx context.Context, userID uuid.UUID, provi
 	if tag.RowsAffected() != 1 {
 		return false, nil
 	}
-	if err := s.CreditUserWallet(ctx, userID, "standing_credit", amountKobo, providerReference, description); err != nil {
+	if err := s.creditWalletTx(ctx, tx, userID, LedgerAccountOperatingBank, amountKobo, providerReference, description); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return false, err
 	}
 	return true, nil

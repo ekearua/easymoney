@@ -7,7 +7,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
+
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
@@ -422,7 +426,18 @@ func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = a.store.CompleteWebhook(context.Background(), deliveryID, "delivered", "")
-	if !fresh || event.Reference == "" {
+	if !fresh {
+		return
+	}
+	// Standing-account (reusable DVA) credits are not payment-scoped: their
+	// reference has no payment row, so they are ingested before the payment
+	// requery below — which fails for an unknown reference and would otherwise
+	// swallow the credit. A standing notification never continues into the
+	// payment path.
+	if a.handleInterswitchStandingCredit(r.Context(), event, body) {
+		return
+	}
+	if event.Reference == "" {
 		return
 	}
 	// Only a terminal notification should trigger a confirmation requery.
@@ -440,7 +455,6 @@ func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) 
 	// Complete any browser web flow that created this payment (guarded, so a
 	// race with the return-page callback cannot double-send).
 	a.maybeCompleteWebFlowForPayment(r.Context(), payment)
-	a.handleInterswitchStandingCredit(r.Context(), event, body)
 }
 
 // handleInterswitchStandingCredit ingests bank-transfer credits that settle a
@@ -449,9 +463,14 @@ func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) 
 // recorded idempotently (by provider reference) and the matching wallet credit
 // is applied exactly once. Matching standing accounts are owned by users, so a
 // credit is never double-counted across retried webhook deliveries.
-func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.GatewayWebhook, body []byte) {
+//
+// It reports whether the notification was a standing-account credit — i.e. its
+// account number resolved to a reservation — in which case the caller must keep
+// it out of the payment requery path, because a standing credit has no payment
+// row. An unresolved account number falls back to the payment path.
+func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.GatewayWebhook, body []byte) bool {
 	if !a.payments.IsGatewaySuccessEvent(service.ProviderInterswitch, event.Event) {
-		return
+		return false
 	}
 	var payload struct {
 		ResolverReference string `json:"resolverReference"`
@@ -461,14 +480,24 @@ func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.G
 		Reference         string `json:"reference"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return
+		return false
 	}
 	accountNumber := strings.TrimSpace(payload.ResolverReference)
 	if accountNumber == "" {
 		accountNumber = strings.TrimSpace(payload.AccountNumber)
 	}
 	if len(accountNumber) < 8 {
-		return
+		return false
+	}
+	// The credit's idempotency key is the transaction reference: prefer the
+	// notification's own reference and fall back to the event's merchant
+	// reference. Without one the credit cannot be deduplicated.
+	creditReference := strings.TrimSpace(payload.Reference)
+	if creditReference == "" {
+		creditReference = strings.TrimSpace(event.Reference)
+	}
+	if creditReference == "" {
+		return false
 	}
 	amountKobo := payload.TransactionAmount
 	if amountKobo == 0 {
@@ -477,24 +506,55 @@ func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.G
 			amountKobo = parsed
 		}
 	}
-	if amountKobo <= 0 {
-		return
-	}
+	// Only a number that resolves to a standing reservation is a standing
+	// credit: a payment-scoped DVA number is not in the table, so such a
+	// notification keeps its normal payment requery.
 	account, err := a.store.StandingAccountByNumber(ctx, accountNumber)
 	if err != nil {
-		return
+		return false
 	}
-	if _, err := a.store.RecordStandingCredit(ctx, account.UserID, account.AccountNumber, event.Reference, amountKobo); err != nil {
-		a.logger.WarnContext(ctx, "standing credit record failed", "reference", event.Reference, "error", err)
-		return
+	if amountKobo <= 0 {
+		return true
 	}
-	applied, err := a.store.ApplyStandingCredit(ctx, account.UserID, event.Reference, amountKobo, "Standing account bank transfer credit")
+	if _, err := a.store.RecordStandingCredit(ctx, account.UserID, account.AccountNumber, creditReference, amountKobo); err != nil {
+		a.logger.WarnContext(ctx, "standing credit record failed", "reference", creditReference, "error", err)
+		return true
+	}
+	applied, err := a.store.ApplyStandingCredit(ctx, account.UserID, creditReference, amountKobo, "Standing account bank transfer credit")
 	if err != nil {
-		a.logger.WarnContext(ctx, "standing credit apply failed", "reference", event.Reference, "error", err)
-		return
+		a.logger.WarnContext(ctx, "standing credit apply failed", "reference", creditReference, "error", err)
+		return true
 	}
 	if applied {
-		a.logger.InfoContext(ctx, "standing account credit applied", "reference", event.Reference, "user", account.UserID, "amount_kobo", amountKobo)
+		a.logger.InfoContext(ctx, "standing account credit applied", "reference", creditReference, "user", account.UserID, "amount_kobo", amountKobo)
+		// Bank credits run through the same transaction-monitoring rules as
+		// card payments, so a structuring or velocity pattern cannot hide by
+		// switching rail to a reusable account number.
+		a.monitorStandingCredit(ctx, account.UserID, creditReference, amountKobo)
+	}
+	return true
+}
+
+// monitorStandingCredit feeds one applied bank-transfer credit through the
+// transaction-monitoring rules together with the customer's recent history on
+// every rail. Alerts are attributed to the credited user and deduped by the
+// bank reference, so a retried delivery never alerts twice.
+func (a *App) monitorStandingCredit(ctx context.Context, userID uuid.UUID, reference string, amountKobo int64) {
+	raised, err := a.store.RunTransactionMonitorForInput(ctx, kyc.TransactionInput{
+		Rail:             kyc.RailStandingCredit,
+		Reference:        reference,
+		UserID:           userID,
+		MerchantName:     "Standing account",
+		MerchantCategory: "Bank transfer",
+		AmountKobo:       amountKobo,
+		PaidAt:           time.Now().UTC(),
+	}, a.monitorConfig())
+	if err != nil {
+		a.logger.WarnContext(ctx, "standing credit monitor failed", "reference", reference, "error", err)
+		return
+	}
+	if raised > 0 {
+		a.logger.InfoContext(ctx, "standing credit monitoring raised alerts", "reference", reference, "user", userID.String(), "alerts", raised)
 	}
 }
 
