@@ -55,27 +55,49 @@ func TestAdminNetworkTemplateContract(t *testing.T) {
 
 	var buf strings.Builder
 	now := time.Date(2026, 9, 26, 10, 0, 0, 0, time.UTC)
-	edges := []store.IdentityLinkRow{
-		{LinkKind: "device", LinkValue: "fingerprint-a", SubjectA: "u-1", SubjectB: "u-2", NameA: "Ada", NameB: "Bode", LastSharedAt: now, Sightings: 2},
-		{LinkKind: "settlement_account", LinkValue: "0123456789", SubjectA: "u-2", SubjectB: "u-3", LastSharedAt: now, Sightings: 2},
+	edges := []store.IdentityLink{
+		{Kind: "device", Value: "fingerprint-a", SubjectA: "u-1", SubjectB: "u-2", NameA: "Ada", NameB: "Bode", LastSeen: now, Sightings: 2},
+		{Kind: "recipient_account", Value: "0123456789", SubjectA: "u-2", SubjectB: "u-3", LastSeen: now, Sightings: 2},
 	}
-	rings := store.DetectRings(edges, 2)
+	rings := store.DetectRingsFromIdentityLinks(edges, 2)
+	scored := []store.ScoredRing{}
+	for _, ring := range rings {
+		members := make([]store.RingMember, 0, len(ring.Members))
+		for _, id := range ring.Members {
+			members = append(members, store.RingMember{Subject: id, Name: ring.Names[id], Tier: "L1", RiskBand: "low"})
+		}
+		scored = append(scored, store.ScoredRing{
+			Members: members, Edges: edges, Kinds: ring.Kinds,
+			Score: 4.2, ConfirmedHits: 1, OpenAlerts: 0, HasCase: true,
+		})
+	}
+	caseRow := store.NetworkCase{
+		ID: 7, MembersKey: "u-1,u-2,u-3", MemberCount: 3,
+		Members: []string{"u-1", "u-2", "u-3"}, LinkKinds: []string{"device", "recipient_account"},
+		Score: 4.2, ConfirmedAlerts: 1, Status: "open",
+	}
 	err := tmpl.ExecuteTemplate(&buf, "admin_network.html", map[string]any{
 		"AppName": "Xego", "Title": "Trust network", "CSRF": "x", "AdminRole": "admin",
-		"Links": edges, "Rings": rings, "MinMembers": 2, "HasLinks": true,
+		"Links": edges, "Rings": scored, "Cases": []store.NetworkCase{caseRow},
+		"MinMembers": 2, "HasLinks": true,
 	})
 	if err != nil {
 		t.Fatalf("execute admin_network.html: %v", err)
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"Identity rings", "Ring 0", "3 identities via",
+		"Identity rings", "score 4.2", "3 identities via",
 		// html/template escapes the '+' in the joined kinds text.
-		"device &#43; settlement_account",
-		"••••6789", // settlement account masked
-		"fingerprint-a",
-		"/admin/kyc/u-1", // members link to their profiles
-		"Ada",            // resolved display names
+		"device &#43; recipient_account",
+		"••••6789",                       // recipient account masked
+		"fingerprint-a",                  // device facts stay opaque
+		"/admin/kyc/u-1",                 // members link to their profiles
+		"Ada",                            // resolved display names
+		"confirmed ×1",                   // alert signal badge
+		"case raised",                    // linked-case badge
+		"Linked cases",                   // the disposition panel
+		"Resolve ring", "False positive", // single disposition flow
+		"L1", "low", // member trust posture columns
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("network page missing %q", want)
@@ -86,7 +108,8 @@ func TestAdminNetworkTemplateContract(t *testing.T) {
 	buf.Reset()
 	err = tmpl.ExecuteTemplate(&buf, "admin_network.html", map[string]any{
 		"AppName": "Xego", "Title": "Trust network", "CSRF": "x", "AdminRole": "admin",
-		"Links": []store.IdentityLinkRow{}, "Rings": []store.Ring(nil), "MinMembers": 2, "HasLinks": false,
+		"Links": []store.IdentityLink{}, "Rings": []store.ScoredRing(nil), "Cases": []store.NetworkCase(nil),
+		"MinMembers": 2, "HasLinks": false,
 	})
 	if err != nil {
 		t.Fatalf("execute empty admin_network.html: %v", err)

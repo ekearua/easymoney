@@ -47,6 +47,39 @@ func TestDetectRingsGroupsSharedFacts(t *testing.T) {
 	}
 }
 
+func TestScoreRingOrdersByStrengthAndSignal(t *testing.T) {
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	fresh := now.Add(-24 * time.Hour)
+	stale := now.Add(-365 * 24 * time.Hour)
+	// Fresh account edge beats a fresh device edge of the same shape.
+	acct := ScoreRing([]IdentityLink{{Kind: "recipient_account", Sightings: 2, LastSeen: fresh}}, 0, 0, now)
+	dev := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: fresh}}, 0, 0, now)
+	if acct <= dev {
+		t.Errorf("account edge score %v must exceed device edge %v", acct, dev)
+	}
+	// Recency decays: the year-old edge scores well below yesterday's.
+	oldDev := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: stale}}, 0, 0, now)
+	if oldDev >= dev {
+		t.Errorf("stale edge score %v must be below fresh %v", oldDev, dev)
+	}
+	// Sightings add weight with diminishing returns.
+	once := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: fresh}}, 0, 0, now)
+	nine := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 10, LastSeen: fresh}}, 0, 0, now)
+	if nine <= once || nine > once*3 {
+		t.Errorf("sightings 10 → %v vs 2 → %v: more, but sublinear", nine, once)
+	}
+	// Confirmed alerts multiply hardest; open alerts bump modestly.
+	base := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: fresh}}, 0, 0, now)
+	withOpen := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: fresh}}, 0, 2, now)
+	withConfirmed := ScoreRing([]IdentityLink{{Kind: "device", Sightings: 2, LastSeen: fresh}}, 2, 0, now)
+	if withOpen <= base || withOpen >= base*2 {
+		t.Errorf("open-alert bump = %v from %v, want a modest multiplier", withOpen, base)
+	}
+	if withConfirmed < base*2 {
+		t.Errorf("confirmed multiplier = %v from %v, want ≥2×", withConfirmed, base)
+	}
+}
+
 func TestMaskAccountShowsLastFourOnly(t *testing.T) {
 	t.Parallel()
 	if got := MaskAccount("0123456789"); got != "••••6789" {

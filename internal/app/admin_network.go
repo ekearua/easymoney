@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -16,11 +17,13 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
-// adminNetwork renders the ring-detection view: identity-link edges grouped
-// into connected components, largest first. Edges come from the store;
-// component grouping is DetectRings' pure logic.
+// adminNetwork renders the ring-detection view as a triage queue: rings
+// scored by weighted sightings/recency (account edges weigh more than a
+// shared browser) and multiplied by the members' alert signal, members
+// annotated with tier and risk band. Rings with confirmed alert outcomes
+// among their members raise one linked network case per member set.
 func (a *App) adminNetwork(w http.ResponseWriter, r *http.Request) {
-	links, err := a.store.IdentityLinks(r.Context(), 300)
+	links, err := a.store.IdentityLinksWithRecipients(r.Context(), 300)
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "identity links", "error", err)
 		http.Error(w, "network view unavailable", http.StatusInternalServerError)
@@ -32,13 +35,67 @@ func (a *App) adminNetwork(w http.ResponseWriter, r *http.Request) {
 			minMembers = n
 		}
 	}
-	rings := store.DetectRings(links, minMembers)
+	rings := store.DetectRingsFromIdentityLinks(links, minMembers)
+	scored, err := a.store.EnrichRings(r.Context(), rings, links, time.Now())
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "ring enrichment", "error", err)
+		http.Error(w, "network view unavailable", http.StatusInternalServerError)
+		return
+	}
+	// Linked cases: one per ring with a confirmed alert among its members.
+	if _, err := a.store.EnsureNetworkCases(r.Context(), scored, 1); err != nil {
+		a.logger.WarnContext(r.Context(), "ensure network cases", "error", err)
+	}
+	cases, err := a.store.ListNetworkCases(r.Context(), 50)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list network cases", "error", err)
+		cases = nil
+	}
+	caseByKey := map[string]store.NetworkCase{}
+	for _, c := range cases {
+		caseByKey[c.MembersKey] = c
+	}
+	for i := range scored {
+		scored[i].HasCase = caseByKey[scored[i].MembersKeyOf()].Status != ""
+	}
 	a.renderAdmin(w, "admin_network.html", r, "Trust network", map[string]any{
 		"Links":      links,
-		"Rings":      rings,
+		"Rings":      scored,
+		"Cases":      cases,
 		"MinMembers": minMembers,
 		"HasLinks":   len(links) > 0,
 	})
+}
+
+// adminResolveNetworkCase disposes of one linked ring case once for the
+// whole member set (resolved, or false_positive when the shared facts
+// turned out to be benign — the family browser, the real family business).
+func (a *App) adminResolveNetworkCase(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	caseID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || caseID <= 0 {
+		http.Error(w, "invalid case id", http.StatusBadRequest)
+		return
+	}
+	status := strings.TrimSpace(r.FormValue("status"))
+	if status != "resolved" && status != "false_positive" {
+		http.Error(w, "invalid status", http.StatusBadRequest)
+		return
+	}
+	note := strings.TrimSpace(r.FormValue("note"))
+	adminEmail := adminEmailFromContext(r.Context())
+	nc, err := a.store.ResolveNetworkCase(r.Context(), caseID, status, adminEmail, note)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "resolve network case failed", "case_id", caseID, "error", err)
+		http.Error(w, "resolve failed", http.StatusInternalServerError)
+		return
+	}
+	a.logger.InfoContext(r.Context(), "network case resolved",
+		"case_id", nc.ID, "status", nc.Status, "members", nc.MemberCount)
+	http.Redirect(w, r, "/admin/network", http.StatusSeeOther)
 }
 
 // adminKYCProfile renders one subject's trust timeline: monitoring alerts,

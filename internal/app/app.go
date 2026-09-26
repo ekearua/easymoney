@@ -622,6 +622,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc/{userID}", a.adminKYCProfile)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/network", a.adminNetwork)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/network/cases/{id}/resolve", a.adminResolveNetworkCase)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyb", a.adminKYB)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance", a.adminKYBAdvance)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance-request/approve", a.adminKYBAdvanceRequestApprove)

@@ -7,32 +7,70 @@
 
 <section class="panel">
   <h2>What this view shows</h2>
-  <p>Identities linked by a <strong>shared fact</strong>: the same browser fingerprint (device), the same settlement bank account behind two merchants, or one channel identifier value appearing under two identifier columns. Each connected group of two or more identities is a <strong>ring</strong> — the mule-cluster pattern. Shared facts are legitimate sometimes (a family browser, a business owner with two merchants); rings are where to look, not verdicts.</p>
+  <p>Identities linked by a <strong>shared fact</strong>: the same browser fingerprint, the same settlement bank account behind two merchants, a recipient bank account saved by two users, or one channel identifier value under two identifier columns. Each connected group is a <strong>ring</strong>, scored for triage: account edges weigh more than a shared browser, repeated and recent sightings weigh more than old ones, and confirmed alerts multiply the score. Rings with a confirmed alert among their members raise one <strong>linked case</strong> covering the whole member set.</p>
   {{if .HasLinks}}
   <p class="small-text">Minimum ring size: {{.MinMembers}} identities.
     <a href="/admin/network?min=2">2</a> · <a href="/admin/network?min=3">3</a> · <a href="/admin/network?min=4">4</a></p>
   {{end}}
 </section>
 
-{{if not .HasLinks}}<section class="panel"><p>No identity links yet. Links appear when two subjects share a device fingerprint, a settlement account, or a channel identifier value.</p></section>{{end}}
+{{if .Cases}}<section class="panel">
+  <h2>Linked cases ({{len .Cases}})</h2>
+  <div class="table-wrap"><table><thead><tr><th>#</th><th>Members</th><th>Via</th><th>Confirmed</th><th>Score</th><th>Status</th><th>Disposition</th></tr></thead><tbody>
+  {{range .Cases}}<tr>
+    <td>#{{.ID}}</td>
+    <td>{{range $i, $m := .Members}}{{if $i}}, {{end}}<a class="mono" href="/admin/kyc/{{$m}}">{{printf "%.8s…" $m}}</a>{{end}}</td>
+    <td>{{join .LinkKinds " + "}}</td>
+    <td>{{.ConfirmedAlerts}}</td>
+    <td>{{printf "%.1f" .Score}}</td>
+    <td><span class="status {{if eq .Status "open"}}warn{{else if eq .Status "resolved"}}ok{{else}}disabled{{end}}">{{.Status}}</span>{{if .ReviewerEmail}}<br><span class="small-text">{{.ReviewerEmail}}</span>{{end}}</td>
+    <td>
+      {{if eq .Status "open"}}
+      <form method="post" action="/admin/network/cases/{{.ID}}/resolve" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="status" value="resolved">
+        <input type="text" name="note" placeholder="outcome note" class="input-compact">
+        <button class="btn btn-small" type="submit">Resolve ring</button>
+      </form>
+      <form method="post" action="/admin/network/cases/{{.ID}}/resolve" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="status" value="false_positive">
+        <button class="btn btn-small btn-danger" type="submit">False positive</button>
+      </form>
+      {{else}}{{.OutcomeNote}}{{end}}
+    </td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>{{end}}
+
+{{if not .HasLinks}}<section class="panel"><p>No identity links yet. Links appear when two subjects share a device fingerprint, a settlement or recipient bank account, or a channel identifier value.</p></section>{{end}}
 
 {{if .Rings}}
 <section class="panel">
-  <h2>Rings ({{len .Rings}})</h2>
+  <h2>Rings by triage score ({{len .Rings}})</h2>
   {{range $i, $ring := .Rings}}
   <div class="ring-card">
-    <h3>Ring {{$i}} — {{len $ring.Members}} identities via {{join $ring.Kinds " + "}}</h3>
-    <ul>
-      {{range $ring.Members}}<li><a class="mono" href="/admin/kyc/{{.}}">{{.}}</a>{{with index $ring.Names .}} — {{.}}{{end}}</li>{{end}}
-    </ul>
+    <h3>#{{$i}} · score {{printf "%.1f" $ring.Score}} — {{len $ring.Members}} identities via {{join $ring.Kinds " + "}}
+      {{if $ring.ConfirmedHits}}<span class="status warn">confirmed ×{{$ring.ConfirmedHits}}</span>{{end}}
+      {{if $ring.OpenAlerts}}<span class="status warn">open alerts ×{{$ring.OpenAlerts}}</span>{{end}}
+      {{if $ring.HasCase}}<span class="status ok">case raised</span>{{end}}
+    </h3>
+    <div class="table-wrap"><table><thead><tr><th>Member</th><th>Name</th><th>Tier</th><th>Risk band</th></tr></thead><tbody>
+    {{range $ring.Members}}<tr>
+      <td><a class="mono" href="/admin/kyc/{{.Subject}}">{{printf "%.8s…" .Subject}}</a></td>
+      <td>{{if .Name}}{{.Name}}{{else}}—{{end}}</td>
+      <td><strong>{{.Tier}}</strong></td>
+      <td><span class="status {{if or (eq .RiskBand "high") (eq .RiskBand "unknown")}}warn{{else if eq .RiskBand "medium"}}warn{{else}}ok{{end}}">{{.RiskBand}}</span></td>
+    </tr>{{end}}
+    </tbody></table></div>
     <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Shared fact</th><th>A</th><th>B</th><th>Sightings</th><th>Last seen</th></tr></thead><tbody>
     {{range $ring.Edges}}<tr>
-      <td>{{.LinkKind}}</td>
+      <td>{{.Kind}}</td>
       <td class="mono">{{.MaskedValue}}</td>
       <td><a class="mono" href="/admin/kyc/{{.SubjectA}}">{{if .NameA}}{{.NameA}}{{else}}{{printf "%.8s…" .SubjectA}}{{end}}</a></td>
       <td><a class="mono" href="/admin/kyc/{{.SubjectB}}">{{if .NameB}}{{.NameB}}{{else}}{{printf "%.8s…" .SubjectB}}{{end}}</a></td>
       <td>{{.Sightings}}</td>
-      <td class="nowrap">{{.LastSharedAt.Format "02 Jan 2006 15:04"}}</td>
+      <td class="nowrap">{{.LastSeen.Format "02 Jan 2006 15:04"}}</td>
     </tr>{{end}}
     </tbody></table></div>
   </div>
@@ -45,12 +83,12 @@
   <h2>All shared-fact links</h2>
   <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Shared fact</th><th>A</th><th>B</th><th>Sightings</th><th>Last seen</th></tr></thead><tbody>
   {{range .Links}}<tr>
-    <td>{{.LinkKind}}</td>
+    <td>{{.Kind}}</td>
     <td class="mono">{{.MaskedValue}}</td>
     <td><a class="mono" href="/admin/kyc/{{.SubjectA}}">{{if .NameA}}{{.NameA}}{{else}}{{printf "%.8s…" .SubjectA}}{{end}}</a></td>
     <td><a class="mono" href="/admin/kyc/{{.SubjectB}}">{{if .NameB}}{{.NameB}}{{else}}{{printf "%.8s…" .SubjectB}}{{end}}</a></td>
     <td>{{.Sightings}}</td>
-    <td class="nowrap">{{.LastSharedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td class="nowrap">{{.LastSeen.Format "02 Jan 2006 15:04"}}</td>
   </tr>{{end}}
   </tbody></table></div>
 </section>
