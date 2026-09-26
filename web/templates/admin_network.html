@@ -30,6 +30,7 @@
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="status" value="resolved">
         <input type="text" name="note" placeholder="outcome note" class="input-compact">
+        <label class="small-text"><input type="checkbox" name="freeze"> freeze members</label>
         <button class="btn btn-small" type="submit">Resolve ring</button>
       </form>
       <form method="post" action="/admin/network/cases/{{.ID}}/resolve" class="inline-block">

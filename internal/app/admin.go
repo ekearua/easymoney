@@ -289,6 +289,18 @@ func (a *App) adminResolveTransactionAlert(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "resolve failed", http.StatusInternalServerError)
 		return
 	}
+	// The moment an alert is confirmed, the ring-case pipeline runs: any
+	// ring containing a member with confirmed evidence gets its network
+	// case raised (or reopened) immediately, not the next time someone
+	// opens /admin/network. A refresh failure must not fail the resolve —
+	// the next confirmation or page load heals it.
+	if label, _ := alert.Details["outcome"].(string); label == "confirmed" {
+		if n, err := a.store.RefreshNetworkCases(r.Context(), 1); err != nil {
+			a.logger.WarnContext(r.Context(), "refresh network cases after confirm", "error", err)
+		} else if n > 0 {
+			a.logger.InfoContext(r.Context(), "network cases raised from confirmation", "raised", n, "alert_id", alert.ID)
+		}
+	}
 	a.logger.InfoContext(r.Context(), "transaction alert resolved", "alert_id", alert.ID, "status", alert.Status)
 	http.Redirect(w, r, "/admin/kyc", http.StatusSeeOther)
 }

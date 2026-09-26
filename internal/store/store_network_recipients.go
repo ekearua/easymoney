@@ -274,6 +274,25 @@ func (s *Store) EnrichRings(ctx context.Context, rings []Ring, edges []IdentityL
 	return out, nil
 }
 
+// RefreshNetworkCases is the one ring-case pipeline, shared by the alert
+// resolution path and the network page: re-reads the live link graph,
+// re-detects rings, enriches them, and upserts network cases for rings with
+// at least minConfirmed confirmed member alerts. Running it after every
+// confirmation means a case is raised the moment evidence exists, not the
+// next time someone opens /admin/network. Returns the upsert count.
+func (s *Store) RefreshNetworkCases(ctx context.Context, minConfirmed int) (int, error) {
+	links, err := s.IdentityLinksWithRecipients(ctx, 300)
+	if err != nil {
+		return 0, err
+	}
+	rings := DetectRingsFromIdentityLinks(links, 2)
+	scored, err := s.EnrichRings(ctx, rings, links, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return s.EnsureNetworkCases(ctx, scored, minConfirmed)
+}
+
 // memberAlertSignals returns, per user id, the count of confirmed alert
 // outcomes and the count of currently-open alerts.
 func (s *Store) memberAlertSignals(ctx context.Context) (map[string]int64, map[string]int64, error) {
