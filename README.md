@@ -92,7 +92,7 @@ RUN_TESTS=0 RUN_VET=0 bash deploy/rebuild-vps.sh
 
 ### Merchant registration email confirmation
 
-Standard user onboarding collects an email for checkout and receipts, but does not require an OTP. The 6-digit email confirmation code is used when a user chooses **Register merchant**, because that is a higher-trust action.
+Standard user onboarding collects an email for checkout and receipts and verifies it with a 6-digit confirmation code — on every track. In the browser flow the code step is a dedicated page; on the chat FSM the emailed code is entered in chat (wrong codes get a friendly re-ask, `RESEND` issues a fresh code, `CHANGE EMAIL` restarts the step, and five wrong entries lock the attempt). For manual demos without SMTP, `EMAIL_DEMO_CODE_IN_CHAT=true` surfaces the code in the chat transcript instead. The same code gate also protects **Register merchant**, a higher-trust action.
 
 Merchant requests start as `awaiting_approval`. An admin must approve the request in `/admin/merchants`; approval creates the payable merchant record, links the requesting user as the merchant owner, and unlocks merchant-only invoice features.
 

@@ -104,14 +104,43 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts?")
+		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts? We'll send it a 6-digit confirmation code.")
 	}
+	// The emailed code is actually verified here (bcrypt-hashed codes,
+	// 5-attempt lockout and a resend cooldown live in VerifyEmailCode and
+	// CreateEmailVerificationCode), closing the gap where the chat track
+	// accepted any input at this state.
 	if session.State == "onboard_email_code" {
+		email := session.Data["email"]
+		if email == "" {
+			email = user.Email
+		}
+		switch strings.ToLower(strings.TrimSpace(input)) {
+		case "resend", "resend code":
+			return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+		case "change email", "email":
+			session.State, session.Data = "onboard_email", map[string]string{"name": session.Data["name"]}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, "No problem. Send the email address you want to use for checkout and receipts.")
+		}
+		code := normalizeEmailCode(input)
+		if len(code) != 6 {
+			return s.sendText(ctx, channel, recipient, "Enter the 6-digit code we sent to "+email+". You can also type RESEND or CHANGE EMAIL.")
+		}
+		ok, err := s.store.VerifyEmailCode(ctx, user.ID, email, emailCodeDigest(email, code))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
+		}
 		session.State = "onboard_dob"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "Email saved."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "Email verified."); err != nil {
 			return err
 		}
 		return s.sendText(ctx, channel, recipient, "As part of the CBN Tier 1 check, send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
@@ -159,14 +188,16 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	if err != nil || !strings.Contains(address.Address, "@") || len(address.Address) > 254 {
 		return s.sendText(ctx, channel, recipient, "That email doesn't look quite right. Please send a valid address, like name@example.com.")
 	}
-	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
+	email := strings.ToLower(address.Address)
+	if err := s.store.UpdateUserEmail(ctx, user.ID, email); err != nil {
 		return err
 	}
-	session.State = "onboard_dob"
+	session.Data["email"] = email
+	session.State = "onboard_email_code"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Email saved. As part of the CBN Tier 1 check, send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
+	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
 }
 
 // handleNewChannelForApprovedUser is the non-blocking cross-channel handoff

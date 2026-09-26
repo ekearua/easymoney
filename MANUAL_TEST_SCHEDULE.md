@@ -199,7 +199,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | ID | Module | Actor | Channel | Title | Priority |
 |---|---|---|---|---|---|
 | TC-02-001 | Onboarding | Individual | WhatsApp | WhatsApp onboarding — display name entry | P0 |
-| TC-02-002 | Onboarding | Individual | WhatsApp | WhatsApp onboarding — email entry + validation | P0 |
+| TC-02-002 | Onboarding | Individual | WhatsApp | WhatsApp onboarding — email entry + validation + 6-digit code verification | P0 |
 | TC-02-003 | Onboarding | Individual | WhatsApp | WhatsApp number confirmation | P0 |
 | TC-02-004 | Onboarding | Individual | Telegram | Telegram onboarding via /start | P0 |
 | TC-02-005 | Onboarding | Individual | Instagram | Instagram Messenger onboarding with quick replies | P1 |
@@ -240,8 +240,10 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 1. Reply with a name (e.g. 'Ada Obi').
 2. Observe email prompt.
 3. Reply 'not-an-email' first, then a valid email.
+4. Observe the 6-digit confirmation code (delivered by email; with `EMAIL_DEMO_CODE_IN_CHAT=true` for demos, in the chat itself).
+5. Reply '000000' (a wrong code), then the correct 6-digit code.
 
-**Expected Result:** Acknowledges the name, asks for email. Invalid email is rejected with a retry prompt; a valid email is accepted and the bot asks to confirm the WhatsApp number.
+**Expected Result:** Acknowledges the name, asks for email. Invalid email is rejected with a retry prompt; a valid email triggers a 6-digit confirmation code. A wrong code gets the re-ask offering `RESEND` / `CHANGE EMAIL`; the correct code advances to the number-confirmation step and sets `email_verified_at`. Five wrong entries lock code entry (start over or use `CHANGE EMAIL`); `RESEND` issues a fresh code after the cooldown.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -270,9 +272,9 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 **Steps**
 
 1. Open the Telegram bot and send /start.
-2. Complete name, email, and confirmation prompts.
+2. Complete name, email, code, and confirmation prompts (chat onboarding verifies the emailed 6-digit code in chat — same gate as the browser flow).
 
-**Expected Result:** Same onboarding flow runs; completion lands on the main menu; Telegram identity is confirmed natively.
+**Expected Result:** Same onboarding flow runs; the code step requires the emailed code (`RESEND` / `CHANGE EMAIL` supported); completion lands on the main menu; Telegram identity is confirmed natively.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

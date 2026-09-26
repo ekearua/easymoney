@@ -41,7 +41,7 @@ func TestOnboardingConfirmAdvancesToL1AndActivatesWallet(t *testing.T) {
 	truncateServiceData(t, ctx, databaseURL)
 
 	msg := &carryoverMessenger{}
-	svc := NewConversationService(config.Config{WebFlowsEnabled: false, AppName: "Xego", SessionTTL: 24 * time.Hour}, repository, nil, nil, map[string]ports.Messenger{
+	svc := NewConversationService(config.Config{WebFlowsEnabled: false, AppName: "Xego", SessionTTL: 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, EmailDemoCodeInChat: true}, repository, nil, nil, map[string]ports.Messenger{
 		ChannelWhatsApp: msg,
 	}, nil, nil, nil)
 
@@ -55,6 +55,12 @@ func TestOnboardingConfirmAdvancesToL1AndActivatesWallet(t *testing.T) {
 	}
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "ada@example.com"}); err != nil {
 		t.Fatalf("email Handle failed: %v", err)
+	}
+	// The chat track now verifies the emailed code; the demo-code fallback
+	// (non-production, EMAIL_DEMO_CODE_IN_CHAT) put the code in the last message.
+	code := chatEmailCodeFromMessages(t, msg.allSentText())
+	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: code}); err != nil {
+		t.Fatalf("email code Handle failed: %v", err)
 	}
 	// CBN Tier-1 data collection runs before the confirm step.
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "1992-05-24"}); err != nil {
