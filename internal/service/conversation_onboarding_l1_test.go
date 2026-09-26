@@ -133,7 +133,7 @@ func TestMyDetailsChatBlockOnTelegram(t *testing.T) {
 		t.Fatalf("handleMyDetails failed: %v", err)
 	}
 	for _, body := range msg.allSentText() {
-		for _, want := range []string{"Your Xego details", "Verification tier", "Wallet", "No standing account number"} {
+		for _, want := range []string{"Your Xego details", "Verification tier", "Wallet", "Your standing account number is being provisioned."} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("telegram details block missing %q in: %q", want, body)
 			}

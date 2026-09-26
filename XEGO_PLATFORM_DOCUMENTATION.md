@@ -190,6 +190,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | KYC tier ladder L0–L3 (CBN tiers) | Adjacent rung advancement gated on evidence; L4 retired in migration 073 | Customers, admins | Implemented | `internal/kyc`; migration 026; migration 073 |
+| Standing account (virtual account) | Reusable virtual account reserved from L1 (provider-first, local `9029…` fallback) for bank-transfer top-ups | Customers | Implemented | `internal/store/store_standing_accounts.go`; migration 072 |
 | KYC/KYB allowance ladder | DB-driven per-tier payment/payout ceilings (single/daily/monthly, in & out) | Customers, merchants, admins | Implemented | `internal/kyc` + `internal/store/store_allowances.go`; migration 053 |
 | Sanctions/PEP screening | Deterministic simulated screener; live vendor plug-in | Customers | Implemented (provider simulated) | README:188 |
 | NIN/BVN identity verification | Deterministic simulated verifier | Customers | Implemented (provider simulated) | README:190 |
@@ -1266,7 +1267,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - **No AI/conversational intelligence** beyond rule-based flows.
 - **No live payout/refund rails** — simulated rails must be replaced for live money.
 - **Identity and screening are simulated** — live vendor plug-in required.
-- **KYC demo path is fully documented** — CBN Tier 1 at onboarding, Tier 2 (photo ID + BVN + NIN), Tier 3 (address proof + simulated EDD).
+- **KYC demo path is fully documented** — CBN Tier 1 at onboarding, Tier 2 (photo ID + BVN + NIN), Tier 3 (address proof + simulated EDD). Standing virtual accounts are reserved from Tier 1 (migration 072).
 
 ### Engineering gaps (resolved)
 

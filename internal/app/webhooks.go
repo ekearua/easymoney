@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/tiktok"
@@ -439,6 +440,62 @@ func (a *App) receiveInterswitchWebhook(w http.ResponseWriter, r *http.Request) 
 	// Complete any browser web flow that created this payment (guarded, so a
 	// race with the return-page callback cannot double-send).
 	a.maybeCompleteWebFlowForPayment(r.Context(), payment)
+	a.handleInterswitchStandingCredit(r.Context(), event, body)
+}
+
+// handleInterswitchStandingCredit ingests bank-transfer credits that settle a
+// standing (reusable) virtual account rather than a payment-scoped DVA. A
+// success notification whose payload carries a standing account number is
+// recorded idempotently (by provider reference) and the matching wallet credit
+// is applied exactly once. Matching standing accounts are owned by users, so a
+// credit is never double-counted across retried webhook deliveries.
+func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.GatewayWebhook, body []byte) {
+	if !a.payments.IsGatewaySuccessEvent(service.ProviderInterswitch, event.Event) {
+		return
+	}
+	var payload struct {
+		ResolverReference string `json:"resolverReference"`
+		AccountNumber     string `json:"accountNumber"`
+		Amount            string `json:"amount"`
+		TransactionAmount int64  `json:"transactionAmount"`
+		Reference         string `json:"reference"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return
+	}
+	accountNumber := strings.TrimSpace(payload.ResolverReference)
+	if accountNumber == "" {
+		accountNumber = strings.TrimSpace(payload.AccountNumber)
+	}
+	if len(accountNumber) < 8 {
+		return
+	}
+	amountKobo := payload.TransactionAmount
+	if amountKobo == 0 {
+		parsed, err := strconv.ParseInt(strings.TrimSpace(payload.Amount), 10, 64)
+		if err == nil {
+			amountKobo = parsed
+		}
+	}
+	if amountKobo <= 0 {
+		return
+	}
+	account, err := a.store.StandingAccountByNumber(ctx, accountNumber)
+	if err != nil {
+		return
+	}
+	if _, err := a.store.RecordStandingCredit(ctx, account.UserID, account.AccountNumber, event.Reference, amountKobo); err != nil {
+		a.logger.WarnContext(ctx, "standing credit record failed", "reference", event.Reference, "error", err)
+		return
+	}
+	applied, err := a.store.ApplyStandingCredit(ctx, account.UserID, event.Reference, amountKobo, "Standing account bank transfer credit")
+	if err != nil {
+		a.logger.WarnContext(ctx, "standing credit apply failed", "reference", event.Reference, "error", err)
+		return
+	}
+	if applied {
+		a.logger.InfoContext(ctx, "standing account credit applied", "reference", event.Reference, "user", account.UserID, "amount_kobo", amountKobo)
+	}
 }
 
 // vtpassWebhookSecretValid reports whether the VTPass callback is authorized.

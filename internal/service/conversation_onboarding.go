@@ -219,9 +219,17 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 			}
 		}
 		// Completing onboarding reaches the base KYC tier (L1: channel +
-		// CBN Tier-1 data confirmed), which activates the wallet and unlocks every
-		// wallet option. Idempotent — a user already at a higher tier is untouched.
+		// CBN Tier-1 data confirmed), which activates the wallet, provisions a
+		// standing account number, and unlocks every wallet option. Idempotent
+		// — a user already at a higher tier is untouched.
 		if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
+			return err
+		}
+		// Reserve the standing account number so the customer can be paid by
+		// bank transfer from Level 1 on. The reserved 9029-* number is the
+		// local default and is upgraded by the provider only when Interswitch
+		// credentials are present.
+		if _, err := s.store.EnsureStandingAccount(ctx, user.ID); err != nil {
 			return err
 		}
 		session.State, session.Data = "menu", map[string]string{}

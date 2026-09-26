@@ -94,8 +94,31 @@ func (s *ConversationService) MyDetailsSummaryOf(ctx context.Context, user store
 			})
 		}
 	}
-	summary.Note = "No standing account number — each payment gets its own virtual account number."
+	summary.Note = s.standingAccountNote(ctx, user.ID, summary.Tier)
 	return summary
+}
+
+// standingAccountNote describes the payer-facing standing account shown at the
+// foot of the details page/chat block. L0 users have no standing account — each
+// payment gets its own virtual account number — while L1+ holders see the
+// reserved number they can be paid into at any time.
+func (s *ConversationService) standingAccountNote(ctx context.Context, userID uuid.UUID, tier string) string {
+	if kyc.Order(tier) < kyc.Order(kyc.TierL1) {
+		return "No standing account number yet — each payment gets its own virtual account number. Reach CBN Tier 1 (complete onboarding) to get your standing account number."
+	}
+	account, err := s.store.StandingAccountByUser(ctx, userID)
+	if err != nil || strings.TrimSpace(account.AccountNumber) == "" {
+		return "Your standing account number is being provisioned."
+	}
+	bank := strings.TrimSpace(account.BankName)
+	if bank == "" {
+		bank = "Interswitch"
+	}
+	note := "Standing account number: " + account.AccountNumber + " (" + bank + ")"
+	if account.Provider != "" {
+		note += " — pay into it any time to top up your wallet"
+	}
+	return note
 }
 
 // individualLimitData returns the payer-facing money-in limits and current

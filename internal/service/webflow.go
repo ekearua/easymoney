@@ -273,6 +273,12 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		return "", err
 	}
+	// Reserve the standing account number with the L1 upgrade so the customer
+	// can receive bank-transfer credits from Tier 1 on. The 9029-* local
+	// reservation is the default when no provider credentials are configured.
+	if _, err := s.store.EnsureStandingAccount(ctx, user.ID); err != nil {
+		return "", err
+	}
 	if _, err := s.store.RecomputeRiskScore(ctx, user.ID); err != nil {
 		return "", err
 	}
