@@ -63,13 +63,22 @@ type KYBAdvancementRequest struct {
 }
 
 // AllowanceReservation describes a money-in/out movement against one subject.
+// AllowanceReservation describes one money movement to validate and record.
+// RiskBand optionally carries the subject's current KYC risk band (low/
+// medium/high): a high band caps the single-transaction ceiling at
+// RiskHighSingleLimitKobo (M3 Trust Fabric step-up), so a profile under
+// active risk cannot move large amounts regardless of tier. Zero means the
+// caller has no band — callers that load the KYC profile anyway pass it;
+// business allowances pass the merchant profile's band.
 type AllowanceReservation struct {
-	AccountType string
-	SubjectID   uuid.UUID
-	Direction   string
-	Tier        string
-	AmountKobo  int64
-	Ref         string
+	AccountType             string
+	SubjectID               uuid.UUID
+	Direction               string
+	Tier                    string
+	AmountKobo              int64
+	Ref                     string
+	RiskBand                string
+	RiskHighSingleLimitKobo int64
 }
 
 // ReserveAllowance atomically validates a movement against the subject's tier
@@ -141,6 +150,15 @@ func (s *Store) ReserveAllowance(ctx context.Context, r AllowanceReservation) er
 	limits, err := tierLimitsTx(ctx, tx, r.AccountType, r.Tier, r.Direction)
 	if err != nil {
 		return err
+	}
+	// M3 decision layer: the persisted risk band finally bites. A high-band
+	// subject gets its single-transaction ceiling capped at the configured
+	// step-up limit inside the same validated transaction, so the cap is
+	// exactly as authoritative — and exactly as replay-safe — as the tier
+	// ceilings themselves. A zero or negative cap disables the step-up.
+	if r.RiskBand == kyc.RiskHigh && r.RiskHighSingleLimitKobo > 0 &&
+		(limits.SingleLimitKobo == 0 || limits.SingleLimitKobo > r.RiskHighSingleLimitKobo) {
+		limits.SingleLimitKobo = r.RiskHighSingleLimitKobo
 	}
 	if err := kyc.Validate(limits, r.AmountKobo, usedDay, usedMonth); err != nil {
 		return fmt.Errorf("allowance rejected: %w", err)

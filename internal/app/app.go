@@ -346,7 +346,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		smsSender: smsSender,
 		eventBus:  eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit)),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
 		imageReader:      imageReader,

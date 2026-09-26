@@ -32,6 +32,8 @@ type SettlementService struct {
 	payoutMaxKobo      int64
 	payoutDailyCapKobo int64
 	payoutDailyCount   int
+
+	riskHighSingleLimitKobo int64
 }
 
 // NewSettlementService constructs the settlement orchestrator. feeBps is the
@@ -59,6 +61,14 @@ func WithPayoutLimits(minKobo, maxKobo, dailyCapKobo int64, dailyCount int) Sett
 		s.payoutMaxKobo = maxKobo
 		s.payoutDailyCapKobo = dailyCapKobo
 		s.payoutDailyCount = dailyCount
+	}
+}
+
+// WithRiskStepUp sets the high-risk-band single ceiling applied to merchant
+// payout allowances when the owning merchant's KYB profile is high risk.
+func WithRiskStepUp(singleLimitKobo int64) SettlementOption {
+	return func(s *SettlementService) {
+		s.riskHighSingleLimitKobo = singleLimitKobo
 	}
 }
 
@@ -135,13 +145,27 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 	if err != nil {
 		return store.Payout{}, err
 	}
+	// M3 decision layer: the business ladder carries no risk band of its own,
+	// so the step-up reads the primary owner's individual band — the same
+	// attribution the transaction monitor uses for payouts. A high-risk owner
+	// caps the payout single ceiling until their review clears.
+	riskBand := ""
+	if s.riskHighSingleLimitKobo > 0 {
+		if ownerID, err := s.store.MerchantOwnerID(ctx, batch.MerchantID); err == nil && ownerID != uuid.Nil {
+			if profile, err := s.store.KYCProfileByUser(ctx, ownerID); err == nil {
+				riskBand = profile.RiskBand
+			}
+		}
+	}
 	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-		AccountType: store.AccountBusiness,
-		SubjectID:   batch.MerchantID,
-		Direction:   kyc.DirOut,
-		Tier:        kybProfile.Tier,
-		AmountKobo:  payoutAmount,
-		Ref:         "payout:" + batch.BatchNo,
+		AccountType:             store.AccountBusiness,
+		SubjectID:               batch.MerchantID,
+		Direction:               kyc.DirOut,
+		Tier:                    kybProfile.Tier,
+		AmountKobo:              payoutAmount,
+		Ref:                     "payout:" + batch.BatchNo,
+		RiskBand:                riskBand,
+		RiskHighSingleLimitKobo: s.riskHighSingleLimitKobo,
 	}); err != nil {
 		return store.Payout{}, err
 	}

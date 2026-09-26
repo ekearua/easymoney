@@ -176,6 +176,12 @@ type Config struct {
 	// ₦10,000,000 CBN cash-reporting threshold.
 	ReportCTRThresholdKobo int64
 
+	// RiskHighSingleLimitKobo caps the single-transaction allowance for a
+	// profile whose KYC risk band is high (M3 Trust Fabric step-up): the
+	// decision layer makes the persisted band bite until the review clears.
+	// Zero disables the cap.
+	RiskHighSingleLimitKobo int64
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -350,6 +356,10 @@ func Load() (Config, error) {
 		MonitorRoundAmountStep:          EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
 		MonitorRoundAmountMin:           EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
 		ReportCTRThresholdKobo:          EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
+		// M3 Trust Fabric step-up: a high-risk-band profile has its
+		// single-transaction allowance capped at this ceiling until the
+		// review clears. Zero disables the step-up.
+		RiskHighSingleLimitKobo:         EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
 		SessionTTL:                      envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                      envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		WebFlowsEnabled:                 envBool("WEB_FLOWS_ENABLED", true),

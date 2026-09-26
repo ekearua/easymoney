@@ -137,12 +137,14 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 			return store.PaymentView{}, err
 		}
 		if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-			AccountType: store.AccountIndividual,
-			SubjectID:   user.ID,
-			Direction:   kyc.DirIn,
-			Tier:        profile.Tier,
-			AmountKobo:  amountKobo,
-			Ref:         payment.ProviderReference,
+			AccountType:             store.AccountIndividual,
+			SubjectID:               user.ID,
+			Direction:               kyc.DirIn,
+			Tier:                    profile.Tier,
+			AmountKobo:              amountKobo,
+			Ref:                     payment.ProviderReference,
+			RiskBand:                profile.RiskBand,
+			RiskHighSingleLimitKobo: s.cfg.RiskHighSingleLimitKobo,
 		}); err != nil {
 			return store.PaymentView{}, err
 		}
@@ -185,12 +187,14 @@ func (s *PaymentService) ConfirmWalletPayment(ctx context.Context, payment store
 		return payment, false, err
 	}
 	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-		AccountType: store.AccountIndividual,
-		SubjectID:   payment.UserID,
-		Direction:   kyc.DirOut,
-		Tier:        profile.Tier,
-		AmountKobo:  payment.AmountKobo,
-		Ref:         payment.ProviderReference,
+		AccountType:             store.AccountIndividual,
+		SubjectID:               payment.UserID,
+		Direction:               kyc.DirOut,
+		Tier:                    profile.Tier,
+		AmountKobo:              payment.AmountKobo,
+		Ref:                     payment.ProviderReference,
+		RiskBand:                profile.RiskBand,
+		RiskHighSingleLimitKobo: s.cfg.RiskHighSingleLimitKobo,
 	}); err != nil {
 		return payment, false, err
 	}
