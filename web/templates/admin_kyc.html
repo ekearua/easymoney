@@ -9,8 +9,16 @@
 <section class="panel">
   <h2>Tier distribution</h2>
   <p>L0 {{index .ByTier "L0"}} · L1 {{index .ByTier "L1"}} · L2 {{index .ByTier "L2"}} · L3 {{index .ByTier "L3"}}</p>
-  <p class="muted">CBN three-tier framework (L1 = CBN Tier 1, L2 = CBN Tier 2, L3 = CBN Tier 3). Ladder rules are enforced by <span class="mono">internal/kyc</span>: advancement is adjacent and evidence-gated; downgrades are audited. Risk bands drive CDD vs EDD.</p>
+  <p class="muted">CBN three-tier framework (L1 = CBN Tier 1, L2 = CBN Tier 2, L3 = CBN Tier 3). Ladder rules are enforced by <span class="mono">internal/kyc</span>: advancement is adjacent and evidence-gated; downgrades are audited. Risk bands drive CDD vs EDD. <a href="/admin/network">Trust network →</a></p>
 </section>
+
+{{if .Suggestions}}<section class="panel">
+  <h2>Rule tuning suggestions</h2>
+  <p class="small-text">The feedback loop at work: rules whose labelled false-positive share over the last 7 days crossed the configured threshold. Suggestions never change limits on their own — thresholds are config-owned (TUNING_FP_PERCENT / TUNING_MIN_LABELLED).</p>
+  <ul>
+  {{range .Suggestions}}<li><span class="status {{if eq .Severity "warn"}}warn{{else}}ok{{end}}">{{.Rule}}</span> {{.Message}}</li>{{end}}
+  </ul>
+</section>{{end}}
 
 <section class="panel">
   <h2>Review queue</h2>

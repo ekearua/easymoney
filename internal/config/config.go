@@ -182,6 +182,14 @@ type Config struct {
 	// Zero disables the cap.
 	RiskHighSingleLimitKobo int64
 
+	// Compliance-queue tuning suggestions (the M4 feedback loop made
+	// actionable): a rule whose labelled false-positive share over the
+	// window reaches TuningFPPercent with at least TuningMinLabelled
+	// labelled outcomes gets a suggestion surfaced. Zero FPPercent keeps
+	// the shipped default (60% over ≥10 labels).
+	TuningFPPercent   float64
+	TuningMinLabelled int64
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -359,22 +367,24 @@ func Load() (Config, error) {
 		// M3 Trust Fabric step-up: a high-risk-band profile has its
 		// single-transaction allowance capped at this ceiling until the
 		// review clears. Zero disables the step-up.
-		RiskHighSingleLimitKobo:         EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
-		SessionTTL:                      envDuration("CONVERSATION_TTL", 30*time.Minute),
-		ReceiptTTL:                      envDuration("RECEIPT_TTL", 90*24*time.Hour),
-		WebFlowsEnabled:                 envBool("WEB_FLOWS_ENABLED", true),
-		MessageLogEnabled:               envBool("MESSAGE_LOG_ENABLED", true),
-		MessageCostServiceNGN:           EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
-		MessageCostMarketingNGN:         EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
-		AITokensPerNGN:                  EnvInt64("AI_TOKENS_PER_NGN", 250),
-		RedisURL:                        strings.TrimSpace(os.Getenv("REDIS_URL")),
-		EventBus:                        strings.ToLower(env("EVENT_BUS", "memory")),
-		EventBusPartitions:              int(EnvInt64("EVENT_BUS_PARTITIONS", 4)),
-		KafkaGroupID:                    env("KAFKA_GROUP_ID", "xego"),
-		RateLimitWebhooksPerMinute:      int(EnvInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
-		RateLimitPublicPerMinute:        int(EnvInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
-		RateLimitScanPerMinute:          int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
-		RateLimitAPIKeysPerMinute:       int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
+		RiskHighSingleLimitKobo:    EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
+		TuningFPPercent:            envFloat("TUNING_FP_PERCENT", 60),
+		TuningMinLabelled:          EnvInt64("TUNING_MIN_LABELLED", 10),
+		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
+		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		WebFlowsEnabled:            envBool("WEB_FLOWS_ENABLED", true),
+		MessageLogEnabled:          envBool("MESSAGE_LOG_ENABLED", true),
+		MessageCostServiceNGN:      EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
+		MessageCostMarketingNGN:    EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
+		AITokensPerNGN:             EnvInt64("AI_TOKENS_PER_NGN", 250),
+		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
+		EventBus:                   strings.ToLower(env("EVENT_BUS", "memory")),
+		EventBusPartitions:         int(EnvInt64("EVENT_BUS_PARTITIONS", 4)),
+		KafkaGroupID:               env("KAFKA_GROUP_ID", "xego"),
+		RateLimitWebhooksPerMinute: int(EnvInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
+		RateLimitPublicPerMinute:   int(EnvInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
+		RateLimitScanPerMinute:     int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
+		RateLimitAPIKeysPerMinute:  int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
 		SettlementFeeBps: int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
 
@@ -653,6 +663,20 @@ func env(name, fallback string) string {
 
 // EnvInt64 reads an integer env var with a fallback; exported so test
 // harnesses that build Config literally honor the same env knobs.
+// envFloat reads a float env var with a fallback; empty or malformed values
+// fall back silently (config template truthfulness guards the documented ones).
+func envFloat(name string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
 func EnvInt64(name string, fallback int64) int64 {
 	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {

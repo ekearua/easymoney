@@ -224,6 +224,22 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		byTier[p.Tier]++
 		ids = append(ids, p.UserID)
 	}
+	// M4 feedback loop made actionable: rules whose labelled false-positive
+	// share crosses the configured threshold get a tuning suggestion in the
+	// queue (the reviewer, not the system, moves any threshold).
+	fpStats, err := a.store.RuleFalsePositiveRates(r.Context(), 7*24*time.Hour)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "rule fp rates", "error", err)
+		fpStats = nil
+	}
+	th := store.DefaultTuningThresholds()
+	if a.cfg.TuningFPPercent > 0 {
+		th.FPPercent = a.cfg.TuningFPPercent
+	}
+	if a.cfg.TuningMinLabelled > 0 {
+		th.MinLabelled = a.cfg.TuningMinLabelled
+	}
+	suggestions := store.BuildTuningSuggestions(fpStats, th)
 	// M2 signal surface: devices seen per profile, so an investigator can
 	// spot one browser behind many accounts (the inverse pattern matters too).
 	devices, err := a.store.DeviceSummaryForUsers(r.Context(), ids)
@@ -239,8 +255,9 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		"Devices":  devices,
 		// Rail filter for the monitoring queue: the rails the engine tags
 		// alerts with, plus the active selection (empty = all rails).
-		"AlertRails": []string{kyc.RailPayment, kyc.RailTopup, kyc.RailStandingCredit, kyc.RailRefund, kyc.RailPayout},
-		"AlertRail":  alertRail,
+		"AlertRails":  []string{kyc.RailPayment, kyc.RailTopup, kyc.RailStandingCredit, kyc.RailRefund, kyc.RailPayout},
+		"AlertRail":   alertRail,
+		"Suggestions": suggestions,
 	})
 }
 
