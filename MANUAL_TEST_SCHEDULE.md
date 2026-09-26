@@ -8,7 +8,7 @@
 
 ## 1. Test Environment Setup & Prerequisites
 
-The tester should stand up a **demo/staging** environment with the simulated rails enabled. Read `.env.example` for the full surface.
+The tester should stand up a **demo/staging** environment with sandbox rails (Interswitch TEST, VTPass sandbox) and the identity/screening vendor keys configured. There are no simulated provider rails. Read `.env.example` for the full surface.
 
 ### 1.1 Provisioning commands
 
@@ -29,12 +29,12 @@ Docker alternative: `docker compose up -d --build` (migrate one-shot -> app -> C
 |---|---|---|
 | `APP_ENV` | `development` | Environment mode |
 | `DATABASE_URL` | local Postgres DSN | System of record |
-| `ALLOW_SIMULATED_RAILS_IN_PROD` | `true` (staging only) | Allows simulated payout/refund/data/identity rails |
-| `INTERSWITCH_CHECKOUT_MODE` | `TEST` | Sandbox web checkout |
-| `BANK_TRANSFER_MODE` | `simulate` | Bank-transfer rail |
-| `PAYOUT_PROVIDER` / `REFUND_PROVIDER` | `simulated` | Payout/refund rails |
-| `DATA_PROVIDER` | `simulated` (or `vtpass` sandbox) | Data fulfilment |
-| `IDENTITY_PROVIDER` / `SCREENING_PROVIDER` | `simulated` | KYC identity/screening |
+| `INTERSWITCH_CHECKOUT_MODE` | `TEST` | Sandbox web checkout (production requires `LIVE`) |
+| `BANK_TRANSFER_MODE` | `interswitch` | Bank-transfer rail (only accepted value) |
+| `PAYOUT_PROVIDER` / `REFUND_PROVIDER` | `interswitch` | Payout/refund rails (only accepted value) |
+| `DATA_PROVIDER` | `vtpass` | Data fulfilment (or `interswitch` for the VTU rail) |
+| `IDENTITY_PROVIDER` / `SCREENING_PROVIDER` | `ninbvnportal` / `http` | Identity and sanctions/PEP adapters |
+| `NINBVNPORTAL_API_KEY` / `SCREENING_API_BASE` | vendor credentials | Required at boot for the adapters above |
 | `TOTP_ENABLED` | `true` | 2FA for admin/merchant login |
 | `DATA_ENCRYPTION_KEY` / `TOTP_ENCRYPTION_KEY` | from `random-*` commands | At-rest encryption |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` | from `hash-password` | Primary admin bootstrap |
@@ -85,7 +85,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - Record **Result** and **Notes** in the Excel Execution Log sheet or below each case.
 - Run phases in order (1 -> 15). Each phase lists its prerequisites.
-- Use the Interswitch sandbox and simulated rails for card/transfer scenarios.
+- Use the Interswitch sandbox for card/transfer/DVA scenarios; the payout, refund, data, identity and screening rails are real vendor adapters (no simulated providers exist).
 - P0 = critical path (block release if failing); P1 = important; P2 = edge/nice-to-have.
 - The Excel supports multiple test cycles — filter by Cycle to track regression.
 
@@ -159,7 +159,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Config / Boot
 - **Actor:** System   **Channel:** CLI   **Priority:** P0
-- **Preconditions:** .env configured with simulated rails and INTERSWITCH_CHECKOUT_MODE=TEST.
+- **Preconditions:** .env configured (APP_ENV=development, Interswitch sandbox credentials, INTERSWITCH_CHECKOUT_MODE=TEST, identity/screening vendor keys).
 
 **Steps**
 
@@ -594,7 +594,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-04-001 | Bank Transfer | Individual | WhatsApp | Bank transfer — fee display | P0 |
 | TC-04-002 | Bank Transfer | Individual | Web | Bank transfer — secure instructions / transfer page | P0 |
 | TC-04-003 | Bank Transfer | Individual | Web | Bank transfer — completion with server-side verification | P0 |
-| TC-04-004 | Bank Transfer | Individual | Web | Bank transfer — simulated failure and retry | P1 |
+| TC-04-004 | Bank Transfer | Individual | Web | Bank transfer — unpaid reservation expiry and retry | P1 |
 | TC-04-005 | Bank Transfer | Individual | System | Expired transfer session closed by expiry worker | P2 |
 | TC-04-006 | Bank Transfer | Individual | Web | Method pre-selection on a reopened flow | P1 |
 | TC-04-007 | Bank Transfer | Individual | WhatsApp | Transfer confirmation message (two-message contract) | P1 |
@@ -637,31 +637,31 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Bank Transfer
 - **Actor:** Individual   **Channel:** Web   **Priority:** P0
-- **Preconditions:** BANK_TRANSFER_MODE=simulate (or sandbox Interswitch).
+- **Preconditions:** BANK_TRANSFER_MODE=interswitch (sandbox DVA credentials).
 
 **Steps**
 
-1. Complete the transfer on the checkout.
-2. Trigger/simulate the verified webhook.
-3. Confirm chat result and receipt.
+1. Open the transfer instructions page and copy the one-time account number.
+2. Send the exact amount to that account (sandbox: post the signed `TRANSACTION.COMPLETED` notification for that reserved account).
+3. Confirm the chat result and receipt.
 
 **Expected Result:** Xego verifies the transfer result server-side before success. Chat reports success with matching receipt; payment resolves to 'succeeded'.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-04-004 - Bank transfer — simulated failure and retry
+#### TC-04-004 - Bank transfer — unpaid reservation expiry and retry
 
 - **Module:** Bank Transfer
 - **Actor:** Individual   **Channel:** Web   **Priority:** P1
-- **Preconditions:** Ability to simulate a failing transfer or use a failing test scenario.
+- **Preconditions:** Reserved one-time account left unpaid past its Valid-until window.
 
 **Steps**
 
-1. Cause the transfer to fail.
-2. Observe payment state.
-3. Retry the payment.
+1. Request a bank transfer and note the Valid-until time.
+2. Do not send the transfer; let the reservation lapse.
+3. Observe the payment state, then start the payment again.
 
-**Expected Result:** Payment fails cleanly (not stuck). Retry creates a fresh draft without double-booking; reconciliation reports no false success.
+**Expected Result:** Payment resolves to `expired` (not stuck), the money-in allowance is released, and the ledger stays empty; starting again creates a fresh draft with a new reserved account; reconciliation reports no false success.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -820,7 +820,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 1. Pay via card checkout or bank transfer.
 2. Confirm the order state after success.
 
-**Expected Result:** Data order transitions to fulfilled after payment success (simulated or VTPass). Receipt issued.
+**Expected Result:** Data order transitions to fulfilled after payment success on the live VTPass rail. Receipt issued.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -1270,7 +1270,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 1. Choose 'Become individual' / the CBN Tier 2 upgrade flow.
 2. Select a government-issued photo ID (PASSPORT, DRIVERS LICENCE, NATIONAL ID, VOTERS CARD).
-3. Submit the 11-digit BVN and NIN (simulated verifier).
+3. Submit the 11-digit BVN and NIN (verified through the NIN/BVN Portal adapter).
 4. Observe the KYC result.
 
 **Expected Result:** KYC advances to L2 (approved individual, screening clear); the customer can now create/join thrift groups and send individual payments. Admin can review the case in /admin/kyc.
@@ -1385,13 +1385,13 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Thrift
 - **Actor:** Admin   **Channel:** Console   **Priority:** P1
-- **Preconditions:** Cycle fully contributed; simulated payout pending in /admin/thrift.
+- **Preconditions:** Cycle fully contributed; payout pending in /admin/thrift.
 
 **Steps**
 
 1. Sign in to /admin.
 2. Open /admin/thrift.
-3. Mark the pending simulated payout completed.
+3. Mark the pending payout completed.
 
 **Expected Result:** Payout marked completed; group advances to the next cycle until every member has received one payout.
 
@@ -1936,7 +1936,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-12-015 | Settlements | Merchant | API | Cut settlement batch | P0 |
 | TC-12-016 | Settlements | Merchant | API | Get settlement batch status | P1 |
 | TC-12-017 | Payouts | Merchant | API | Request payout for open batch | P0 |
-| TC-12-018 | Payouts | Merchant | API | Payout failure with declining bank code 011 | P1 |
+| TC-12-018 | Payouts | Merchant | API | Payout declined by the transfer rail, then retried | P1 |
 | TC-12-019 | Settlements | Merchant | API | Register and list settlement accounts | P1 |
 | TC-12-020 | Refunds | Merchant | API | Refund a succeeded payment | P0 |
 | TC-12-021 | Disputes | Merchant | API | List and view disputes | P2 |
@@ -2184,18 +2184,18 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-12-018 - Payout failure with declining bank code 011
+#### TC-12-018 - Payout declined by the transfer rail, then retried
 
 - **Module:** Payouts
 - **Actor:** Merchant   **Channel:** API   **Priority:** P1
-- **Preconditions:** Simulated rail; settlement account with bank_code 011.
+- **Preconditions:** Live Interswitch Send Money rail; a destination the rail declines (name enquiry fails, or TransferFunds returns a non-90000 code).
 
 **Steps**
 
-1. Request a payout to bank code 011.
-2. Observe the outcome.
+1. Request a payout to the declined destination.
+2. Observe the payout row; then retry and reverse it.
 
-**Expected Result:** Payout fails deterministically (SIM rail declines 011); row is retryable; reversal can reopen the batch.
+**Expected Result:** The provider returns a declined (non-90000) response: the payout row is marked `failed` with `last_error`, `RetryPayout` resubmits up to `PayoutMaxAttempts`, and `ReversePayout` reopens the batch for a fresh payout.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2224,7 +2224,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 1. POST /api/v1/payments/{reference}/refund (optional reason).
 
-**Expected Result:** Full refund: pending -> completed (simulated rail), payment transitions to refunded, ledger reversal posted, payment.refunded emitted.
+**Expected Result:** Full refund: Interswitch accepts the reversal (responseCode Z0/90000), the refund row completes, the payment transitions to refunded, the ledger reversal is posted, and payment.refunded is emitted.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2329,7 +2329,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Payouts
 - **Actor:** Admin   **Channel:** Console   **Priority:** P1
-- **Preconditions:** A failed payout (bank 011).
+- **Preconditions:** A payout marked failed by a declined provider transfer (see TC-12-018).
 
 **Steps**
 
@@ -2690,7 +2690,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 1. Open /admin/thrift.
 
-**Expected Result:** Groups, members, contributions, and pending simulated payouts visible.
+**Expected Result:** Groups, members, contributions, and pending payouts visible.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2778,7 +2778,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-15-011 | ChatGuard | Admin | Console | Chat guard incidents | P2 |
 | TC-15-012 | Webhooks | Admin | Console | Webhook delivery log + dead-letter replay | P1 |
 | TC-15-013 | Screening | Admin | CLI | KYC rescreen | P2 |
-| TC-15-014 | Identity | Individual | WhatsApp | NIN/BVN identity verification (simulated) | P1 |
+| TC-15-014 | Identity | Individual | WhatsApp | NIN/BVN identity verification (vendor adapter) | P1 |
 | TC-15-015 | Encryption | Admin | Console | Encryption at rest verification | P0 |
 | TC-15-016 | RateLimit | System | Web | Public page rate limiting | P1 |
 | TC-15-017 | RateLimit | System | Webhook | Webhook rate limiting | P1 |
@@ -2974,7 +2974,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Screening
 - **Actor:** Admin   **Channel:** CLI   **Priority:** P2
-- **Preconditions:** SCREENING_PROVIDER=simulated.
+- **Preconditions:** SCREENING_PROVIDER=http (screening vendor adapter configured).
 
 **Steps**
 
@@ -2984,7 +2984,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-15-014 - NIN/BVN identity verification (simulated)
+#### TC-15-014 - NIN/BVN identity verification (vendor adapter)
 
 - **Module:** Identity
 - **Actor:** Individual   **Channel:** WhatsApp   **Priority:** P1
@@ -2994,7 +2994,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 1. Submit the 11-digit NIN or BVN in the CBN Tier 2 upgrade flow (both are required).
 
-**Expected Result:** Simulated verifier returns a deterministic result; a successful BVN and NIN pair is attached to the profile and unlocks L2.
+**Expected Result:** The NIN/BVN Portal verifier returns a match result; a successful BVN and NIN pair is attached to the profile and unlocks L2.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

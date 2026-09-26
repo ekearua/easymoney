@@ -51,11 +51,11 @@ The platform is delivered as a **single Go binary** (`cmd/demo`) that runs a chi
 
 **AI/conversational functionality:** There is **no artificial intelligence**. The conversational engine is purely rule-based (intent/keyword matching and menu state). Any expectation of AI/NLP capabilities is not supported by the repository analysis.
 
-**External integrations:** Interswitch Web Checkout (real, test-key), WhatsApp Cloud API (real), Telegram Bot API (real), SMTP email (optional), VTPass (sandbox), plus simulated payout, refund, data-fulfilment, identity (NIN/BVN), and sanctions/PEP screening providers. Redis (optional) and Kafka (optional) back rate limiting and the event bus respectively.
+**External integrations:** Interswitch Web Checkout (real, test-key), WhatsApp Cloud API (real), Telegram Bot API (real), SMTP email (optional), VTPass (sandbox), plus live payout/refund (Interswitch), data-fulfilment (VTPass or Interswitch VTU), identity (ninbvnportal.com.ng), and sanctions/PEP screening (HTTP vendor adapter) integrations. Redis (optional) and Kafka (optional) back rate limiting and the event bus respectively.
 
 **Overall platform architecture.** Customers and merchants interact through channel webhooks and web consoles; a chi router (`internal/app`) receives requests, enqueues inbound messages, and exposes admin/merchant/Partner APIs; domain services (`internal/service`) orchestrate business logic; the store layer (`internal/store`) persists state, applies financial invariants, and writes business events to a transactional outbox; background workers drain outbox, deliver webhooks, run settlements, reconciliation, retention, rescreening, and transaction monitoring. PostgreSQL is the system of record.
 
-**Production readiness:** The repository analysis explicitly establishes that the build is **not** production-ready for live money. README.md:443-444 states the build is not a licensed payment processor and lists required additions before live-money use. Simulated rails, `EMAIL_DEMO_CODE_IN_CHAT`, and test-key-only Interswitch policy corroborate this.
+**Production readiness:** The repository analysis explicitly establishes that the build is **not** production-ready for live money. README.md:443-444 states the build is not a licensed payment processor and lists required additions before live-money use. The sandbox/test-key Interswitch policy, `EMAIL_DEMO_CODE_IN_CHAT`, and the QA-unprovisioned transfer rail corroborate this.
 
 ---
 
@@ -156,17 +156,17 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | Hosted card checkout | Interswitch Web Checkout hosted checkout (form redirect), verification-driven success | Customers | Implemented | `internal/providers/interswitch/client.go`; `app/checkout.go` |
-| Bank-transfer path | Generated transfer instructions; success only after customer confirms | Customers | Implemented (rail simulated) | `bank_transfer_simulations`; `store_reconcile.go:112-119` |
+| Bank-transfer path | Interswitch dynamic virtual account; success only after server-side requery | Customers | Implemented | DVA initialize (`service/payments.go`); `store_standing_accounts.go` |
 | Payment lifecycle | draft → … → succeeded/failed/refunded with `CanTransition` enforcement | System | Implemented | `domain/payment.go:32-46` |
 | Partner API payments | Server-to-server initiate/status/verify | Merchants | Implemented | `app/api_keys.go`; routes in `app.go` |
 | Invoices | Line-item invoices, split/partial payments, `wa.me` pay link | Merchants, customers | Implemented | migration 012; routes in `app.go` |
 | Request-money links (checkouts) | General links resolved by a payer; idempotent | Merchants, customers | Implemented | migrations 035, 039; `app/checkout.go` |
 | Payment fees | Settlement fee booked at batch cut | System, merchants | Implemented | migration 043; `SETTLEMENT_FEE_BPS` |
-| Refunds (full) | Full-payment refunds with ledger reversal | Merchants (API), admins | Implemented (rail simulated) | `store_refunds.go:66-181` |
+| Refunds (full) | Full-payment refunds with ledger reversal | Merchants (API), admins | Implemented | Interswitch refund API; `store_refunds.go:66-181` |
 | Refunds (partial) | — | — | Not implemented (full-only per analysis) | `store_refunds.go:81` |
 | Disputes | open/won/lost/expired; admin resolution | Admins, merchants | Implemented | `store_refunds.go:334-382` |
 | Settlement batches | Cut open batches, scheduled/processed/failed | Merchants (API), admins | Implemented | `store_settlements.go`; migration 041 |
-| Payouts | queued/processing/completed/failed/reversed; simulated rail | Merchants (API), admins | Implemented (rail simulated) | README:368; `app/workers.go` |
+| Payouts | queued/processing/completed/failed/reversed; Interswitch NIP rail | Merchants (API), admins | Implemented | Interswitch v5 `TransferFunds`; `app/workers.go` |
 | Payout reversal | Reverse failed/processing payout, reopen batch | Merchants (API), admins | Implemented | `app/settlements.go`; README:363 |
 | Settlement accounts | Register/manage payout destinations, defaults | Merchants (API), admins | Implemented | routes in `app.go` |
 | Automatic provider routing | EWMA latency + consecutive-error health tracking; `PickProvider()` auto-selects optimal gateway | System | Implemented | `internal/service/provider_router.go` |
@@ -192,8 +192,8 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | KYC tier ladder L0–L3 (CBN tiers) | Adjacent rung advancement gated on evidence; L4 retired in migration 073 | Customers, admins | Implemented | `internal/kyc`; migration 026; migration 073 |
 | Standing account (virtual account) | Reusable virtual account reserved from L1 (provider-first, local `9029…` fallback) for bank-transfer top-ups | Customers | Implemented | `internal/store/store_standing_accounts.go`; migration 072 |
 | KYC/KYB allowance ladder | DB-driven per-tier payment/payout ceilings (single/daily/monthly, in & out) | Customers, merchants, admins | Implemented | `internal/kyc` + `internal/store/store_allowances.go`; migration 053 |
-| Sanctions/PEP screening | Deterministic simulated screener; live vendor plug-in | Customers | Implemented (provider simulated) | README:188 |
-| NIN/BVN identity verification | Deterministic simulated verifier | Customers | Implemented (provider simulated) | README:190 |
+| Sanctions/PEP screening | HTTP vendor adapter (`SCREENING_API_BASE` required at boot) | Customers | Implemented | `internal/providers/screening/http.go` |
+| NIN/BVN identity verification | Live ninbvnportal.com.ng lookup (`NINBVNPORTAL_API_KEY` required at boot) | Customers | Implemented | `internal/providers/identity/ninbvnportal.go` |
 | ML/FT risk scoring | 0–100 score, low/medium/high band | System | Implemented | `internal/kyc.ScoreRisk`; migration 027 |
 | Transaction monitoring | Velocity, structuring, round amounts, high-risk categories | System, admins | Implemented | `kyc/monitor.go:82-197`; migration 028 |
 | Regulator reports | STR, CTR, PEP CSV generation | Admins/compliance | Implemented | `app/reports.go:38-90` |
@@ -249,7 +249,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | ------- | ----------- | ------------ | --------------------- | -------------- |
 | Thrift groups | Fixed contribution, weekly/monthly, 2–12 members, payout rotation | Customers | Implemented | migrations 013, 015; `app/admin.go` |
 | Thrift pool ledger account | 6100_thrift_pool | System | Implemented | `store_ledger.go:22-32` |
-| Mobile data purchase | Order lifecycle, fulfilment (simulated/VTPass) | Customers | Implemented (fulfilment simulated) | `service/data.go`; migration 008 |
+| Mobile data purchase | Order lifecycle, fulfilment through VTPass or Interswitch VTU | Customers | Implemented | `service/data.go`; migration 008 |
 | Data plan catalog | Networks/plans, VTPass `provider_sku` sync | System | Implemented | `sync-vtpass-data-plans`; README:270-314 |
 
 ### 3.9 Platform Infrastructure Features
@@ -440,8 +440,8 @@ See Section 10.
 The platform distinguishes three money movements:
 
 1. **Customer → merchant payment** (card and bank transfer both via Interswitch Web Checkout; verification-driven success).
-2. **Merchant settlement payout** (batch → merchant settlement account) through the **simulated payout rail**.
-3. **Refund** (merchant → customer reversal) through the **simulated refund rail**.
+2. **Merchant settlement payout** (batch → merchant settlement account) through the **Interswitch NIP rail**.
+3. **Refund** (merchant → customer reversal) through the **Interswitch refund API**.
 
 There is **no peer-to-peer transfer or general money-transfer product**. "Transfers" in the README are documented as bank-transfer payments (customer-initiated) and settlement payouts.
 
@@ -449,15 +449,15 @@ There is **no peer-to-peer transfer or general money-transfer product**. "Transf
 
 - **Initiation:** In chat, the customer selects **Bank transfer** and chooses a collection bank (browsable/searchable list).
 - **Beneficiary handling / validation:** Bank-transfer payments are completed on the Interswitch hosted checkout; the recipient payout for individual pay is booked by the post-success settlement hook.
-- **Provider interaction:** The bank rail is a **simulation** (`bank_transfer_simulations`), with status `user_confirmed`.
-- **Status:** The payment transitions to succeeded only after confirmation.
+- **Provider interaction:** The rail is an Interswitch dynamic virtual account (`BANK_TRANSFER_MODE=interswitch`); confirmation is the server-side requery, never the customer's word.
+- **Status:** The payment transitions to succeeded only after verification.
 - **Ledger implications:** On success, the money-in posting is debited to `1100_operating_bank` with `source_type='payment'`. Evidence: `store_reconcile.go:84-87`.
-- **Reconciliation:** Bank-transfer payments reconcile through the internal-vs-ledger legs like every other gateway payment (the simulated bank rail leg was retired with the rail). Evidence: `store_reconcile.go`.
-- **Implementation status:** Implemented end-to-end with a simulated bank rail.
+- **Reconciliation:** Bank-transfer payments reconcile through the internal-vs-ledger legs like every other gateway payment (the legacy in-app bank rail leg was retired when DVA collection landed). Evidence: `store_reconcile.go`.
+- **Implementation status:** Implemented end-to-end on the Interswitch DVA rail.
 
 ### 7.3 Settlement payouts (merchant side)
 
-See Section 9. The payout provider is a deterministic simulator: bank code `011` always declines; any other bank code succeeds and returns `external_ref = SIM-PAY-<reference>-<unix>`. Idempotency key is the payout row id. Evidence: README:368.
+See Section 9. Payouts dispatch through the Interswitch NIP single transfer (v5 `TransferFunds`); the batch number is the provider idempotency key and a declined attempt records `last_error` on the payout for retry.
 
 ---
 
@@ -532,7 +532,7 @@ Money-in postings use `source_type='payment'`; payout money-out uses `source_typ
 
 - A payout is requested for an open batch to the merchant's default active settlement account: statuses `queued`, `processing`, `completed`, `failed`, `reversed`. Evidence: README:362-364.
 - A 10-second ticker dispatches queued payouts (`app/workers.go`). Payout max attempts = 3.
-- The default provider is `simulated`: bank code `011` always declines (tests failure/retry/reverse); any other code succeeds with `external_ref = SIM-PAY-<reference>-<unix>`. Idempotency key is the payout row id, so a retry of the same payout replays its outcome while a reversed payout (a fresh row) gets a fresh outcome. Evidence: README:368.
+- The rail is the Interswitch NIP single transfer (v5 `TransferFunds`); the batch number is the provider idempotency key, so a redelivered payout request settles once. A declined attempt is recorded on the payout (`last_error`) and the batch stays scheduled for retry. Production requires `INTERSWITCH_TRANSFER_BASE_URL` and `INTERSWITCH_SOURCE_ACCOUNT`; the sandbox v5 OAuth needs QA-provisioned credentials (see GO_LIVE_RUNBOOK §3.2).
 - **Payout reversal:** reverses a failed/processing payout, reopens its batch, and (merchant-only) releases funds back to `3100 merchant_payable`; a fresh payout can then be requested. Evidence: README:363; `app/settlements.go`.
 - **Bank interactions:** Payout destinations are settlement accounts (`bank_code` NIP code, `account_number`, `account_name`); status `pending`/`active`/`disabled`, admin approve/disable. Evidence: README:365-366.
 
@@ -542,7 +542,7 @@ Completed payouts must have a matching money-out posting on `3200` (reconciliati
 
 ### 9.4 Implementation status
 
-Implemented end-to-end with a **simulated payout rail**. No live bank integration exists in the repository.
+Implemented end-to-end on the **Interswitch NIP rail**. The sandbox transfer rail is blocked on QA provisioning, not code (GO_LIVE_RUNBOOK §5).
 
 ---
 
@@ -555,8 +555,8 @@ Implemented end-to-end with a **simulated payout rail**. No live bank integratio
 - **Preconditions:** Payment must be `succeeded` (status enforced), must not have an active refund, and must not be in a `scheduled`/`processed` settlement batch (reverse the payout first). Evidence: `store_refunds.go:85-115`; `app/refunds.go:65-75`.
 - **Atomic flow (`RequestRefund`, `store_refunds.go`):** lock payment `FOR UPDATE` → validate preconditions → if in an open batch, remove the settlement line and recompute batch totals → insert refund (`pending_approval`) → emit `payment.refunded` → commit. All in one transaction.
 - **Approval flow (`ApproveRefund`):** A **different** admin approves → transitions refund to `pending` → posts the ledger reversal via offsetting entries → transitions payment to `refunded` → records `payment_events`. Evidence: `store_refunds.go`.
-- **Refund statuses:** `pending_approval`, `pending`, `succeeded`, `failed`. The default rail is **simulated** — always succeeds with `provider_refund_id = SIM-REF-<payment_id>-<unix>`. Evidence: README:374.
-- **Provider interactions:** `CompleteRefund` / `FailRefund` (`store_refunds.go:240-265`). A live rail plugs in behind the same interface.
+- **Refund statuses:** `pending_approval`, `pending`, `succeeded`, `failed`. The rail is the Interswitch refund API; `provider_refund_id` is recorded when the API confirms.
+- **Provider interactions:** `CompleteRefund` / `FailRefund` (`store_refunds.go:240-265`) after the Interswitch refund call.
 
 ### 10.2 Disputes
 
@@ -572,7 +572,7 @@ Implemented end-to-end with a **simulated payout rail**. No live bank integratio
 
 ### 10.4 Implementation status
 
-Implemented end-to-end; both refund and dispute provider rails are simulated.
+Implemented end-to-end; refunds ride the Interswitch refund API and disputes are admin state transitions.
 
 ---
 
@@ -600,7 +600,7 @@ Discrepancies → Admin review (reconciliation_items persisted)
 
 - **Leg 1 — Internal:** succeeded payments (reference, amount, currency, provider).
 - **Leg 2 — Ledger:** money-in postings (`debit`, account `1100_operating_bank`, `source_type='payment'`, unreversed), summed per journal ref.
-- **Leg 3 — Bank rail:** retired with the simulated bank rail; bank-transfer payments reconcile through the internal-vs-ledger legs.
+- **Leg 3 — Bank rail:** the legacy in-app bank rail was retired when bank-transfer collection moved to Interswitch DVA; bank-transfer payments reconcile through the internal-vs-ledger legs.
 - **Leg 4 — Payouts:** completed payouts must have matching money-out postings on `3200` with `source_type='payout'`.
 
 Checks produce categorized discrepancies such as `internal_without_ledger`, `amount_mismatch`, `ledger_without_internal`, `bank_without_internal`, `bank_amount_mismatch`, `internal_without_bank`, `payout_without_ledger`, `payout_amount_mismatch`, `ledger_without_payout`.
@@ -627,18 +627,18 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 - A sanctions/PEP screening decision of `strong`/`blocked` halts advancement until `clear`/`manually_cleared`.
 - Enforced in the store (`AdvanceKYCTier`/`AdvanceKYCTierTo`/`DowngradeKYCTier`); every transition, screening, and review is audited. Evidence: README:186.
 - Compliance manages the ladder and manual review queue at `/admin/kyc` (admin/compliance roles). Evidence: `app/admin.go`.
-- **Status:** Implemented. **Note (Resolved):** the demo now documents and exercises the full ladder — CBN Tier-1 chat/browser onboarding to L1, photo ID + BVN + NIN to L2, and address proof + simulated EDD to L3.
+- **Status:** Implemented. **Note (Resolved):** the demo now documents and exercises the full ladder — CBN Tier-1 chat/browser onboarding to L1, photo ID + BVN + NIN to L2, and address proof + an EDD case to L3.
 
 ### 12.2 Identity verification (NIN/BVN)
 
-- Implemented through the `IdentityVerifier` port. The `simulated` provider is deterministic: a NIN starting with `1` or a BVN starting with `2` verifies; `8…` mismatches; `9…` is not found. A live vendor (Smile ID / Youverify / Dojah / Prembly) plugs in behind the same interface. Evidence: README:190.
-- **Status:** Implemented with a simulated provider.
+- Implemented through the `IdentityVerifier` port. `IDENTITY_PROVIDER=ninbvnportal` calls the live ninbvnportal.com.ng lookup; `NINBVNPORTAL_API_KEY` is required at boot, and other vendors (Smile ID / Youverify / Dojah / Prembly) plug in behind the same interface.
+- **Status:** Implemented on a live vendor adapter.
 
 ### 12.3 Sanctions / PEP screening
 
-- Implemented through the `SanctionsScreener` port. The `simulated` provider returns `strong` for a name containing a sanctions token ("Sanctioned"/"Drug Lord"), `possible` for a PEP token ("Senator"/"Minister"), else `clear`. A live OFAC/vendor list plugs in behind the same interface. Evidence: README:188.
-- Screening runs when the CBN Tier-1 basic-details application is processed (chat or browser upgrade flow) ahead of the L1 promotion; a background worker re-screens profiles every `KYC_RESCREEN_PERIOD` (default 90 days); a `strong`/`blocked` rescreen downgrades to L1 and opens a review case. Evidence: README:197-199; `rescreen` command.
-- **Status:** Implemented with a simulated provider.
+- Implemented through the `SanctionsScreener` port: the HTTP adapter posts identity fields to `{SCREENING_API_BASE}/screen` and maps the vendor response onto `clear`/`possible`/`strong`; `SCREENING_API_BASE` is required at boot. Evidence: `internal/providers/screening/http.go`.
+- Screening runs when the CBN Tier-1 basic-details application is processed (chat or browser upgrade flow) ahead of the L1 promotion; a background worker re-screens profiles every `KYC_RESCREEN_PERIOD` (default 90 days); a `strong`/`blocked` rescreen downgrades to L1 and opens a review case. Evidence: `rescreen` command.
+- **Status:** Implemented on a live vendor adapter.
 
 ### 12.4 ML/FT risk scoring
 
@@ -648,10 +648,10 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 
 ### 12.5 Transaction monitoring (AML)
 
-- Rules (evidence `kyc/monitor.go:82-197`): **velocity** (more than N settled payments per window), **structuring** (several payments just under a threshold), **round amounts** (clean multiples), and **high-risk counterparty categories**.
-- Defaults: velocity window 24h/limit 10; structuring 24h/count 3/floor ₦40,000/ceil ₦100,000; round step/min ₦10,000; high-risk categories `Gambling,Forex,Crypto`. Evidence: `.env.example:91-100`.
+- Rules (evidence `internal/kyc/monitor.go`): **velocity** (more than N settled money movements per window), **structuring** (several movements just under a threshold), **round amounts** (clean multiples), and **high-risk counterparty categories** — evaluated across card/transfer payments, wallet top-ups, standing-account bank credits, refunds, and merchant settlement payouts (attributed to the merchant owner). Alerts carry the rails they fired over plus a dedupe reference, so rescans and redeliveries never duplicate an alert.
+- Defaults: velocity window 24h/limit 10; structuring 24h/count 3/floor ₦40,000/ceil ₦100,000; round step/min ₦10,000; high-risk categories `Gambling,Forex,Crypto`. Evidence: `.env.example` (`MONITOR_*`).
 - Alerts: severities `low`/`medium`/`high` mapping to risk-score contributions 15/35/60 (`kyc/monitor.go:32-40`). Medium/high alerts open a `monitoring` manual review case.
-- Runs as a periodic 15-minute job (`app/workers.go`) and as an event consumer on `payment.succeeded` (`service/eventbus.go:98-132`).
+- Runs as a periodic 15-minute job (`app/workers.go`), as an event consumer on `payment.succeeded` (`service/eventbus.go`), and inline when a standing-account bank credit is applied (`app/webhooks.go`).
 - **Status:** Implemented.
 
 ### 12.6 Regulatory reporting
@@ -679,7 +679,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 
 **Implemented:** KYC ladder, KYB ladder for merchants, screening decisions, allowance ceilings with reservation enforcement, risk scoring, transaction monitoring rules, review queues, DSR (Section 20 workflow), legal holds, retention, SIEM, chat guard, RBAC, STR/CTR/PEP file reports, global transaction limits.
 
-**Partially implemented:** Identity and sanctions screening (simulated providers; live vendor plug-in required), email confirmation (SMTP optional, chat demo mode).
+**Partially implemented:** Email confirmation (SMTP optional, chat demo mode); identity and screening are implemented on live vendor adapters whose credentials must be supplied at boot.
 
 **Scaffolded / Planned:** No live regulatory submission pipeline.
 
@@ -864,16 +864,16 @@ All admin routes require login; RBAC middleware gates sensitive actions. Routes 
 
 | Integration | Purpose | Xego Component | Direction | Status |
 | ----------- | ------- | -------------- | --------- | ------ |
-| Interswitch Web Checkout | Card payment initialize (form redirect), requery, outbound webhook | `internal/providers/interswitch/client.go` | Outbound (API) + Inbound (webhook) | Real HTTP, **test-key only** |
+| Interswitch Web Checkout | Card payment initialize (form redirect), requery, outbound webhook | `internal/providers/interswitch/client.go` | Outbound (API) + Inbound (webhook) | Real HTTP (TEST sandbox by default; LIVE required in production) |
 | WhatsApp Cloud API | Customer chat, checkout links, templates, images | `internal/providers/whatsapp/client.go` | Bidirectional | Real HTTP |
 | Telegram Bot API | Customer chat | `internal/app` webhook + bot client | Bidirectional | Real HTTP |
 | SMTP | Merchant-registration email confirmation | `internal/providers/email` | Outbound | Real (Configured Only; empty defaults) |
 | VTPass | Data plan catalogue + fulfilment | `app/webhooks.go`; `sync-vtpass-data-plans`; vtpass provider | Bidirectional (webhook + API) | Sandbox HTTP |
-| Payout rail | Settlement payouts | `internal/providers/payout/simulated.go` | Outbound | **Simulated** |
-| Refund rail | Refunds | `internal/providers/refund/simulated.go` | Outbound | **Simulated** |
-| Data fulfilment | Mobile data orders | `internal/providers/data` | Outbound | Simulated default (`DATA_PROVIDER=simulated`) |
-| Identity (NIN/BVN) | KYC L2 gate (photo ID + both verified) | `internal/providers/identity` | Outbound | **Simulated** |
-| Sanctions/PEP screening | KYC screening | `internal/providers/screening` | Outbound | **Simulated** |
+| Payout rail | Settlement payouts | internal Interswitch client (v5 `TransferFunds`) | Outbound | Real HTTP (QA-provisioned credentials required) |
+| Refund rail | Refunds | internal Interswitch client (refund API) | Outbound | Real HTTP |
+| Data fulfilment | Mobile data orders | `internal/providers/vtpass`; Interswitch VTU | Outbound | VTPass sandbox HTTP / Interswitch |
+| Identity (NIN/BVN) | KYC L2 gate (photo ID + both verified) | `internal/providers/identity/ninbvnportal.go` | Outbound | Real HTTP (`NINBVNPORTAL_API_KEY` required) |
+| Sanctions/PEP screening | KYC screening | `internal/providers/screening/http.go` | Outbound | Real HTTP (`SCREENING_API_BASE` required) |
 | Redis | Distributed rate limiting | `internal/ratelimit` | Internal | Configured Only (empty `REDIS_URL` → in-memory) |
 | Kafka | Event bus | `internal/bus/kafka` | Internal | Configured Only (default `EVENT_BUS=memory`) |
 | S3-compatible storage (OCI/AWS/MinIO) | Backup shipping | `deploy/backup.sh` (rclone) | Outbound | Deployment |
@@ -1065,8 +1065,8 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 - **Trigger:** Customer chooses **Bank transfer**.
 - **Actors:** Customer, engine, store.
 - **Process:** 1) payment method selected; 2) review with DVA fee; 3) customer completes the payment on the Interswitch hosted checkout; 4) payment → `succeeded` only after server-side verification.
-- **Data:** payment, bank_transfer_simulations (`user_confirmed`), ledger pair, events.
-- **Status:** Implemented (rail simulated).
+- **Data:** payment, DVA virtual-account reference, ledger pair, events.
+- **Status:** Implemented on the Interswitch DVA rail.
 
 ### Workflow: Invoice generation & split payment
 
@@ -1096,18 +1096,18 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 ### Workflow: Settlement & payout
 
 - **Trigger:** Merchant calls `POST /settlements` (or operator tooling) with a `batch_no`.
-- **Actors:** Merchant (API), SettlementService, dispatcher, simulated rail, admin.
-- **Process:** 1) cut: freeze succeeded un-batched payments; ledger 3100→3200; fee entry; 2) batch `open`; 3) `POST .../payout` → payout `queued`; 4) 10s dispatcher → `processing` → rail call; 5) `completed` (bank code ≠ 011) or `failed` (011 declines; retry up to 3); 6) ledger money-out on 3200; 7) `payout.succeeded/failed` → merchant webhook.
+- **Actors:** Merchant (API), SettlementService, dispatcher, Interswitch NIP rail, admin.
+- **Process:** 1) cut: freeze succeeded un-batched payments; ledger 3100→3200; fee entry; 2) batch `open`; 3) `POST .../payout` → payout `queued`; 4) 10s dispatcher → `processing` → NIP `TransferFunds` call; 5) `completed` on provider success or `failed` with `last_error` (retry up to 3); 6) ledger money-out on 3200; 7) `payout.succeeded/failed` → merchant webhook.
 - **Failure/override:** reverse payout → reopen batch → funds back to 3100 → fresh payout.
-- **Status:** Implemented (rail simulated).
+- **Status:** Implemented on the Interswitch NIP rail.
 
 ### Workflow: Refund
 
 - **Trigger:** `POST /api/v1/payments/{reference}/refund` or operator action.
-- **Actors:** Merchant (API), admin, RefundService, simulated rail.
-- **Process (atomic, `RefundPayment`):** lock payment → validate succeeded / no active refund / batch state → remove open-batch line + recompute totals → insert refund `pending` → payment → `refunded` (+ event) → ledger reversal → `payment.refunded` → commit → rail (simulated) completes or fails.
+- **Actors:** Merchant (API), admin, RefundService, Interswitch refund API.
+- **Process (atomic, `RefundPayment`):** lock payment → validate succeeded / no active refund / batch state → remove open-batch line + recompute totals → insert refund `pending` → payment → `refunded` (+ event) → ledger reversal → `payment.refunded` → commit → rail call completes or fails.
 - **Data:** refunds, payment_events, ledger_entries (reversal), outbox.
-- **Status:** Implemented (rail simulated).
+- **Status:** Implemented on the Interswitch refund rail.
 
 ### Workflow: Dispute
 
@@ -1165,20 +1165,20 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | Per-payment fee model | Implemented | `service/fees.go`; card/DVA/bank transfer/NIP configurable caps |
 | Payment split application | Implemented | `store/store_split_payments.go`; migration 052; ledger posting at collection |
 | Individual pay (customer payout) | Implemented | `service/conversation_individual_pay.go`; 8-step WhatsApp flow; bank transfer only |
-| Bank-transfer path | Implemented (rail simulated) | `bank_transfer_simulations`; README:22 |
+| Bank-transfer path | Implemented | Interswitch DVA; `store_standing_accounts.go` |
 | Partner API (payments/invoices/checkouts/settlements/payouts/refunds/disputes) | Implemented | `app/api_keys.go` |
 | Merchant webhooks | Implemented | `merchant_webhooks.go` |
 | Invoices (split/partial) | Implemented | migration 012; README:415-420 |
 | Request-money links / checkouts | Implemented | migrations 035/039; `app/checkout.go` |
 | QR receipt scanning / merchant services | Implemented | migration 014/019; `app/checkout.go` |
 | Thrift savings | Implemented | migrations 013/015; simulated payouts |
-| Mobile data purchase | Implemented (fulfilment simulated) | migration 008; `service/data.go` |
+| Mobile data purchase | Implemented | migration 008; `service/data.go` (VTPass / Interswitch VTU) |
 | Double-entry hash-chained ledger | Implemented | `store_ledger.go`; migrations 030/040 |
 | Ledger balance SQL | Unclear | call sites established; aggregation not line-verified |
 | Settlements / batches | Implemented | `store_settlements.go`; migration 041 |
-| Payouts | Implemented (rail simulated) | README:368; `app/workers.go` |
+| Payouts | Implemented | Interswitch NIP; `app/workers.go` |
 | Settlement fees | Implemented | migration 043; `SETTLEMENT_FEE_BPS` |
-| Refunds | Implemented (rail simulated) | `store_refunds.go:66-181` |
+| Refunds | Implemented | Interswitch refund API; `store_refunds.go:66-181` |
 | Partial refunds | Not implemented | full-only per `store_refunds.go:81` |
 | Disputes | Implemented | `store_refunds.go:334-382` |
 | Three-way reconciliation | Implemented | `store_reconcile.go`; `app/reconcile.go` |
