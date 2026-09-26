@@ -236,27 +236,6 @@ func (s *ConversationService) handlePayIndividualMethod(ctx context.Context, cha
 	}
 }
 
-func (s *ConversationService) handleAwaitIndividualBankTransfer(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	if strings.EqualFold(strings.TrimSpace(input), "cancel") {
-		return s.resetWithMessage(ctx, channel, recipient, user, session, "Transfer cancelled. Send *menu* to start over.")
-	}
-	if !strings.EqualFold(strings.TrimSpace(input), "confirm") {
-		return s.sendText(ctx, channel, recipient, "Send *confirm* when you've completed the transfer, or *cancel* to abort.")
-	}
-
-	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
-	recipientGets := amountKobo - XegoPayoutFee(s.cfg, amountKobo)
-	recipientPhone := session.Data["recipient_phone"]
-
-	session.State, session.Data = "menu", map[string]string{}
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient,
-		fmt.Sprintf("Payment confirmed!\n\nRecipient %s will receive %s within 24 hours.\nSend *menu* for more options.",
-			recipientPhone, domain.FormatNGN(recipientGets)))
-}
-
 func (s *ConversationService) initPayIndividualBankTransfer(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
 	amountKobo := parseAmountKobo(session.Data["amount_kobo"])
 	collectionFee := XegoCollectionFee(s.cfg, FeeChannelForProvider("transfer"), amountKobo)

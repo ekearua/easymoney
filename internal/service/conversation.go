@@ -418,11 +418,6 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handlePayIndividualConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_method":
 		return s.handlePayIndividualMethod(ctx, message.Channel, recipient, user, session, input)
-	case "await_individual_bank_transfer":
-		return s.handleAwaitIndividualBankTransfer(ctx, message.Channel, recipient, user, session, input)
-	case "await_individual_payment":
-		// Card checkout: webhook will complete. Acknowledge if user sends text.
-		return s.sendText(ctx, message.Channel, recipient, "Your card payment is being processed. We'll notify you when it's complete.")
 	case "wallet_topup_amount":
 		return s.handleWalletTopupAmount(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_method":

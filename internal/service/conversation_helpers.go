@@ -510,7 +510,7 @@ func describeCurrentFlow(session store.Session) string {
 		return "paying a thrift contribution"
 	case "select_data_payment_method":
 		return "purchasing mobile data"
-	case "pay_individual_method", "await_individual_bank_transfer", "await_individual_payment":
+	case "pay_individual_method":
 		phone := session.Data["recipient_phone"]
 		if phone != "" {
 			return fmt.Sprintf("sending money to %s", phone)
@@ -611,10 +611,6 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		})
 	case "pay_individual_method":
 		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer or your wallet. Send *bank transfer* or *wallet* to proceed.")
-	case "await_individual_bank_transfer":
-		return s.sendText(ctx, channel, recipient, "Waiting for your bank transfer confirmation. Send *confirm* when done.")
-	case "await_individual_payment":
-		return s.sendText(ctx, channel, recipient, "Your payment is being processed. We'll notify you when it's complete.")
 	case "wallet_topup_amount":
 		return s.startWalletTopup(ctx, channel, recipient, user, session)
 	case "wallet_topup_method":
