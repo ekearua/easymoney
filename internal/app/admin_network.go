@@ -93,6 +93,33 @@ func (a *App) adminResolveNetworkCase(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "resolve failed", http.StatusInternalServerError)
 		return
 	}
+	// Ring-aware enforcement: resolving as confirmed may freeze allowance
+	// reservations for every member of the ring in one action (the reviewer
+	// ticks the freeze box). Resolving as false_positive instead lifts any
+	// freeze previously raised against these members — a mis-tick heals the
+	// ring rather than requiring per-member cleanup.
+	if status == "resolved" && r.FormValue("freeze") == "on" {
+		members, err := a.store.NetworkCaseMembers(r.Context(), nc)
+		if err != nil {
+			a.logger.WarnContext(r.Context(), "resolve case members", "case_id", nc.ID, "error", err)
+		} else {
+			for _, m := range members {
+				if err := a.store.FreezeAllowance(r.Context(), m.AccountType, m.SubjectID, adminEmail, nc.ID, note); err != nil {
+					a.logger.WarnContext(r.Context(), "freeze member", "subject", m.SubjectID, "error", err)
+				}
+			}
+			a.logger.InfoContext(r.Context(), "ring members frozen", "case_id", nc.ID, "members", len(members))
+		}
+	} else if status == "false_positive" {
+		members, err := a.store.NetworkCaseMembers(r.Context(), nc)
+		if err == nil {
+			for _, m := range members {
+				if _, err := a.store.UnfreezeAllowance(r.Context(), m.AccountType, m.SubjectID, adminEmail); err != nil {
+					a.logger.WarnContext(r.Context(), "unfreeze member", "subject", m.SubjectID, "error", err)
+				}
+			}
+		}
+	}
 	a.logger.InfoContext(r.Context(), "network case resolved",
 		"case_id", nc.ID, "status", nc.Status, "members", nc.MemberCount)
 	http.Redirect(w, r, "/admin/network", http.StatusSeeOther)
@@ -134,6 +161,13 @@ func (a *App) adminKYCProfile(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		displayName = user.DisplayName
 	}
+	// Freeze posture on the profile page: an investigator must see that
+	// money movement is blocked for this subject, and can lift it here.
+	frozen, err := a.store.SubjectIsFrozen(r.Context(), store.AccountIndividual, userID)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "subject freeze check", "error", err)
+		frozen = false
+	}
 	a.renderAdmin(w, "admin_kyc_profile.html", r, "KYC profile", map[string]any{
 		"Profile":       profile,
 		"UserID":        id,
@@ -141,6 +175,7 @@ func (a *App) adminKYCProfile(w http.ResponseWriter, r *http.Request) {
 		"Timeline":      timeline,
 		"SubjectLinks":  subjectLinks,
 		"TimelineCount": len(timeline),
+		"Frozen":        frozen,
 	})
 }
 

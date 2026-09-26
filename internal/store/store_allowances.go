@@ -94,6 +94,69 @@ type AllowanceReservation struct {
 // before the payment/payout row is created: a rejected reservation prevents
 // creation, and a crash after a successful reservation can only over-count
 // (the conservative direction), never under-count.
+// ErrAllowanceFrozen means the subject has an active allowance freeze
+// raised from a confirmed network case; new reservations are refused in
+// both directions until compliance lifts it.
+var ErrAllowanceFrozen = errors.New("allowances are frozen pending compliance review")
+
+// FreezeAllowance raises an active freeze on a subject (one per subject —
+// a second freeze on an already-frozen subject is a no-op), recording the
+// reviewer and the network case that motivated it. Idempotent.
+func (s *Store) FreezeAllowance(ctx context.Context, accountType string, subjectID uuid.UUID, frozenBy string, caseID int64, reason string) error {
+	if accountType != AccountIndividual && accountType != AccountBusiness {
+		return fmt.Errorf("invalid allowance account type %q", accountType)
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO allowance_freezes(account_type, subject_id, frozen_by, case_id, reason)
+		VALUES($1, $2, $3, NULLIF($4, 0), $5)
+		ON CONFLICT (account_type, subject_id) WHERE unfrozen_at IS NULL DO NOTHING`,
+		accountType, subjectID, frozenBy, caseID, reason)
+	return err
+}
+
+// UnfreezeAllowance lifts every active freeze on a subject, recording who
+// lifted it. Idempotent; returns whether a freeze was actually lifted.
+func (s *Store) UnfreezeAllowance(ctx context.Context, accountType string, subjectID uuid.UUID, unfrozenBy string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE allowance_freezes SET unfrozen_at=now(), unfrozen_by=$3
+		WHERE account_type=$1 AND subject_id=$2 AND unfrozen_at IS NULL`,
+		accountType, subjectID, unfrozenBy)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SubjectIsFrozen reports whether an active freeze blocks the subject.
+func (s *Store) SubjectIsFrozen(ctx context.Context, accountType string, subjectID uuid.UUID) (bool, error) {
+	var frozen bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM allowance_freezes WHERE account_type=$1 AND subject_id=$2 AND unfrozen_at IS NULL)`,
+		accountType, subjectID).Scan(&frozen)
+	return frozen, err
+}
+
+// NetworkCaseMembers resolves a case's member set to (account_type, id)
+// pairs for freeze/unfreeze sweeps.
+func (s *Store) NetworkCaseMembers(ctx context.Context, c NetworkCase) ([]struct {
+	AccountType string
+	SubjectID   uuid.UUID
+}, error) {
+	out := make([]struct {
+		AccountType string
+		SubjectID   uuid.UUID
+	}, 0, len(c.Members))
+	for _, m := range c.Members {
+		if id, err := uuid.Parse(m); err == nil {
+			out = append(out, struct {
+				AccountType string
+				SubjectID   uuid.UUID
+			}{AccountIndividual, id})
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) ReserveAllowance(ctx context.Context, r AllowanceReservation) error {
 	if r.AccountType != AccountIndividual && r.AccountType != AccountBusiness {
 		return fmt.Errorf("invalid allowance account type %q", r.AccountType)
@@ -135,6 +198,20 @@ func (s *Store) ReserveAllowance(ctx context.Context, r AllowanceReservation) er
 	}
 	if exists {
 		return tx.Commit(ctx)
+	}
+
+	// Trust Fabric network enforcement: an active freeze (raised when a
+	// network case covering this subject was resolved as confirmed) blocks
+	// new reservations in both directions, inside the same validated
+	// transaction as the tier ceilings.
+	var frozen bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM allowance_freezes WHERE account_type=$1 AND subject_id=$2 AND unfrozen_at IS NULL)`,
+		r.AccountType, r.SubjectID).Scan(&frozen); err != nil {
+		return fmt.Errorf("check allowance freeze: %w", err)
+	}
+	if frozen {
+		return ErrAllowanceFrozen
 	}
 
 	now := time.Now()

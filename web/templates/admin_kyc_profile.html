@@ -8,6 +8,7 @@
 <section class="panel">
   <p><span class="mono">{{.UserID}}</span></p>
   <p>Tier <strong>{{.Profile.Tier}}</strong> · Risk band <span class="status {{if or (eq .Profile.RiskBand "medium") (eq .Profile.RiskBand "high")}}warn{{else}}ok{{end}}">{{.Profile.RiskBand}}</span> · score {{.Profile.RiskScore | printf "%.0f"}} · last screening {{if .Profile.LastScreeningDecision}}{{.Profile.LastScreeningDecision}}{{else}}—{{end}}</p>
+  {{if .Frozen}}<p><span class="status warn">allowances frozen</span> <span class="small-text">A confirmed network case blocks new money movement for this subject. An admin can lift it from the linked case on the <a href="/admin/network">Trust network</a> page.</span></p>{{end}}
   <p><a href="/admin/kyc">← Back to the KYC queue</a></p>
 </section>
 
