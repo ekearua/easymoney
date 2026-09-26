@@ -1,9 +1,41 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestExampleEnvTemplateLoads pins .env.example to values the loader actually
+// accepts. When the simulated providers were retired the template kept
+// advertising them (plus a phantom ALLOW_SIMULATED_RAILS_IN_PROD override), so
+// a copied template could not boot. This guard reads the real file, applies
+// every assignment in its documented development mode, and fails if the
+// template drifts back to unloadable values.
+func TestExampleEnvTemplateLoads(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", ".env.example"))
+	if err != nil {
+		t.Fatalf("read .env.example: %v", err)
+	}
+	if strings.Contains(string(raw), "ALLOW_SIMULATED_RAILS_IN_PROD") {
+		t.Fatal(".env.example advertises ALLOW_SIMULATED_RAILS_IN_PROD, which the loader never reads")
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("template line is not an assignment: %q", line)
+		}
+		t.Setenv(strings.TrimSpace(key), strings.TrimSpace(value))
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf(".env.example no longer loads: %v", err)
+	}
+}
 
 func TestProductionRequiresAtLeastOnePaymentProvider(t *testing.T) {
 	t.Setenv("APP_ENV", "production")

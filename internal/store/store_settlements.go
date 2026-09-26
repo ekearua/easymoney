@@ -41,8 +41,9 @@ const (
 	PayoutReversed   = "reversed"
 )
 
-// SettlementProviderDefault is the rail used when none is configured.
-const SettlementProviderDefault = "simulated"
+// SettlementProviderDefault is the payout rail recorded on new payout rows:
+// Interswitch NIP single transfer, the only real settlement rail.
+const SettlementProviderDefault = "interswitch"
 
 // PayoutMaxAttempts bounds retries before a payout is left for operator action.
 const PayoutMaxAttempts = 3
