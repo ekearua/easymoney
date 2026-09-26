@@ -20,6 +20,18 @@ const (
 	AlertHigh   = "high"
 )
 
+// Monitoring rails. The engine is rail-agnostic: card/transfer payments,
+// wallet top-ups, standing-account bank credits, refunds, and merchant
+// settlement payouts are all evaluated by the same rules, so a structuring or
+// velocity pattern cannot hide by switching rail.
+const (
+	RailPayment        = "payment"
+	RailTopup          = "topup"
+	RailStandingCredit = "standing_credit"
+	RailRefund         = "refund"
+	RailPayout         = "payout"
+)
+
 // Monitoring rule identifiers (transaction_alerts.rule).
 const (
 	RuleVelocity             = "velocity"
@@ -39,8 +51,17 @@ func AlertScore(severity string) float64 {
 	return 15
 }
 
-// TransactionInput is one settled payment observed by the monitor.
+// TransactionInput is one settled money movement observed by the monitor.
 type TransactionInput struct {
+	// Rail identifies which money rail the event came from. Empty is treated as
+	// RailPayment for backwards compatibility.
+	Rail string
+	// Reference is the rail's stable row reference (payment id, bank credit
+	// provider reference, refund id, payout id). It keys alert dedupe so a
+	// redelivered or re-scanned event is never alerted twice.
+	Reference string
+	// PaymentID is set for payment-backed rails only; bank credits, refunds,
+	// and payouts carry a Reference instead.
 	PaymentID        uuid.UUID
 	UserID           uuid.UUID
 	MerchantID       uuid.UUID
@@ -56,9 +77,16 @@ type MonitorConfig struct {
 	VelocityLimit  int // max settled payments per window before an alert
 
 	StructuringWindow time.Duration
-	StructuringCount  int   // minimum number of below-threshold payments
-	StructuringFloor  int64 // payments in [Floor, Floor+Floor) count as structuring
-	StructuringCeil   int64 // payments >= Ceil are ignored by this rule
+	StructuringCount  int   // minimum number of below-threshold movements
+	StructuringFloor  int64 // movements at or above this amount count as structuring
+	StructuringCeil   int64 // movements >= Ceil are ignored by this rule
+
+	// ReportThreshold is the currency-transaction reporting boundary in kobo
+	// (REPORT_CTR_THRESHOLD_KOBO). When > 0 it caps StructuringCeil, so the
+	// rule only fires for clusters that stay below the reporting boundary and
+	// alerts name the boundary they straddle instead of a bare hardcoded
+	// ceiling.
+	ReportThreshold int64
 
 	RoundAmountStep int64 // amounts divisible by this step flag the rule
 	RoundAmountMin  int64 // smallest amount that can flag the rule
@@ -72,6 +100,11 @@ type MonitorAlert struct {
 	Severity   string
 	UserID     uuid.UUID
 	PaymentIDs []uuid.UUID
+	// Rails is the sorted distinct set of rails the alert was raised over.
+	Rails []string
+	// References are the stable event references behind the alert; the first
+	// one is recorded with the alert and used to dedupe redeliveries.
+	References []string
 	AmountKobo int64
 	Details    map[string]any
 }
@@ -90,25 +123,30 @@ func RunTransactionMonitor(events []TransactionInput, cfg MonitorConfig) []Monit
 	}
 	var alerts []MonitorAlert
 
-	// Velocity: more than N settled payments inside the window.
+	// Velocity: more than N settled money movements inside the window, across
+	// every rail.
 	if len(events) >= cfg.VelocityLimit {
 		sorted := sortedByPaidAt(events)
 		cutoff := sorted[len(sorted)-1].PaidAt.Add(-cfg.VelocityWindow)
-		within := 0
+		var within []TransactionInput
 		var ids []uuid.UUID
 		for _, e := range sorted {
 			if !e.PaidAt.Before(cutoff) {
-				within++
-				ids = append(ids, e.PaymentID)
+				within = append(within, e)
+				if e.PaymentID != uuid.Nil {
+					ids = append(ids, e.PaymentID)
+				}
 			}
 		}
-		if within >= cfg.VelocityLimit {
+		if len(within) >= cfg.VelocityLimit {
 			alerts = append(alerts, MonitorAlert{
 				Rule:       RuleVelocity,
 				Severity:   AlertMedium,
 				UserID:     events[0].UserID,
 				PaymentIDs: ids,
-				Details:    map[string]any{"window": cfg.VelocityWindow.String(), "limit": cfg.VelocityLimit, "count": within},
+				Rails:      distinctRails(within),
+				References: referencesOf(within),
+				Details:    map[string]any{"window": cfg.VelocityWindow.String(), "limit": cfg.VelocityLimit, "count": len(within)},
 			})
 		}
 	}
@@ -116,7 +154,13 @@ func RunTransactionMonitor(events []TransactionInput, cfg MonitorConfig) []Monit
 	// Structuring: several payments just under a reporting threshold inside
 	// the window. The rule only engages when a floor is configured; payments at
 	// or above the ceiling are ignored (they are handled as large transfers).
-	structured := 0
+	// The reporting boundary caps the rule: a movement at or above the CTR
+	// threshold is a reportable transaction, not a structuring candidate.
+	ceil := cfg.StructuringCeil
+	if cfg.ReportThreshold > 0 && (ceil <= 0 || ceil > cfg.ReportThreshold) {
+		ceil = cfg.ReportThreshold
+	}
+	var structured []TransactionInput
 	var structuredIDs []uuid.UUID
 	latest := time.Time{}
 	if cfg.StructuringFloor > 0 {
@@ -124,28 +168,41 @@ func RunTransactionMonitor(events []TransactionInput, cfg MonitorConfig) []Monit
 			if e.AmountKobo < cfg.StructuringFloor {
 				continue
 			}
-			if cfg.StructuringCeil > 0 && e.AmountKobo >= cfg.StructuringCeil {
+			if ceil > 0 && e.AmountKobo >= ceil {
 				continue
 			}
-			structured++
-			structuredIDs = append(structuredIDs, e.PaymentID)
+			structured = append(structured, e)
+			if e.PaymentID != uuid.Nil {
+				structuredIDs = append(structuredIDs, e.PaymentID)
+			}
 			if e.PaidAt.After(latest) {
 				latest = e.PaidAt
 			}
 		}
 	}
-	if structured >= cfg.StructuringCount {
+	if len(structured) >= cfg.StructuringCount {
+		details := map[string]any{
+			"count":  len(structured),
+			"floor":  cfg.StructuringFloor,
+			"window": cfg.StructuringWindow.String(),
+			"latest": latest,
+		}
+		if ceil > 0 {
+			details["ceil"] = ceil
+		}
+		if cfg.ReportThreshold > 0 {
+			// Name the CTR boundary the cluster stays under, so an investigator
+			// sees why these amounts are suspicious together.
+			details["report_threshold"] = cfg.ReportThreshold
+		}
 		alerts = append(alerts, MonitorAlert{
 			Rule:       RuleStructuring,
 			Severity:   AlertHigh,
 			UserID:     events[0].UserID,
 			PaymentIDs: structuredIDs,
-			Details: map[string]any{
-				"count":  structured,
-				"floor":  cfg.StructuringFloor,
-				"window": cfg.StructuringWindow.String(),
-				"latest": latest,
-			},
+			Rails:      distinctRails(structured),
+			References: referencesOf(structured),
+			Details:    details,
 		})
 	}
 
@@ -162,7 +219,9 @@ func RunTransactionMonitor(events []TransactionInput, cfg MonitorConfig) []Monit
 				Rule:       RuleRoundAmounts,
 				Severity:   AlertLow,
 				UserID:     e.UserID,
-				PaymentIDs: []uuid.UUID{e.PaymentID},
+				PaymentIDs: paymentIDsOf(e),
+				Rails:      []string{railOf(e)},
+				References: []string{referenceOf(e)},
 				AmountKobo: e.AmountKobo,
 				Details:    map[string]any{"step": cfg.RoundAmountStep},
 			})
@@ -183,7 +242,9 @@ func RunTransactionMonitor(events []TransactionInput, cfg MonitorConfig) []Monit
 				Rule:       RuleHighRiskCounterparty,
 				Severity:   AlertMedium,
 				UserID:     e.UserID,
-				PaymentIDs: []uuid.UUID{e.PaymentID},
+				PaymentIDs: paymentIDsOf(e),
+				Rails:      []string{railOf(e)},
+				References: []string{referenceOf(e)},
 				AmountKobo: e.AmountKobo,
 				Details: map[string]any{
 					"merchant":    e.MerchantName,
@@ -201,4 +262,64 @@ func sortedByPaidAt(events []TransactionInput) []TransactionInput {
 	copy(out, events)
 	sort.Slice(out, func(i, j int) bool { return out[i].PaidAt.Before(out[j].PaidAt) })
 	return out
+}
+
+// railOf resolves the event's rail, defaulting an unset rail to a payment so
+// inputs built before rails existed keep their meaning.
+func railOf(e TransactionInput) string {
+	if e.Rail == "" {
+		return RailPayment
+	}
+	return e.Rail
+}
+
+// referenceOf resolves the event's stable dedupe reference, falling back to the
+// payment id when the rail did not supply one.
+func referenceOf(e TransactionInput) string {
+	if e.Reference != "" {
+		return e.Reference
+	}
+	if e.PaymentID != uuid.Nil {
+		return e.PaymentID.String()
+	}
+	return ""
+}
+
+// paymentIDsOf returns the payment-backed ids of one event (none for non-
+// payment rails).
+func paymentIDsOf(e TransactionInput) []uuid.UUID {
+	if e.PaymentID == uuid.Nil {
+		return nil
+	}
+	return []uuid.UUID{e.PaymentID}
+}
+
+// distinctRails returns the sorted distinct rails behind a set of events.
+func distinctRails(events []TransactionInput) []string {
+	seen := map[string]bool{}
+	for _, e := range events {
+		seen[railOf(e)] = true
+	}
+	rails := make([]string, 0, len(seen))
+	for rail := range seen {
+		rails = append(rails, rail)
+	}
+	sort.Strings(rails)
+	return rails
+}
+
+// referencesOf returns the distinct non-empty references behind a set of
+// events, in event order, so the first one is stable for dedupe.
+func referencesOf(events []TransactionInput) []string {
+	seen := map[string]bool{}
+	var refs []string
+	for _, e := range events {
+		ref := referenceOf(e)
+		if ref == "" || seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	return refs
 }

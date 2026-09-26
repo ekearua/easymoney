@@ -193,7 +193,8 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	alerts, err := a.store.ListTransactionAlerts(r.Context(), "", 100)
+	alertRail := strings.TrimSpace(r.URL.Query().Get("rail"))
+	alerts, err := a.store.ListTransactionAlertsFiltered(r.Context(), "", alertRail, 100)
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "list transaction alerts", "error", err)
 		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
@@ -208,6 +209,10 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		"Cases":    cases,
 		"Alerts":   alerts,
 		"ByTier":   byTier,
+		// Rail filter for the monitoring queue: the rails the engine tags
+		// alerts with, plus the active selection (empty = all rails).
+		"AlertRails": []string{kyc.RailPayment, kyc.RailTopup, kyc.RailStandingCredit, kyc.RailRefund, kyc.RailPayout},
+		"AlertRail":  alertRail,
 	})
 }
 

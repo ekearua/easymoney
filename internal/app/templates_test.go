@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/providers/interswitch"
 	"whatsapp-payment-demo/internal/store"
@@ -77,6 +79,63 @@ func TestHostedFieldsTemplateMountsEveryConfiguredField(t *testing.T) {
 	for _, want := range []string{page.SDKURL, "/static/hosted_fields.js", "id=\"details-page\"", "id=\"pin-page\"", "id=\"otp-page\"", "id=\"hf-dots\""} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("rendered page is missing %q", want)
+		}
+	}
+}
+
+// TestAdminKYCAlertRailFilter pins the compliance-queue rail triage: the filter
+// links render, the selected rail is the active one, and each alert row shows
+// the rails it fired over plus the reference that points at the rail row.
+func TestAdminKYCAlertRailFilter(t *testing.T) {
+	t.Parallel()
+	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"money":             func(k int64) string { return "NGN" },
+		"maskPII":           func(s string) string { return s },
+		"statusClass":       func(any) string { return "" },
+		"percent":           func(float64) string { return "" },
+		"sub":               func(a, b int64) int64 { return a - b },
+		"add":               func(a, b int64) int64 { return a + b },
+		"inc":               func(i int) int { return i + 1 },
+		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
+		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
+		"date":              func(any) string { return "" },
+	}).ParseFS(web.Assets, "templates/admin_kyc.html", "templates/nav.html")
+	if err != nil {
+		t.Fatalf("parse admin kyc template: %v", err)
+	}
+	var buf strings.Builder
+	err = tmpl.ExecuteTemplate(&buf, "admin_kyc.html", map[string]any{
+		"AppName":    "Xego",
+		"Title":      "KYC ladder",
+		"CSRF":       "x",
+		"AdminRole":  "admin",
+		"Profiles":   []store.KYCProfile{},
+		"Cases":      []store.ManualReviewCase{},
+		"ByTier":     map[string]int{"L0": 0, "L1": 0, "L2": 0, "L3": 0},
+		"AlertRails": []string{"payment", "topup", "standing_credit", "refund", "payout"},
+		"AlertRail":  "standing_credit",
+		"Alerts": []store.TransactionAlert{{
+			ID: 7, UserID: uuid.New(), Rule: "structuring", Severity: "high", Status: "open",
+			Details: map[string]any{
+				"rails":            []any{"standing_credit"},
+				"reference":        "STD-CREDIT-0007",
+				"report_threshold": float64(1_000_000),
+			},
+			CreatedAt: time.Now(),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("execute admin_kyc.html: %v", err)
+	}
+	rendered := buf.String()
+	for _, want := range []string{
+		`href="/admin/kyc?rail=payout"`,
+		"<strong>standing_credit</strong>",
+		"STD-CREDIT-0007",
+		"report_threshold",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered KYC page is missing %q", want)
 		}
 	}
 }

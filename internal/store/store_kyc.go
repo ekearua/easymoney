@@ -652,6 +652,14 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 // ListTransactionAlerts returns transaction-monitoring alerts newest first,
 // optionally filtered to a status.
 func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit int) ([]TransactionAlert, error) {
+	return s.ListTransactionAlertsFiltered(ctx, status, "", limit)
+}
+
+// ListTransactionAlertsFiltered additionally filters to one monitored rail
+// (payment, topup, standing_credit, refund, payout) by matching the alert's
+// recorded rail tags, so an investigator can triage by the money rail that
+// fired. An empty rail keeps every alert.
+func (s *Store) ListTransactionAlertsFiltered(ctx context.Context, status, rail string, limit int) ([]TransactionAlert, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
@@ -663,6 +671,15 @@ func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit 
 	if status != "" {
 		query += ` WHERE status=$1`
 		args = append(args, status)
+	}
+	if rail != "" {
+		args = append(args, rail)
+		if status == "" {
+			query += ` WHERE`
+		} else {
+			query += ` AND`
+		}
+		query += ` details->'rails' ? $` + strconv.Itoa(len(args))
 	}
 	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)
@@ -692,105 +709,98 @@ func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit 
 	return alerts, rows.Err()
 }
 
-// RunTransactionMonitor evaluates settled payments inside the lookback window
-// against the monitoring rules and records any alerts as risk events. A high
-// or medium alert also escalates into a manual review case (case_type
-// 'monitoring'). Returns the number of alerts raised.
+// RunTransactionMonitor evaluates settled money movements inside the lookback
+// window — across every monitored rail: card/transfer payments, wallet
+// top-ups, standing-account bank credits, refunds, and merchant settlement
+// payouts — against the monitoring rules and records any alerts as risk
+// events. A high or medium alert also escalates into a manual review case
+// (case_type 'monitoring'). Alerts are deduped by payment id or rail
+// reference, so rescanning the window never re-raises an alert. Returns the
+// number of new alerts raised.
 func (s *Store) RunTransactionMonitor(ctx context.Context, since time.Time, cfg kyc.MonitorConfig) (int, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
-		FROM payments p
-		JOIN merchants m ON m.id = p.merchant_id
-		WHERE p.status='succeeded' AND p.paid_at IS NOT NULL AND p.paid_at >= $1
-		ORDER BY p.user_id, p.paid_at`, since)
+	inputs, err := s.monitorInputs(ctx, since, time.Now().UTC().Add(time.Hour), nil)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 	byUser := map[uuid.UUID][]kyc.TransactionInput{}
 	var order []uuid.UUID
-	for rows.Next() {
-		var t kyc.TransactionInput
-		if err := rows.Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName,
-			&t.MerchantCategory, &t.AmountKobo, &t.PaidAt); err != nil {
-			return 0, err
-		}
+	for _, t := range inputs {
 		if _, seen := byUser[t.UserID]; !seen {
 			order = append(order, t.UserID)
 		}
 		byUser[t.UserID] = append(byUser[t.UserID], t)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
 	raised := 0
 	for _, userID := range order {
-		for _, alert := range kyc.RunTransactionMonitor(byUser[userID], cfg) {
-			if err := s.insertTransactionAlert(ctx, userID, alert); err != nil {
-				return raised, err
-			}
-			raised++
-		}
-	}
-	return raised, nil
-}
-
-// PaymentTransactionInput loads the monitoring input for one settled payment,
-// including its merchant name and category.
-func (s *Store) PaymentTransactionInput(ctx context.Context, paymentID uuid.UUID) (kyc.TransactionInput, error) {
-	var t kyc.TransactionInput
-	err := s.pool.QueryRow(ctx, `
-		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
-		FROM payments p
-		JOIN merchants m ON m.id = p.merchant_id
-		WHERE p.id=$1`, paymentID).Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt)
-	return t, err
-}
-
-// RunTransactionMonitorForPayment evaluates one newly settled payment against
-// the monitoring rules together with the customer's recent history (Phase 3
-// event-driven consumer). It is idempotent: an alert already recorded for a
-// payment under the same rule is not re-raised, so redelivery is safe.
-func (s *Store) RunTransactionMonitorForPayment(ctx context.Context, payment kyc.TransactionInput, cfg kyc.MonitorConfig) (int, error) {
-	if cfg.VelocityWindow <= 0 {
-		cfg.VelocityWindow = 24 * time.Hour
-	}
-	if cfg.StructuringWindow <= 0 {
-		cfg.StructuringWindow = 24 * time.Hour
-	}
-	since := payment.PaidAt.Add(-cfg.VelocityWindow)
-	if earlier := payment.PaidAt.Add(-cfg.StructuringWindow); earlier.Before(since) {
-		since = earlier
-	}
-	history, err := s.settledPaymentsForUser(ctx, payment.UserID, since, payment.PaidAt)
-	if err != nil {
-		return 0, err
-	}
-	history = append(history, payment)
-	raised := 0
-	for _, alert := range kyc.RunTransactionMonitor(history, cfg) {
-		recorded, err := s.alertExistsForPayment(ctx, alert.UserID, alert.Rule, alert.PaymentIDs)
+		count, err := s.recordMonitorAlerts(ctx, userID, kyc.RunTransactionMonitor(byUser[userID], cfg))
+		raised += count
 		if err != nil {
 			return raised, err
 		}
-		if recorded {
-			continue
-		}
-		if err := s.insertTransactionAlert(ctx, alert.UserID, alert); err != nil {
-			return raised, err
-		}
-		raised++
 	}
 	return raised, nil
 }
 
-func (s *Store) settledPaymentsForUser(ctx context.Context, userID uuid.UUID, since, before time.Time) ([]kyc.TransactionInput, error) {
+// monitorInputs loads settled events for every monitored rail, optionally
+// filtered to one user. occurred_at is each rail's settlement timestamp and
+// the window is [since, before). Merchant settlement payouts are attributed to
+// the merchant's primary owner (merchant_owners is the only user link on that
+// rail); a payout with no owner has nobody to alert and is skipped.
+func (s *Store) monitorInputs(ctx context.Context, since, before time.Time, userID *uuid.UUID) ([]kyc.TransactionInput, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at
-		FROM payments p
-		JOIN merchants m ON m.id = p.merchant_id
-		WHERE p.status='succeeded' AND p.user_id=$1 AND p.paid_at >= $2 AND p.paid_at < $3
-		ORDER BY p.paid_at`, userID, since, before)
+		WITH events AS (
+			SELECT CASE WHEN m.slug='xego-wallet-topup' THEN 'topup' ELSE 'payment' END AS rail,
+			       p.id::text AS reference, p.id AS payment_id, p.user_id,
+			       m.id AS merchant_id, m.name AS merchant_name, m.category AS merchant_category,
+			       p.amount_kobo, p.paid_at AS occurred_at
+			FROM payments p
+			JOIN merchants m ON m.id = p.merchant_id
+			WHERE p.status='succeeded' AND p.paid_at IS NOT NULL
+			  AND p.paid_at >= $1 AND p.paid_at < $2
+			  AND ($3::uuid IS NULL OR p.user_id = $3)
+
+			UNION ALL
+
+			SELECT 'standing_credit', sc.provider_reference, NULL, sc.user_id,
+			       NULL, 'Standing account', 'Bank transfer', sc.amount_kobo, sc.created_at
+			FROM standing_credits sc
+			WHERE sc.status='applied' AND sc.created_at >= $1 AND sc.created_at < $2
+			  AND ($3::uuid IS NULL OR sc.user_id = $3)
+
+			UNION ALL
+
+			SELECT 'refund', r.id::text, r.payment_id, p.user_id,
+			       m.id, COALESCE(NULLIF(m.name,''), 'Refund'), COALESCE(m.category,''),
+			       r.amount_kobo, COALESCE(r.completed_at, r.created_at)
+			FROM refunds r
+			JOIN payments p ON p.id = r.payment_id
+			LEFT JOIN merchants m ON m.id = p.merchant_id
+			WHERE r.status='succeeded'
+			  AND COALESCE(r.completed_at, r.created_at) >= $1
+			  AND COALESCE(r.completed_at, r.created_at) < $2
+			  AND ($3::uuid IS NULL OR p.user_id = $3)
+
+			UNION ALL
+
+			SELECT 'payout', po.id::text, NULL, mo.user_id,
+			       po.merchant_id, COALESCE(NULLIF(m.name,''), 'Merchant payout'), COALESCE(m.category,''),
+			       po.amount_kobo, COALESCE(po.completed_at, po.created_at)
+			FROM payouts po
+			JOIN LATERAL (
+				SELECT user_id FROM merchant_owners
+				WHERE merchant_id = po.merchant_id
+				ORDER BY created_at LIMIT 1
+			) mo ON true
+			JOIN merchants m ON m.id = po.merchant_id
+			WHERE po.status='completed'
+			  AND COALESCE(po.completed_at, po.created_at) >= $1
+			  AND COALESCE(po.completed_at, po.created_at) < $2
+			  AND ($3::uuid IS NULL OR mo.user_id = $3)
+		)
+		SELECT rail, reference, payment_id, user_id, merchant_id, merchant_name,
+		       merchant_category, amount_kobo, occurred_at
+		FROM events
+		ORDER BY user_id, occurred_at`, since, before, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -798,30 +808,146 @@ func (s *Store) settledPaymentsForUser(ctx context.Context, userID uuid.UUID, si
 	var inputs []kyc.TransactionInput
 	for rows.Next() {
 		var t kyc.TransactionInput
-		if err := rows.Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt); err != nil {
+		var paymentID, merchantID *uuid.UUID
+		if err := rows.Scan(&t.Rail, &t.Reference, &paymentID, &t.UserID, &merchantID,
+			&t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt); err != nil {
 			return nil, err
+		}
+		if paymentID != nil {
+			t.PaymentID = *paymentID
+		}
+		if merchantID != nil {
+			t.MerchantID = *merchantID
 		}
 		inputs = append(inputs, t)
 	}
 	return inputs, rows.Err()
 }
 
-// alertExistsForPayment reports whether an alert for any of the payment IDs
-// was already recorded under the rule, making monitoring idempotent.
-func (s *Store) alertExistsForPayment(ctx context.Context, userID uuid.UUID, rule string, paymentIDs []uuid.UUID) (bool, error) {
+// recordMonitorAlerts dedupes and stores the alerts raised for one user. An
+// alert is skipped when a previous alert for the same rule carries any of its
+// payment ids or its rail reference.
+func (s *Store) recordMonitorAlerts(ctx context.Context, userID uuid.UUID, alerts []kyc.MonitorAlert) (int, error) {
+	raised := 0
+	for _, alert := range alerts {
+		recorded, err := s.alertExistsForEvent(ctx, userID, alert.Rule, alert.PaymentIDs, alert.References)
+		if err != nil {
+			return raised, err
+		}
+		if recorded {
+			continue
+		}
+		if err := s.insertTransactionAlert(ctx, userID, alert); err != nil {
+			return raised, err
+		}
+		raised++
+	}
+	return raised, nil
+}
+
+// PaymentTransactionInput loads the monitoring input for one settled payment,
+// including its merchant name and category. Wallet top-ups are tagged with
+// their own rail so a funding burst is distinguishable from merchant spend.
+func (s *Store) PaymentTransactionInput(ctx context.Context, paymentID uuid.UUID) (kyc.TransactionInput, error) {
+	var t kyc.TransactionInput
+	err := s.pool.QueryRow(ctx, `
+		SELECT p.id, p.user_id, p.merchant_id, m.name, m.category, p.amount_kobo, p.paid_at,
+		       CASE WHEN m.slug='xego-wallet-topup' THEN 'topup' ELSE 'payment' END
+		FROM payments p
+		JOIN merchants m ON m.id = p.merchant_id
+		WHERE p.id=$1`, paymentID).Scan(&t.PaymentID, &t.UserID, &t.MerchantID, &t.MerchantName, &t.MerchantCategory, &t.AmountKobo, &t.PaidAt, &t.Rail)
+	if err != nil {
+		return t, err
+	}
+	t.Reference = t.PaymentID.String()
+	return t, nil
+}
+
+// RunTransactionMonitorForInput evaluates one newly settled event against the
+// monitoring rules together with the customer's recent history on every rail
+// (Phase 3 event-driven consumer). It is idempotent: an alert already recorded
+// for the event's payment id or rail reference under the same rule is not
+// re-raised, so redelivery is safe.
+func (s *Store) RunTransactionMonitorForInput(ctx context.Context, input kyc.TransactionInput, cfg kyc.MonitorConfig) (int, error) {
+	if cfg.VelocityWindow <= 0 {
+		cfg.VelocityWindow = 24 * time.Hour
+	}
+	if cfg.StructuringWindow <= 0 {
+		cfg.StructuringWindow = 24 * time.Hour
+	}
+	since := input.PaidAt.Add(-cfg.VelocityWindow)
+	if earlier := input.PaidAt.Add(-cfg.StructuringWindow); earlier.Before(since) {
+		since = earlier
+	}
+	history, err := s.monitorInputs(ctx, since, input.PaidAt, &input.UserID)
+	if err != nil {
+		return 0, err
+	}
+	// The triggering event is appended explicitly; drop any history row that is
+	// the same event (a standing credit is written before its alert runs, so it
+	// can already sit inside the lookback window).
+	trigger := monitorInputReference(input)
+	events := make([]kyc.TransactionInput, 0, len(history)+1)
+	for _, e := range history {
+		if trigger != "" && e.Reference == trigger {
+			continue
+		}
+		events = append(events, e)
+	}
+	events = append(events, input)
+	return s.recordMonitorAlerts(ctx, input.UserID, kyc.RunTransactionMonitor(events, cfg))
+}
+
+// RunTransactionMonitorForPayment evaluates one newly settled payment against
+// the monitoring rules together with the customer's recent history.
+func (s *Store) RunTransactionMonitorForPayment(ctx context.Context, payment kyc.TransactionInput, cfg kyc.MonitorConfig) (int, error) {
+	return s.RunTransactionMonitorForInput(ctx, payment, cfg)
+}
+
+// monitorInputReference is the stable dedupe reference for a monitor event.
+func monitorInputReference(input kyc.TransactionInput) string {
+	if input.Reference != "" {
+		return input.Reference
+	}
+	if input.PaymentID != uuid.Nil {
+		return input.PaymentID.String()
+	}
+	return ""
+}
+
+// alertExistsForEvent reports whether an alert for any of the payment ids or
+// rail references was already recorded under the rule, making monitoring
+// idempotent across redeliveries and rescans.
+func (s *Store) alertExistsForEvent(ctx context.Context, userID uuid.UUID, rule string, paymentIDs []uuid.UUID, references []string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM transaction_alerts
-			WHERE user_id=$1 AND rule=$2 AND payment_id = ANY($3)
-		)`, userID, rule, paymentIDs).Scan(&exists)
+			WHERE user_id=$1 AND rule=$2 AND (
+				(cardinality($3::uuid[]) > 0 AND payment_id = ANY($3::uuid[]))
+				OR (cardinality($4::text[]) > 0 AND details->>'reference' = ANY($4::text[]))
+			)
+		)`, userID, rule, paymentIDs, references).Scan(&exists)
 	return exists, err
 }
 
 func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, alert kyc.MonitorAlert) error {
-	details, _ := json.Marshal(alert.Details)
-	if details == nil {
-		details = []byte("{}")
+	details := map[string]any{}
+	for key, value := range alert.Details {
+		details[key] = value
+	}
+	if len(alert.Rails) > 0 {
+		details["rails"] = alert.Rails
+	}
+	if len(alert.References) > 0 {
+		details["reference"] = alert.References[0]
+		if len(alert.References) > 1 {
+			details["references"] = alert.References
+		}
+	}
+	encoded, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("encode alert details: %w", err)
 	}
 	var paymentID *uuid.UUID
 	if len(alert.PaymentIDs) > 0 {
@@ -830,7 +956,7 @@ func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, al
 	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO transaction_alerts(user_id,payment_id,rule,severity,details)
 		VALUES($1,$2,$3,$4,$5::jsonb)`,
-		userID, paymentID, alert.Rule, alert.Severity, string(details)); err != nil {
+		userID, paymentID, alert.Rule, alert.Severity, string(encoded)); err != nil {
 		return fmt.Errorf("insert transaction alert: %w", err)
 	}
 	if _, err := s.RecordRiskEvent(ctx, RiskEvent{

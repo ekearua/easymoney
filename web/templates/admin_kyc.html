@@ -44,12 +44,18 @@
 
 <section class="panel">
   <h2>Transaction alerts</h2>
-  <p class="muted">Raised by the C14 monitoring engine: velocity, structuring, round amounts, and high-risk counterparties.</p>
-  <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Severity</th><th>User</th><th>Status</th><th>Details</th><th>Raised</th><th>Action</th></tr></thead><tbody>
+  <p class="muted">Raised by the C14 monitoring engine across every rail — velocity, structuring (bounded by the CTR reporting threshold), round amounts, and high-risk counterparties. The reference opens the exact payment, bank credit, refund, or payout behind the alert.</p>
+  <p class="muted">Rail:
+    {{if .AlertRail}}<a href="/admin/kyc">all</a>{{else}}<strong>all</strong>{{end}}
+    {{range .AlertRails}} · {{if eq . $.AlertRail}}<strong>{{.}}</strong>{{else}}<a href="/admin/kyc?rail={{.}}">{{.}}</a>{{end}}{{end}}
+  </p>
+  <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Rail</th><th>Severity</th><th>User</th><th>Reference</th><th>Status</th><th>Details</th><th>Raised</th><th>Action</th></tr></thead><tbody>
   {{range .Alerts}}<tr>
     <td class="mono">{{.Rule}}</td>
+    <td class="mono">{{with index .Details "rails"}}{{printf "%v" .}}{{else}}—{{end}}</td>
     <td><span class="status {{if eq .Severity "high"}}failed{{else if eq .Severity "medium"}}warn{{else}}ok{{end}}">{{.Severity}}</span></td>
     <td class="mono">{{.UserID}}</td>
+    <td class="mono">{{with index .Details "reference"}}{{printf "%v" .}}{{else}}—{{end}}</td>
     <td><span class="status {{if eq .Status "open"}}pending{{else}}succeeded{{end}}">{{.Status}}</span>{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</td>
     <td class="mono">{{printf "%v" .Details}}</td>
     <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
@@ -74,7 +80,7 @@
       {{end}}
     </td>
   </tr>
-  {{else}}<tr><td colspan="7">No transaction alerts.</td></tr>{{end}}
+  {{else}}<tr><td colspan="9">No transaction alerts.</td></tr>{{end}}
   </tbody></table></div>
 </section>
 
