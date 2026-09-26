@@ -75,6 +75,10 @@
       <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="status" value="resolved">
+        <select name="outcome" class="input-small">
+          <option value="false_positive">false positive</option>
+          <option value="confirmed">confirmed</option>
+        </select>
         <button class="btn btn-small" type="submit">Resolve</button>
       </form>
       {{end}}
@@ -86,16 +90,17 @@
 
 <section class="panel">
   <h2>Profiles</h2>
-  <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Risk</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Risk</th><th>Devices</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
   {{range .Profiles}}<tr>
     <td class="mono">{{.UserID}}</td>
     <td><strong>{{.Tier}}</strong></td>
     <td><span class="status {{if or (eq .RiskBand "medium") (eq .RiskBand "high")}}warn{{else}}ok{{end}}">{{.RiskBand}}</span> {{.RiskScore | printf "%.0f"}}</td>
+    <td>{{with index .Devices .UserID}}<span title="{{.LastLabel}} · last seen {{.LastSeenAt.Format "02 Jan 2006 15:04"}}">{{.DeviceCount}}</span>{{else}}—{{end}}</td>
     <td>{{if .LastScreeningDecision}}{{.LastScreeningDecision}}{{else}}—{{end}}</td>
     <td class="mono">{{printf "%v" .Evidence}}</td>
     <td class="nowrap">{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td>
   </tr>
-  {{else}}<tr><td colspan="6">No KYC profiles yet.</td></tr>{{end}}
+  {{else}}<tr><td colspan="7">No KYC profiles yet.</td></tr>{{end}}
   </tbody></table></div>
 </section>
 </main></body></html>

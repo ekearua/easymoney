@@ -982,6 +982,19 @@ func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, al
 // ResolveTransactionAlert moves an alert to a terminal status and records who
 // resolved it and when.
 func (s *Store) ResolveTransactionAlert(ctx context.Context, alertID int64, status, reviewerEmail string) (TransactionAlert, error) {
+	return s.resolveTransactionAlert(ctx, alertID, status, reviewerEmail, "")
+}
+
+// ResolveTransactionOutcome records the reviewer's explicit disposition on a
+// resolve action (M4 feedback loop).
+func (s *Store) ResolveTransactionAlertOutcome(ctx context.Context, alertID int64, status, reviewerEmail, reviewerOutcome string) (TransactionAlert, error) {
+	return s.resolveTransactionAlert(ctx, alertID, status, reviewerEmail, reviewerOutcome)
+}
+
+// resolveTransactionAlert moves an alert to a terminal status and records the
+// M4 outcome row; reviewerOutcome is the explicit false_positive/confirmed call
+// on a resolve (empty means acknowledged/escalated mapping applies).
+func (s *Store) resolveTransactionAlert(ctx context.Context, alertID int64, status, reviewerEmail, reviewerOutcome string) (TransactionAlert, error) {
 	valid := map[string]bool{"acknowledged": true, "escalated": true, "resolved": true}
 	if !valid[status] {
 		return TransactionAlert{}, fmt.Errorf("invalid alert status %q", status)
@@ -991,8 +1004,7 @@ func (s *Store) ResolveTransactionAlert(ctx context.Context, alertID int64, stat
 	var paymentID *uuid.UUID
 	var details []byte
 	var reviewedAt *time.Time
-	err := s.pool.QueryRow(ctx, `
-		UPDATE transaction_alerts
+	err := s.pool.QueryRow(ctx, `UPDATE transaction_alerts
 		SET status=$2, reviewer_email=$3, reviewed_at=COALESCE(reviewed_at, $4)
 		WHERE id=$1
 		RETURNING id, user_id, payment_id, rule, severity, COALESCE(details::text,'{}'),
@@ -1002,13 +1014,96 @@ func (s *Store) ResolveTransactionAlert(ctx context.Context, alertID int64, stat
 	if err != nil {
 		return TransactionAlert{}, fmt.Errorf("resolve transaction alert: %w", err)
 	}
+	// M4 feedback loop: the disposition becomes an outcome row (migration 075),
+	// so false-positive rates per rule are computable and any future threshold
+	// tuning or model work has labelled data. acknowledged→undetermined,
+	// escalated→confirmed, resolved→the reviewer's explicit outcome call.
+	label, oerr := s.recordAlertOutcome(ctx, alertID, a.Rule, a.Severity, status, reviewerEmail, reviewerOutcome)
+	if oerr != nil {
+		return TransactionAlert{}, oerr
+	}
 	a.PaymentID = paymentID
 	a.ReviewedAt = reviewedAt
 	_ = json.Unmarshal(details, &a.Details)
 	if a.Details == nil {
 		a.Details = map[string]any{}
 	}
+	a.Details["outcome"] = label
 	return a, nil
+}
+
+// recordAlertOutcome inserts one outcome row per resolve action: acknowledging
+// means "not yet determined", escalating means the reviewer confirmed the
+// suspicion, resolving records the reviewer's explicit call (defaulting to
+// false_positive — the common disposition when an alert closes without
+// escalation). Rows append, so the reviewer-call history is preserved.
+func (s *Store) recordAlertOutcome(ctx context.Context, alertID int64, rule, severity, status, reviewerEmail, outcome string) (string, error) {
+	label := map[string]string{
+		"acknowledged": "undetermined",
+		"escalated":    "confirmed",
+		"resolved":     outcome,
+	}[status]
+	if label == "" {
+		label = "false_positive"
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO transaction_alert_outcomes(alert_id, outcome, rule, severity, reviewer_email)
+		VALUES($1,$2,$3,$4,$5)`, alertID, label, rule, severity, reviewerEmail); err != nil {
+		return "", fmt.Errorf("record alert outcome: %w", err)
+	}
+	return label, nil
+}
+
+// alertOutcomeTx inserts exactly one outcome row per (alert, status) change.
+// Re-resolving an alert to the same status is idempotent (the unique guard
+// is the (alert_id, outcome, created_at-minute) triple via ON CONFLICT DO
+// NOTHING on a plain index — re-disposition appends a new row by design so
+// the history of reviewer calls is preserved).
+func (s *Store) alertOutcomeTx(ctx context.Context, alertID int64, rule, severity, status, reviewerEmail, outcome string) (string, error) {
+	label := map[string]string{
+		"acknowledged": "undetermined",
+		"escalated":    "confirmed",
+		"resolved":     outcome,
+	}[status]
+	if label == "" {
+		label = "false_positive"
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO transaction_alert_outcomes(alert_id, outcome, rule, severity, reviewer_email)
+		VALUES($1,$2,$3,$4,$5)`, alertID, label, rule, severity, reviewerEmail); err != nil {
+		return "", fmt.Errorf("record alert outcome: %w", err)
+	}
+	return label, nil
+}
+
+// AlertOutcomeCounts returns confirmed and false_positive outcome counts per
+// rule, for the compliance queue's feedback summary (M4/M5).
+type AlertOutcomeCount struct {
+	Rule          string
+	Confirmed     int
+	FalsePositive int
+}
+
+func (s *Store) AlertOutcomeCounts(ctx context.Context) ([]AlertOutcomeCount, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT rule,
+		       count(*) FILTER (WHERE outcome='confirmed') AS confirmed,
+		       count(*) FILTER (WHERE outcome='false_positive') AS false_positive
+		FROM transaction_alert_outcomes
+		GROUP BY rule ORDER BY rule`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AlertOutcomeCount
+	for rows.Next() {
+		var c AlertOutcomeCount
+		if err := rows.Scan(&c.Rule, &c.Confirmed, &c.FalsePositive); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // CreateManualReviewCase opens a KYC review-queue item.

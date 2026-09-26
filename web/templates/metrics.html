@@ -19,6 +19,17 @@
   {{else if .AITokens7d}}<article><span>AI tokens (7d)</span><strong>{{.AITokens7d}}</strong></article>
   {{end}}
 </section>
+{{if .TrustKPIs}}<section class="panel"><h2>Trust &amp; risk intelligence (7d)</h2>
+  <section class="metrics">
+    <article><span>Alert false-positive rate</span><strong>{{printf "%.0f%%" .TrustKPIs.AlertFalsePositivePct}}</strong><em class="small-text">{{.TrustKPIs.FalsePositiveOutcomes}} FP / {{.TrustKPIs.ConfirmedOutcomes}} confirmed</em></article>
+    <article><span>Median alert resolution</span><strong>{{.MedianResolutionLabel}}</strong></article>
+    <article><span>Monitored movements (7d)</span><strong>{{.TrustKPIs.MonitoredMovements7d}}</strong><em class="small-text">payments, top-ups, standing credits, refunds, payouts</em></article>
+    <article><span>Risk-band mix</span><strong>
+      {{- $low := index .TrustKPIs.BandCounts "low"}}{{$med := index .TrustKPIs.BandCounts "medium"}}{{$high := index .TrustKPIs.BandCounts "high" -}}
+      low {{$low}} · med {{$med}} · high {{$high}}</strong><em class="small-text">KYC profiles by current band</em></article>
+  </section>
+  <p class="small-text">Computed from alert outcomes, rail-aware monitoring coverage and KYC risk bands — the Trust Fabric plan's own KPIs.</p>
+</section>{{end}}
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
 <section class="panel"><h2>Two-factor authentication</h2>
   {{if .MFAEnforced}}<p>Two-step sign-in is <strong>required</strong> on this deployment, so every account passes a second step after its password.</p>{{end}}
