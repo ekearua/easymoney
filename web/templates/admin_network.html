@@ -1,0 +1,59 @@
+{{define "admin_network.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Trust Fabric · network layer</p><h1>Identity rings</h1></div></header>
+
+<section class="panel">
+  <h2>What this view shows</h2>
+  <p>Identities linked by a <strong>shared fact</strong>: the same browser fingerprint (device), the same settlement bank account behind two merchants, or one channel identifier value appearing under two identifier columns. Each connected group of two or more identities is a <strong>ring</strong> — the mule-cluster pattern. Shared facts are legitimate sometimes (a family browser, a business owner with two merchants); rings are where to look, not verdicts.</p>
+  {{if .HasLinks}}
+  <p class="small-text">Minimum ring size: {{.MinMembers}} identities.
+    <a href="/admin/network?min=2">2</a> · <a href="/admin/network?min=3">3</a> · <a href="/admin/network?min=4">4</a></p>
+  {{end}}
+</section>
+
+{{if not .HasLinks}}<section class="panel"><p>No identity links yet. Links appear when two subjects share a device fingerprint, a settlement account, or a channel identifier value.</p></section>{{end}}
+
+{{if .Rings}}
+<section class="panel">
+  <h2>Rings ({{len .Rings}})</h2>
+  {{range $i, $ring := .Rings}}
+  <div class="ring-card">
+    <h3>Ring {{$i}} — {{len $ring.Members}} identities via {{join $ring.Kinds " + "}}</h3>
+    <ul>
+      {{range $ring.Members}}<li><a class="mono" href="/admin/kyc/{{.}}">{{.}}</a>{{with index $ring.Names .}} — {{.}}{{end}}</li>{{end}}
+    </ul>
+    <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Shared fact</th><th>A</th><th>B</th><th>Sightings</th><th>Last seen</th></tr></thead><tbody>
+    {{range $ring.Edges}}<tr>
+      <td>{{.LinkKind}}</td>
+      <td class="mono">{{.MaskedValue}}</td>
+      <td><a class="mono" href="/admin/kyc/{{.SubjectA}}">{{if .NameA}}{{.NameA}}{{else}}{{printf "%.8s…" .SubjectA}}{{end}}</a></td>
+      <td><a class="mono" href="/admin/kyc/{{.SubjectB}}">{{if .NameB}}{{.NameB}}{{else}}{{printf "%.8s…" .SubjectB}}{{end}}</a></td>
+      <td>{{.Sightings}}</td>
+      <td class="nowrap">{{.LastSharedAt.Format "02 Jan 2006 15:04"}}</td>
+    </tr>{{end}}
+    </tbody></table></div>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
+{{if .HasLinks}}
+<section class="panel">
+  <h2>All shared-fact links</h2>
+  <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Shared fact</th><th>A</th><th>B</th><th>Sightings</th><th>Last seen</th></tr></thead><tbody>
+  {{range .Links}}<tr>
+    <td>{{.LinkKind}}</td>
+    <td class="mono">{{.MaskedValue}}</td>
+    <td><a class="mono" href="/admin/kyc/{{.SubjectA}}">{{if .NameA}}{{.NameA}}{{else}}{{printf "%.8s…" .SubjectA}}{{end}}</a></td>
+    <td><a class="mono" href="/admin/kyc/{{.SubjectB}}">{{if .NameB}}{{.NameB}}{{else}}{{printf "%.8s…" .SubjectB}}{{end}}</a></td>
+    <td>{{.Sightings}}</td>
+    <td class="nowrap">{{.LastSharedAt.Format "02 Jan 2006 15:04"}}</td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>
+{{end}}
+</main></body></html>
+{{end}}

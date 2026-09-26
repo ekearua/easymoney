@@ -1,0 +1,42 @@
+{{define "admin_kyc_profile.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Trust Fabric · profile</p><h1>{{if .DisplayName}}{{.DisplayName}}{{else}}Profile{{end}}</h1></div></header>
+
+<section class="panel">
+  <p><span class="mono">{{.UserID}}</span></p>
+  <p>Tier <strong>{{.Profile.Tier}}</strong> · Risk band <span class="status {{if or (eq .Profile.RiskBand "medium") (eq .Profile.RiskBand "high")}}warn{{else}}ok{{end}}">{{.Profile.RiskBand}}</span> · score {{.Profile.RiskScore | printf "%.0f"}} · last screening {{if .Profile.LastScreeningDecision}}{{.Profile.LastScreeningDecision}}{{else}}—{{end}}</p>
+  <p><a href="/admin/kyc">← Back to the KYC queue</a></p>
+</section>
+
+{{if .SubjectLinks}}
+<section class="panel">
+  <h2>Identity links</h2>
+  <p class="small-text">This subject shares a device, settlement account, or channel identifier value with another identity. See the full picture at <a href="/admin/network">Trust network</a>.</p>
+  <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Shared fact</th><th>Linked identity</th><th>Last seen</th></tr></thead><tbody>
+  {{range .SubjectLinks}}<tr>
+    <td>{{.LinkKind}}</td>
+    <td class="mono">{{.MaskedValue}}</td>
+    <td>{{if eq .SubjectA $.UserID}}<a class="mono" href="/admin/kyc/{{.SubjectB}}">{{if .NameB}}{{.NameB}}{{else}}{{printf "%.8s…" .SubjectB}}{{end}}</a>{{else}}<a class="mono" href="/admin/kyc/{{.SubjectA}}">{{if .NameA}}{{.NameA}}{{else}}{{printf "%.8s…" .SubjectA}}{{end}}</a>{{end}}</td>
+    <td class="nowrap">{{.LastSharedAt.Format "02 Jan 2006 15:04"}}</td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>
+{{end}}
+
+<section class="panel">
+  <h2>Trust timeline</h2>
+  {{if not .Timeline}}<p>No alerts, device sightings, or audit entries for this profile yet.</p>{{end}}
+  {{if .Timeline}}<div class="table-wrap"><table><thead><tr><th>When</th><th>Kind</th><th>Event</th><th>Detail</th></tr></thead><tbody>
+  {{range .Timeline}}<tr>
+    <td class="nowrap">{{.When.Format "02 Jan 2006 15:04"}}</td>
+    <td><span class="status {{if eq .Kind "alert"}}warn{{else if eq .Kind "device"}}{{else}}ok{{end}}">{{.Kind}}</span></td>
+    <td>{{.Label}}</td>
+    <td class="mono small-text">{{if eq .Kind "device"}}{{printf "%.16s…" .Detail}}{{else}}{{.Detail}}{{end}}</td>
+  </tr>{{end}}
+  </tbody></table></div>{{end}}
+</section>
+</main></body></html>
+{{end}}
