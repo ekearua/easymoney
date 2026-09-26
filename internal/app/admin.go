@@ -2,6 +2,7 @@ package app
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,11 +40,28 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.AITokensPerNGN > 0 {
 		spendKobo = weekTokens * 100 / a.cfg.AITokensPerNGN
 	}
+	// M5 intelligence KPIs: false-positive rate, resolution speed, signal
+	// coverage and the risk-band mix, straight from the Trust Fabric plan.
+	kpis, err := a.store.TrustFabricKPIs(r.Context(), 7*24*time.Hour)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "trust KPI stats failed", "error", err)
+		// The dashboard still renders; the tile just shows the zero state.
+	}
+	resolutionLabel := "—"
+	if mins := kpis.MedianAlertResolutionMins; mins > 0 {
+		if mins >= 1 {
+			resolutionLabel = fmt.Sprintf("%.0f min", mins)
+		} else {
+			resolutionLabel = fmt.Sprintf("%.0f sec", mins*60)
+		}
+	}
 	data := a.securitySummaryData(r.Context(), store.MFAScopeAdmin, adminIDFromContext(r.Context()))
 	data["Metrics"] = metrics
 	data["AITokens7d"] = weekTokens
 	data["AITokensPerNGN"] = a.cfg.AITokensPerNGN
 	data["AISpendKobo"] = spendKobo
+	data["TrustKPIs"] = kpis
+	data["MedianResolutionLabel"] = resolutionLabel
 	a.renderAdmin(w, "metrics.html", r, "Metrics", data)
 }
 
@@ -201,14 +219,24 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	byTier := map[string]int{kyc.TierL0: 0, kyc.TierL1: 0, kyc.TierL2: 0, kyc.TierL3: 0}
+	ids := make([]uuid.UUID, 0, len(profiles))
 	for _, p := range profiles {
 		byTier[p.Tier]++
+		ids = append(ids, p.UserID)
+	}
+	// M2 signal surface: devices seen per profile, so an investigator can
+	// spot one browser behind many accounts (the inverse pattern matters too).
+	devices, err := a.store.DeviceSummaryForUsers(r.Context(), ids)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "device summaries", "error", err)
+		devices = map[uuid.UUID]store.DeviceSummary{}
 	}
 	a.renderAdmin(w, "admin_kyc.html", r, "KYC ladder", map[string]any{
 		"Profiles": profiles,
 		"Cases":    cases,
 		"Alerts":   alerts,
 		"ByTier":   byTier,
+		"Devices":  devices,
 		// Rail filter for the monitoring queue: the rails the engine tags
 		// alerts with, plus the active selection (empty = all rails).
 		"AlertRails": []string{kyc.RailPayment, kyc.RailTopup, kyc.RailStandingCredit, kyc.RailRefund, kyc.RailPayout},
@@ -229,8 +257,16 @@ func (a *App) adminResolveTransactionAlert(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	status := strings.TrimSpace(r.FormValue("status"))
+	// M4 feedback loop: on a resolve the reviewer states the disposition
+	// (false_positive by default, or confirmed); acknowledged/escalated map
+	// to undetermined/confirmed automatically.
+	outcome := strings.TrimSpace(r.FormValue("outcome"))
+	if outcome != "false_positive" && outcome != "confirmed" && outcome != "" {
+		http.Error(w, "invalid outcome", http.StatusBadRequest)
+		return
+	}
 	adminEmail := adminEmailFromContext(r.Context())
-	alert, err := a.store.ResolveTransactionAlert(r.Context(), alertID, status, adminEmail)
+	alert, err := a.store.ResolveTransactionAlertOutcome(r.Context(), alertID, status, adminEmail, outcome)
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "resolve transaction alert failed", "alert_id", alertID, "error", err)
 		http.Error(w, "resolve failed", http.StatusInternalServerError)

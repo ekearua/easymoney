@@ -211,6 +211,17 @@ func (a *App) paymentByCheckoutToken(w http.ResponseWriter, r *http.Request) (st
 		http.NotFound(w, r)
 		return store.PaymentView{}, false
 	}
+	// M1/M2 signal capture: the browser touching a checkout link is the
+	// customer-side device signal (the payer may differ from the portal
+	// sign-in that created the payment). Best-effort, never blocking.
+	if ua := r.Header.Get("User-Agent"); ua != "" {
+		fp := store.DeviceFingerprint(ua, r.Header.Get("Accept-Language"))
+		if fp != "" {
+			if err := a.store.TouchTrustedDevice(r.Context(), payment.UserID, fp, store.DeviceLabel(ua)+" · checkout"); err != nil {
+				a.logger.WarnContext(r.Context(), "checkout device touch failed", "payment", payment.ID, "error", err)
+			}
+		}
+	}
 	return payment, true
 }
 

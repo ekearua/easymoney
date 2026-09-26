@@ -80,6 +80,7 @@ func (a *App) secondFactorRequired(ctx context.Context, scope string, subjectID 
 // returns the page the subject lands on. Callers answering in HTML redirect;
 // callers answering in JSON hand the path to the browser.
 func (a *App) issueSession(w http.ResponseWriter, r *http.Request, scope string, subjectID uuid.UUID) (string, error) {
+	a.touchTrustedDevice(r, scope, subjectID)
 	ttl := a.cfg.AuthSessionTTL
 	if ttl <= 0 {
 		ttl = 12 * time.Hour
@@ -182,6 +183,31 @@ func (a *App) subjectEmail(ctx context.Context, scope string, subjectID uuid.UUI
 		return ""
 	}
 	return strings.TrimSpace(admin.Email)
+}
+
+// touchTrustedDevice records the browser a portal sign-in came from (M1/M2
+// Trust Fabric signal capture). The fingerprint is a coarse UA+language hash,
+// never a raw identifier; the audit trail already carries the IP. Merchant
+// sign-ins touch the owner user's device set (the KYC subject), admin
+// sign-ins are staff and carry no device row. Failures are logged and
+// swallowed: device intelligence must never block a sign-in.
+func (a *App) touchTrustedDevice(r *http.Request, scope string, subjectID uuid.UUID) {
+	if scope != store.MFAScopeMerchant {
+		return
+	}
+	ownerID, err := a.store.MerchantOwnerID(r.Context(), subjectID)
+	if err != nil || ownerID == uuid.Nil {
+		return
+	}
+	ua := r.Header.Get("User-Agent")
+	fingerprint := store.DeviceFingerprint(ua, r.Header.Get("Accept-Language"))
+	if fingerprint == "" {
+		return
+	}
+	label := store.DeviceLabel(ua) + " · merchant portal"
+	if err := a.store.TouchTrustedDevice(r.Context(), ownerID, fingerprint, label); err != nil {
+		a.logger.WarnContext(r.Context(), "trusted device touch failed", "scope", scope, "error", err)
+	}
 }
 
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
