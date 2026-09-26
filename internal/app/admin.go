@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -198,7 +199,7 @@ func (a *App) adminKYC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "kyc dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	byTier := map[string]int{"L0": 0, "L1": 0, "L2": 0, "L3": 0, "L4": 0}
+	byTier := map[string]int{kyc.TierL0: 0, kyc.TierL1: 0, kyc.TierL2: 0, kyc.TierL3: 0}
 	for _, p := range profiles {
 		byTier[p.Tier]++
 	}

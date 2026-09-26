@@ -18,6 +18,7 @@ type IndividualProfile struct {
 	UserID      uuid.UUID
 	LegalName   string
 	DateOfBirth time.Time
+	Gender      string
 	Address     string
 	Occupation  string
 	KYCStatus   string
@@ -25,7 +26,7 @@ type IndividualProfile struct {
 	UpdatedAt   time.Time
 }
 
-// KYCProfile is a user's position on the L0-L4 identity ladder (C9/C10).
+// KYCProfile is a user's position on the L0-L3 identity ladder (C9/C10).
 type KYCProfile struct {
 	UserID                uuid.UUID
 	Tier                  string
@@ -105,26 +106,28 @@ type TransactionAlert struct {
 	CreatedAt     time.Time
 }
 
-// UpsertIndividualProfile records the demo KYC profile, upgrades the user to
-// the individual account level, and records the identity-on-file verification.
-// Sanctions/PEP screening and L0-L4 ladder promotion are handled by the caller
+// UpsertIndividualProfile records the CBN Tier-1 self-declared profile (legal
+// name, date of birth, gender, address), upgrades the user to the individual
+// account level, and records the tier1_basic_details verification. Sanctions/
+// PEP screening and L0-L3 ladder promotion are handled by the caller
 // (RecordScreeningResult then AdvanceKYCTier/AdvanceKYCTierTo), so a blocking
 // screening decision keeps the user below L2.
-func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation string) (IndividualProfile, error) {
+func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation, gender string) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,kyc_status)
-		VALUES($1,$2,$3,$4,$5,'approved_simulated')
+		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,gender,kyc_status)
+		VALUES($1,$2,$3,$4,$5,$6,'approved_simulated')
 		ON CONFLICT(user_id) DO UPDATE
 		SET legal_name=EXCLUDED.legal_name,
 			date_of_birth=EXCLUDED.date_of_birth,
 			address=EXCLUDED.address,
 			occupation=EXCLUDED.occupation,
+			gender=EXCLUDED.gender,
 			kyc_status='approved_simulated',
 			updated_at=now()
-		RETURNING user_id,legal_name,date_of_birth,address,occupation,kyc_status,created_at,updated_at`,
-		userID, strings.TrimSpace(legalName), dob, strings.TrimSpace(address), strings.TrimSpace(occupation),
-	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+		RETURNING user_id,legal_name,date_of_birth,address,occupation,gender,kyc_status,created_at,updated_at`,
+		userID, strings.TrimSpace(legalName), dob, strings.TrimSpace(address), strings.TrimSpace(occupation), strings.TrimSpace(gender),
+	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.Gender, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
 	if err != nil {
 		return IndividualProfile{}, err
 	}
@@ -133,7 +136,7 @@ func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, l
 	}
 	if _, err := s.RecordCustomerVerification(ctx, CustomerVerification{
 		UserID:           userID,
-		VerificationType: kyc.EvIdentityOnFile,
+		VerificationType: kyc.EvTier1BasicDetails,
 		Provider:         "simulated",
 		Result:           map[string]any{"status": "approved_simulated"},
 	}); err != nil {
@@ -156,9 +159,9 @@ func (s *Store) HealIndividualAccountLevel(ctx context.Context, userID uuid.UUID
 func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id,legal_name,date_of_birth,address,occupation,kyc_status,created_at,updated_at
+		SELECT user_id,legal_name,date_of_birth,gender,address,occupation,kyc_status,created_at,updated_at
 		FROM individual_profiles
-		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
 	return profile, err
 }
 
@@ -287,6 +290,7 @@ func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string,
 	if err != nil {
 		return KYCProfile{}, err
 	}
+	fromTier := profile.Tier
 	if err := kyc.CanAdvance(profile.Tier, to, evidence); err != nil {
 		return KYCProfile{}, err
 	}
@@ -317,7 +321,7 @@ func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string,
 		ResourceType: sql.NullString{String: "user", Valid: true},
 		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
 		Details: map[string]any{
-			"from_tier": profile.Tier,
+			"from_tier": fromTier,
 			"to_tier":   to,
 			"evidence":  merged,
 		},
@@ -353,6 +357,7 @@ func (s *Store) DowngradeKYCTier(ctx context.Context, userID uuid.UUID, to strin
 	if err != nil {
 		return KYCProfile{}, err
 	}
+	fromTier := profile.Tier
 	if err := kyc.CanDowngrade(profile.Tier, to); err != nil {
 		return KYCProfile{}, err
 	}
@@ -377,7 +382,7 @@ func (s *Store) DowngradeKYCTier(ctx context.Context, userID uuid.UUID, to strin
 		ResourceType: sql.NullString{String: "user", Valid: true},
 		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
 		Details: map[string]any{
-			"from_tier": profile.Tier,
+			"from_tier": fromTier,
 			"to_tier":   to,
 			"reason":    reason,
 		},
@@ -399,8 +404,8 @@ func (s *Store) DowngradeKYCTier(ctx context.Context, userID uuid.UUID, to strin
 
 // AdvanceKYCTierTo promotes a user step by step up to a target tier using the
 // supplied evidence, stopping early if the target is already reached. This is
-// the entry point for flows that unlock a fixed tier (e.g. identity on file ->
-// L2) regardless of the user's starting position.
+// the entry point for flows that unlock a fixed tier (e.g. CBN Tier-1 data on
+// file -> L1) regardless of the user's starting position.
 func (s *Store) AdvanceKYCTierTo(ctx context.Context, userID uuid.UUID, to string, evidence []string, actor *AuditLog) (KYCProfile, error) {
 	profile, err := s.EnsureKYCProfile(ctx, userID)
 	if err != nil {
@@ -425,8 +430,6 @@ func tierAt(order int) string {
 		return kyc.TierL2
 	case 3:
 		return kyc.TierL3
-	case 4:
-		return kyc.TierL4
 	}
 	return kyc.TierL0
 }
@@ -1007,13 +1010,11 @@ func (s *Store) ReviewManualReviewCase(ctx context.Context, caseID int64, approv
 func requiredTierEvidence(to string) []string {
 	switch to {
 	case kyc.TierL1:
-		return []string{kyc.EvChannelConfirmed}
+		return []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}
 	case kyc.TierL2:
-		return []string{kyc.EvIdentityOnFile}
+		return []string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}
 	case kyc.TierL3:
-		return []string{kyc.EvNINBVNVerified}
-	case kyc.TierL4:
-		return []string{kyc.EvEDDCompleted}
+		return []string{kyc.EvAddressProof, kyc.EvEDDCompleted}
 	}
 	return nil
 }

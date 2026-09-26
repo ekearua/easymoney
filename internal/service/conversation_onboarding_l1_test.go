@@ -56,6 +56,16 @@ func TestOnboardingConfirmAdvancesToL1AndActivatesWallet(t *testing.T) {
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "ada@example.com"}); err != nil {
 		t.Fatalf("email Handle failed: %v", err)
 	}
+	// CBN Tier-1 data collection runs before the confirm step.
+	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "1992-05-24"}); err != nil {
+		t.Fatalf("dob Handle failed: %v", err)
+	}
+	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "female"}); err != nil {
+		t.Fatalf("gender Handle failed: %v", err)
+	}
+	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "14 Admiralty Way, Lekki, Lagos"}); err != nil {
+		t.Fatalf("address Handle failed: %v", err)
+	}
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "confirm"}); err != nil {
 		t.Fatalf("confirm Handle failed: %v", err)
 	}
@@ -80,12 +90,12 @@ func TestOnboardingConfirmAdvancesToL1AndActivatesWallet(t *testing.T) {
 	}
 	foundLevelMsg := false
 	for _, body := range msg.allSentText() {
-		if strings.Contains(body, "Level 1") {
+		if strings.Contains(body, "CBN Tier 1") {
 			foundLevelMsg = true
 		}
 	}
 	if !foundLevelMsg {
-		t.Fatalf("confirmation message should mention Level 1, got %q", msg.allSentText())
+		t.Fatalf("confirmation message should mention CBN Tier 1, got %q", msg.allSentText())
 	}
 }
 
@@ -115,7 +125,7 @@ func TestMyDetailsChatBlockOnTelegram(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+	if _, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Telegram has no web flow, so "my details" stays a chat block.

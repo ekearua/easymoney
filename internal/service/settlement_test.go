@@ -41,7 +41,8 @@ func TestSettlementServiceDispatch(t *testing.T) {
 	// KYB tier (C9), and the batches below total ₦2m each. B0's single ceiling
 	// is ₦200k, so step the merchant up to B2 (₦5m single, ₦5m daily-out),
 	// mirroring the KYB ladder a merchant climbs before settlement runs.
-	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, []string{kyc.EvBusinessDocs}, nil); err != nil {
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1,
+		[]string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB2, []string{kyc.EvBusinessBank}, nil); err != nil {

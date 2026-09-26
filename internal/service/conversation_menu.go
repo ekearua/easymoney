@@ -81,7 +81,7 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 				// Level 2 is required to send money to individuals: offer the
 				// verification flow instead of a dead-end message.
 				return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
-					"Complete individual verification (Level 2) before sending money to other individuals.", "Verify profile", nil)
+					"Complete individual verification (CBN Tier 2) before sending money to other individuals.", "Verify profile", nil)
 			}
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualPay, "", "", nil)
 		}

@@ -131,7 +131,7 @@ func TestAutoRefundSupersededWebFlowAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.UpsertIndividualProfile(ctx, payer.ID, "Test Auto Refund",
-		time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "1 Test St, Lagos", "Tester"); err != nil {
+		time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC), "1 Test St, Lagos", "Tester", "Female"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.RecordScreeningResult(ctx, store.ScreeningResult{
@@ -140,7 +140,7 @@ func TestAutoRefundSupersededWebFlowAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, kyc.TierL1,
-		[]string{kyc.EvChannelConfirmed}, nil); err != nil {
+		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 

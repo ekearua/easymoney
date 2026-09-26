@@ -285,7 +285,8 @@ func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, e
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT merchant_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
-		       COALESCE(last_screening_decision,''), review_status, reviewed_by, reviewed_at,
+		       COALESCE(last_screening_decision,''), last_screen_at, rescreen_due,
+		       review_status, reviewed_by, reviewed_at,
 		       COALESCE(advancement_request::text,''), advancement_requested_at,
 		       created_at, updated_at
 		FROM business_kyb_profiles ORDER BY updated_at DESC LIMIT $1`, limit)
@@ -320,19 +321,81 @@ func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, e
 	return profiles, rows.Err()
 }
 
-// BusinessEvidenceFor returns the evidence key a one-step business advancement
-// to the given tier requires. Empty when to is not the target of an adjacent
-// step (B0 has no entry evidence).
-func BusinessEvidenceFor(to string) string {
+// KYBDocuments is the structured set of corporate documents a merchant
+// supplies with a self-service upgrade request (CAC, TIN, beneficial owners,
+// business address, SCUML, DNFBP self-certification).
+type KYBDocuments struct {
+	MerchantID       uuid.UUID
+	CACRegNumber     string
+	TIN              string
+	BeneficialOwners string
+	BusinessAddress  string
+	SCUMLNumber      string
+	DNFBP            bool
+	RecordedAt       time.Time
+	UpdatedAt        time.Time
+}
+
+// UpsertKYBDocuments records (or replaces) the structured corporate documents
+// for a merchant. Callers record the documents together with the advisory
+// advancement request they accompany.
+func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, documents KYBDocuments) error {
+	documents.MerchantID = merchantID
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_documents(merchant_id, cac_reg_number, tin,
+			beneficial_owners, business_address, scuml_number, dnfbp)
+		VALUES($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (merchant_id) DO UPDATE
+		SET cac_reg_number=EXCLUDED.cac_reg_number,
+		    tin=EXCLUDED.tin,
+		    beneficial_owners=EXCLUDED.beneficial_owners,
+		    business_address=EXCLUDED.business_address,
+		    scuml_number=EXCLUDED.scuml_number,
+		    dnfbp=EXCLUDED.dnfbp,
+		    updated_at=now()`,
+		merchantID, documents.CACRegNumber, documents.TIN, documents.BeneficialOwners,
+		documents.BusinessAddress, documents.SCUMLNumber, documents.DNFBP)
+	return err
+}
+
+// KYBDocumentsByMerchant loads the merchant's latest recorded corporate
+// documents. A missing record returns pgx.ErrNoRows.
+func (s *Store) KYBDocumentsByMerchant(ctx context.Context, merchantID uuid.UUID) (KYBDocuments, error) {
+	var d KYBDocuments
+	err := s.pool.QueryRow(ctx, `
+		SELECT merchant_id, cac_reg_number, tin, beneficial_owners,
+		       business_address, scuml_number, dnfbp, recorded_at, updated_at
+		FROM business_kyb_documents WHERE merchant_id=$1`, merchantID).Scan(
+		&d.MerchantID, &d.CACRegNumber, &d.TIN, &d.BeneficialOwners,
+		&d.BusinessAddress, &d.SCUMLNumber, &d.DNFBP, &d.RecordedAt, &d.UpdatedAt)
+	return d, err
+}
+
+// BusinessEvidenceRequiredFor returns the complete evidence set a one-step
+// business advancement to the given tier requires (the B1 corporate suite is
+// five hard gates; B2/B3 each require one key). Empty when to is not the
+// target of an adjacent step (B0 has no entry evidence).
+func BusinessEvidenceRequiredFor(to string) []string {
 	switch to {
 	case kyc.TierB1:
-		return kyc.EvBusinessDocs
+		return []string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}
 	case kyc.TierB2:
-		return kyc.EvBusinessBank
+		return []string{kyc.EvBusinessBank}
 	case kyc.TierB3:
-		return kyc.EvBusinessEDD
+		return []string{kyc.EvBusinessEDD}
 	}
-	return ""
+	return nil
+}
+
+// BusinessEvidenceFor returns a single headline evidence key for a one-step
+// business advancement, for legacy callers that build a summary. Prefer
+// BusinessEvidenceRequiredFor when recording the actual request.
+func BusinessEvidenceFor(to string) string {
+	required := BusinessEvidenceRequiredFor(to)
+	if len(required) == 0 {
+		return ""
+	}
+	return required[0]
 }
 
 // NextBusinessTier returns the next tier above the current one on the B0-B3
@@ -508,6 +571,7 @@ func (s *Store) AdvanceKYBTier(ctx context.Context, merchantID uuid.UUID, to str
 	if err != nil {
 		return KYBProfile{}, err
 	}
+	fromTier := profile.Tier
 	if err := kyc.CanAdvanceBusiness(profile.Tier, to, evidence); err != nil {
 		return KYBProfile{}, err
 	}
@@ -544,7 +608,7 @@ func (s *Store) AdvanceKYBTier(ctx context.Context, merchantID uuid.UUID, to str
 		ResourceType: sql.NullString{String: "merchant", Valid: true},
 		ResourceID:   sql.NullString{String: merchantID.String(), Valid: true},
 		Details: map[string]any{
-			"from_tier": profile.Tier,
+			"from_tier": fromTier,
 			"to_tier":   to,
 			"evidence":  merged,
 		},
@@ -581,6 +645,7 @@ func (s *Store) DowngradeKYBTier(ctx context.Context, merchantID uuid.UUID, to, 
 	if err != nil {
 		return KYBProfile{}, err
 	}
+	fromTier := profile.Tier
 	if err := kyc.CanDowngradeBusiness(profile.Tier, to); err != nil {
 		return KYBProfile{}, err
 	}
@@ -610,7 +675,7 @@ func (s *Store) DowngradeKYBTier(ctx context.Context, merchantID uuid.UUID, to, 
 		ResourceType: sql.NullString{String: "merchant", Valid: true},
 		ResourceID:   sql.NullString{String: merchantID.String(), Valid: true},
 		Details: map[string]any{
-			"from_tier": profile.Tier,
+			"from_tier": fromTier,
 			"to_tier":   to,
 			"reason":    reason,
 		},
@@ -624,6 +689,14 @@ func (s *Store) DowngradeKYBTier(ctx context.Context, merchantID uuid.UUID, to, 
 	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
 		return KYBProfile{}, fmt.Errorf("audit kyb downgrade: %w", err)
 	}
+	// A merchant demoted to the unverified B0 baseline loses its verified
+	// status: the business wallet is frozen (money-out blocked) within the same
+	// transaction so the downgrade and freeze cannot diverge.
+	if to == kyc.TierB0 {
+		if err := freezeWalletTx(ctx, tx, WalletOwnerBusiness, merchantID); err != nil {
+			return KYBProfile{}, fmt.Errorf("freeze business wallet on downgrade: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return KYBProfile{}, fmt.Errorf("commit kyb downgrade: %w", err)
 	}
@@ -631,31 +704,61 @@ func (s *Store) DowngradeKYBTier(ctx context.Context, merchantID uuid.UUID, to, 
 }
 
 // ReviewKYBProfile approves or rejects a merchant's KYB position and records
-// the reviewer. It does not move the tier; that is AdvanceKYBTier's job.
+// the reviewer, the review timestamp, and the reviewer's note in one audited
+// transaction. It does not move the tier; that is AdvanceKYBTier's job. A
+// rejection freezes the merchant's business wallet (money-out blocked) because
+// an unverified position must not continue disbursing.
 func (s *Store) ReviewKYBProfile(ctx context.Context, merchantID uuid.UUID, approve bool, reviewedBy *uuid.UUID, note string) error {
 	status := "approved"
 	if !approve {
 		status = "rejected"
 	}
-	tag, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin kyb review: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		UPDATE business_kyb_profiles
-		SET review_status=$2, reviewed_by=$3, updated_at=now()
+		SET review_status=$2, reviewed_by=$3, reviewed_at=now(), updated_at=now()
 		WHERE merchant_id=$1`, merchantID, status, reviewedBy)
 	if err != nil {
-		return err
+		return fmt.Errorf("update kyb review: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return errors.New("kyb profile not found")
 	}
+	var reviewerID uuid.NullUUID
+	if reviewedBy != nil {
+		reviewerID = uuid.NullUUID{UUID: *reviewedBy, Valid: true}
+	}
+	entry := AuditLog{
+		ActorType:    "system",
+		Action:       "kyb.reviewed",
+		ResourceType: sql.NullString{String: "merchant", Valid: true},
+		ResourceID:   sql.NullString{String: merchantID.String(), Valid: true},
+		ActorID:      reviewerID,
+		Details: map[string]any{
+			"decision": status,
+			"note":     note,
+		},
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return fmt.Errorf("audit kyb review: %w", err)
+	}
 	// W1: approving the merchant's KYB position integrates their business
-	// wallet (created active), mirroring AdvanceKYBTier.
+	// wallet (created active), mirroring AdvanceKYBTier. Rejecting freezes the
+	// wallet so an unverified merchant cannot make money-out movements.
 	if approve {
-		if _, err := s.EnsureBusinessWallet(ctx, merchantID, ""); err != nil {
+		if _, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive); err != nil {
 			return fmt.Errorf("ensure business wallet: %w", err)
 		}
+	} else {
+		if err := freezeWalletTx(ctx, tx, WalletOwnerBusiness, merchantID); err != nil {
+			return fmt.Errorf("freeze business wallet on reject: %w", err)
+		}
 	}
-	_ = note
-	return nil
+	return tx.Commit(ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -664,6 +767,19 @@ func (s *Store) ReviewKYBProfile(ctx context.Context, merchantID uuid.UUID, appr
 
 func allowanceLockKey(accountType string, subjectID uuid.UUID, direction string) string {
 	return fmt.Sprintf("allow:%s:%s:%s", accountType, subjectID, direction)
+}
+
+// freezeWalletTx freezes the entity's wallet (money-out blocked) inside the
+// caller's transaction. A missing wallet row is not an error: there is nothing
+// to freeze yet.
+func freezeWalletTx(ctx context.Context, tx pgx.Tx, ownerType string, ownerID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE wallet_accounts
+		SET status='frozen', updated_at=now()
+		WHERE owner_type=$1 AND owner_id=$2`, ownerType, ownerID); err != nil {
+		return fmt.Errorf("freeze %s wallet: %w", ownerType, err)
+	}
+	return nil
 }
 
 type summable interface {

@@ -248,11 +248,7 @@ func (s *ConversationService) handleKYBRequestConfirm(ctx context.Context, chann
 		return s.sendText(ctx, channel, recipient, "Upgrade request cancelled. You can always come back from the merchant menu.")
 	}
 	next := session.Data["next_tier"]
-	evidenceKey := store.BusinessEvidenceFor(next)
-	var evidence []string
-	if evidenceKey != "" {
-		evidence = []string{evidenceKey}
-	}
+	evidence := store.BusinessEvidenceRequiredFor(next)
 	profile, err := s.store.RequestKYBAdvancement(ctx, merchantID, evidence, "")
 	if err != nil {
 		session.State, session.Data = "menu", map[string]string{}
@@ -276,7 +272,7 @@ func (s *ConversationService) handleKYBRequestConfirm(ctx context.Context, chann
 func kycEvidenceRequirement(tier string) string {
 	switch tier {
 	case kyc.TierB1:
-		return "RC/CAC registration documents and directors verified"
+		return "CAC registration certificate, business TIN, beneficial owners, business address and SCUML certificate"
 	case kyc.TierB2:
 		return "Settlement bank verified against the business identity"
 	case kyc.TierB3:

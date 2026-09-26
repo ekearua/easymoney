@@ -182,7 +182,7 @@ func TestWalletAwaitingToSucceeded(t *testing.T) {
 	if _, err := repository.EnsureKYCProfile(ctx, user.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 	wallet, err := repository.WalletByOwner(ctx, WalletOwnerUser, user.ID)

@@ -184,10 +184,10 @@ var wfFlowLayouts = map[string]wfFlowLayout{
 	service.WebFlowTopup:            {[]string{"Pay"}, map[string]int{"": 0, "amount": 0, "review": 0, "checkout": 0, "done": 0}},
 	service.WebFlowIndividualPay:    {[]string{"Recipient", "Pay"}, map[string]int{"": 0, "phone": 0, "amount": 1, "bank": 1, "bank_pick": 1, "account": 1, "review": 1, "checkout": 1, "done": 1}},
 	// KYC / onboarding: identity and profile setup walk the same shell.
-	service.WebFlowOnboard:           {[]string{"Name", "Email", "Verify", "Confirm"}, map[string]int{"": 0, "name": 0, "email": 1, "code": 2, "confirm": 3, "done": 3}},
-	service.WebFlowIndividualUpgrade: {[]string{"Email", "Verify", "Profile", "Review", "ID"}, map[string]int{"": 0, "email": 0, "code": 1, "profile": 2, "review": 3, "result": 4, "done": 4}},
+	service.WebFlowOnboard:           {[]string{"Name", "Email", "Verify", "Details", "Confirm"}, map[string]int{"": 0, "name": 0, "email": 1, "code": 2, "details": 3, "confirm": 4, "done": 4}},
+	service.WebFlowIndividualUpgrade: {[]string{"Email", "Verify", "Profile", "Review", "CBN Tier 2", "CBN Tier 3"}, map[string]int{"": 0, "email": 0, "code": 1, "profile": 2, "review": 3, "tier2": 4, "tier3": 5, "done": 5}},
 	service.WebFlowMerchantRegister:  {[]string{"Email", "Verify", "Name", "Category", "About", "Review"}, map[string]int{"": 0, "email": 0, "code": 1, "name": 2, "category": 3, "description": 4, "review": 5, "done": 5}},
-	service.WebFlowKYBRequest:        {[]string{"Merchant", "Note", "Review"}, map[string]int{"": 0, "merchant": 0, "note": 1, "review": 2, "done": 2}},
+	service.WebFlowKYBRequest:        {[]string{"Merchant", "Corporate", "Owners", "Compliance", "Note", "Review"}, map[string]int{"": 0, "merchant": 0, "corporate": 1, "owners": 2, "compliance": 3, "note": 4, "review": 5, "done": 5}},
 	// Thrift: creating a group walks the contribution terms; joining is a
 	// two-step confirm of the group the customer was invited to.
 	service.WebFlowThriftCreate: {[]string{"Name", "Amount", "Frequency", "Size", "Review"}, map[string]int{"": 0, "name": 0, "amount": 1, "frequency": 2, "target": 3, "review": 4, "done": 4}},

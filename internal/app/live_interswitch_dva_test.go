@@ -89,7 +89,7 @@ func TestLiveInterswitchDVATransfer(t *testing.T) {
 		Mode:         "TEST",
 	})
 	gateways := map[string]ports.PaymentGateway{
-		service.ProviderInterswitch: gateway,
+		service.ProviderInterswitch:  gateway,
 		service.ProviderBankTransfer: gateway,
 	}
 	payments := service.NewPaymentService(cfg, repository, gateways, service.NewProviderRouter(gateways, logger), logger)
@@ -109,7 +109,7 @@ func TestLiveInterswitchDVATransfer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, whatsappkyc.TierL1,
-		[]string{whatsappkyc.EvChannelConfirmed}, nil); err != nil {
+		[]string{whatsappkyc.EvChannelConfirmed, whatsappkyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 

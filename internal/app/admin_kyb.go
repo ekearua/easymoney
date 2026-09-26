@@ -25,20 +25,20 @@ type kybEvidenceOption struct {
 
 // kybAdminRow is the per-merchant view for the KYB console.
 type kybAdminRow struct {
-	MerchantID       uuid.UUID
-	MerchantName     string
-	Tier             string
-	ReviewStatus     string
-	Screening        string
-	Evidence         []string
-	UpdatedAt        time.Time
-	NextTier         string
-	Options          []kybEvidenceOption
+	MerchantID        uuid.UUID
+	MerchantName      string
+	Tier              string
+	ReviewStatus      string
+	Screening         string
+	Evidence          []string
+	UpdatedAt         time.Time
+	NextTier          string
+	Options           []kybEvidenceOption
 	HasAdvanceRequest bool
-	AdvanceTier      string
-	AdvanceEvidence  []string
-	AdvanceNote      string
-	AdvanceRequested string
+	AdvanceTier       string
+	AdvanceEvidence   []string
+	AdvanceNote       string
+	AdvanceRequested  string
 }
 
 // adminKYB renders the business identity ladder together with the editable
@@ -178,8 +178,8 @@ func (a *App) adminKYBAdvanceRequestApprove(w http.ResponseWriter, r *http.Reque
 	// Fall back to the documented evidence for the target if the merchant
 	// submitted nothing usable, so an approve still succeeds on a bare request.
 	if len(evidence) == 0 {
-		if req := store.BusinessEvidenceFor(to); req != "" {
-			evidence = []string{req}
+		if required := store.BusinessEvidenceRequiredFor(to); len(required) != 0 {
+			evidence = required
 		}
 	}
 	advanced, err := a.store.AdvanceKYBTier(r.Context(), merchantID, to, evidence, actor)
@@ -316,24 +316,31 @@ func nextBusinessTier(tier string) string {
 }
 
 // businessEvidenceOptions lists every verifiable business identity piece with
-// the one the target tier actually requires flagged.
+// the one the target tier actually requires flagged. B0 -> B1 is the corporate
+// suite of five hard gates (CAC, TIN, UBO, location, SCUML).
 func businessEvidenceOptions(next string) []kybEvidenceOption {
 	all := []kybEvidenceOption{
-		{Key: kyc.EvBusinessDocs, Label: "Legal identity: RC/BN and directors verified"},
+		{Key: kyc.EvCACVerified, Label: "Corporate affairs (RC/CAC) registered and verified"},
+		{Key: kyc.EvTINVerified, Label: "Tax Identification Number verified with FIRS"},
+		{Key: kyc.EvUBOCleared, Label: "Beneficial owners declared and cleared"},
+		{Key: kyc.EvLocationVerified, Label: "Operating address structurally verified"},
+		{Key: kyc.EvSCUMLSubmitted, Label: "SCUML registration submitted"},
 		{Key: kyc.EvBusinessBank, Label: "Settlement bank matched to the business identity"},
 		{Key: kyc.EvBusinessEDD, Label: "Enhanced due diligence on beneficial owners and source of funds"},
 	}
-	required := ""
+	required := map[string]bool{}
 	switch next {
 	case kyc.TierB1:
-		required = kyc.EvBusinessDocs
+		for _, key := range []string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted} {
+			required[key] = true
+		}
 	case kyc.TierB2:
-		required = kyc.EvBusinessBank
+		required[kyc.EvBusinessBank] = true
 	case kyc.TierB3:
-		required = kyc.EvBusinessEDD
+		required[kyc.EvBusinessEDD] = true
 	}
 	for i := range all {
-		all[i].IsRequired = all[i].Key == required
+		all[i].IsRequired = required[all[i].Key]
 	}
 	return all
 }

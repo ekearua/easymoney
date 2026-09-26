@@ -161,7 +161,7 @@ func TestJourneyHarness(t *testing.T) {
 		UserID: payer.ID, Provider: "journey", Decision: whatsappkyc.ScreenClear,
 	}, 30*24*time.Hour)
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, whatsappkyc.TierL2,
-		[]string{whatsappkyc.EvChannelConfirmed, whatsappkyc.EvIdentityOnFile}, nil); err != nil {
+		[]string{whatsappkyc.EvChannelConfirmed, whatsappkyc.EvTier1BasicDetails, whatsappkyc.EvGovPhotoID, whatsappkyc.EvBVNVerified, whatsappkyc.EvNINVerified}, nil); err != nil {
 		t.Fatal(err)
 	}
 	// Fund a wallet so the journey can ALSO prove the wallet rail end to end.

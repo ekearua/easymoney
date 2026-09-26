@@ -176,7 +176,7 @@ func TestWebFlowFormHarness(t *testing.T) {
 		// Reaching L1 also activates the pending individual wallet opened at
 		// user creation, so the wallet rails are exercisable here.
 		if _, err := repository.AdvanceKYCTierTo(ctx, user.ID, whatsappkyc.TierL1,
-			[]string{whatsappkyc.EvChannelConfirmed}, nil); err != nil {
+			[]string{whatsappkyc.EvChannelConfirmed, whatsappkyc.EvTier1BasicDetails}, nil); err != nil {
 			t.Fatal(err)
 		}
 		return user
@@ -254,14 +254,14 @@ func TestWebFlowFormHarness(t *testing.T) {
 	pages["invoice_items_summary"] = cfg.BaseURL + "/w/" + invoiceToken
 
 	// kyb_request needs an approved merchant owned by the payer; seed the
-	// merchant_owners join directly and park the flow on its note step.
+	// merchant_owners join directly and park the flow on its merchant step.
 	if _, err := repository.RawExec(ctx, fmt.Sprintf(`INSERT INTO merchant_owners (merchant_id, user_id)
 		SELECT m.id, '%s' FROM merchants m WHERE m.slug='lagos-lunchbox'
 		ON CONFLICT DO NOTHING`, payer.ID)); err != nil {
 		t.Fatal(err)
 	}
 	kybToken := startFlow("request kyb upgrade")
-	pages["kyb_note"] = cfg.BaseURL + "/w/" + kybToken
+	pages["kyb_merchant"] = cfg.BaseURL + "/w/" + kybToken
 
 	// pay, parked on the one-page start: AI bar, merchant select, amount
 	// field, and payment rails together. A catalog service is seeded onto the
@@ -368,7 +368,7 @@ func TestWebFlowFormHarness(t *testing.T) {
 	}
 
 	fmt.Printf("FORMS base=%s\n", srv.URL)
-	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_note", "invoice_items_summary", "pay_merchant", "pay_review_wallet_short", "wallet_topup", "wallet_pay"} {
+	for _, name := range []string{"thrift_frequency", "upgrade_profile", "onboard_code", "kyb_merchant", "invoice_items_summary", "pay_merchant", "pay_review_wallet_short", "wallet_topup", "wallet_pay"} {
 		fmt.Printf("FORMS %s=%s\n", name, pages[name])
 	}
 	if out := os.Getenv("FORMS_META_FILE"); out != "" {

@@ -77,7 +77,7 @@ Runs `go run ./cmd/demo seed` to create:
 | System merchant | xego-individual-pay (Xego Individual Pay) |
 | System merchant | xego-wallet-topup (Xego Wallet Top-up) |
 | Demo admin user | +2348000000001 'Demo Merchant Admin' (owner of seeded merchants) |
-| KYC tier limits | CBN ladder L0-L4 / B0-B3 with single/daily/monthly ceilings |
+| KYC tier limits | CBN ladder L0-L3 / B0-B3 with single/daily/monthly ceilings |
 
 Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
@@ -1238,11 +1238,11 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 </details>
 
-### Phase 8: L1+ — Thrift Group Savings (10 cases)
+### Phase 8: L2 — Thrift Group Savings (10 cases)
 
-- **Tier/Actor:** L1+
+- **Tier/Actor:** L2 (CBN Tier 2)
 - **Prerequisites:** Phase 6
-- **On completing this phase you unlock:** KYC advancement to L2 and customer-to-customer individual pay.
+- **On completing this phase you unlock:** KYC advancement to L2 (customer becomes an approved individual) and customer-to-customer individual pay (Phase 9).
 
 | ID | Module | Actor | Channel | Title | Priority |
 |---|---|---|---|---|---|
@@ -1260,20 +1260,20 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 <details>
 <summary>Step-by-step details for Phase 8</summary>
 
-#### TC-08-001 - Become individual — KYC identity for thrift
+#### TC-08-001 - Become individual — CBN Tier 2 (photo ID + BVN + NIN)
 
 - **Module:** Thrift
 - **Actor:** Individual   **Channel:** WhatsApp   **Priority:** P0
-- **Preconditions:** Onboarded customer at L1.
+- **Preconditions:** Onboarded customer at L1 (CBN Tier 1).
 
 **Steps**
 
-1. Choose 'Become individual'.
-2. Complete the email OTP.
-3. Enter legal name, DOB, address, occupation.
-4. Observe KYC result.
+1. Choose 'Become individual' / the CBN Tier 2 upgrade flow.
+2. Select a government-issued photo ID (PASSPORT, DRIVERS LICENCE, NATIONAL ID, VOTERS CARD).
+3. Submit the 11-digit BVN and NIN (simulated verifier).
+4. Observe the KYC result.
 
-**Expected Result:** KYC marked approved_simulated; the customer can now create/join thrift groups. Admin can review the case in /admin/kyc.
+**Expected Result:** KYC advances to L2 (approved individual, screening clear); the customer can now create/join thrift groups and send individual payments. Admin can review the case in /admin/kyc.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -1422,7 +1422,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 | ID | Module | Actor | Channel | Title | Priority |
 |---|---|---|---|---|---|
-| TC-09-001 | KYC | Admin | Console | KYC L1→L2 advancement (identity on file) | P0 |
+| TC-09-001 | KYC | Admin | Console | KYC L1→L2 advancement (photo ID + verified BVN and NIN) | P0 |
 | TC-09-002 | Individual Pay | Individual | WhatsApp | Individual pay flow starts from menu | P0 |
 | TC-09-003 | Individual Pay | Individual | WhatsApp | Recipient phone + validation | P1 |
 | TC-09-004 | Individual Pay | Individual | WhatsApp | Amount + narration entry and review | P0 |
@@ -1432,18 +1432,18 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 <details>
 <summary>Step-by-step details for Phase 9</summary>
 
-#### TC-09-001 - KYC L1→L2 advancement (identity on file)
+#### TC-09-001 - KYC L1→L2 advancement (photo ID + verified BVN and NIN)
 
 - **Module:** KYC
 - **Actor:** Admin   **Channel:** Console   **Priority:** P0
-- **Preconditions:** Customer at L1 with identity submitted during 'Become individual' flow.
+- **Preconditions:** Customer at L1 (CBN Tier 1) after completing the CBN Tier 2 identity fields.
 
 **Steps**
 
 1. Open /admin/kyc.
-2. Advance the customer from L1 to L2 with EvIdentityOnFile evidence and clear screening.
+2. Advance the customer from L1 to L2 with `government_photo_id` + `bvn_verified` + `nin_verified` evidence and clear screening.
 
-**Expected Result:** Customer advances to L2. Allowance limits increase to L2 ceilings (single ₦20M, daily ₦20M, monthly ₦50M). Audit log records the advancement.
+**Expected Result:** Customer advances to L2. Allowance limits increase to L2 ceilings (single ₦200k, daily ₦500k, monthly ₦3m). Audit log records the advancement.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2988,13 +2988,13 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Identity
 - **Actor:** Individual   **Channel:** WhatsApp   **Priority:** P1
-- **Preconditions:** KYC L2+ flow requiring ID evidence.
+- **Preconditions:** KYC Tier-2 flow (L1 → L2) requiring a government photo ID plus both verified IDs.
 
 **Steps**
 
-1. Submit NIN/BVN in the KYC flow.
+1. Submit the 11-digit NIN or BVN in the CBN Tier 2 upgrade flow (both are required).
 
-**Expected Result:** Simulated verifier returns a deterministic result; verified ID attached to profile.
+**Expected Result:** Simulated verifier returns a deterministic result; a successful BVN and NIN pair is attached to the profile and unlocks L2.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

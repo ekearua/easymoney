@@ -75,8 +75,12 @@ func TestValidateAmountMustBePositive(t *testing.T) {
 }
 
 func TestCanAdvanceBusiness(t *testing.T) {
-	if err := CanAdvanceBusiness(TierB0, TierB1, []string{EvBusinessDocs}); err != nil {
-		t.Fatalf("B0->B1 with docs should pass: %v", err)
+	corporate := []string{EvCACVerified, EvTINVerified, EvUBOCleared, EvLocationVerified, EvSCUMLSubmitted}
+	if err := CanAdvanceBusiness(TierB0, TierB1, corporate); err != nil {
+		t.Fatalf("B0->B1 with corporate documents should pass: %v", err)
+	}
+	if err := CanAdvanceBusiness(TierB0, TierB1, []string{EvBusinessDocs}); err == nil {
+		t.Fatal("B0->B1 with a single legacy docs key must fail")
 	}
 	if err := CanAdvanceBusiness(TierB0, TierB1, nil); err == nil {
 		t.Fatal("B0->B1 without evidence must fail")

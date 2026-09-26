@@ -19,9 +19,24 @@ const (
 // Business evidence keys a transition must satisfy. Recorded in
 // business_kyb_profiles.evidence (registered via admin KYB review).
 const (
-	// EvBusinessDocs means RC/CAC registration documents plus directors are
-	// verified. Satisfies B0 -> B1.
-	EvBusinessDocs = "business_docs_verified"
+	// EvCACVerified means the corporate affairs certificate (RC/CAC) was
+	// checked and matches the registered business identity. With the other
+	// four corporate items it satisfies B0 -> B1.
+	EvCACVerified = "cac_verified"
+	// EvTINVerified means the business Tax Identification Number was verified
+	// against the FIRS records. Satisfies B0 -> B1 together with the other
+	// corporate items.
+	EvTINVerified = "tin_verified"
+	// EvUBOCleared means the beneficial owners were declared and cleared.
+	// Satisfies B0 -> B1 together with the other corporate items.
+	EvUBOCleared = "ubo_cleared"
+	// EvLocationVerified means the business operating address was structurally
+	// verified. Satisfies B0 -> B1 together with the other corporate items.
+	EvLocationVerified = "location_verified"
+	// EvSCUMLSubmitted means the SCUML (Special Control Unit against Money
+	// Laundering) certificate or registration nil submitted. Satisfies B0 -> B1
+	// together with the other corporate items.
+	EvSCUMLSubmitted = "scuml_submitted"
 	// EvBusinessBank means the settlement bank account is verified against the
 	// registered business identity. Satisfies B1 -> B2.
 	EvBusinessBank = "business_bank_verified"
@@ -29,6 +44,12 @@ const (
 	// funds) completed. Satisfies B2 -> B3.
 	EvBusinessEDD = "business_edd_completed"
 )
+
+// EvBusinessDocs is the legacy B0 -> B1 evidence key. It is retained for
+// compatibility: new profiles must satisfy the five corporate hard gates
+// instead (cac_verified, tin_verified, ubo_cleared, location_verified,
+// scuml_submitted).
+const EvBusinessDocs = "business_docs_verified"
 
 // ValidBusinessTier reports whether t is one of the B0-B3 tiers.
 func ValidBusinessTier(t string) bool {
@@ -66,7 +87,7 @@ func CanAdvanceBusiness(from, to string, evidence []string) error {
 	}
 	switch to {
 	case TierB1:
-		return requireEvidence(to, evidence, EvBusinessDocs)
+		return requireEvidence(to, evidence, EvCACVerified, EvTINVerified, EvUBOCleared, EvLocationVerified, EvSCUMLSubmitted)
 	case TierB2:
 		return requireEvidence(to, evidence, EvBusinessBank)
 	case TierB3:

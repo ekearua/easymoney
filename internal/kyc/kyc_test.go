@@ -8,7 +8,7 @@ func TestOrder(t *testing.T) {
 		TierL1: 1,
 		TierL2: 2,
 		TierL3: 3,
-		TierL4: 4,
+		"L4":   -1,
 		"L9":   -1,
 		"":     -1,
 	}
@@ -26,15 +26,16 @@ func TestCanAdvance(t *testing.T) {
 		evidence []string
 		wantOK   bool
 	}{
-		{"L0 to L1 with channel", TierL0, TierL1, []string{EvChannelConfirmed}, true},
-		{"L0 to L1 missing evidence", TierL0, TierL1, nil, false},
-		{"L1 to L2 with identity", TierL1, TierL2, []string{EvIdentityOnFile}, true},
-		{"L2 to L3 with NIN", TierL2, TierL3, []string{EvNINBVNVerified}, true},
-		{"L3 to L4 with EDD", TierL3, TierL4, []string{EvEDDCompleted}, true},
-		{"skip a tier", TierL1, TierL3, []string{EvNINBVNVerified}, false},
-		{"downgrade not an advance", TierL2, TierL1, []string{EvIdentityOnFile}, false},
-		{"unknown tier", TierL0, "L9", []string{EvChannelConfirmed}, false},
-		{"same tier", TierL2, TierL2, []string{EvIdentityOnFile}, false},
+		{"L0 to L1 with channel and tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails}, true},
+		{"L0 to L1 missing tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed}, false},
+		{"L1 to L2 with photo ID, BVN and NIN", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified, EvNINVerified}, true},
+		{"L1 to L2 missing both-verified IDs", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified}, false},
+		{"L2 to L3 with address proof and EDD", TierL2, TierL3, []string{EvAddressProof, EvEDDCompleted}, true},
+		{"skip a tier", TierL1, TierL3, []string{EvAddressProof, EvEDDCompleted}, false},
+		{"downgrade not an advance", TierL2, TierL1, []string{EvGovPhotoID, EvBVNVerified, EvNINVerified}, false},
+		{"unknown tier", TierL0, "L9", []string{EvChannelConfirmed, EvTier1BasicDetails}, false},
+		{"same tier", TierL2, TierL2, []string{EvGovPhotoID, EvBVNVerified, EvNINVerified}, false},
+		{"retired L4 is unknown", TierL3, "L4", []string{EvEDDCompleted}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,6 +70,39 @@ func TestBlockedByScreening(t *testing.T) {
 		if !BlockedByScreening(d) {
 			t.Errorf("%q must block advancement", d)
 		}
+	}
+}
+
+func TestCBNTier(t *testing.T) {
+	cases := map[string]string{
+		TierL0: "",
+		TierL1: "1",
+		TierL2: "2",
+		TierL3: "3",
+		"L4":   "",
+	}
+	for tier, want := range cases {
+		if got := CBNTier(tier); got != want {
+			t.Errorf("CBNTier(%q) = %q, want %q", tier, got, want)
+		}
+	}
+}
+
+func TestCBNTierLabel(t *testing.T) {
+	if got, want := CBNTierLabel(TierL1), "CBN Tier 1"; got != want {
+		t.Errorf("CBNTierLabel(L1) = %q, want %q", got, want)
+	}
+	if got := CBNTierLabel(TierL0); got != "" {
+		t.Errorf("CBNTierLabel(L0) = %q, want empty", got)
+	}
+}
+
+func TestCBNCorrelationCeilings(t *testing.T) {
+	if CBNTier1MaxSingleKobo != 5_000_000 || CBNTier1MaxDailyKobo != 20_000_000 || CBNTier1MaxMonthlyKobo != 50_000_000 {
+		t.Error("CBN Tier 1 ceilings must be 50k/200k/500k naira")
+	}
+	if CBNTier2MaxSingleKobo != 20_000_000 || CBNTier2MaxDailyKobo != 50_000_000 || CBNTier2MaxMonthlyKobo != 300_000_000 {
+		t.Error("CBN Tier 2 ceilings must be 200k/500k/3m naira")
 	}
 }
 
@@ -143,7 +177,7 @@ func TestScoreRisk(t *testing.T) {
 		{
 			name:      "EDD completes offsets earlier risk",
 			events:    []RiskEventInput{{EventType: "velocity", Score: 25}},
-			tier:      TierL4,
+			tier:      TierL3,
 			screening: ScreenPossible,
 			wantScore: 20,
 			wantBand:  RiskLow,

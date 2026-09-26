@@ -338,7 +338,7 @@ func Load() (Config, error) {
 		VTPassWebhookSecret:             os.Getenv("VTPASS_WEBHOOK_SECRET"),
 		VTPassTimeout:                   envDuration("VTPASS_TIMEOUT", 45*time.Second),
 		PaymentMinKobo:                  EnvInt64("PAYMENT_MIN_KOBO", 10_000),
-		PaymentMaxKobo:                  EnvInt64("PAYMENT_MAX_KOBO", 10_000_000),
+		PaymentMaxKobo:                  EnvInt64("PAYMENT_MAX_KOBO", 1_000_000_000),
 		RetentionPeriod:                 envDuration("RETENTION_PERIOD", 90*24*time.Hour),
 		KYCRescreenPeriod:               envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		MonitorVelocityWindow:           envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),

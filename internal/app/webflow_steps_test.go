@@ -248,7 +248,7 @@ func TestFlowStepsStates(t *testing.T) {
 	if !ok || itemsSteps[2].State != "current" || itemsSteps[2].Label != "Items" {
 		t.Fatalf("invoice_create items_summary must be the Items node, got %+v (ok=%v)", itemsSteps, ok)
 	}
-	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "note"); !ok || steps[1].State != "current" {
+	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "note"); !ok || steps[4].State != "current" || steps[4].Label != "Note" {
 		t.Fatalf("kyb_request note step must be the current node, got %+v (ok=%v)", steps, ok)
 	}
 }

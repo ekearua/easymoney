@@ -540,14 +540,29 @@ func (a *App) wfOnboardStep(r *http.Request, flow store.WebFlow, user store.User
 		page.Fields = []webFlowField{{Name: "code", Label: "6-digit code", Type: "text", Required: true}}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Verify"}, {Name: "resend", Label: "Resend code"}}
 		return page, nil
+	case "details":
+		page.Title = "CBN Tier 1 details"
+		page.Intro = "The CBN requires your date of birth, gender and residential address before we can confirm your account at Tier 1."
+		page.Fields = []webFlowField{
+			{Name: "dob", Label: "Date of birth (YYYY-MM-DD)", Type: "date", Required: true},
+			{Name: "gender", Label: "Gender", Type: "select", Required: true, Options: []webFlowOption{
+				{Value: "male", Label: "Male"}, {Value: "female", Label: "Female"},
+			}},
+			{Name: "address", Label: "Residential address", Type: "textarea", Required: true},
+		}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
+		return page, nil
 	case "confirm":
 		page.Title = "Almost done"
 		page.Review = []webFlowLine{
 			{Term: "Name", Desc: flow.Payload["name"]},
 			{Term: "Email", Desc: flow.Payload["email"]},
+			{Term: "Date of birth", Desc: flow.Payload["dob"]},
+			{Term: "Gender", Desc: flow.Payload["gender"]},
+			{Term: "Address", Desc: flow.Payload["address"]},
 			{Term: "Account", Desc: user.WhatsAppNumber},
 		}
-		page.Intro = "Xego uses your WhatsApp number as your account identity. Confirm to finish setup."
+		page.Intro = "Xego uses your WhatsApp number as your account identity. Confirm to finish setup at CBN Tier 1."
 		page.Actions = []webFlowAction{{Name: "confirm", Label: "Confirm my account"}}
 		return page, nil
 	}
@@ -602,6 +617,32 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		}
 		payload := clonePayload(flow.Payload)
 		payload["email_verified"] = "1"
+		a.wfAdvance(w, r, flow, "details", payload)
+		return nil, nil
+	case "details":
+		dob := strings.TrimSpace(r.FormValue("dob"))
+		gender := strings.ToLower(strings.TrimSpace(r.FormValue("gender")))
+		address := strings.TrimSpace(r.FormValue("address"))
+		var errs []string
+		parsed, err := time.Parse("2006-01-02", dob)
+		if err != nil {
+			errs = append(errs, "Enter your date of birth as YYYY-MM-DD.")
+		} else if parsed.After(time.Now().AddDate(-18, 0, 0)) {
+			errs = append(errs, "You must be at least 18 to open a Xego account.")
+		}
+		if gender != "male" && gender != "female" {
+			errs = append(errs, "Select your gender.")
+		}
+		if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
+			errs = append(errs, "Send an address between 10 and 240 characters.")
+		}
+		if msg := wfFormError(errs); msg != "" {
+			return a.wfPageWithError(flow, page, msg), nil
+		}
+		payload := clonePayload(flow.Payload)
+		payload["dob"] = dob
+		payload["gender"] = gender
+		payload["address"] = address
 		a.wfAdvance(w, r, flow, "confirm", payload)
 		return nil, nil
 	case "confirm":
@@ -611,20 +652,25 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if err := a.store.ConfirmUserNumber(r.Context(), user.ID); err != nil {
 			return a.wfPageWithError(flow, page, "Could not confirm your account. Please try again."), nil
 		}
-		// Completing onboarding reaches the base KYC tier (L1: channel + email
-		// confirmed), which activates the wallet and unlocks every wallet
-		// option. Idempotent — a user already at a higher tier is untouched.
-		if _, err := a.store.AdvanceKYCTierTo(r.Context(), user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+		if dob, err := time.Parse("2006-01-02", flow.Payload["dob"]); err == nil {
+			if _, err := a.store.UpsertIndividualProfile(r.Context(), user.ID, flow.Payload["name"], dob, flow.Payload["address"], "", flow.Payload["gender"]); err != nil {
+				return a.wfPageWithError(flow, page, "Could not save your tier 1 details. Please try again."), nil
+			}
+		}
+		// Completing onboarding reaches the base KYC tier (L1: channel + CBN
+		// Tier-1 data confirmed), which activates the wallet and unlocks every
+		// wallet option. Idempotent — a user already at a higher tier is untouched.
+		if _, err := a.store.AdvanceKYCTierTo(r.Context(), user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 			return a.wfPageWithError(flow, page, "Could not finish confirming your account. Please try again."), nil
 		}
-		msg := "You're all set. Your account is confirmed (Level 1) and your Xego wallet is now active. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
+		msg := "You're all set. Your account is confirmed (CBN Tier 1) and your Xego wallet is now active. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Your account is confirmed."), nil
 		}
 		done := a.wfPage(flow)
 		done.Done = true
 		done.DoneTitle = "You're all set"
-		done.DoneBody = "Your " + a.cfg.AppName + " profile is complete. Open WhatsApp and send MENU to get started."
+		done.DoneBody = "Your " + a.cfg.AppName + " profile is complete at CBN Tier 1. Open WhatsApp and send MENU to get started."
 		return &done, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
@@ -648,6 +694,20 @@ func (a *App) wfKYCProfileTier(r *http.Request, user store.User) (string, error)
 		return kyc.TierL0, nil
 	}
 	return profile.Tier, nil
+}
+
+func wfPhotoIDType(input string) string {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "passport", "international passport":
+		return "passport"
+	case "drivers_licence", "drivers licence", "drivers", "licence":
+		return "drivers_licence"
+	case "national_id", "national id", "national":
+		return "national_id"
+	case "voters_card", "voters card", "voters", "pvc":
+		return "voters_card"
+	}
+	return ""
 }
 
 func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
@@ -693,11 +753,14 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		page.Fields = []webFlowField{
 			{Name: "legal_name", Label: "Legal name", Type: "text", Required: true},
 			{Name: "dob", Label: "Date of birth (YYYY-MM-DD)", Type: "date", Required: true},
+			{Name: "gender", Label: "Gender", Type: "select", Required: true, Options: []webFlowOption{
+				{Value: "male", Label: "Male"}, {Value: "female", Label: "Female"},
+			}},
 			{Name: "address", Label: "Residential address", Type: "textarea", Required: true},
 			{Name: "occupation", Label: "Occupation", Type: "text", Required: true},
 			{Name: "id_slip", Label: "Photo of your NIN or BVN slip (optional)", Type: "upload",
 				MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits.",
-				Hint:        "Uploading a slip lets Xego prefill your ID number when you reach Level 3. You can also type or say it later."},
+				Hint:        "Uploading a slip lets Xego prefill your ID number when you reach Tier 2. You can also type or say it later."},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
@@ -706,6 +769,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		page.Review = []webFlowLine{
 			{Term: "Legal name", Desc: flow.Payload["legal_name"]},
 			{Term: "Date of birth", Desc: flow.Payload["dob"]},
+			{Term: "Gender", Desc: flow.Payload["gender"]},
 			{Term: "Address", Desc: flow.Payload["address"]},
 			{Term: "Occupation", Desc: flow.Payload["occupation"]},
 			{Term: "Email", Desc: flow.Payload["email"]},
@@ -717,10 +781,50 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 			}
 			page.Review = append(page.Review, webFlowLine{Term: "ID slip read", Desc: desc})
 		}
-		page.Intro = "Submitting this profile applies a compliance screening. Level 2 approval is immediate when the screen is clean."
+		page.Intro = "Submitting this profile applies a compliance screening. CBN Tier 1 approval is immediate when the screen is clean."
 		page.Actions = []webFlowAction{{Name: "apply", Label: "Submit profile"}}
 		return page, nil
-	case "result", "done":
+	case "tier2":
+		page.Title = "CBN Tier 2 — identity"
+		page.Intro = "To reach CBN Tier 2 you need a government-issued photo ID, plus your BVN and NIN verified against the national databases."
+		page.Fields = []webFlowField{
+			{Name: "photo_id_type", Label: "Government photo ID", Type: "radio", Required: true, Options: []webFlowOption{
+				{Value: "passport", Label: "International passport"},
+				{Value: "drivers_licence", Label: "Driver's licence"},
+				{Value: "national_id", Label: "National ID card"},
+				{Value: "voters_card", Label: "Voter's card (PVC)"},
+			}},
+			{Name: "photo_id_number", Label: "ID number", Type: "text", Required: true,
+				Hint: "The number printed on your photo ID."},
+			{Name: "bvn", Label: "11-digit BVN", Type: "text", Required: true},
+			{Name: "nin", Label: "11-digit NIN", Type: "text", Required: true},
+			{Name: "id_slip", Label: "Upload your NIN or BVN slip", Type: "upload",
+				MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits."},
+			{Name: "id_voice", Label: "Or say the digits", Type: "voice",
+				Hint: "Record a short voice note saying the number clearly."},
+		}
+		page.Actions = []webFlowAction{{Name: "submit_tier2", Label: "Verify and upgrade"}, {Name: "skip", Label: "Skip for now"}}
+		return page, nil
+	case "tier3":
+		page.Title = "CBN Tier 3 — enhanced due diligence"
+		page.Intro = "To reach CBN Tier 3 (uncapped) you need a structural proof of address and an enhanced due-diligence check (liveness + source of funds). For this demo the check is self-service."
+		page.Fields = []webFlowField{
+			{Name: "address_proof", Label: "Utility bill reference", Type: "text", Required: true,
+				Hint: "A recent utility bill reference (like a prepaid meter or account number)."},
+			{Name: "source_of_funds", Label: "Primary source of funds", Type: "radio", Required: true, Options: []webFlowOption{
+				{Value: "SALARY", Label: "Salary"},
+				{Value: "BUSINESS", Label: "Business income"},
+				{Value: "INVESTMENTS", Label: "Investments"},
+				{Value: "GIFTS", Label: "Gifts"},
+				{Value: "OTHER", Label: "Other"},
+			}},
+			{Name: "liveness", Label: "I confirm I'm completing this verification myself in real time", Type: "radio", Required: true, Options: []webFlowOption{
+				{Value: "yes", Label: "Yes, I confirm"},
+			}},
+		}
+		page.Actions = []webFlowAction{{Name: "submit_tier3", Label: "Complete due diligence"}, {Name: "skip", Label: "Skip for now"}}
+		return page, nil
+	case "done":
 		if flow.Step == "done" {
 			page.Done = true
 			page.DoneTitle = "Individual profile updated"
@@ -732,25 +836,8 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		if flow.Payload["upgrade_result"] == "review" {
 			page.Intro = "Your profile is under review. Our compliance team is checking your screening result and will follow up."
 		} else {
-			page.Intro = "Your individual profile is approved at Level 2 (identity on file). Optionally add your NIN or BVN to reach Level 3 and raise your limits."
+			page.Intro = "Your individual profile is approved at CBN Tier 1. Use the next steps to reach Tier 2 and Tier 3."
 		}
-		prefilled := wfIDNumberFrom(flow.Payload["id_slip"] + " " + flow.Payload["id_voice"])
-		idNumberHint := ""
-		if prefilled != "" {
-			idNumberHint = "We read " + prefilled + " from your upload or voice note — confirm or edit it."
-		}
-		page.Fields = []webFlowField{
-			{Name: "id_type", Label: "ID type", Type: "radio", Required: false, Options: []webFlowOption{
-				{Value: "nin", Label: "NIN"},
-				{Value: "bvn", Label: "BVN"},
-			}},
-			{Name: "id_number", Label: "11-digit number", Type: "text", Value: prefilled, Hint: idNumberHint},
-			{Name: "id_slip", Label: "Upload your NIN or BVN slip", Type: "upload",
-				MediaPrompt: "Extract the 11-digit NIN or BVN number from this identity slip. Reply with only the digits."},
-			{Name: "id_voice", Label: "Or say your 11-digit number", Type: "voice",
-				Hint: "Record a short voice note saying the number clearly."},
-		}
-		page.Actions = []webFlowAction{{Name: "verify_id", Label: "Verify ID"}, {Name: "skip", Label: "Skip for now"}}
 		return page, nil
 	}
 	return page, fmt.Errorf("unknown individual_upgrade step %q", flow.Step)
@@ -766,7 +853,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 			// already vouches identity, so this only heals the gate.
 			tierNow, _ := a.wfKYCProfileTier(r, user)
 			if kyc.Order(tierNow) < kyc.Order(kyc.TierL2) {
-				return a.wfPageWithError(flow, page, "Your profile is no longer at Level 2. Complete verification below."), nil
+				return a.wfPageWithError(flow, page, "Your profile is no longer at CBN Tier 2. Complete verification below."), nil
 			}
 			if err := a.store.HealIndividualAccountLevel(r.Context(), user.ID); err != nil {
 				return a.wfPageWithError(flow, page, "Could not fix your account. Please try again or contact support."), nil
@@ -806,14 +893,20 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 	case "profile":
 		legalName := strings.TrimSpace(r.FormValue("legal_name"))
 		dob := strings.TrimSpace(r.FormValue("dob"))
+		gender := strings.ToLower(strings.TrimSpace(r.FormValue("gender")))
 		address := strings.TrimSpace(r.FormValue("address"))
 		occupation := strings.TrimSpace(r.FormValue("occupation"))
 		var errs []string
 		if len([]rune(legalName)) < 3 || len([]rune(legalName)) > 100 {
 			errs = append(errs, "Send your legal name (3-100 characters).")
 		}
-		if _, err := time.Parse("2006-01-02", dob); err != nil {
+		if parsed, err := time.Parse("2006-01-02", dob); err != nil {
 			errs = append(errs, "Enter your date of birth as YYYY-MM-DD.")
+		} else if parsed.After(time.Now().AddDate(-18, 0, 0)) {
+			errs = append(errs, "You must be at least 18.")
+		}
+		if gender != "male" && gender != "female" {
+			errs = append(errs, "Select your gender.")
 		}
 		if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
 			errs = append(errs, "Send an address between 10 and 240 characters.")
@@ -827,6 +920,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		payload := clonePayload(flow.Payload)
 		payload["legal_name"] = legalName
 		payload["dob"] = dob
+		payload["gender"] = gender
 		payload["address"] = address
 		payload["occupation"] = occupation
 		a.wfAdvance(w, r, flow, "review", payload)
@@ -839,7 +933,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not load your account."), nil
 		}
-		outcome, err := a.conversation.ApplyIndividualProfile(r.Context(), user, flow.Payload["legal_name"], flow.Payload["dob"], flow.Payload["address"], flow.Payload["occupation"])
+		outcome, err := a.conversation.ApplyIndividualProfile(r.Context(), user, flow.Payload["legal_name"], flow.Payload["dob"], flow.Payload["gender"], flow.Payload["address"], flow.Payload["occupation"])
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Profile submission failed: "+err.Error()), nil
 		}
@@ -855,57 +949,150 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 			done.DoneBody = "Our compliance team is checking your screening result and will follow up on WhatsApp."
 			return &done, nil
 		}
-		a.wfAdvance(w, r, flow, "result", payload)
+		if err := a.wfFinish(r.Context(), flow, "Your Xego individual profile is approved at CBN Tier 1. Continue in the browser to reach CBN Tier 2 (photo ID, BVN + NIN) and Tier 3 (enhanced due diligence)."); err != nil {
+			return a.wfPageWithError(flow, page, "Your profile was submitted."), nil
+		}
+		a.wfAdvance(w, r, flow, "tier2", payload)
 		return nil, nil
-	case "result":
+	case "tier2":
 		if action == "skip" {
-			msg := "No problem. Your Xego individual profile is Level 2 (identity on file) and approved. You can create thrift groups and send money to individuals."
+			msg := "No problem. Your Xego individual profile is CBN Tier 1 and approved. You can browse the menu; send MENU anytime."
 			if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 				return a.wfPageWithError(flow, page, "Profile saved."), nil
 			}
 			done := a.wfPage(flow)
 			done.Done = true
 			done.DoneTitle = "Individual profile updated"
-			done.DoneBody = "Your profile is Level 2 and approved. Check WhatsApp for your new limits."
+			done.DoneBody = "Your profile is CBN Tier 1 and approved. Check WhatsApp for your new limits."
 			return &done, nil
 		}
-		if action != "verify_id" {
-			return a.wfPageWithError(flow, page, "Verify your ID or skip to stay at Level 2."), nil
+		if action != "submit_tier2" {
+			return a.wfPageWithError(flow, page, "Verify and upgrade, or skip to stay at CBN Tier 1."), nil
 		}
-		idType := strings.ToLower(strings.TrimSpace(r.FormValue("id_type")))
-		// Typed input must be exactly 11 digits (a mistyped 12-digit number must
-		// error, not silently truncate into a different identity). OCR and
-		// voice extraction is noisy, so the fallback tolerates surrounding text.
-		idNumber := ""
-		typed := strings.ReplaceAll(strings.TrimSpace(r.FormValue("id_number")), " ", "")
-		switch {
-		case typed != "":
-			if len(typed) != 11 || strings.Trim(typed, "0123456789") != "" {
-				return a.wfPageWithError(flow, page, "The ID number must be exactly 11 digits."), nil
+		photoIDType := wfPhotoIDType(r.FormValue("photo_id_type"))
+		photoIDNumber := strings.TrimSpace(r.FormValue("photo_id_number"))
+		bvn := strings.ReplaceAll(strings.TrimSpace(r.FormValue("bvn")), " ", "")
+		ninField := strings.ReplaceAll(strings.TrimSpace(r.FormValue("nin")), " ", "")
+		if slip := wfIDNumberFrom(flow.Payload["id_slip"] + " " + flow.Payload["id_voice"]); slip != "" {
+			if n := strings.ReplaceAll(slip, " ", ""); len(n) == 11 {
+				if len(bvn) != 11 {
+					bvn = n
+				} else if len(ninField) != 11 {
+					ninField = n
+				}
 			}
-			idNumber = typed
-		case wfIDNumberFrom(flow.Payload["id_slip"]) != "":
-			idNumber = wfIDNumberFrom(flow.Payload["id_slip"])
-		case wfIDNumberFrom(flow.Payload["id_voice"]) != "":
-			idNumber = wfIDNumberFrom(flow.Payload["id_voice"])
-		default:
-			return a.wfPageWithError(flow, page, "Send your 11-digit NIN or BVN: type it, upload a photo of your slip, or say it in a voice note."), nil
+		}
+		var errs []string
+		if photoIDType == "" {
+			errs = append(errs, "Select your government photo ID type.")
+		}
+		if len([]rune(photoIDNumber)) < 6 || len([]rune(photoIDNumber)) > 25 {
+			errs = append(errs, "Send the ID number printed on your photo ID (6-25 characters).")
+		}
+		if len(bvn) != 11 || strings.Trim(bvn, "0123456789") != "" {
+			errs = append(errs, "The BVN must be exactly 11 digits.")
+		}
+		if len(ninField) != 11 || strings.Trim(ninField, "0123456789") != "" {
+			errs = append(errs, "The NIN must be exactly 11 digits.")
+		}
+		if msg := wfFormError(errs); msg != "" {
+			return a.wfPageWithError(flow, page, msg), nil
 		}
 		user, err := a.store.UserByID(r.Context(), user.ID)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not load your account."), nil
 		}
-		message, err := a.conversation.VerifyIndividualIdentity(r.Context(), user, flow.Payload["legal_name"], flow.Payload["dob"], idType, idNumber)
-		if err != nil {
+		if _, err := a.store.RecordCustomerVerification(r.Context(), store.CustomerVerification{
+			UserID: user.ID, VerificationType: kyc.EvGovPhotoID,
+			Status: "completed", Provider: "simulated",
+			Result: map[string]any{"id_type": photoIDType, "id_number": photoIDNumber},
+		}); err != nil {
+			return a.wfPageWithError(flow, page, "Could not record your photo ID."), nil
+		}
+		if _, err := a.conversation.VerifyIndividualID(r.Context(), user, flow.Payload["legal_name"], flow.Payload["dob"], "bvn", bvn); err != nil {
 			return a.wfPageWithError(flow, page, err.Error()), nil
 		}
-		if err := a.wfFinish(r.Context(), flow, message); err != nil {
-			return a.wfPageWithError(flow, page, "Verification recorded."), nil
+		if _, err := a.conversation.VerifyIndividualID(r.Context(), user, flow.Payload["legal_name"], flow.Payload["dob"], "nin", ninField); err != nil {
+			return a.wfPageWithError(flow, page, err.Error()), nil
+		}
+		if _, err := a.store.AdvanceKYCTierTo(r.Context(), user.ID, kyc.TierL2, []string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}, nil); err != nil {
+			return a.wfPageWithError(flow, page, "Could not upgrade to CBN Tier 2: "+err.Error()), nil
+		}
+		if _, err := a.store.RecomputeRiskScore(r.Context(), user.ID); err != nil {
+			return a.wfPageWithError(flow, page, "Could not refresh your risk profile."), nil
+		}
+		if err := a.wfFinish(r.Context(), flow, "Your BVN and NIN are verified. Your Xego individual profile is approved at CBN Tier 2. Continue in the browser to reach CBN Tier 3 (uncapped)."); err != nil {
+			return a.wfPageWithError(flow, page, "Tier 2 recorded."), nil
+		}
+		payload := clonePayload(flow.Payload)
+		a.wfAdvance(w, r, flow, "tier3", payload)
+		return nil, nil
+	case "tier3":
+		if action == "skip" {
+			msg := "No problem. Your Xego individual profile is CBN Tier 2 and approved. You can browse the menu; send MENU anytime."
+			if err := a.wfFinish(r.Context(), flow, msg); err != nil {
+				return a.wfPageWithError(flow, page, "Profile saved."), nil
+			}
+			done := a.wfPage(flow)
+			done.Done = true
+			done.DoneTitle = "Individual profile updated"
+			done.DoneBody = "Your profile is CBN Tier 2 and approved. Check WhatsApp for your new limits."
+			return &done, nil
+		}
+		if action != "submit_tier3" {
+			return a.wfPageWithError(flow, page, "Complete the due-diligence check, or skip to stay at CBN Tier 2."), nil
+		}
+		addressProof := strings.TrimSpace(r.FormValue("address_proof"))
+		sourceOfFunds := strings.ToUpper(strings.TrimSpace(r.FormValue("source_of_funds")))
+		liveness := strings.TrimSpace(r.FormValue("liveness"))
+		var errs []string
+		if len([]rune(addressProof)) < 4 {
+			errs = append(errs, "Send a utility bill reference (like a prepaid meter or account number).")
+		}
+		switch sourceOfFunds {
+		case "SALARY", "BUSINESS", "INVESTMENTS", "GIFTS", "OTHER":
+		default:
+			errs = append(errs, "Select your primary source of funds.")
+		}
+		if liveness != "yes" {
+			errs = append(errs, "Confirm that you're completing this verification yourself in real time.")
+		}
+		if msg := wfFormError(errs); msg != "" {
+			return a.wfPageWithError(flow, page, msg), nil
+		}
+		user, err := a.store.UserByID(r.Context(), user.ID)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not load your account."), nil
+		}
+		if _, err := a.store.RecordCustomerVerification(r.Context(), store.CustomerVerification{
+			UserID: user.ID, VerificationType: kyc.EvAddressProof,
+			Status: "completed", Provider: "simulated",
+			Result: map[string]any{"reference": addressProof, "address": flow.Payload["address"]},
+		}); err != nil {
+			return a.wfPageWithError(flow, page, "Could not record your address proof."), nil
+		}
+		if _, err := a.store.RecordCustomerVerification(r.Context(), store.CustomerVerification{
+			UserID: user.ID, VerificationType: kyc.EvEDDCompleted,
+			Status: "completed", Provider: "simulated",
+			Result: map[string]any{"liveness": "passed", "source_of_funds": sourceOfFunds},
+		}); err != nil {
+			return a.wfPageWithError(flow, page, "Could not record the due-diligence check."), nil
+		}
+		if _, err := a.store.AdvanceKYCTierTo(r.Context(), user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil); err != nil {
+			return a.wfPageWithError(flow, page, "Could not upgrade to CBN Tier 3: "+err.Error()), nil
+		}
+		riskProfile, err := a.store.RecomputeRiskScore(r.Context(), user.ID)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not refresh your risk profile."), nil
+		}
+		msg := fmt.Sprintf("Enhanced due diligence complete. Your Xego individual profile is now approved at CBN Tier 3 (uncapped). Risk profile: %s. Send MENU anytime.", strings.ToUpper(riskProfile.RiskBand))
+		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
+			return a.wfPageWithError(flow, page, "Due diligence recorded."), nil
 		}
 		done := a.wfPage(flow)
 		done.Done = true
 		done.DoneTitle = "Individual profile updated"
-		done.DoneBody = "Check WhatsApp for the confirmation and your new limits."
+		done.DoneBody = "Your profile is now CBN Tier 3 (uncapped). Check WhatsApp for the confirmation and your new limits."
 		return &done, nil
 	}
 	return a.wfPageWithError(flow, page, "This flow has finished. Reopen it from WhatsApp."), nil
@@ -1047,6 +1234,11 @@ func (a *App) wfMerchantRegisterSubmit(w http.ResponseWriter, r *http.Request, f
 // kyb_request — self-service business tier upgrade
 // =========================================================================
 
+// dnfbpSegments are the CBN-listed designated non-financial businesses and
+// professions a merchant self-certifies against during KYB so the compliance
+// team can apply enhanced due diligence to high-risk categories.
+var dnfbpSegments = []string{"Real estate", "Hospitality", "Luxury retail", "Supermarkets"}
+
 func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
 	page := a.wfPage(flow)
 	switch flow.Step {
@@ -1066,6 +1258,33 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 		page.Fields = []webFlowField{{Name: "merchant_slug", Label: "Merchant", Type: "select", Required: true, Options: merchantSelectOptions(merchants)}}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
+	case "corporate":
+		page.Title = "Corporate documents"
+		page.Intro = "Upload your CAC registration certificate number and business Tax Identification Number (TIN)."
+		page.Fields = []webFlowField{
+			{Name: "cac_reg_number", Label: "CAC registration number", Type: "text", Required: true},
+			{Name: "tin", Label: "Business TIN", Type: "text", Required: true},
+		}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
+		return page, nil
+	case "owners":
+		page.Title = "Beneficial owners and location"
+		page.Intro = "List every beneficial owner (anyone controlling 25% or more) and the business's operating address."
+		page.Fields = []webFlowField{
+			{Name: "beneficial_owners", Label: "Beneficial owners", Type: "textarea", Required: true},
+			{Name: "business_address", Label: "Business address", Type: "textarea", Required: true},
+		}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
+		return page, nil
+	case "compliance":
+		page.Title = "SCUML and risk category"
+		page.Intro = "Send your SCUML (Special Control Unit against Money Laundering) registration number, and tell us if the business operates in a designated non-financial business or profession (DNFBP): " + strings.Join(dnfbpSegments, ", ") + "."
+		page.Fields = []webFlowField{
+			{Name: "scuml_number", Label: "SCUML registration number", Type: "text", Required: true},
+			{Name: "dnfbp", Label: "Designated non-financial business?", Type: "select", Required: true, Options: []webFlowOption{{Value: "No", Label: "No"}, {Value: "Yes", Label: "Yes"}}},
+		}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
+		return page, nil
 	case "note":
 		page.Title = "Upgrade note (optional)"
 		page.Intro = "Anything the compliance team should know? You can leave this empty."
@@ -1080,6 +1299,12 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 		page.Title = "Review upgrade request"
 		page.Review = []webFlowLine{
 			{Term: "Merchant", Desc: merchant.Name},
+			{Term: "CAC registration", Desc: flow.Payload["cac_reg_number"]},
+			{Term: "Business TIN", Desc: flow.Payload["tin"]},
+			{Term: "Beneficial owners", Desc: flow.Payload["beneficial_owners"]},
+			{Term: "Business address", Desc: flow.Payload["business_address"]},
+			{Term: "SCUML", Desc: flow.Payload["scuml_number"]},
+			{Term: "DNFBP category", Desc: flow.Payload["dnfbp"]},
 			{Term: "Note", Desc: flow.Payload["note"]},
 		}
 		page.Intro = "The compliance team reviews upgrade requests before they take effect."
@@ -1099,6 +1324,49 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		}
 		payload := clonePayload(flow.Payload)
 		payload["merchant_slug"] = slug
+		a.wfAdvance(w, r, flow, "corporate", payload)
+		return nil, nil
+	case "corporate":
+		cacReg := strings.TrimSpace(r.FormValue("cac_reg_number"))
+		tin := strings.ReplaceAll(strings.TrimSpace(r.FormValue("tin")), " ", "")
+		var errs []string
+		if len([]rune(cacReg)) < 6 || len([]rune(cacReg)) > 40 {
+			errs = append(errs, "Send your CAC registration number (RC or CAC number, 6-40 characters).")
+		}
+		if len([]rune(tin)) < 8 || len([]rune(tin)) > 20 {
+			errs = append(errs, "Send your business TIN before continuing.")
+		}
+		if msg := wfFormError(errs); msg != "" {
+			return a.wfPageWithError(flow, page, msg), nil
+		}
+		payload := clonePayload(flow.Payload)
+		payload["cac_reg_number"] = cacReg
+		payload["tin"] = tin
+		a.wfAdvance(w, r, flow, "owners", payload)
+		return nil, nil
+	case "owners":
+		owners := strings.TrimSpace(r.FormValue("beneficial_owners"))
+		address := strings.TrimSpace(r.FormValue("business_address"))
+		if len([]rune(owners)) < 5 || len([]rune(address)) < 10 {
+			return a.wfPageWithError(flow, page, "Send each beneficial owner (25%+) and a full business address."), nil
+		}
+		payload := clonePayload(flow.Payload)
+		payload["beneficial_owners"] = owners
+		payload["business_address"] = address
+		a.wfAdvance(w, r, flow, "compliance", payload)
+		return nil, nil
+	case "compliance":
+		scuml := strings.ReplaceAll(strings.TrimSpace(r.FormValue("scuml_number")), " ", "")
+		dnfbp := strings.TrimSpace(r.FormValue("dnfbp"))
+		if len([]rune(scuml)) < 5 || len([]rune(scuml)) > 30 {
+			return a.wfPageWithError(flow, page, "Send your SCUML registration number before continuing."), nil
+		}
+		if dnfbp != "Yes" && dnfbp != "No" {
+			return a.wfPageWithError(flow, page, "Tell us whether the business is a designated non-financial business (Yes or No)."), nil
+		}
+		payload := clonePayload(flow.Payload)
+		payload["scuml_number"] = scuml
+		payload["dnfbp"] = dnfbp
 		a.wfAdvance(w, r, flow, "note", payload)
 		return nil, nil
 	case "note":
@@ -1114,8 +1382,40 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		if err != nil {
 			return a.wfPageWithError(flow, page, "That merchant is no longer available."), nil
 		}
-		if _, err := a.store.RequestKYBAdvancement(r.Context(), merchant.ID, nil, flow.Payload["note"]); err != nil {
+		profile, err := a.store.EnsureKYBProfile(r.Context(), merchant.ID)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "Could not load the merchant's KYB position."), nil
+		}
+		next := store.NextBusinessTier(profile.Tier)
+		if next == "" {
+			return a.wfPageWithError(flow, page, "This merchant is already at the highest business tier (B3)."), nil
+		}
+		// The merchant's corporate documents are the evidence the request
+		// carries; the compliance team verifies them before advancing.
+		evidence := store.BusinessEvidenceRequiredFor(next)
+		if len(evidence) == 0 {
+			return a.wfPageWithError(flow, page, "There is no documentation requirement for the next tier."), nil
+		}
+		note := strings.TrimSpace(flow.Payload["note"])
+		if flow.Payload["dnfbp"] == "Yes" {
+			if note == "" {
+				note = "Business self-certified as a designated non-financial business or profession"
+			} else {
+				note += " | Business self-certified as a DNFBP"
+			}
+		}
+		if _, err := a.store.RequestKYBAdvancement(r.Context(), merchant.ID, evidence, note); err != nil {
 			return a.wfPageWithError(flow, page, "The upgrade request failed: "+err.Error()), nil
+		}
+		if err := a.store.UpsertKYBDocuments(r.Context(), merchant.ID, store.KYBDocuments{
+			CACRegNumber:     flow.Payload["cac_reg_number"],
+			TIN:              flow.Payload["tin"],
+			BeneficialOwners: flow.Payload["beneficial_owners"],
+			BusinessAddress:  flow.Payload["business_address"],
+			SCUMLNumber:      flow.Payload["scuml_number"],
+			DNFBP:            flow.Payload["dnfbp"] == "Yes",
+		}); err != nil {
+			return a.wfPageWithError(flow, page, "The upgrade documents could not be saved."), nil
 		}
 		msg := "Your upgrade request for " + merchant.Name + " has been submitted. The compliance team will review it and update you."
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {

@@ -334,7 +334,7 @@ func TestChannelWebhookSmoke(t *testing.T) {
 		// then the ladder promotion to L2 — so the payer may send money to
 		// other individuals.
 		if _, err := repository.UpsertIndividualProfile(ctx, waUser.ID, "Ada Smoke",
-			time.Date(1992, 5, 24, 0, 0, 0, 0, time.UTC), "14 Admiralty Way, Lekki, Lagos", "Product designer"); err != nil {
+			time.Date(1992, 5, 24, 0, 0, 0, 0, time.UTC), "14 Admiralty Way, Lekki, Lagos", "Product designer", "Female"); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := repository.RecordScreeningResult(ctx, store.ScreeningResult{
@@ -343,7 +343,7 @@ func TestChannelWebhookSmoke(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := repository.AdvanceKYCTierTo(ctx, waUser.ID, kyc.TierL2,
-			[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
+			[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails, kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}, nil); err != nil {
 			t.Fatal(err)
 		}
 		waMessenger.reset()

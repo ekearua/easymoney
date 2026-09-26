@@ -189,7 +189,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 
 | Feature | Description | Users/Actors | Implementation Status | Key Components |
 | ------- | ----------- | ------------ | --------------------- | -------------- |
-| KYC tier ladder L0–L4 | Adjacent rung advancement gated on evidence | Customers, admins | Implemented | `internal/kyc`; migration 026 |
+| KYC tier ladder L0–L3 (CBN tiers) | Adjacent rung advancement gated on evidence; L4 retired in migration 073 | Customers, admins | Implemented | `internal/kyc`; migration 026; migration 073 |
 | KYC/KYB allowance ladder | DB-driven per-tier payment/payout ceilings (single/daily/monthly, in & out) | Customers, merchants, admins | Implemented | `internal/kyc` + `internal/store/store_allowances.go`; migration 053 |
 | Sanctions/PEP screening | Deterministic simulated screener; live vendor plug-in | Customers | Implemented (provider simulated) | README:188 |
 | NIN/BVN identity verification | Deterministic simulated verifier | Customers | Implemented (provider simulated) | README:190 |
@@ -621,12 +621,12 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 
 ### 12.1 KYC tier ladder
 
-- Tiers **L0** (unverified) → **L1** (channel + email confirmed) → **L2** (identity on file) → **L3** (NIN/BVN verified) → **L4** (enhanced due diligence). Evidence: README:176-186; migration 026.
-- Advancement must be **adjacent** and gated on matching evidence: `channel_confirmed`, `identity_on_file`, `nin_or_bvn_verified`, `edd_completed`. Downgrades can drop to any lower tier.
+- Tiers **L0** (unverified) → **L1** (CBN Tier 1: channel + self-declared basic details) → **L2** (CBN Tier 2: photo ID + verified BVN and NIN) → **L3** (CBN Tier 3: address proof + EDD). The old **L4** rung is retired; migration 073 demotes legacy L2/L3/L4 profiles to L1. Evidence: README:183-203; migration 026; migration 073.
+- Advancement must be **adjacent** and gated on matching evidence: `channel_confirmed` + `tier1_basic_details` (→ L1); `government_photo_id` + `bvn_verified` + `nin_verified` (→ L2); `address_proof` + `edd_completed` (→ L3). Downgrades can drop to any lower tier.
 - A sanctions/PEP screening decision of `strong`/`blocked` halts advancement until `clear`/`manually_cleared`.
 - Enforced in the store (`AdvanceKYCTier`/`AdvanceKYCTierTo`/`DowngradeKYCTier`); every transition, screening, and review is audited. Evidence: README:186.
 - Compliance manages the ladder and manual review queue at `/admin/kyc` (admin/compliance roles). Evidence: `app/admin.go`.
-- **Status:** Implemented. **Note (Unclear):** the analysis did not establish a documented demo path for advancing beyond L3 (EDD evidence exists in code; README:184 lists it, the demo narrative stops at L3).
+- **Status:** Implemented. **Note (Resolved):** the demo now documents and exercises the full ladder — CBN Tier-1 chat/browser onboarding to L1, photo ID + BVN + NIN to L2, and address proof + simulated EDD to L3.
 
 ### 12.2 Identity verification (NIN/BVN)
 
@@ -636,7 +636,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 ### 12.3 Sanctions / PEP screening
 
 - Implemented through the `SanctionsScreener` port. The `simulated` provider returns `strong` for a name containing a sanctions token ("Sanctioned"/"Drug Lord"), `possible` for a PEP token ("Senator"/"Minister"), else `clear`. A live OFAC/vendor list plugs in behind the same interface. Evidence: README:188.
-- Screening runs at onboarding before the L2 promotion; a background worker re-screens profiles every `KYC_RESCREEN_PERIOD` (default 90 days); a `strong`/`blocked` rescreen downgrades to L1 and opens a review case. Evidence: README:188; `rescreen` command.
+- Screening runs when the CBN Tier-1 basic-details application is processed (chat or browser upgrade flow) ahead of the L1 promotion; a background worker re-screens profiles every `KYC_RESCREEN_PERIOD` (default 90 days); a `strong`/`blocked` rescreen downgrades to L1 and opens a review case. Evidence: README:197-199; `rescreen` command.
 - **Status:** Implemented with a simulated provider.
 
 ### 12.4 ML/FT risk scoring
@@ -661,10 +661,10 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 ### 12.7 Allowance ladder (KYC/KYB tier ceilings)
 
 - **Purpose.** The flat global cap has been layered with a DB-driven allowance ladder. Every money-in (customer payment) and money-out (merchant settlement payout, individual-pay disbursement) movement against a subject is validated against that subject's tier ceilings before its payment/payout row is created, so a rejected reservation stops creation atomically. Evidence: `service/payments.go` (`CreateDraftForProvider`), `service/settlement.go` (`RequestPayout`), `service/conversation_individual_pay.go`.
-- **Ceilings.** Per `(account type, tier, direction)` row in `kyc_tier_limits`, in kobo: single, daily, and monthly, with `single ≤ daily ≤ monthly`. CBN-aligned defaults (migration 053), equal for money-in and money-out: individuals L0 single ₦20k / daily ₦20k / monthly ₦100k; L1 ₦50k/₦50k/₦300k; L2 ₦200k/₦200k/₦500k; L3 ₦1m/₦1m/₦10m; L4 ₦5m/₦5m/₦50m. Businesses B0 ₦200k/₦200k/₦1m; B1 ₦1m/₦1m/₦5m; B2 ₦5m/₦5m/₦50m; B3 ₦10m/₦10m/₦100m. Administrators edit any row live in the console (see below).
+- **Ceilings.** Per `(account type, tier, direction)` row in `kyc_tier_limits`, in kobo: single, daily, and monthly, with `single ≤ daily ≤ monthly`. CBN-aligned defaults (migration 053, L1-L3 realigned in migration 073; the old L4 rows are deleted), equal for money-in and money-out: individuals L0 single ₦20k / daily ₦20k / monthly ₦100k; L1 ₦50k/₦200k/₦500k; L2 ₦200k/₦500k/₦3m; L3 ₦1m/₦1m/₦10m. Businesses B0 ₦200k/₦200k/₦1m; B1 ₦1m/₦1m/₦5m; B2 ₦5m/₦5m/₦50m; B3 ₦10m/₦10m/₦100m. Administrators edit any row live in the console (see below).
 - **Usage accounting.** `allowance_usage` is append-only, keyed by `transaction_ref` for idempotent re-application (a replay is a no-op). Daily/monthly rollups sum on the **Lagos (WAT, UTC+1) calendar** (`kyc.DayWindowStart`/`kyc.MonthWindowStart`). Reservations for the same subject+direction are serialized with `pg_advisory_xact_lock`, so concurrent payments cannot each pass validation.
 - **Release.** A money-in reservation is released centrally when a payment lands in `failed`/`abandoned`/`expired`/`refunded` (`store/store_payments.go` `transitionPayment`). Payout reservations are keyed `payout:<batchNo>` and released only when the payout is reversed (`store_settlements.go` `ReversePayout`); a failed payout keeps its reservation because a retry is the same intent.
-- **Business KYB ladder.** `business_kyb_profiles` holds each merchant's position on B0–B3 (the KYB twin of `kyc_profiles`). Advancement is adjacent and evidence-gated (`business_docs_verified` → `business_bank_verified` → `business_edd_completed`); past B0 it requires a non-blocked sanctions/PEP decision. Existing merchants were grandfathered to B0/approved with `["registration_approved"]` evidence. A blocked **business** rescreen (same periodic job that serves individuals) forces the merchant back to B0 and immediately lowers the ceilings `ReserveAllowance` enforces. Evidence: `internal/app/cli.go` (`RescreenDue`), `RecordKYBScreening`, `BusinessKYBProfilesDueForRescreen`.
+- **Business KYB ladder.** `business_kyb_profiles` holds each merchant's position on B0–B3 (the KYB twin of `kyc_profiles`). Advancement is adjacent and evidence-gated: B0→B1 requires the full corporate suite (`cac_verified`,`tin_verified`,`ubo_cleared`,`location_verified`,`scuml_submitted`), then `business_bank_verified` → `business_edd_completed` for the higher rungs; past B0 it requires a non-blocked sanctions/PEP decision. Existing merchants were grandfathered to B0/approved with `["registration_approved"]` evidence. A blocked **business** rescreen (same periodic job that serves individuals) forces the merchant back to B0 and immediately lowers the ceilings `ReserveAllowance` enforces. Evidence: `internal/app/cli.go` (`RescreenDue`), `RecordKYBScreening`, `BusinessKYBProfilesDueForRescreen`.
 - **Customer-facing visibility.** WhatsApp menu *My limits* shows tier, per-payment/day/month ceilings, and used/remaining for today and the month; *KYB status & limits* does the same for merchants. Allowance rejections are rewritten into actionable copy ("complete more verification…", upgrade prompt) by `conversation_allowances.go`.
 - **Administration.** `/admin/kyb` (admin/compliance roles) lists every business profile with review actions and advance-to-next-tier forms, and renders every `kyc_tier_limits` row as an inline editor. Changes are audited (`admin.tier_limits.updated`, `admin.kyb.reviewed`; tier moves audit as `kyb.tier_advanced`/`kyb.tier_downgraded`). Evidence: `app/admin_kyb.go`.
 - **Status:** Implemented, gated on Postgres (migration 053).
@@ -871,7 +871,7 @@ All admin routes require login; RBAC middleware gates sensitive actions. Routes 
 | Payout rail | Settlement payouts | `internal/providers/payout/simulated.go` | Outbound | **Simulated** |
 | Refund rail | Refunds | `internal/providers/refund/simulated.go` | Outbound | **Simulated** |
 | Data fulfilment | Mobile data orders | `internal/providers/data` | Outbound | Simulated default (`DATA_PROVIDER=simulated`) |
-| Identity (NIN/BVN) | KYC L3 | `internal/providers/identity` | Outbound | **Simulated** |
+| Identity (NIN/BVN) | KYC L2 gate (photo ID + both verified) | `internal/providers/identity` | Outbound | **Simulated** |
 | Sanctions/PEP screening | KYC screening | `internal/providers/screening` | Outbound | **Simulated** |
 | Redis | Distributed rate limiting | `internal/ratelimit` | Internal | Configured Only (empty `REDIS_URL` → in-memory) |
 | Kafka | Event bus | `internal/bus/kafka` | Internal | Configured Only (default `EVENT_BUS=memory`) |
@@ -1133,7 +1133,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** Customer chooses **Pay individual** from the payment menu.
 - **Actors:** Customer, conversational engine, store.
-- **Prerequisites:** Customer must have KYC Level 2 (identity on file) verified.
+- **Prerequisites:** Customer must be an approved individual at **CBN Tier 2 (L2)** — government photo ID plus verified BVN and NIN.
 - **Process (two-page browser flow / 8-step chat conversation):**
   1. Page 1: recipient phone, payout amount (₦100–₦100,000), and recipient bank (browsable/searchable list of NIP-enabled banks) together; an ambiguous bank name opens the legacy disambiguation picker.
   2. Page 2 (review): recipient account number with the summary (recipient name, bank, account, amount, ₦100 NIP fee, total) and the payment rails on the same page — tapping a rail drafts the payment.
@@ -1181,7 +1181,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | Partial refunds | Not implemented | full-only per `store_refunds.go:81` |
 | Disputes | Implemented | `store_refunds.go:334-382` |
 | Three-way reconciliation | Implemented | `store_reconcile.go`; `app/reconcile.go` |
-| KYC ladder L0–L4 | Implemented | migration 026; README:176-186 |
+| KYC ladder L0–L3 (CBN tiers) | Implemented | migration 026; migration 073; README:183-203 |
 | Sanctions/PEP screening | Implemented (provider simulated) | README:188 |
 | NIN/BVN verification | Implemented (provider simulated) | README:190 |
 | ML/FT risk scoring | Implemented | `kyc.ScoreRisk`; migration 027 |
@@ -1266,7 +1266,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - **No AI/conversational intelligence** beyond rule-based flows.
 - **No live payout/refund rails** — simulated rails must be replaced for live money.
 - **Identity and screening are simulated** — live vendor plug-in required.
-- **KYC demo path stops at L3** — no documented demo flow for L4/EDD.
+- **KYC demo path is fully documented** — CBN Tier 1 at onboarding, Tier 2 (photo ID + BVN + NIN), Tier 3 (address proof + simulated EDD).
 
 ### Engineering gaps (resolved)
 

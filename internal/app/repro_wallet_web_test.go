@@ -149,7 +149,7 @@ func TestReproWalletWebPayment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.UpsertIndividualProfile(ctx, payer.ID, "Chidi Okonjo",
-		time.Date(1990, 3, 11, 0, 0, 0, 0, time.UTC), "7 Admiralty Way, Lekki, Lagos", "Engineer"); err != nil {
+		time.Date(1990, 3, 11, 0, 0, 0, 0, time.UTC), "7 Admiralty Way, Lekki, Lagos", "Engineer", "Male"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := repository.RecordScreeningResult(ctx, store.ScreeningResult{
@@ -158,7 +158,7 @@ func TestReproWalletWebPayment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, kyc.TierL1,
-		[]string{kyc.EvChannelConfirmed}, nil); err != nil {
+		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 	wallet, err := repository.WalletByOwner(ctx, store.WalletOwnerUser, payer.ID)

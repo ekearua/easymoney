@@ -131,7 +131,7 @@ func TestCheckoutRenderToggle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, kyc.TierL1,
-		[]string{kyc.EvChannelConfirmed}, nil); err != nil {
+		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")

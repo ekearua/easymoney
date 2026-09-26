@@ -81,7 +81,9 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	if (!user.OnboardingComplete || user.FirstContact) && s.WebFlowEnabled(channel, WebFlowOnboard) && (session.State == "" || session.State == "menu") {
 		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowOnboard, "", "", nil)
 	}
-	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" && session.State != "onboard_confirm_account" {
+	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" &&
+		session.State != "onboard_dob" && session.State != "onboard_gender" && session.State != "onboard_address" &&
+		session.State != "onboard_confirm_account" {
 		session.State = "onboard_name"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -98,17 +100,57 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 			return err
 		}
 		session.State = "onboard_email"
+		session.Data = map[string]string{"name": name}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
 		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts?")
 	}
 	if session.State == "onboard_email_code" {
-		session.State, session.Data = "onboard_confirm_account", map[string]string{}
+		session.State = "onboard_dob"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "Email saved. One last step."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "Email saved."); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "As part of the CBN Tier 1 check, send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
+	}
+	if session.State == "onboard_dob" {
+		dob, err := time.Parse("2006-01-02", strings.TrimSpace(input))
+		if err != nil || dob.After(time.Now().AddDate(-18, 0, 0)) {
+			return s.sendText(ctx, channel, recipient, "Send a valid date of birth as YYYY-MM-DD. For this demo, you must be at least 18.")
+		}
+		session.State = "onboard_gender"
+		session.Data["dob"] = dob.Format("2006-01-02")
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
+	}
+	if session.State == "onboard_gender" {
+		gender := strings.ToLower(strings.TrimSpace(input))
+		if gender != "male" && gender != "female" {
+			return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
+		}
+		session.State = "onboard_address"
+		session.Data["gender"] = gender
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Send your residential address for the demo profile.")
+	}
+	if session.State == "onboard_address" {
+		address := strings.TrimSpace(input)
+		if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
+			return s.sendText(ctx, channel, recipient, "Send an address between 10 and 240 characters.")
+		}
+		session.State = "onboard_confirm_account"
+		session.Data["address"] = address
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		if err := s.sendText(ctx, channel, recipient, "Address saved. One last step."); err != nil {
 			return err
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
@@ -120,11 +162,11 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 	if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(address.Address)); err != nil {
 		return err
 	}
-	session.State, session.Data = "onboard_confirm_account", map[string]string{}
+	session.State = "onboard_dob"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendAccountConfirmation(ctx, channel, recipient)
+	return s.sendText(ctx, channel, recipient, "Email saved. As part of the CBN Tier 1 check, send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
 }
 
 // handleNewChannelForApprovedUser is the non-blocking cross-channel handoff
@@ -164,17 +206,29 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 		if err != nil {
 			return err
 		}
-		// Completing onboarding reaches the base KYC tier (L1: channel + email
-		// confirmed), which activates the wallet and unlocks every wallet
-		// option. Idempotent — a user already at a higher tier is untouched.
-		if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+		// CBN Tier-1 data (legal name, date of birth, gender, residential
+		// address) is collected during onboarding; persist it when present so
+		// the L0 -> L1 advance can carry tier1_basic_details.
+		if dob, err := time.Parse("2006-01-02", strings.TrimSpace(session.Data["dob"])); err == nil {
+			name := strings.TrimSpace(session.Data["name"])
+			if name == "" {
+				name = strings.TrimSpace(user.DisplayName)
+			}
+			if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, name, dob, session.Data["address"], "", session.Data["gender"]); err != nil {
+				return err
+			}
+		}
+		// Completing onboarding reaches the base KYC tier (L1: channel +
+		// CBN Tier-1 data confirmed), which activates the wallet and unlocks every
+		// wallet option. Idempotent — a user already at a higher tier is untouched.
+		if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 			return err
 		}
 		session.State, session.Data = "menu", map[string]string{}
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed (Level 1) and your Xego wallet is now active."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "You're all set. Your account is confirmed (CBN Tier 1) and your Xego wallet is now active."); err != nil {
 			return err
 		}
 		return s.sendMenu(ctx, channel, recipient, user)

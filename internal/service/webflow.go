@@ -231,15 +231,20 @@ func (s *ConversationService) VerifyEmailCode(ctx context.Context, userID uuid.U
 	return nil
 }
 
-// ApplyIndividualProfile persists the identity profile, screens the customer,
-// and advances the tier to L2 (identity on file) when the screen is clean.
-// It returns "approved" or "review" (a manual-review case was opened).
-func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user store.User, legalName, dob, address, occupation string) (string, error) {
+// ApplyIndividualProfile persists the CBN Tier-1 self-declared profile
+// (legal name, DOB, gender, address), screens the customer, and advances the
+// tier to L1 (CBN Tier 1) when the screen is clean. It returns "approved" or
+// "review" (a manual-review case was opened).
+func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user store.User, legalName, dob, gender, address, occupation string) (string, error) {
 	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(dob))
 	if err != nil || parsed.After(time.Now().AddDate(-18, 0, 0)) {
 		return "", errors.New("Enter a valid date of birth as YYYY-MM-DD. You must be at least 18.")
 	}
-	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, strings.TrimSpace(legalName), parsed, strings.TrimSpace(address), strings.TrimSpace(occupation)); err != nil {
+	gender = strings.ToLower(strings.TrimSpace(gender))
+	if gender != "male" && gender != "female" {
+		return "", errors.New("Enter your gender as MALE or FEMALE.")
+	}
+	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, strings.TrimSpace(legalName), parsed, strings.TrimSpace(address), strings.TrimSpace(occupation), gender); err != nil {
 		return "", err
 	}
 	result, err := s.screener.Screen(ctx, ports.ScreeningRequest{
@@ -264,8 +269,8 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 		}
 		return "review", nil
 	}
-	if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL2,
-		[]string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile}, nil); err != nil {
+	if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL1,
+		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		return "", err
 	}
 	if _, err := s.store.RecomputeRiskScore(ctx, user.ID); err != nil {
@@ -274,10 +279,13 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 	return "approved", nil
 }
 
-// VerifyIndividualIdentity verifies an NIN/BVN against the provider and
-// advances the user to L3 on success. It returns the outcome message exactly
-// as it should appear to the customer.
-func (s *ConversationService) VerifyIndividualIdentity(ctx context.Context, user store.User, legalName, dob, idType, idNumber string) (string, error) {
+// VerifyIndividualID verifies one electronic identity (BVN or NIN) against the
+// provider and records the matching evidence. It returns a customer-facing
+// message on success and an error when the input was rejected or the provider
+// disputed the identity. Under the CBN ladder a single verification never
+// promotes the user — Tier 2 requires the government photo ID plus BOTH a
+// verified BVN and NIN, promoted together by the caller.
+func (s *ConversationService) VerifyIndividualID(ctx context.Context, user store.User, legalName, dob, idType, idNumber string) (string, error) {
 	idType = strings.ToLower(strings.TrimSpace(idType))
 	if idType != "nin" && idType != "bvn" {
 		return "", errors.New("ID type must be NIN or BVN.")
@@ -290,31 +298,27 @@ func (s *ConversationService) VerifyIndividualIdentity(ctx context.Context, user
 		LegalName: legalName, DateOfBirth: dob,
 	})
 	if err != nil {
-		return "", errors.New("We could not reach the verification provider. Please try again in a moment, or skip to stay at Level 2.")
+		return "", errors.New("We could not reach the verification provider. Please try again in a moment.")
 	}
 	switch result.Status {
 	case "verified":
+		evidence := kyc.EvBVNVerified
+		if idType == "nin" {
+			evidence = kyc.EvNINVerified
+		}
 		if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
-			UserID: user.ID, VerificationType: kyc.EvNINBVNVerified,
+			UserID: user.ID, VerificationType: evidence,
 			Status: "completed", Provider: s.identityProviderName,
 			ProviderRef: result.ProviderRef,
-			Result:      map[string]any{"id_type": idType, "match_name": result.MatchName, "match_dob": result.MatchDOB},
+			Result:      map[string]any{"id_type": idType, "id_number": idNumber, "match_name": result.MatchName, "match_dob": result.MatchDOB},
 		}); err != nil {
 			return "", err
 		}
-		if _, err := s.store.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvNINBVNVerified}, nil); err != nil {
-			return "", err
-		}
-		riskProfile, err := s.store.RecomputeRiskScore(ctx, user.ID)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("Your %s verified. Your Xego individual profile is now Level 3 (%s verified). Risk profile: %s.",
-			strings.ToUpper(idType), strings.ToUpper(idType), strings.ToUpper(riskProfile.RiskBand)), nil
+		return fmt.Sprintf("Your %s is verified.", strings.ToUpper(idType)), nil
 	case "mismatch", "not_found":
-		return "", errors.New(result.Message + ". Double-check the number and try again, or skip to stay at Level 2.")
+		return "", errors.New(result.Message + ". Double-check the number and try again.")
 	default:
-		return "", errors.New("Verification is still pending. Try again in a moment, or skip to stay at Level 2.")
+		return "", errors.New("Verification is still pending. Try again in a moment.")
 	}
 }
 

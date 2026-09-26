@@ -696,11 +696,11 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}
 
 	// Adjacent advances require the right evidence.
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed}, nil); err != nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1, []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatalf("advance L0->L1 with evidence: %v", err)
 	}
 	// Advancing to L2 or higher requires a non-blocked screening decision.
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvIdentityOnFile}, nil); err == nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}, nil); err == nil {
 		t.Fatal("advance L1->L2 without screening should fail")
 	}
 	clearResult, err := repository.RecordScreeningResult(ctx, ScreeningResult{
@@ -712,25 +712,25 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if clearResult.RescreenDue == nil || !clearResult.RescreenDue.After(time.Now()) {
 		t.Fatalf("expected rescreen_due set in the future, got %v", clearResult.RescreenDue)
 	}
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvIdentityOnFile}, nil); err != nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL2, []string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}, nil); err != nil {
 		t.Fatalf("advance L1->L2 with evidence: %v", err)
 	}
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err == nil {
-		t.Fatal("non-adjacent advance L2->L4 should fail")
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvEDDCompleted}, nil); err == nil {
+		t.Fatal("advance L2->L3 without address proof should fail")
 	}
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvChannelConfirmed}, nil); err == nil {
 		t.Fatal("advance with wrong evidence should fail")
 	}
 
-	// AdvanceKYCTierTo walks adjacent steps L2->L4 with all evidence.
-	walked, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL4, []string{kyc.EvNINBVNVerified, kyc.EvEDDCompleted}, nil)
+	// AdvanceKYCTierTo walks adjacent steps L1->L3 with all evidence.
+	walked, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil)
 	if err != nil {
-		t.Fatalf("AdvanceKYCTierTo L2->L4: %v", err)
+		t.Fatalf("AdvanceKYCTierTo L2->L3: %v", err)
 	}
-	if walked.Tier != kyc.TierL4 {
-		t.Fatalf("expected L4 after walk, got %s", walked.Tier)
+	if walked.Tier != kyc.TierL3 {
+		t.Fatalf("expected L3 after walk, got %s", walked.Tier)
 	}
-	wantEvidence := []string{kyc.EvChannelConfirmed, kyc.EvIdentityOnFile, kyc.EvNINBVNVerified, kyc.EvEDDCompleted}
+	wantEvidence := []string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails, kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified, kyc.EvAddressProof, kyc.EvEDDCompleted}
 	if len(walked.Evidence) != len(wantEvidence) {
 		t.Fatalf("evidence accumulation mismatch: got %v", walked.Evidence)
 	}
@@ -741,10 +741,10 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}, 30*24*time.Hour); err != nil {
 		t.Fatalf("record screening: %v", err)
 	}
-	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL3, "possible sanctions match", nil); err != nil {
-		t.Fatalf("downgrade L4->L3: %v", err)
+	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL2, "possible sanctions match", nil); err != nil {
+		t.Fatalf("downgrade L3->L2: %v", err)
 	}
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err == nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil); err == nil {
 		t.Fatal("advance while screening decision is 'strong' should fail")
 	}
 
@@ -754,21 +754,21 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	}, 30*24*time.Hour); err != nil {
 		t.Fatalf("record cleared screening: %v", err)
 	}
-	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL4, []string{kyc.EvEDDCompleted}, nil); err != nil {
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil); err != nil {
 		t.Fatalf("advance after manual clear: %v", err)
 	}
 
-	// Drop back below L4 so the review approval is the step that raises the
+	// Drop back below L3 so the review approval is the step that raises the
 	// tier: approving a case for a user already at the requested tier would be
 	// rejected by the adjacent-advance rule.
-	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL3, "re-verified after manual clear", nil); err != nil {
-		t.Fatalf("downgrade L4->L3 for review case: %v", err)
+	if _, err := repository.DowngradeKYCTier(ctx, user.ID, kyc.TierL2, "re-verified after manual clear", nil); err != nil {
+		t.Fatalf("downgrade L3->L2 for review case: %v", err)
 	}
 
 	// A manual review case goes through the queue and approval raises the tier.
 	if _, err := repository.CreateManualReviewCase(ctx, ManualReviewCase{
-		UserID: user.ID, CaseType: "tier_upgrade", RequestedTier: kyc.TierL4,
-		Reason: "review before L4",
+		UserID: user.ID, CaseType: "tier_upgrade", RequestedTier: kyc.TierL3,
+		Reason: "review before L3",
 	}); err != nil {
 		t.Fatalf("create review case: %v", err)
 	}
@@ -792,8 +792,8 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterReview.Tier != kyc.TierL4 {
-		t.Fatalf("expected L4 after review approval, got %s", afterReview.Tier)
+	if afterReview.Tier != kyc.TierL3 {
+		t.Fatalf("expected L3 after review approval, got %s", afterReview.Tier)
 	}
 
 	// Every transition is audited and attributed to the operator where given.
@@ -827,7 +827,7 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		t.Fatal(err)
 	}
 	if startRisk.RiskBand != kyc.RiskLow {
-		t.Fatalf("expected low risk at L4 with no events, got %q", startRisk.RiskBand)
+		t.Fatalf("expected low risk at L3 with no events, got %q", startRisk.RiskBand)
 	}
 	if _, err := repository.RecordRiskEvent(ctx, RiskEvent{
 		UserID: user.ID, EventType: "structuring", Score: 70, Details: map[string]any{"window": "24h"},

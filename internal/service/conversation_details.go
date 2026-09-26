@@ -73,7 +73,7 @@ func (s *ConversationService) MyDetailsSummaryOf(ctx context.Context, user store
 			}
 		}
 		if wallet.Status == store.WalletStatusPending {
-			summary.WalletNote = "pending — it activates automatically when your account reaches Level 1"
+			summary.WalletNote = "pending — it activates automatically when your account reaches CBN Tier 1"
 		}
 	case errors.Is(err, pgx.ErrNoRows):
 		summary.WalletStatus = "none"

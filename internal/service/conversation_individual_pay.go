@@ -21,7 +21,7 @@ func (s *ConversationService) startPayIndividual(ctx context.Context, channel, r
 		// verification flow instead of a dead-end message.
 		if s.WebFlowEnabled(channel, WebFlowIndividualUpgrade) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualUpgrade,
-				"Complete individual verification (Level 2) before sending money to other individuals.", "Verify profile", nil)
+				"Complete individual verification (CBN Tier 2) before sending money to other individuals.", "Verify profile", nil)
 		}
 		return s.startIndividualUpgrade(ctx, channel, recipient, user, session)
 	}

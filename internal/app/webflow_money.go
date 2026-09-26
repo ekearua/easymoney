@@ -1035,7 +1035,7 @@ func (a *App) wfWalletStatePreview(r *http.Request, flow store.WebFlow) string {
 	}
 	amount := wfInt(flow.Payload["amount_kobo"])
 	if wallet.Status != store.WalletStatusActive {
-		return fmt.Sprintf("Your wallet isn't active yet. Verify your account to reach Level 1 and activate your wallet to pay from it here, or choose another payment method.")
+		return fmt.Sprintf("Your wallet isn't active yet. Verify your account to reach CBN Tier 1 and activate your wallet to pay from it here, or choose another payment method.")
 	}
 	balance, err := a.store.WalletBalance(r.Context(), wallet.ID)
 	if err != nil {
@@ -1057,7 +1057,7 @@ func friendlyWebPaymentError(err error) string {
 	case errors.Is(err, store.ErrInsufficientWalletBalance):
 		return "Your wallet balance is too low for this payment. Top up your wallet and try again, or choose another payment method."
 	case errors.Is(err, store.ErrWalletNotActive):
-		return "Wallet payments need an active wallet. Verify your account to reach Level 1 and activate your wallet, then try again, or choose another payment method."
+		return "Wallet payments need an active wallet. Verify your account to reach CBN Tier 1 and activate your wallet, then try again, or choose another payment method."
 	}
 	if msg, ok := service.AllowanceMessage(err); ok && msg != "" {
 		return msg

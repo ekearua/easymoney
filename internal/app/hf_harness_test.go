@@ -132,7 +132,7 @@ func TestHostedFieldsHarness(t *testing.T) {
 		UserID: payer.ID, Provider: "harness", Decision: whatsappkyc.ScreenClear,
 	}, 30*24*time.Hour)
 	if _, err := repository.AdvanceKYCTierTo(ctx, payer.ID, whatsappkyc.TierL1,
-		[]string{whatsappkyc.EvChannelConfirmed}, nil); err != nil {
+		[]string{whatsappkyc.EvChannelConfirmed, whatsappkyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
 	}
 	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")

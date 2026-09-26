@@ -26,7 +26,7 @@ func openAllowanceTestRepository(t *testing.T) (*Store, context.Context) {
 		t.Fatal(err)
 	}
 	if _, err := repository.pool.Exec(ctx, `
-		TRUNCATE allowance_usage,business_kyb_profiles,kyc_profiles,users,merchants
+		TRUNCATE allowance_usage,business_kyb_profiles,business_kyb_documents,kyc_profiles,users,merchants
 		RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
@@ -117,31 +117,31 @@ func TestAllowanceMonthlyCeilingStepsAboveDaily(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Seed prior-day usage within the current month (before today's daily
-	// window) so monthly usage sits just under the L4 monthly ceiling (5B)
-	// while each prior day stayed within the L4 single/daily ceiling (500M).
+	// window) so monthly usage sits just under the L3 monthly ceiling (1B)
+	// while the prior day stayed within the L3 single/daily ceiling (100M).
 	// A same-day reservation can then step above the daily window without
 	// breaching single/daily, and the MONTHLY ceiling is what ultimately binds.
 	if _, err := repository.pool.Exec(ctx, `
 		INSERT INTO allowance_usage(account_type, subject_id, direction, tier_at_time, amount_kobo, transaction_ref, recorded_at)
-		VALUES ('individual', $1, 'in', 'L4', 4000000000, 'allow:prior-1', $2),
-		       ('individual', $1, 'in', 'L4', 800000000,  'allow:prior-2', $3)`,
-		user.ID, time.Now().Add(-24*time.Hour), time.Now().Add(-48*time.Hour)); err != nil {
+		VALUES ('individual', $1, 'in', 'L3', 990000000, 'allow:prior-1', $2)`,
+		user.ID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	// 4.8B prior + 100M today = 4.9B: still in touch with but under the monthly
-	// ceiling, so this reserve passes.
+	// 990M prior + 10M today = 1.0B: in touch with the L3 monthly ceiling
+	// (1B), with the single (<=100M) and today's daily (<=100M) ceilings
+	// clear, so this reserve passes.
 	if err := repository.ReserveAllowance(ctx, AllowanceReservation{
 		AccountType: AccountIndividual, SubjectID: user.ID, Direction: kyc.DirIn,
-		Tier: kyc.TierL4, AmountKobo: 100_000_000, Ref: "allow:m1",
+		Tier: kyc.TierL3, AmountKobo: 10_000_000, Ref: "allow:m1",
 	}); err != nil {
-		t.Fatalf("in touch with the L4 monthly ceiling should pass: %v", err)
+		t.Fatalf("in touch with the L3 monthly ceiling should pass: %v", err)
 	}
-	// 4.9B + 200M = 5.1B exceeds the monthly ceiling while today's daily usage
-	// (300M) and the single transaction (200M) stay under their 500M ceilings,
-	// so the rejection must be a monthly-limit rejection.
+	// 1.0B + 1M = 1.001B exceeds the monthly ceiling while the single (1M)
+	// and today's daily (11M) usage stay under their 100M ceilings, so the
+	// rejection must be a monthly-limit rejection.
 	err = repository.ReserveAllowance(ctx, AllowanceReservation{
 		AccountType: AccountIndividual, SubjectID: user.ID, Direction: kyc.DirIn,
-		Tier: kyc.TierL4, AmountKobo: 200_000_000, Ref: "allow:m2",
+		Tier: kyc.TierL3, AmountKobo: 1_000_000, Ref: "allow:m2",
 	})
 	var le *kyc.LimitError
 	if !errors.As(err, &le) || le.Limit != kyc.LimitMonthly {
@@ -211,12 +211,13 @@ func TestAdvanceKYBTierGating(t *testing.T) {
 	if err != nil || profile.Tier != kyc.TierB0 {
 		t.Fatalf("fresh business profile should be B0: tier=%s err=%v", profile.Tier, err)
 	}
+	corporate := []string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, nil, nil); err == nil {
 		t.Fatal("B0->B1 without evidence must fail")
 	}
-	profile, err = repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, []string{kyc.EvBusinessDocs}, nil)
+	profile, err = repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil)
 	if err != nil || profile.Tier != kyc.TierB1 {
-		t.Fatalf("B0->B1 with docs should pass: tier=%s err=%v", profile.Tier, err)
+		t.Fatalf("B0->B1 with corporate documents should pass: tier=%s err=%v", profile.Tier, err)
 	}
 
 	// Seed grandfathers merchants as screened-clear (migration 053), so a
@@ -285,7 +286,8 @@ func TestRequestKYBAdvancementStagesRequest(t *testing.T) {
 	if err := repository.RecordKYBScreening(ctx, merchant.ID, "clear", nil, 90*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, []string{kyc.EvBusinessDocs}, nil); err != nil {
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1,
+		[]string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}, nil); err != nil {
 		t.Fatalf("advance to B1 should pass: %v", err)
 	}
 	profile, err = repository.RequestKYBAdvancement(ctx, merchant.ID, []string{kyc.EvBusinessBank}, "")
