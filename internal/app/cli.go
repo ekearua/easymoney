@@ -281,15 +281,15 @@ func (a *App) MonitorTransactions(ctx context.Context) error {
 // and the Phase 3 event-driven compliance consumer.
 func (a *App) monitorConfig() kyc.MonitorConfig {
 	return kyc.MonitorConfig{
-		VelocityWindow:     a.cfg.MonitorVelocityWindow,
-		VelocityLimit:      a.cfg.MonitorVelocityLimit,
-		StructuringWindow:  a.cfg.MonitorStructuringWindow,
-		StructuringCount:   a.cfg.MonitorStructuringCount,
-		StructuringFloor:   a.cfg.MonitorStructuringFloor,
-		StructuringCeil:    a.cfg.MonitorStructuringCeil,
+		VelocityWindow:    a.cfg.MonitorVelocityWindow,
+		VelocityLimit:     a.cfg.MonitorVelocityLimit,
+		StructuringWindow: a.cfg.MonitorStructuringWindow,
+		StructuringCount:  a.cfg.MonitorStructuringCount,
+		StructuringFloor:  a.cfg.MonitorStructuringFloor,
+		StructuringCeil:   a.cfg.MonitorStructuringCeil,
 		// The CTR reporting boundary caps the structuring rule so a cluster
 		// below the reportable threshold is what fires, and the alert names it.
-		ReportThreshold: a.cfg.ReportCTRThresholdKobo,
+		ReportThreshold:    a.cfg.ReportCTRThresholdKobo,
 		RoundAmountStep:    a.cfg.MonitorRoundAmountStep,
 		RoundAmountMin:     a.cfg.MonitorRoundAmountMin,
 		HighRiskCategories: a.cfg.MonitorHighRiskCategories,
