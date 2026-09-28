@@ -118,6 +118,7 @@ var exemptChatStates = map[string]string{
 	"thrift_join_confirm":         "confirm",
 	"thrift_activate_order":       "confirm",
 	"kyb_request_select_merchant": "selection",
+	"kyb_request_details":         "aggregated",
 	"kyb_request_confirm":         "confirm",
 	"invoice_pay_method":          "selection",
 	"pay_individual_method":       "selection",

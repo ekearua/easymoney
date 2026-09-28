@@ -326,6 +326,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleIndividualLiveness(ctx, message.Channel, recipient, user, session, input)
 	case "kyb_request_select_merchant":
 		return s.handleKYBRequestSelectMerchant(ctx, message.Channel, recipient, user, session, input)
+	case "kyb_request_details":
+		return s.handleKYBRequestDetails(ctx, message.Channel, recipient, user, session, input)
 	case "kyb_request_confirm":
 		return s.handleKYBRequestConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "thrift_name":

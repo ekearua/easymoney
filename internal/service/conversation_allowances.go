@@ -208,20 +208,30 @@ func (s *ConversationService) startKYBUpgradeRequestForMerchant(ctx context.Cont
 	if next == "" {
 		return s.sendText(ctx, channel, recipient, fmt.Sprintf("%s is already at the highest business tier (B3). No upgrade is available.", merchantName))
 	}
-	req := kycEvidenceRequirement(next)
-	lines := []string{
-		fmt.Sprintf("Upgrade request: %s (%s → %s)", merchantName, profile.Tier, next),
-		"",
-		fmt.Sprintf("Requirement: %s", req),
-		"",
-		"Reply YES to submit this upgrade request, or anything else to cancel.",
-	}
-	session.State = "kyb_request_confirm"
 	session.Data = map[string]string{
 		"merchant_id":   merchantID.String(),
 		"merchant_name": merchantName,
 		"from_tier":     profile.Tier,
 		"next_tier":     next,
+	}
+	// B0 -> B1 is the corporate hard gate, so it needs the documents rather
+	// than a bare confirmation: collect them in one message. The higher rungs
+	// are a settlement-bank and an enhanced-due-diligence attestation, which
+	// the compliance team records itself, so they stay a one-word confirm.
+	if next == kyc.TierB1 {
+		session.State = "kyb_request_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, kybDetailsPrompt(merchantName, profile.Tier, next))
+	}
+	session.State = "kyb_request_confirm"
+	lines := []string{
+		fmt.Sprintf("Upgrade request: %s (%s → %s)", merchantName, profile.Tier, next),
+		"",
+		fmt.Sprintf("Requirement: %s", kycEvidenceRequirement(next)),
+		"",
+		"Reply YES to submit this upgrade request, or anything else to cancel.",
 	}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
@@ -248,8 +258,11 @@ func (s *ConversationService) handleKYBRequestConfirm(ctx context.Context, chann
 		return s.sendText(ctx, channel, recipient, "Upgrade request cancelled. You can always come back from the merchant menu.")
 	}
 	next := session.Data["next_tier"]
-	evidence := store.BusinessEvidenceRequiredFor(next)
-	profile, err := s.store.RequestKYBAdvancement(ctx, merchantID, evidence, "")
+	// The request asserts nothing on the merchant's behalf. Recording the
+	// tier's requirement list here would hand the compliance team a request
+	// that already "has" every document, so an approval could grant a tier
+	// with nothing behind it. The reviewer records what they verified.
+	profile, err := s.store.RequestKYBAdvancement(ctx, merchantID, []string{}, "requested in chat")
 	if err != nil {
 		session.State, session.Data = "menu", map[string]string{}
 		if err2 := s.saveSession(ctx, session); err2 != nil {
@@ -265,6 +278,88 @@ func (s *ConversationService) handleKYBRequestConfirm(ctx context.Context, chann
 	return s.sendText(ctx, channel, recipient, fmt.Sprintf(
 		"Upgrade request submitted for %s (%s → %s).\n\nOur compliance team will review your request. You can check the status from the merchant menu.",
 		merchantName, profile.Tier, next))
+}
+
+// kybDetailsPrompt asks for the five corporate documents in one message. Like
+// every other aggregated collection prompt it shows a labeled example, so a
+// customer can reply with exactly those labels and nothing has to be guessed.
+func kybDetailsPrompt(merchantName, from, to string) string {
+	return strings.Join([]string{
+		fmt.Sprintf("Upgrade request: %s (%s → %s)", merchantName, from, to),
+		"",
+		"This rung needs your corporate documents. Send all five in one message, one per line:",
+		promptListing([]string{
+			"CAC registration number (RC or CAC number)",
+			"Business TIN",
+			"Beneficial owners (each name and shareholding)",
+			"Business operating address",
+			"SCUML registration number",
+		}),
+		"For example:",
+		"CAC: RC1234567",
+		"TIN: 1234567890",
+		"Owners: Ada Obi 60%, Chidi Obi 40%",
+		"Address: 12 Marina Road, Lagos Island, Lagos",
+		"SCUML: SC123456",
+		"",
+		"Nothing is granted from this message alone. The compliance team checks every item against the register and will ask for the certificates if they need them.",
+		"Reply CANCEL to stop.",
+	}, "\n")
+}
+
+// handleKYBRequestDetails records the merchant's corporate claims and files the
+// upgrade request with exactly the evidence those claims support. It never
+// asserts a tier's requirement list on the merchant's behalf: a document the
+// merchant did not supply is not evidence, and the store's hard gate refuses a
+// B1 advance until a reviewer has checked each one.
+func (s *ConversationService) handleKYBRequestDetails(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	if strings.EqualFold(strings.TrimSpace(input), "cancel") {
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, "Upgrade request cancelled. You can always come back from the merchant menu.")
+	}
+	merchantID, err := uuid.Parse(session.Data["merchant_id"])
+	if err != nil {
+		session.State, session.Data = "menu", map[string]string{}
+		if err2 := s.saveSession(ctx, session); err2 != nil {
+			return err2
+		}
+		return s.sendText(ctx, channel, recipient, "Something went wrong. Please try again from the menu.")
+	}
+	details := ParseKYBDocumentDetails(input)
+	if missing := details.Missing(); len(missing) > 0 {
+		return s.sendText(ctx, channel, recipient, missingParts(missing)+" Send them all in one message, one per line.")
+	}
+	docs := store.KYBDocuments{
+		CACRegNumber:     details.CACRegNumber,
+		TIN:              details.TIN,
+		BeneficialOwners: details.BeneficialOwners,
+		BusinessAddress:  details.BusinessAddress,
+		SCUMLNumber:      details.SCUMLNumber,
+	}
+	if err := s.store.UpsertKYBDocuments(ctx, merchantID, docs); err != nil {
+		return err
+	}
+	evidence := store.DeriveKYBEvidence(docs)
+	next := session.Data["next_tier"]
+	profile, err := s.store.RequestKYBAdvancement(ctx, merchantID, evidence, "submitted in chat")
+	if err != nil {
+		session.State, session.Data = "menu", map[string]string{}
+		if err2 := s.saveSession(ctx, session); err2 != nil {
+			return err2
+		}
+		return s.sendText(ctx, channel, recipient, fmt.Sprintf("Could not submit the upgrade request: %s", err))
+	}
+	merchantName := session.Data["merchant_name"]
+	session.State, session.Data = "menu", map[string]string{}
+	if err := s.saveSession(ctx, session); err != nil {
+		return err
+	}
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf(
+		"Upgrade request submitted for %s (%s → %s) with %d of 5 documents on file.\n\nOur compliance team verifies each one before your tier changes. If you have the CAC and TIN certificates, opening the browser upgrade flow and uploading them speeds this up.",
+		merchantName, profile.Tier, next, len(evidence)))
 }
 
 // kycEvidenceRequirement returns a human-readable description of what the

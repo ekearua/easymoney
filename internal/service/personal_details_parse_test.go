@@ -234,3 +234,80 @@ func TestParseMerchantRegistrationDetails(t *testing.T) {
 		t.Fatalf("missing = %v, want one", got)
 	}
 }
+
+// TestParseKYBDocumentDetailsLabeled pins the aggregated corporate message: a
+// customer who answers with the prompted labels has every item captured, and a
+// TIN typed with separators is stored as digits.
+func TestParseKYBDocumentDetailsLabeled(t *testing.T) {
+	t.Parallel()
+	got := ParseKYBDocumentDetails(strings.Join([]string{
+		"CAC: RC1234567",
+		"TIN: 123-456-7890",
+		"Owners: Ada Obi 60%, Chidi Obi 40%",
+		"Address: 12 Marina Road, Lagos Island, Lagos",
+		"SCUML: SC123456",
+	}, "\n"))
+	if got.CACRegNumber != "RC1234567" {
+		t.Errorf("CAC = %q", got.CACRegNumber)
+	}
+	if got.TIN != "1234567890" {
+		t.Errorf("TIN = %q, want the digits only", got.TIN)
+	}
+	if !strings.Contains(got.BeneficialOwners, "Ada Obi") {
+		t.Errorf("owners = %q", got.BeneficialOwners)
+	}
+	if !strings.Contains(got.BusinessAddress, "Marina") {
+		t.Errorf("address = %q", got.BusinessAddress)
+	}
+	if got.SCUMLNumber != "SC123456" {
+		t.Errorf("SCUML = %q", got.SCUMLNumber)
+	}
+	if missing := got.Missing(); len(missing) != 0 {
+		t.Fatalf("a complete message should owe nothing, got %v", missing)
+	}
+}
+
+// TestParseKYBDocumentDetailsPartial pins the friendly re-ask: what arrived is
+// kept and only what is still owed is named.
+func TestParseKYBDocumentDetailsPartial(t *testing.T) {
+	t.Parallel()
+	got := ParseKYBDocumentDetails("CAC: RC1234567\nTIN: 1234567890")
+	if got.CACRegNumber != "RC1234567" || got.TIN != "1234567890" {
+		t.Fatalf("captured = %+v", got)
+	}
+	missing := got.Missing()
+	if len(missing) != 3 {
+		t.Fatalf("missing = %v, want three", missing)
+	}
+	joined := strings.Join(missing, "|")
+	for _, want := range []string{"beneficial owners", "business address", "SCUML"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing = %v, want %q named", missing, want)
+		}
+	}
+}
+
+// TestParseKYBDocumentDetailsUnlabeled pins the shape fallback: a customer who
+// types the items in the prompted order without labels is still understood.
+func TestParseKYBDocumentDetailsUnlabeled(t *testing.T) {
+	t.Parallel()
+	got := ParseKYBDocumentDetails(strings.Join([]string{
+		"RC7654321",
+		"1234567890",
+		"12 Broad Street, Lagos Island, Lagos",
+		"Bola Ade 100%",
+		"SC654321",
+	}, "\n"))
+	if !strings.Contains(got.CACRegNumber, "7654321") {
+		t.Errorf("CAC = %q", got.CACRegNumber)
+	}
+	if got.TIN != "1234567890" {
+		t.Errorf("TIN = %q", got.TIN)
+	}
+	if !strings.Contains(got.BusinessAddress, "Broad Street") {
+		t.Errorf("address = %q", got.BusinessAddress)
+	}
+	if len(got.Missing()) != 0 {
+		t.Fatalf("an unlabeled message in prompt order should owe nothing, got %v", got.Missing())
+	}
+}

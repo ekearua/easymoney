@@ -802,6 +802,130 @@ func ParseNameAndEmail(input string) NameAndEmail {
 	return out
 }
 
+// KYBDocumentDetails is the corporate evidence a merchant asserts about their
+// own business in one aggregated chat message. It is a claim, not a
+// verification: the compliance team checks each item against the registry
+// before any tier moves.
+type KYBDocumentDetails struct {
+	CACRegNumber     string
+	TIN              string
+	BeneficialOwners string
+	BusinessAddress  string
+	SCUMLNumber      string
+}
+
+var (
+	// kybCorporateNumberRe recognises an RC/CAC registration number.
+	kybCorporateNumberRe = regexp.MustCompile(`(?i)\b(?:RC|CAC)?\s*[0-9]{6,10}\b`)
+	// kybTINRe recognises a taxpayer number: 10-13 digits, possibly separated.
+	kybTINRe = regexp.MustCompile(`\b[0-9][0-9\-\s]{8,16}[0-9]\b`)
+)
+
+// ParseKYBDocumentDetails reads the five corporate items from one labeled
+// message. Labels are matched case-insensitively and a "field:" prefix is
+// stripped. Unlabeled lines fall back to shape, so a customer who types plain
+// lines in the prompted order is still understood.
+func ParseKYBDocumentDetails(input string) KYBDocumentDetails {
+	var out KYBDocumentDetails
+	var rest []string
+	for _, raw := range strings.Split(input, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		value := stripLabel(line)
+		switch {
+		case strings.HasPrefix(lower, "cac"), strings.HasPrefix(lower, "rc"),
+			strings.HasPrefix(lower, "company registration"), strings.HasPrefix(lower, "registration"):
+			if out.CACRegNumber == "" {
+				out.CACRegNumber = value
+			}
+		case strings.HasPrefix(lower, "tin"), strings.HasPrefix(lower, "tax"):
+			if out.TIN == "" {
+				out.TIN = kybdigitsOnly(value)
+			}
+		case strings.HasPrefix(lower, "owner"), strings.HasPrefix(lower, "beneficial"),
+			strings.HasPrefix(lower, "director"), strings.HasPrefix(lower, "shareholder"), strings.HasPrefix(lower, "ubo"):
+			if out.BeneficialOwners == "" {
+				out.BeneficialOwners = value
+			}
+		case strings.HasPrefix(lower, "address"), strings.HasPrefix(lower, "location"),
+			strings.HasPrefix(lower, "operating"):
+			if out.BusinessAddress == "" {
+				out.BusinessAddress = value
+			}
+		case strings.HasPrefix(lower, "scuml"):
+			if out.SCUMLNumber == "" {
+				out.SCUMLNumber = value
+			}
+		default:
+			rest = append(rest, line)
+		}
+	}
+	// Unlabeled lines, by shape: a registration number, then a taxpayer
+	// number, then a street-like line as the address, then a list-like line as
+	// the owners, then a short token as the SCUML number.
+	for _, line := range rest {
+		switch {
+		case out.CACRegNumber == "" && kybCorporateNumberRe.MatchString(line):
+			out.CACRegNumber = kybCorporateNumberRe.FindString(line)
+		case out.TIN == "" && kybTINRe.MatchString(line):
+			out.TIN = kybdigitsOnly(kybTINRe.FindString(line))
+		case out.BusinessAddress == "" && looksLikeAddress(line):
+			out.BusinessAddress = line
+		case out.BeneficialOwners == "":
+			out.BeneficialOwners = line
+		case out.SCUMLNumber == "" && len([]rune(line)) <= 30:
+			out.SCUMLNumber = line
+		}
+	}
+	return out
+}
+
+// Missing lists the human labels of the fields the message did not supply, in
+// prompt order, so the re-ask names exactly what is still needed.
+func (d KYBDocumentDetails) Missing() []string {
+	var out []string
+	if strings.TrimSpace(d.CACRegNumber) == "" {
+		out = append(out, "CAC registration number")
+	}
+	if strings.TrimSpace(d.TIN) == "" {
+		out = append(out, "business TIN")
+	}
+	if strings.TrimSpace(d.BeneficialOwners) == "" {
+		out = append(out, "beneficial owners")
+	}
+	if strings.TrimSpace(d.BusinessAddress) == "" {
+		out = append(out, "business address")
+	}
+	if strings.TrimSpace(d.SCUMLNumber) == "" {
+		out = append(out, "SCUML registration number")
+	}
+	return out
+}
+
+// looksLikeAddress reports whether a line reads like a street address: long
+// enough to be one, and carrying a number or a comma.
+func looksLikeAddress(line string) bool {
+	if len([]rune(line)) < 10 {
+		return false
+	}
+	return strings.ContainsAny(line, "0123456789,")
+}
+
+// kybdigitsOnly strips every non-digit from a value (a TIN is often typed with
+// separators).
+func kybdigitsOnly(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // isPlausibleEmail is the lightweight email shape check shared by the
 // aggregated parsers (full validation stays with the callers).
 func isPlausibleEmail(s string) bool {
