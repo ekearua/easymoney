@@ -153,6 +153,25 @@ type Config struct {
 	ScreeningTimeout    time.Duration
 	KYCRescreenPeriod   time.Duration
 
+	// Corporate-registry (CAC), tax-authority (FIRS) and location
+	// verification. Unlike identity and screening these default to their
+	// deterministic simulators, because their live vendors are optional: the
+	// platform (and every test) boots without registry or geocoding
+	// credentials. Set *_PROVIDER=http to use a live endpoint.
+	CorporateRegistryProvider string
+	CorporateRegistryAPIBase  string
+	CorporateRegistryAPIKey   string
+	CorporateRegistryTimeout  time.Duration
+	TaxIDProvider             string
+	TaxIDAPIBase              string
+	TaxIDAPIKey               string
+	TaxIDTimeout              time.Duration
+	LocationProvider          string
+	LocationAPIBase           string
+	LocationAPIKey            string
+	LocationTimeout           time.Duration
+	LocationMaxDistanceM      float64
+
 	// AI / OCR / STT configuration (Phase 3-5).
 	AIEnabled  bool
 	AIProvider string
@@ -339,6 +358,19 @@ func Load() (Config, error) {
 		ScreeningAPIBase:                strings.TrimRight(os.Getenv("SCREENING_API_BASE"), "/"),
 		ScreeningAPIKey:                 os.Getenv("SCREENING_API_KEY"),
 		ScreeningTimeout:                envDuration("SCREENING_TIMEOUT", 30*time.Second),
+		CorporateRegistryProvider:       strings.ToLower(env("CAC_PROVIDER", "simulated")),
+		CorporateRegistryAPIBase:        strings.TrimRight(os.Getenv("CAC_API_BASE"), "/"),
+		CorporateRegistryAPIKey:         os.Getenv("CAC_API_KEY"),
+		CorporateRegistryTimeout:        envDuration("CAC_TIMEOUT", 30*time.Second),
+		TaxIDProvider:                   strings.ToLower(env("FIRS_PROVIDER", "simulated")),
+		TaxIDAPIBase:                    strings.TrimRight(os.Getenv("FIRS_API_BASE"), "/"),
+		TaxIDAPIKey:                     os.Getenv("FIRS_API_KEY"),
+		TaxIDTimeout:                    envDuration("FIRS_TIMEOUT", 30*time.Second),
+		LocationProvider:                strings.ToLower(env("LOCATION_PROVIDER", "simulated")),
+		LocationAPIBase:                 strings.TrimRight(os.Getenv("LOCATION_API_BASE"), "/"),
+		LocationAPIKey:                  os.Getenv("LOCATION_API_KEY"),
+		LocationTimeout:                 envDuration("LOCATION_TIMEOUT", 30*time.Second),
+		LocationMaxDistanceM:            float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
 		AIEnabled:                       envBool("AI_ENABLED", false),
 		AIProvider:                      strings.ToLower(env("AI_PROVIDER", "openai")),
 		AIAPIKey:                        os.Getenv("AI_API_KEY"),
@@ -455,6 +487,21 @@ func Load() (Config, error) {
 	case "", "ninbvnportal":
 	default:
 		return Config{}, fmt.Errorf("IDENTITY_PROVIDER must be \"ninbvnportal\", got %q", cfg.IdentityProvider)
+	}
+	switch cfg.CorporateRegistryProvider {
+	case "", "simulated", "http":
+	default:
+		return Config{}, fmt.Errorf("CAC_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.CorporateRegistryProvider)
+	}
+	switch cfg.TaxIDProvider {
+	case "", "simulated", "http":
+	default:
+		return Config{}, fmt.Errorf("FIRS_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.TaxIDProvider)
+	}
+	switch cfg.LocationProvider {
+	case "", "simulated", "http":
+	default:
+		return Config{}, fmt.Errorf("LOCATION_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.LocationProvider)
 	}
 	switch cfg.SMSProvider {
 	case "", "webhook", "http":
@@ -642,6 +689,15 @@ func validateProductionRails(cfg Config) error {
 	}
 	if cfg.ScreeningProvider == "http" && cfg.ScreeningAPIBase == "" {
 		return errors.New("SCREENING_API_BASE is required when SCREENING_PROVIDER=http")
+	}
+	if cfg.CorporateRegistryProvider == "http" && cfg.CorporateRegistryAPIBase == "" {
+		return errors.New("CAC_API_BASE is required when CAC_PROVIDER=http")
+	}
+	if cfg.TaxIDProvider == "http" && cfg.TaxIDAPIBase == "" {
+		return errors.New("FIRS_API_BASE is required when FIRS_PROVIDER=http")
+	}
+	if cfg.LocationProvider == "http" && cfg.LocationAPIBase == "" {
+		return errors.New("LOCATION_API_BASE is required when LOCATION_PROVIDER=http")
 	}
 	if strings.EqualFold(cfg.PayoutProvider, "interswitch") || strings.EqualFold(cfg.RefundProvider, "interswitch") {
 		if cfg.InterswitchTransferBaseURL == "" {

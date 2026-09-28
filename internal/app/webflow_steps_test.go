@@ -248,8 +248,14 @@ func TestFlowStepsStates(t *testing.T) {
 	if !ok || itemsSteps[2].State != "current" || itemsSteps[2].Label != "Items" {
 		t.Fatalf("invoice_create items_summary must be the Items node, got %+v (ok=%v)", itemsSteps, ok)
 	}
-	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "note"); !ok || steps[4].State != "current" || steps[4].Label != "Note" {
+	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "note"); !ok || steps[5].State != "current" || steps[5].Label != "Note" {
 		t.Fatalf("kyb_request note step must be the current node, got %+v (ok=%v)", steps, ok)
+	}
+	// The corporate-documents rung sits between owners and compliance: the
+	// evidence a B0 -> B1 advance needs is collected before the compliance
+	// category question, not after it.
+	if steps, ok := wfFlowSteps(service.WebFlowKYBRequest, "location"); !ok || steps[3].State != "current" || steps[3].Label != "Location" {
+		t.Fatalf("kyb_request location step must be the current node, got %+v (ok=%v)", steps, ok)
 	}
 }
 

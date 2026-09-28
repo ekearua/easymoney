@@ -2458,6 +2458,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-14-012 | Monitoring | Admin | Console | Transaction monitoring alert resolution | P1 |
 | TC-14-013 | KYB | Admin | Console | KYB profile advancement | P1 |
 | TC-14-014 | KYB | Admin | Console | KYB advance-request approve/clear | P2 |
+| TC-14-016 | KYB | Merchant + Admin | Browser/Console | KYB document submission and per-document verification | P1 |
 | TC-14-015 | Allowances | Admin | Console | Tier limit update | P2 |
 | TC-14-016 | Thrift | Admin | Console | Thrift groups management | P1 |
 | TC-14-017 | Data | Admin | Console | Data orders list | P2 |
@@ -2649,14 +2650,14 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** KYB
 - **Actor:** Admin   **Channel:** Console   **Priority:** P1
-- **Preconditions:** Registered merchants with B0 profiles.
+- **Preconditions:** Registered merchants with B0 profiles; the merchant has submitted the five corporate documents (see TC-14-016) and a reviewer has verified each one.
 
 **Steps**
 
 1. Open /admin/kyb.
-2. Advance a merchant to B1.
+2. Advance a merchant to B1 (tick the evidence you verified).
 
-**Expected Result:** Business tier advances; business wallet/settlement limits reflect the new tier.
+**Expected Result:** Business tier advances; business wallet/settlement limits reflect the new tier. **Negative check:** advancing a B0 merchant whose documents are submitted but not verified is refused with `advance to B1 requires a reviewer-verified "…" document`, and the tier does not move.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -2668,9 +2669,33 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 **Steps**
 
-1. Approve the advance request (or clear it).
+1. Open /admin/kyb and find the merchant's upgrade request.
+2. Approve it without ticking any evidence, then approve it again with the evidence ticked (or clear it).
 
-**Expected Result:** Tier updates on approval; cleared requests leave tier unchanged.
+**Expected Result:** Approving with nothing ticked is refused with `tick the evidence you verified before approving` — the request's own evidence list is never used as a fallback. Approving with the evidence ticked advances the tier; clearing leaves it unchanged.
+
+- **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
+
+#### TC-14-016 - KYB document submission and per-document verification
+
+- **Module:** KYB
+- **Actor:** Merchant + Admin   **Channel:** Browser (`/w/{token}`) and Console   **Priority:** P1
+- **Preconditions:** An approved merchant is at B0; `WEB_FLOWS_ENABLED` on the merchant's channel.
+
+**Steps**
+
+1. From the merchant menu choose *Request KYB upgrade*; the browser flow opens at **Merchant**.
+2. On **Corporate**, type the CAC number and TIN, then upload a photo of each certificate — confirm the OCR reading appears above the field and that a blank typed field is filled from the reading.
+3. Press **Back** from **Owners** and confirm the previously typed values are still there, then continue.
+4. On **Location**, upload a utility bill, then tap *Confirm my current location* and grant the browser permission. Repeat once refusing the permission and confirm the step still accepts the uploaded bill alone.
+5. Complete **Compliance**, **Note** and **Review**; confirm the review page lists the documents attached and the reported position.
+6. Submit, then open `/admin/kyb`, find the merchant's *Corporate documents* panel, and confirm the five rows show what was submitted.
+7. Press *Check CAC registry and TIN* and *Re-check location*; confirm each row gains a proposal line and that nothing is marked verified by the check alone.
+8. Verify one document, then press *Reject* on it and confirm the verified count drops back.
+9. Verify all five, then approve the upgrade request and confirm the merchant reaches B1.
+10. Re-open the browser flow and change the CAC number; confirm the previously verified documents read `unreviewed` again.
+
+**Expected Result:** Each document is a claim until a reviewer dispositions it; the tier only moves once all five are verified. Registry and location checks inform the reviewer but never verify anything themselves. Replacing a document clears the dispositions it carried.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

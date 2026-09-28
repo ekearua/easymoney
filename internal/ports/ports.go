@@ -194,6 +194,102 @@ type SanctionsScreener interface {
 	Screen(context.Context, ScreeningRequest) (ScreeningDecision, error)
 }
 
+// Verification statuses shared by the corporate registry, tax authority and
+// location adapters. They are the vocabulary the reviewer's disposition is
+// informed by; none of them advances a tier.
+const (
+	// VerifyVerified means the external source confirmed the submitted value.
+	VerifyVerified = "verified"
+	// VerifyMismatch means the source holds a record but it disagrees with the
+	// submitted identity (usually the registered name).
+	VerifyMismatch = "mismatch"
+	// VerifyNotFound means the source holds no record for the submitted value.
+	VerifyNotFound = "not_found"
+	// VerifyMatched means the reported position agreed with the declared
+	// address within the configured tolerance.
+	VerifyMatched = "matched"
+	// VerifyReview means the check completed but a human must judge it.
+	VerifyReview = "review"
+	// VerifyNoLocation means no position was captured, so nothing could be
+	// compared.
+	VerifyNoLocation = "no_location"
+)
+
+// CorporateRegistryRequest contains the business identity a corporate
+// registry lookup checks: the CAC registration number against the registered
+// company name.
+type CorporateRegistryRequest struct {
+	RegistrationNumber string
+	BusinessName       string
+}
+
+// CorporateRegistryResult is the provider-neutral outcome of a corporate
+// registry check.
+type CorporateRegistryResult struct {
+	Status         string
+	RegisteredName string
+	RegisteredAt   string
+	ProviderRef    string
+	MatchName      bool
+	Message        string
+}
+
+// CorporateRegistryVerifier isolates corporate-registry verification (a CAC
+// RC lookup) from a specific portal or vendor, the same way IdentityVerifier
+// isolates NIN/BVN.
+type CorporateRegistryVerifier interface {
+	VerifyCorporate(context.Context, CorporateRegistryRequest) (CorporateRegistryResult, error)
+}
+
+// TaxIDRequest contains the business identity a tax-authority lookup checks.
+type TaxIDRequest struct {
+	TIN          string
+	BusinessName string
+}
+
+// TaxIDResult is the provider-neutral outcome of a tax identification number
+// check.
+type TaxIDResult struct {
+	Status         string
+	RegisteredName string
+	ProviderRef    string
+	MatchName      bool
+	Message        string
+}
+
+// TaxIDVerifier isolates TIN verification (FIRS) from a specific vendor.
+type TaxIDVerifier interface {
+	VerifyTaxID(context.Context, TaxIDRequest) (TaxIDResult, error)
+}
+
+// LocationRequest contains the operating address a merchant declared, the
+// reference read from an uploaded proof-of-address document, and the position
+// their browser reported with the visitor's permission.
+type LocationRequest struct {
+	Address        string
+	UtilityBillRef string
+	Latitude       float64
+	Longitude      float64
+	AccuracyMeters float64
+}
+
+// LocationResult is the provider-neutral outcome of a location check.
+// DistanceMeters is -1 when the provider cannot geocode the declared address,
+// so a caller never reads a zero as "same place".
+type LocationResult struct {
+	Status          string
+	DistanceMeters  float64
+	ResolvedAddress string
+	ProviderRef     string
+	Message         string
+}
+
+// LocationVerifier isolates operating-address verification (geocoding plus a
+// distance comparison against the reported position) from a specific vendor.
+type LocationVerifier interface {
+	VerifyLocation(context.Context, LocationRequest) (LocationResult, error)
+}
+
 // PayoutRequest contains the neutral payout instruction sent to a bank rail.
 type PayoutRequest struct {
 	Reference     string // settlement batch_no, used as the idempotency key

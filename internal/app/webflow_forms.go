@@ -1264,19 +1264,36 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 		return page, nil
 	case "corporate":
 		page.Title = "Corporate documents"
-		page.Intro = "Upload your CAC registration certificate number and business Tax Identification Number (TIN)."
+		page.Intro = "Your CAC registration number and business TIN, plus a photo of each certificate so the compliance team can check them against the register."
 		page.Fields = []webFlowField{
-			{Name: "cac_reg_number", Label: "CAC registration number", Type: "text", Required: true},
-			{Name: "tin", Label: "Business TIN", Type: "text", Required: true},
+			{Name: "cac_reg_number", Label: "CAC registration number", Type: "text", Required: true,
+				Value: flow.Payload["cac_reg_number"], Hint: "The RC or CAC number on the certificate, for example RC1234567."},
+			{Name: "cac_document", Label: "CAC certificate", Type: "upload", Value: flow.Payload["cac_document"],
+				MediaPrompt: "Read this company registration certificate. Reply with the RC or CAC registration number and the registered company name, on one line."},
+			{Name: "tin", Label: "Business TIN", Type: "text", Required: true, Value: flow.Payload["tin"]},
+			{Name: "tin_document", Label: "TIN certificate", Type: "upload", Value: flow.Payload["tin_document"],
+				MediaPrompt: "Read this Tax Identification Number certificate. Reply with the TIN and the taxpayer name, on one line."},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "owners":
-		page.Title = "Beneficial owners and location"
-		page.Intro = "List every beneficial owner (anyone controlling 25% or more) and the business's operating address."
+		page.Title = "Beneficial owners"
+		page.Intro = "List every beneficial owner — anyone who owns or controls 25% or more — and the business's operating address."
 		page.Fields = []webFlowField{
-			{Name: "beneficial_owners", Label: "Beneficial owners", Type: "textarea", Required: true},
-			{Name: "business_address", Label: "Business address", Type: "textarea", Required: true},
+			{Name: "beneficial_owners", Label: "Beneficial owners", Type: "textarea", Required: true, Value: flow.Payload["beneficial_owners"],
+				Hint: "One per line: full name and shareholding."},
+			{Name: "business_address", Label: "Business address", Type: "textarea", Required: true, Value: flow.Payload["business_address"]},
+		}
+		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
+		return page, nil
+	case "location":
+		page.Title = "Operating address and location"
+		page.Intro = "Upload a recent utility bill for the operating address, then confirm where you are right now. Your position is what lets us check the address really is this business's."
+		page.Fields = []webFlowField{
+			{Name: "address_document", Label: "Utility bill for the operating address", Type: "upload", Value: flow.Payload["address_document"],
+				MediaPrompt: "Read this utility bill. Reply with the account or meter reference and the service address printed on it, on one line."},
+			{Name: "location", Label: "Where you are now", Type: "location", Value: flow.Payload["location_summary"],
+				Hint: "Your browser asks for permission once. Xego records only the position and the time."},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
@@ -1284,15 +1301,15 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 		page.Title = "SCUML and risk category"
 		page.Intro = "Send your SCUML (Special Control Unit against Money Laundering) registration number, and tell us if the business operates in a designated non-financial business or profession (DNFBP): " + strings.Join(dnfbpSegments, ", ") + "."
 		page.Fields = []webFlowField{
-			{Name: "scuml_number", Label: "SCUML registration number", Type: "text", Required: true},
-			{Name: "dnfbp", Label: "Designated non-financial business?", Type: "select", Required: true, Options: []webFlowOption{{Value: "No", Label: "No"}, {Value: "Yes", Label: "Yes"}}},
+			{Name: "scuml_number", Label: "SCUML registration number", Type: "text", Required: true, Value: flow.Payload["scuml_number"]},
+			{Name: "dnfbp", Label: "Designated non-financial business?", Type: "select", Required: true, Value: flow.Payload["dnfbp"], Options: []webFlowOption{{Value: "No", Label: "No"}, {Value: "Yes", Label: "Yes"}}},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "note":
 		page.Title = "Upgrade note (optional)"
 		page.Intro = "Anything the compliance team should know? You can leave this empty."
-		page.Fields = []webFlowField{{Name: "note", Label: "Note", Type: "textarea"}}
+		page.Fields = []webFlowField{{Name: "note", Label: "Note", Type: "textarea", Value: flow.Payload["note"]}}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
 	case "review":
@@ -1301,6 +1318,7 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 			return page, err
 		}
 		page.Title = "Review upgrade request"
+		docs := a.wfKYBDocumentsFromPayload(flow.Payload)
 		page.Review = []webFlowLine{
 			{Term: "Merchant", Desc: merchant.Name},
 			{Term: "CAC registration", Desc: flow.Payload["cac_reg_number"]},
@@ -1309,9 +1327,11 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 			{Term: "Business address", Desc: flow.Payload["business_address"]},
 			{Term: "SCUML", Desc: flow.Payload["scuml_number"]},
 			{Term: "DNFBP category", Desc: flow.Payload["dnfbp"]},
+			{Term: "Documents attached", Desc: wfDocumentSummary(docs)},
+			{Term: "Location", Desc: orPlaceholder(flow.Payload["location_summary"], "not confirmed")},
 			{Term: "Note", Desc: flow.Payload["note"]},
 		}
-		page.Intro = "The compliance team reviews upgrade requests before they take effect."
+		page.Intro = "The compliance team reviews these documents before any tier changes. Evidence counts only once a reviewer has checked the document behind it."
 		page.Actions = []webFlowAction{{Name: "submit", Label: "Request upgrade"}}
 		return page, nil
 	}
@@ -1320,6 +1340,15 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 
 func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
+	// Back walks the chain one step, keeping everything already collected.
+	if action == "back" {
+		prev, ok := wfKYBPreviousStep(flow.Step)
+		if !ok {
+			return a.wfPageWithError(flow, page, "This is the first step; there is nothing to go back to."), nil
+		}
+		a.wfAdvance(w, r, flow, prev, flow.Payload)
+		return nil, nil
+	}
 	switch flow.Step {
 	case "", "merchant":
 		slug := strings.TrimSpace(r.FormValue("merchant_slug"))
@@ -1333,12 +1362,23 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 	case "corporate":
 		cacReg := strings.TrimSpace(r.FormValue("cac_reg_number"))
 		tin := strings.ReplaceAll(strings.TrimSpace(r.FormValue("tin")), " ", "")
+		cacDoc := strings.TrimSpace(flow.Payload["cac_document"])
+		tinDoc := strings.TrimSpace(flow.Payload["tin_document"])
+		// An uploaded certificate can supply a number the customer could not
+		// find, but the typed value always wins: the reading is the document
+		// behind the claim, never a replacement for the claim.
+		if cacReg == "" {
+			cacReg = wfCorporateNumberFrom(cacDoc)
+		}
+		if tin == "" {
+			tin = wfTINFromDocument(tinDoc)
+		}
 		var errs []string
 		if len([]rune(cacReg)) < 6 || len([]rune(cacReg)) > 40 {
-			errs = append(errs, "Send your CAC registration number (RC or CAC number, 6-40 characters).")
+			errs = append(errs, "Send your CAC registration number (RC or CAC number), or upload the certificate so we can read it.")
 		}
 		if len([]rune(tin)) < 8 || len([]rune(tin)) > 20 {
-			errs = append(errs, "Send your business TIN before continuing.")
+			errs = append(errs, "Send your business TIN, or upload the certificate so we can read it.")
 		}
 		if msg := wfFormError(errs); msg != "" {
 			return a.wfPageWithError(flow, page, msg), nil
@@ -1352,12 +1392,24 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		owners := strings.TrimSpace(r.FormValue("beneficial_owners"))
 		address := strings.TrimSpace(r.FormValue("business_address"))
 		if len([]rune(owners)) < 5 || len([]rune(address)) < 10 {
-			return a.wfPageWithError(flow, page, "Send each beneficial owner (25%+) and a full business address."), nil
+			return a.wfPageWithError(flow, page, "List each beneficial owner (25%+) and a full business address."), nil
 		}
 		payload := clonePayload(flow.Payload)
 		payload["beneficial_owners"] = owners
 		payload["business_address"] = address
-		a.wfAdvance(w, r, flow, "compliance", payload)
+		a.wfAdvance(w, r, flow, "location", payload)
+		return nil, nil
+	case "location":
+		// One of the two proofs is enough to move on: a utility bill the
+		// reviewer can read, or a position this device reported. Requiring
+		// both would strand a customer whose browser blocked the permission
+		// prompt, and requiring neither would make the step decorative.
+		addressDoc := strings.TrimSpace(flow.Payload["address_document"])
+		confirmed := strings.TrimSpace(flow.Payload["location_confirmed"]) == "1"
+		if addressDoc == "" && !confirmed {
+			return a.wfPageWithError(flow, page, "Upload a utility bill, or confirm your current location, before continuing."), nil
+		}
+		a.wfAdvance(w, r, flow, "compliance", flow.Payload)
 		return nil, nil
 	case "compliance":
 		scuml := strings.ReplaceAll(strings.TrimSpace(r.FormValue("scuml_number")), " ", "")
@@ -1394,14 +1446,22 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		if next == "" {
 			return a.wfPageWithError(flow, page, "This merchant is already at the highest business tier (B3)."), nil
 		}
-		// The merchant's corporate documents are the evidence the request
-		// carries; the compliance team verifies them before advancing.
-		evidence := store.BusinessEvidenceRequiredFor(next)
+		// Documents first, then the request: replacing a document clears any
+		// earlier reviewer disposition, so the request must be built from the
+		// documents that are actually on file now.
+		docs := a.wfKYBDocumentsFromPayload(flow.Payload)
+		if err := a.store.UpsertKYBDocuments(r.Context(), merchant.ID, docs); err != nil {
+			return a.wfPageWithError(flow, page, "The upgrade documents could not be saved."), nil
+		}
+		// The request carries exactly the evidence the submitted documents
+		// justify - never the tier's whole requirement list, which would let an
+		// operator approve a tier with nothing behind it.
+		evidence := store.DeriveKYBEvidence(docs)
 		if len(evidence) == 0 {
-			return a.wfPageWithError(flow, page, "There is no documentation requirement for the next tier."), nil
+			return a.wfPageWithError(flow, page, "Attach at least one corporate document before requesting an upgrade."), nil
 		}
 		note := strings.TrimSpace(flow.Payload["note"])
-		if flow.Payload["dnfbp"] == "Yes" {
+		if docs.DNFBP {
 			if note == "" {
 				note = "Business self-certified as a designated non-financial business or profession"
 			} else {
@@ -1411,17 +1471,7 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		if _, err := a.store.RequestKYBAdvancement(r.Context(), merchant.ID, evidence, note); err != nil {
 			return a.wfPageWithError(flow, page, "The upgrade request failed: "+err.Error()), nil
 		}
-		if err := a.store.UpsertKYBDocuments(r.Context(), merchant.ID, store.KYBDocuments{
-			CACRegNumber:     flow.Payload["cac_reg_number"],
-			TIN:              flow.Payload["tin"],
-			BeneficialOwners: flow.Payload["beneficial_owners"],
-			BusinessAddress:  flow.Payload["business_address"],
-			SCUMLNumber:      flow.Payload["scuml_number"],
-			DNFBP:            flow.Payload["dnfbp"] == "Yes",
-		}); err != nil {
-			return a.wfPageWithError(flow, page, "The upgrade documents could not be saved."), nil
-		}
-		msg := "Your upgrade request for " + merchant.Name + " has been submitted. The compliance team will review it and update you."
+		msg := "Your upgrade request for " + merchant.Name + " was sent with " + strconv.Itoa(len(evidence)) + " of 5 corporate documents (" + strings.Join(evidence, ", ") + "). The compliance team verifies each document before any tier changes."
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Upgrade request submitted."), nil
 		}

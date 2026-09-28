@@ -43,7 +43,7 @@
     {{end}}
     <form id="wf-main" method="post" action="/w/{{.Token}}">
       {{range .Fields}}
-        {{if and (ne .Type "upload") (ne .Type "voice") (ne .Type "aisearch")}}
+        {{if and (ne .Type "upload") (ne .Type "voice") (ne .Type "aisearch") (ne .Type "location")}}
           {{if eq .Type "hidden"}}
             <input type="hidden" name="{{.Name}}" value="{{.Value}}">
           {{else if eq .Type "select"}}
@@ -125,11 +125,26 @@
         </div>
       {{end}}
     {{end}}
+    {{range .Fields}}{{if eq .Type "location"}}
+      <div class="media-upload wf-location">
+        <span class="media-label">{{.Label}}{{if .Required}} *{{end}}</span>
+        {{if .Value}}<p class="muted">Reported location: <strong>{{.Value}}</strong></p>{{end}}
+        <form method="post" action="/w/{{$.Token}}/location" data-location-form>
+          <input type="hidden" name="latitude">
+          <input type="hidden" name="longitude">
+          <input type="hidden" name="accuracy_m">
+          <button type="button" class="wf-location-open" data-location>📍 Confirm my current location</button>
+        </form>
+        <p class="error" data-location-error hidden></p>
+        {{if .Hint}}<p class="muted">{{.Hint}}</p>{{end}}
+      </div>
+    {{end}}{{end}}
   {{end}}
   {{if .WhatsAppLink}}<p class="muted">Open <a href="{{.WhatsAppLink}}">WhatsApp</a> to return to your Xego chat.</p>{{end}}
   <p class="muted">Xego completes every payment only after it is verified on our side.</p>
 </main>
 <script src="/static/webflow-scan.js" defer></script>
+<script src="/static/webflow-location.js" defer></script>
 <script src="/static/webflow-onepage.js" defer></script>
 <script src="/static/date-picker.js" defer></script>
 </body></html>

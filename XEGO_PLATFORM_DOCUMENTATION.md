@@ -194,6 +194,10 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | KYC/KYB allowance ladder | DB-driven per-tier payment/payout ceilings (single/daily/monthly, in & out) | Customers, merchants, admins | Implemented | `internal/kyc` + `internal/store/store_allowances.go`; migration 053 |
 | Sanctions/PEP screening | HTTP vendor adapter (`SCREENING_API_BASE` required at boot) | Customers | Implemented | `internal/providers/screening/http.go` |
 | NIN/BVN identity verification | Live ninbvnportal.com.ng lookup (`NINBVNPORTAL_API_KEY` required at boot) | Customers | Implemented | `internal/providers/identity/ninbvnportal.go` |
+| Corporate registry (CAC) | Optional live lookup; `CAC_PROVIDER=simulated` by default | Compliance | Implemented | `internal/providers/cac/cac.go` |
+| Tax authority (FIRS TIN) | Optional live lookup; `FIRS_PROVIDER=simulated` by default | Compliance | Implemented | `internal/providers/firs/firs.go` |
+| Location verification | Geocodes the operating address and compares it with the browser-reported position; `LOCATION_PROVIDER=simulated` by default | Compliance | Implemented | `internal/providers/geo/geo.go` |
+| KYB document evidence | Merchant-submitted corporate documents; a reviewer disposition per document is what the B0→B1 gate accepts | Merchants, compliance | Implemented | `store_allowances.go` (`DeriveKYBEvidence`, `VerifiedKYBEvidence`, `ReviewKYBDocument`); `internal/app/webflow_kyb.go`; `internal/app/admin_kyb_documents.go`; migration 078 |
 | ML/FT risk scoring | 0–100 score, low/medium/high band | System | Implemented | `internal/kyc.ScoreRisk`; migration 027 |
 | Transaction monitoring | Velocity, structuring, round amounts, high-risk categories | System, admins | Implemented | `kyc/monitor.go:82-197`; migration 028 |
 | Regulator reports | STR, CTR, PEP CSV generation | Admins/compliance | Implemented | `app/reports.go:38-90` |
@@ -269,9 +273,9 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 
 ### 4.1 Registration & Onboarding
 
-- **WhatsApp/Telegram customers:** A customer messages the bot, enters a name and email, and confirms the WhatsApp number or Telegram account. Standard onboarding collects an email for checkout and receipts but does **not** require an OTP. Evidence: README:90-92, 398-400.
+- **WhatsApp/Telegram customers:** A customer messages the bot, sends name and email (one message, or either half alone), verifies the 6-digit emailed code in chat, and confirms the WhatsApp number or Telegram account. Standard onboarding collects an email for checkout and receipts and **requires** the verified OTP on every track (browser and chat). Evidence: README:90-96, 398-400.
 - **Cross-channel identity carry-over:** KYC tier is global to the customer (the surviving primary account row), not per channel. A customer whose global identity already cleared the approved/money-out tier (individual account label, KYC ≥ L2) is never re-hijacked into per-channel account confirmation on a fresh channel (Telegram/Instagram/TikTok): `Handle` routes their first message to `handleNewChannelForApprovedUser` (`conversation_onboarding.go`), which sends a one-time non-blocking intro plus the menu and durably stamps the channel via `MarkChannelOnboarded` (`store_users.go`) — a KYC-neutral update touching only that channel's `*_confirmed_at`, never `verification_level`, `account_level`, or KYC tier — so the gate stays closed and the intro fires exactly once. Users below the approved tier still run per-channel onboarding unchanged. Regression coverage: `internal/service/conversation_channel_carryover_test.go` and `internal/store/store_mark_channel_integration_test.go`. Evidence: `conversation.go:215-227`; README (Cross-channel identity carry-over).
-- **Merchant registration:** A user choosing **Register merchant** receives a 6-digit email confirmation code (OTP), enters business name/category/description, and the request lands in `/admin/merchants` as `awaiting_approval`. An admin approves the request; approval creates the payable merchant record, links the requesting user as merchant owner, and unlocks merchant-only invoice features. Evidence: README:94, 401; migration 011.
+- **Merchant registration:** A user choosing **Register merchant** receives a 6-digit email confirmation code (OTP), submits business name/category/description in one aggregated chat message, and the request lands in `/admin/merchants` as `awaiting_approval`. An admin approves the request; approval creates the payable merchant record, links the requesting user as merchant owner, and unlocks merchant-only invoice features. Evidence: README:94-98, 401; migration 011.
 - **Implementation status:** Implemented. Email delivery requires SMTP configuration; a chat-delivered demo code exists for rehearsal and is refused when `APP_ENV=production`. Evidence: `.env.example:20-27`; README:107.
 
 ### 4.2 Authentication
@@ -628,6 +632,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 - Enforced in the store (`AdvanceKYCTier`/`AdvanceKYCTierTo`/`DowngradeKYCTier`); every transition, screening, and review is audited. Evidence: README:186.
 - Compliance manages the ladder and manual review queue at `/admin/kyc` (admin/compliance roles). Evidence: `app/admin.go`.
 - **Status:** Implemented. **Note (Resolved):** the demo now documents and exercises the full ladder — CBN Tier-1 chat/browser onboarding to L1, photo ID + BVN + NIN to L2, and address proof + an EDD case to L3.
+- **Aggregated collection (chat).** The chat FSM collects each evidence block in one message, not one field per turn: Tier-1 details (DOB/gender/address) during onboarding; the L1→L2 upgrade takes the profile block (name/DOB/gender/address/occupation), the ID block (type + number), the BVN+NIN pair, and the EDD block (address proof + source of funds) each as one message; merchant registration takes name/category/description together. Labeled lines or a plain line per fact both parse; re-asks echo captured fields and name exactly what is missing, and legacy single-field states delegate to the aggregated handlers so in-flight sessions complete. A `go/ast` readiness guard (`internal/service/chat_states_guard_test.go`) fails the build if any dispatched chat state collects free-text facts without aggregating or a recorded exemption (codes, amounts, selections, confirms, atomic facts), and if a classified state leaves the dispatcher. Evidence: `personal_details_parse.go`; `conversation_onboarding.go`; `conversation_individual.go`; `conversation_merchant_register.go`.
 
 ### 12.2 Identity verification (NIN/BVN)
 
@@ -666,6 +671,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 - **Usage accounting.** `allowance_usage` is append-only, keyed by `transaction_ref` for idempotent re-application (a replay is a no-op). Daily/monthly rollups sum on the **Lagos (WAT, UTC+1) calendar** (`kyc.DayWindowStart`/`kyc.MonthWindowStart`). Reservations for the same subject+direction are serialized with `pg_advisory_xact_lock`, so concurrent payments cannot each pass validation.
 - **Release.** A money-in reservation is released centrally when a payment lands in `failed`/`abandoned`/`expired`/`refunded` (`store/store_payments.go` `transitionPayment`). Payout reservations are keyed `payout:<batchNo>` and released only when the payout is reversed (`store_settlements.go` `ReversePayout`); a failed payout keeps its reservation because a retry is the same intent.
 - **Business KYB ladder.** `business_kyb_profiles` holds each merchant's position on B0–B3 (the KYB twin of `kyc_profiles`). Advancement is adjacent and evidence-gated: B0→B1 requires the full corporate suite (`cac_verified`,`tin_verified`,`ubo_cleared`,`location_verified`,`scuml_submitted`), then `business_bank_verified` → `business_edd_completed` for the higher rungs; past B0 it requires a non-blocked sanctions/PEP decision. Existing merchants were grandfathered to B0/approved with `["registration_approved"]` evidence. A blocked **business** rescreen (same periodic job that serves individuals) forces the merchant back to B0 and immediately lowers the ceilings `ReserveAllowance` enforces. Evidence: `internal/app/cli.go` (`RescreenDue`), `RecordKYBScreening`, `BusinessKYBProfilesDueForRescreen`.
+- **KYB evidence is document-backed (migration 078).** `business_kyb_documents` holds what the merchant submitted — the OCR reading of an uploaded CAC certificate, TIN certificate and utility bill, the typed values, and the position their browser reported — plus the reviewer's per-document disposition (`reviews`) and the third-party proposals (`verifications`). `DeriveKYBEvidence` returns the keys the submitted documents justify; `VerifiedKYBEvidence` returns the subset a reviewer verified; `AdvanceKYBTier` refuses a B1 advance unless all five keys are verified, so a bare upgrade request can never become a tier. Replacing a document clears the dispositions it carried (an identical resubmission keeps them). Merchants submit through the browser flow (`WebFlowKYBRequest`, with uploads and a geolocation-confirmed Location step) or the chat `kyb_request_details` aggregated message; compliance works them at `/admin/kyb`. Every disposition and check is audited. Evidence: `store_allowances.go` (`DeriveKYBEvidence`, `VerifiedKYBEvidence`, `ReviewKYBDocument`, `SaveKYBVerification`, `RecordKYBLocation`), `internal/app/webflow_kyb.go`, `internal/app/admin_kyb_documents.go`, migrations 074/078.
 - **Customer-facing visibility.** WhatsApp menu *My limits* shows tier, per-payment/day/month ceilings, and used/remaining for today and the month; *KYB status & limits* does the same for merchants. Allowance rejections are rewritten into actionable copy ("complete more verification…", upgrade prompt) by `conversation_allowances.go`.
 - **Administration.** `/admin/kyb` (admin/compliance roles) lists every business profile with review actions and advance-to-next-tier forms, and renders every `kyc_tier_limits` row as an inline editor. Changes are audited (`admin.tier_limits.updated`, `admin.kyb.reviewed`; tier moves audit as `kyb.tier_advanced`/`kyb.tier_downgraded`). Evidence: `app/admin_kyb.go`.
 - **Status:** Implemented, gated on Postgres (migration 053).
@@ -758,7 +764,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 
 ### 14.3 Email
 
-- **Triggering events:** merchant-registration email confirmation (6-digit OTP). Standard user onboarding does not require email OTP. Evidence: README:90-92.
+- **Triggering events:** standard-user and merchant-registration email confirmation (6-digit OTP, required on every track). Evidence: README:90-92.
 - **Delivery:** SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`); chat-delivered demo code option for rehearsal; refused in production. Evidence: `.env.example:20-27`; README:107.
 - **Status:** Implemented; SMTP is Configured Only (empty defaults) and delivery is optional in practice.
 
@@ -874,6 +880,9 @@ All admin routes require login; RBAC middleware gates sensitive actions. Routes 
 | Data fulfilment | Mobile data orders | `internal/providers/vtpass`; Interswitch VTU | Outbound | VTPass sandbox HTTP / Interswitch |
 | Identity (NIN/BVN) | KYC L2 gate (photo ID + both verified) | `internal/providers/identity/ninbvnportal.go` | Outbound | Real HTTP (`NINBVNPORTAL_API_KEY` required) |
 | Sanctions/PEP screening | KYC screening | `internal/providers/screening/http.go` | Outbound | Real HTTP (`SCREENING_API_BASE` required) |
+| Corporate registry (CAC) | KYB B0→B1 review aid | `internal/providers/cac/cac.go` | Outbound | Simulated by default; `CAC_PROVIDER=http` calls a live endpoint |
+| Tax authority (FIRS TIN) | KYB B0→B1 review aid | `internal/providers/firs/firs.go` | Outbound | Simulated by default; `FIRS_PROVIDER=http` calls a live endpoint |
+| Location verification | KYB operating-address check | `internal/providers/geo/geo.go` | Outbound | Simulated by default; `LOCATION_PROVIDER=http` calls a live endpoint |
 | Redis | Distributed rate limiting | `internal/ratelimit` | Internal | Configured Only (empty `REDIS_URL` → in-memory) |
 | Kafka | Event bus | `internal/bus/kafka` | Internal | Configured Only (default `EVENT_BUS=memory`) |
 | S3-compatible storage (OCI/AWS/MinIO) | Backup shipping | `deploy/backup.sh` (rclone) | Outbound | Deployment |
@@ -1022,7 +1031,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
   1. Webhook received and signature-verified.
   2. Message normalized and enqueued.
   3. Drain worker invokes `conversation.Handle`.
-  4. Bot collects name and email.
+  4. Bot collects name and email (one aggregated message, or either half alone — the missing half is asked next).
   5. Customer confirms the WhatsApp number / Telegram account.
 - **Data created:** user row (whatsapp/telegram identity), conversation session, consent records.
 - **External systems:** WhatsApp Cloud API / Telegram Bot API.
@@ -1035,7 +1044,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 - **Trigger:** User chooses **Register merchant** in chat.
 - **Actors:** User, email/SMTP (or chat demo), admin.
-- **Process:** 1) email OTP issued; 2) user confirms OTP; 3) user submits business name/category/description; 4) request stored as `awaiting_approval`; 5) admin approves in `/admin/merchants`; 6) merchant record created, owner linked, invoice features unlocked.
+- **Process:** 1) email OTP issued; 2) user confirms OTP; 3) user submits business name/category/description in one aggregated message (labeled lines or a line per fact; a partial or garbled message is re-asked by field while echoing what was captured); 4) request stored as `awaiting_approval`; 5) admin approves in `/admin/merchants`; 6) merchant record created, owner linked, invoice features unlocked.
 - **Data created:** merchant registration request, merchant, merchant_owners, consent records.
 - **External systems:** SMTP (optional; chat demo code otherwise).
 - **Success/failure:** approval unlocks merchant features; rejection/disabled blocks them. Audit-logged.
@@ -1293,7 +1302,8 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 
 - **No regulatory submission pipeline** — STR/CTR/PEP are file exports only.
 - **No regulatory certification claims** — README explicitly states the build is not a licensed payment processor.
-- **No merchant KYB** beyond registration approval.
+- **No merchant KYB beyond registration approval** — retracted as of migration 078. The B0–B3 ladder is implemented, and B0→B1 evidence is now document-backed: a merchant submits the corporate documents and a reviewer dispositions each one, so an evidence key cannot be asserted into existence. The remaining gap is narrower and is stated below it:
+- **CAC and FIRS checks are optional adapters** — the corporate registry and tax-authority verifiers ship with simulators and no vendor is wired by default, so on a stock deployment those two documents are verified by the reviewer's own judgement (plus uploaded certificates), not by an electronic lookup.
 
 ### Infrastructure gaps
 

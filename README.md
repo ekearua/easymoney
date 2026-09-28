@@ -94,6 +94,8 @@ RUN_TESTS=0 RUN_VET=0 bash deploy/rebuild-vps.sh
 
 Standard user onboarding collects an email for checkout and receipts and verifies it with a 6-digit confirmation code — on every track. In the browser flow the code step is a dedicated page; on the chat FSM the emailed code is entered in chat (wrong codes get a friendly re-ask, `RESEND` issues a fresh code, `CHANGE EMAIL` restarts the step, and five wrong entries lock the attempt). For manual demos without SMTP, `EMAIL_DEMO_CODE_IN_CHAT=true` surfaces the code in the chat transcript instead. The same code gate also protects **Register merchant**, a higher-trust action.
 
+**Aggregated chat collection.** Chat flows never ask one field per message: onboarding takes the name and email together (or either alone — the missing half is asked next), the Tier-1 details block takes DOB + gender + address in one message, and merchant registration takes business name + category + description in one message. Labeled lines (`Name: ...`, `DOB: ...`) or a plain line per fact both parse; a partial or garbled message is re-asked naming exactly what is missing while echoing what was captured — nothing retyped, nothing discarded. The same pattern covers the individual KYC upgrade (details block, photo ID type + number, BVN + NIN, EDD set) and the existing thrift/invoice concat forms. A `go/ast` guard (`internal/service/chat_states_guard_test.go`) fails the build if any dispatched chat state collects free-text facts without either aggregating or an explicit exemption (verification codes, amounts, selections, confirms, one atomic fact), and equally if a classified state disappears from the dispatcher — the manifests cannot drift into fiction.
+
 Merchant requests start as `awaiting_approval`. An admin must approve the request in `/admin/merchants`; approval creates the payable merchant record, links the requesting user as the merchant owner, and unlocks merchant-only invoice features.
 
 For real email delivery, configure:
@@ -200,6 +202,22 @@ In the demo flow, the customer completes **CBN Tier 1** by confirming their chan
 ML/FT risk scoring (`internal/kyc.ScoreRisk`) aggregates scored risk observations (the `risk_events` table) with the tier and last screening decision into a 0-100 score and a `low`/`medium`/`high` band (CBN risk-based approach): unverified identities and strong/possible sanctions matches add weight, completed EDD subtracts it, and the band persists on the KYC profile (`risk_band`/`risk_score`). Any `RecordRiskEvent` call recomputes the band transactionally and audits `kyc.risk_scored`; the rescreen worker and `go run ./cmd/demo recompute-risk` refresh it too. The band is shown on the `/admin/kyc` profiles table.
 
 Transaction monitoring (`internal/kyc.RunTransactionMonitor`) evaluates settled money movements every 15 minutes — across card/transfer payments, wallet top-ups, standing-account bank credits, refunds, and merchant settlement payouts (attributed to the merchant owner) — against behaviour rules — velocity (more than `MONITOR_VELOCITY_LIMIT` movements per `MONITOR_VELOCITY_WINDOW`), structuring (several movements just under a threshold), round amounts, and high-risk counterparty categories (`MONITOR_HIGH_RISK_CATEGORIES`) — and records each finding in `transaction_alerts` tagged with the rails it fired over and a dedupe reference, so a rescan or redelivery never duplicates an alert. A settled standing-account bank credit is monitored as the webhook applies it; payments are monitored by both the event consumer and the periodic scan. Medium/high alerts open a `monitoring` manual review case and feed the ML/FT risk score; the compliance queue at `/admin/kyc` shows every alert with Ack/Escalate/Resolve actions. `go run ./cmd/demo monitor` runs a manual pass.
+
+### Merchant KYB: submitted documents, reviewer dispositions
+
+The business ladder (B0–B3) is the KYB twin of the customer ladder, held in `business_kyb_profiles`. B0 → B1 is the corporate hard gate: it needs the full suite — `cac_verified`, `tin_verified`, `ubo_cleared`, `location_verified`, `scuml_submitted` — and past B0 a non-blocked sanctions/PEP decision is required too. Evidence is **not** the tier's requirement list: an evidence key counts only when the merchant submitted the document behind it **and** a reviewer recorded a disposition on that document (`business_kyb_documents.reviews`, migration `078_kyb_document_reviews.sql`). `store.DeriveKYBEvidence` returns the keys the submitted documents justify; `store.VerifiedKYBEvidence` returns the subset a reviewer has verified; `AdvanceKYBTier` refuses a B1 advance unless all five keys are verified. A bare upgrade request therefore can never become a tier, whoever approves it.
+
+Merchants submit in either surface. The browser flow (`WebFlowKYBRequest`, reached from *Request KYB upgrade*) walks Merchant → Corporate → Owners → Location → Compliance → Note → Review, and accepts **uploads** of the CAC certificate, the TIN certificate and a utility bill, OCR'd to text by the AI image reader (the reading, never the raw file, is stored). The Location step asks the browser for permission once and records the position and its accuracy alongside the utility-bill reading — the only check that uses something a merchant cannot simply type. The chat path (`kyb_request_details`) collects the same five items in **one aggregated message**; the reviewer then checks those claims against the register in the console.
+
+Compliance works the documents at `/admin/kyb`: the *Corporate documents* panel shows each submitted document, its reviewer status, and any third-party proposal, with Verify/Reject per document and one-click registry and location checks. Three adapters back those checks, all defaulting to a documented deterministic simulator so the panel always has a proposal to judge:
+
+| Check | Port | Simulator default | Live adapter |
+| --- | --- | --- | --- |
+| CAC registration | `CorporateRegistryVerifier` | `CAC_PROVIDER=simulated` | `CAC_PROVIDER=http` → `{CAC_API_BASE}/corporate-verification` |
+| FIRS TIN | `TaxIDVerifier` | `FIRS_PROVIDER=simulated` | `FIRS_PROVIDER=http` → `{FIRS_API_BASE}/tin-verification` |
+| Operating address | `LocationVerifier` | `LOCATION_PROVIDER=simulated` | `LOCATION_PROVIDER=http` → `{LOCATION_API_BASE}/location-verification` (`LOCATION_MAX_DISTANCE_M`, default 5000) |
+
+A proposal never verifies anything: it informs the reviewer's disposition, which is the only thing the gate reads. Replacing a submitted document clears the dispositions it carried (a certificate that has since been swapped out is not the one that was reviewed), while an identical resubmission keeps them. Every disposition, registry check and location check is audited (`kyb.document.reviewed`, `admin.kyb.documents.registry_checked`, `admin.kyb.documents.location_checked`).
 
 ### Cross-channel identity carry-over
 
@@ -456,9 +474,9 @@ Verify the signature before trusting any payload; recompute `HMAC-SHA256(secret,
 ## Manual acceptance script
 
 1. Message the configured WhatsApp number or Telegram bot. Use `/start` on Telegram.
-2. Enter a name and email.
+2. Send name and email (one message: `Ada Obi\nada@example.com`, or separately).
 3. Confirm the WhatsApp number or Telegram account.
-4. Choose **Register merchant**, complete the 6-digit email OTP, enter business name, category, and description, then confirm the request appears in `/admin/merchants`.
+4. Choose **Register merchant**, complete the 6-digit email OTP, then send business name, category, and description **in one message** (`Name: Ade's Kitchen` / `Category: Food` / `Description: ...` — a garbled message is re-asked by field without losing what was captured), then confirm the request appears in `/admin/merchants`.
 5. Choose **Make payment**. The flow opens on one page: type an instruction into the AI bar (or use the file/camera/mic icons), pick the merchant, and enter an amount from ₦100 to ₦100,000. If the merchant list is long, type a merchant name/category to search. Recently selected merchants appear first. If the merchant sells named services or tickets, tapping a payment option continues to an item page first — nothing is charged for an unchosen item.
 6. Tap one of the payment-option buttons on the page — **Pay … with card**, **Bank transfer**, or **Pay from wallet** — the amount and rails render together, no separate review hop.
 7. For card checkout, the button opens the secure Interswitch payment page directly; complete the provider flow there.

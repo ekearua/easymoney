@@ -23,6 +23,19 @@ type kybEvidenceOption struct {
 	IsRequired bool
 }
 
+// kybDocumentView is one submitted corporate document with the reviewer's
+// disposition and any third-party proposal, as the KYB console shows it.
+type kybDocumentView struct {
+	Key          string
+	Label        string
+	Document     string
+	Status       string
+	Reviewer     string
+	Note         string
+	ReviewedAt   string
+	Verification string // "<provider> · <status>: <message>" or ""
+}
+
 // kybAdminRow is the per-merchant view for the KYB console.
 type kybAdminRow struct {
 	MerchantID        uuid.UUID
@@ -39,6 +52,13 @@ type kybAdminRow struct {
 	AdvanceEvidence   []string
 	AdvanceNote       string
 	AdvanceRequested  string
+
+	// Documents and the evidence tally the corporate hard gate reads.
+	Documents      []kybDocumentView
+	SubmittedCount int
+	VerifiedCount  int
+	LocationStatus string
+	LocationText   string
 }
 
 // adminKYB renders the business identity ladder together with the editable
@@ -80,6 +100,15 @@ func (a *App) adminKYB(w http.ResponseWriter, r *http.Request) {
 			NextTier:     next,
 			Options:      businessEvidenceOptions(next),
 		}
+		docs, derr := a.store.KYBDocumentsByMerchant(r.Context(), p.MerchantID)
+		if derr != nil {
+			docs = store.KYBDocuments{}
+		}
+		row.Documents = kybDocumentViews(docs)
+		row.SubmittedCount = len(store.DeriveKYBEvidence(docs))
+		row.VerifiedCount = len(store.VerifiedKYBEvidence(docs))
+		row.LocationStatus = orPlaceholder(docs.LocationStatus, "not captured")
+		row.LocationText = kybLocationText(docs)
 		if p.AdvancementRequest != nil {
 			row.HasAdvanceRequest = true
 			row.AdvanceTier = p.AdvancementRequest.RequestedTier
@@ -174,13 +203,20 @@ func (a *App) adminKYBAdvanceRequestApprove(w http.ResponseWriter, r *http.Reque
 		IP:         sql.NullString{String: clientIP(r), Valid: true},
 	}
 	to := profile.AdvancementRequest.RequestedTier
-	evidence := profile.AdvancementRequest.Evidence
-	// Fall back to the documented evidence for the target if the merchant
-	// submitted nothing usable, so an approve still succeeds on a bare request.
-	if len(evidence) == 0 {
-		if required := store.BusinessEvidenceRequiredFor(to); len(required) != 0 {
-			evidence = required
+	// Evidence is what the reviewer ticked having checked it, never the tier's
+	// requirement list. Filling that list in here is what used to let a bare
+	// upgrade request — no documents at all — become an approved tier; the
+	// store's corporate hard gate also refuses a B1 advance whose documents a
+	// reviewer has not verified.
+	var evidence []string
+	for _, key := range r.Form["evidence"] {
+		if key != "" {
+			evidence = append(evidence, key)
 		}
+	}
+	if len(evidence) == 0 {
+		http.Redirect(w, r, "/admin/kyb?error="+url.QueryEscape("tick the evidence you verified before approving"), http.StatusSeeOther)
+		return
 	}
 	advanced, err := a.store.AdvanceKYBTier(r.Context(), merchantID, to, evidence, actor)
 	if err != nil {

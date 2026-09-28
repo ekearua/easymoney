@@ -187,7 +187,7 @@ var wfFlowLayouts = map[string]wfFlowLayout{
 	service.WebFlowOnboard:           {[]string{"Name", "Email", "Verify", "Details", "Confirm"}, map[string]int{"": 0, "name": 0, "email": 1, "code": 2, "details": 3, "confirm": 4, "done": 4}},
 	service.WebFlowIndividualUpgrade: {[]string{"Email", "Verify", "Profile", "Review", "CBN Tier 2", "CBN Tier 3"}, map[string]int{"": 0, "email": 0, "code": 1, "profile": 2, "review": 3, "tier2": 4, "tier3": 5, "done": 5}},
 	service.WebFlowMerchantRegister:  {[]string{"Email", "Verify", "Name", "Category", "About", "Review"}, map[string]int{"": 0, "email": 0, "code": 1, "name": 2, "category": 3, "description": 4, "review": 5, "done": 5}},
-	service.WebFlowKYBRequest:        {[]string{"Merchant", "Corporate", "Owners", "Compliance", "Note", "Review"}, map[string]int{"": 0, "merchant": 0, "corporate": 1, "owners": 2, "compliance": 3, "note": 4, "review": 5, "done": 5}},
+	service.WebFlowKYBRequest:        {[]string{"Merchant", "Corporate", "Owners", "Location", "Compliance", "Note", "Review"}, map[string]int{"": 0, "merchant": 0, "corporate": 1, "owners": 2, "location": 3, "compliance": 4, "note": 5, "review": 6, "done": 6}},
 	// Thrift: creating a group walks the contribution terms; joining is a
 	// two-step confirm of the group the customer was invited to.
 	service.WebFlowThriftCreate: {[]string{"Name", "Amount", "Frequency", "Size", "Review"}, map[string]int{"": 0, "name": 0, "amount": 1, "frequency": 2, "target": 3, "review": 4, "done": 4}},

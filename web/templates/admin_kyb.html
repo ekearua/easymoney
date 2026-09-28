@@ -54,6 +54,8 @@
         <div class="flex gap-4 mt-4 flex-wrap">
           <form method="post" action="/admin/kyb/{{.MerchantID}}/advance-request/approve">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <p class="muted">Tick what you verified, then approve:</p>
+            {{range .Options}}{{if .IsRequired}}<label class="block"><input type="checkbox" name="evidence" value="{{.Key}}"> {{.Label}}</label>{{end}}{{end}}
             <button class="btn btn-small" type="submit">Approve upgrade</button>
           </form>
           <form method="post" action="/admin/kyb/{{.MerchantID}}/advance-request/clear">
@@ -95,6 +97,52 @@
   </tr>
   {{else}}<tr><td colspan="9">No business KYB profiles yet. They are created when a merchant first applies a payout or views KYB status.</td></tr>{{end}}
   </tbody></table></div>
+</section>
+<section class="panel">
+  <h2>Corporate documents (B0 → B1)</h2>
+  <p class="muted">A tier moves only on evidence a reviewer has verified: a typed or uploaded document stays a claim until a disposition is recorded here. The registry and location checks are proposals for you to judge — they never verify anything by themselves.</p>
+  {{range .Profiles}}
+  {{$mid := .MerchantID}}
+  <div class="request-box">
+    <p><strong>{{if .MerchantName}}{{.MerchantName}}{{else}}<span class="mono">{{.MerchantID}}</span>{{end}}</strong> — tier <span class="mono">{{.Tier}}</span> · <strong>{{.VerifiedCount}}</strong>/5 verified, {{.SubmittedCount}} submitted</p>
+    {{if .LocationText}}<p class="muted">Reported position {{.LocationText}} · last check: {{.LocationStatus}}</p>{{end}}
+    <div class="table-wrap"><table><thead><tr><th>Document</th><th>Submitted</th><th>Review</th><th>Registry / location proposal</th><th>Action</th></tr></thead><tbody>
+    {{range .Documents}}<tr>
+      <td>{{.Label}}</td>
+      <td>{{if .Document}}<span class="mono">{{.Document}}</span>{{else}}<span class="muted">not submitted</span>{{end}}</td>
+      <td><span class="status {{if eq .Status "verified"}}ok{{else if eq .Status "rejected"}}failed{{else}}pending{{end}}">{{if .Status}}{{.Status}}{{else}}unreviewed{{end}}</span>{{if .Reviewer}}<br><small class="muted">{{.Reviewer}}</small>{{end}}{{if .Note}}<br><small class="muted">{{.Note}}</small>{{end}}</td>
+      <td>{{if .Verification}}<small>{{.Verification}}</small>{{else}}<span class="muted">—</span>{{end}}</td>
+      <td>{{if .Document}}
+        <form method="post" action="/admin/kyb/{{$mid}}/documents/review" class="inline-block">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="evidence" value="{{.Key}}">
+          <input type="hidden" name="decision" value="verify">
+          <button class="btn btn-small" type="submit">Verify</button>
+        </form>
+        <form method="post" action="/admin/kyb/{{$mid}}/documents/review" class="inline-block">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="evidence" value="{{.Key}}">
+          <input type="hidden" name="decision" value="reject">
+          <button class="btn btn-small btn-danger" type="submit">Reject</button>
+        </form>
+        {{else}}<span class="muted">—</span>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody></table></div>
+    <div class="flex gap-4 mt-4 flex-wrap">
+      <form method="post" action="/admin/kyb/{{$mid}}/documents/registry">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="btn btn-small" type="submit">Check CAC registry and TIN</button>
+      </form>
+      {{if .LocationText}}
+      <form method="post" action="/admin/kyb/{{$mid}}/documents/location">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="btn btn-small" type="submit">Re-check location</button>
+      </form>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
 </section>
 </main></body></html>
 {{end}}

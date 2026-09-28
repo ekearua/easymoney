@@ -35,7 +35,10 @@ import (
 	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
 	aiprovider "whatsapp-payment-demo/internal/providers/ai"
+	cacprovider "whatsapp-payment-demo/internal/providers/cac"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
+	firsprovider "whatsapp-payment-demo/internal/providers/firs"
+	geoprovider "whatsapp-payment-demo/internal/providers/geo"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
@@ -74,14 +77,21 @@ type App struct {
 	totpKey               []byte
 	sanctionsScreener     ports.SanctionsScreener
 	screeningProviderName string
-	smsSender             ports.SMSSender
-	eventBus              ports.EventBus
-	publisher             *service.EventPublisher
-	merchantWebhooks      *service.MerchantWebhookDeliverer
-	settlements           *service.SettlementService
-	refunds               *service.RefundService
-	disputes              *service.DisputeService
-	workerWg              sync.WaitGroup
+
+	// KYB document verification. These default to their deterministic
+	// simulators, so the admin review panel always has a proposal to show
+	// even when no registry or geocoding vendor is configured.
+	corporateRegistry ports.CorporateRegistryVerifier
+	taxIDVerifier     ports.TaxIDVerifier
+	locationVerifier  ports.LocationVerifier
+	smsSender         ports.SMSSender
+	eventBus          ports.EventBus
+	publisher         *service.EventPublisher
+	merchantWebhooks  *service.MerchantWebhookDeliverer
+	settlements       *service.SettlementService
+	refunds           *service.RefundService
+	disputes          *service.DisputeService
+	workerWg          sync.WaitGroup
 
 	// Transactional email, used for merchant confirmation and for emailed
 	// second-factor codes.
@@ -198,6 +208,52 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported SCREENING_PROVIDER %q", cfg.ScreeningProvider)
+	}
+	// Corporate-registry, tax-authority and location verifiers for the KYB
+	// document review panel. All three default to a deterministic simulator,
+	// so a missing vendor degrades to "a proposal a human must confirm"
+	// rather than blocking the flow.
+	var corporateRegistry ports.CorporateRegistryVerifier
+	switch strings.ToLower(cfg.CorporateRegistryProvider) {
+	case "", "simulated":
+		corporateRegistry = cacprovider.NewSimulated()
+	case "http":
+		if cfg.CorporateRegistryAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("CAC_API_BASE is required when CAC_PROVIDER=http")
+		}
+		corporateRegistry = cacprovider.NewHTTP(cfg.CorporateRegistryAPIBase, cfg.CorporateRegistryAPIKey, cfg.CorporateRegistryTimeout)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported CAC_PROVIDER %q", cfg.CorporateRegistryProvider)
+	}
+	var taxIDVerifier ports.TaxIDVerifier
+	switch strings.ToLower(cfg.TaxIDProvider) {
+	case "", "simulated":
+		taxIDVerifier = firsprovider.NewSimulated()
+	case "http":
+		if cfg.TaxIDAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("FIRS_API_BASE is required when FIRS_PROVIDER=http")
+		}
+		taxIDVerifier = firsprovider.NewHTTP(cfg.TaxIDAPIBase, cfg.TaxIDAPIKey, cfg.TaxIDTimeout)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported FIRS_PROVIDER %q", cfg.TaxIDProvider)
+	}
+	var locationVerifier ports.LocationVerifier
+	switch strings.ToLower(cfg.LocationProvider) {
+	case "", "simulated":
+		locationVerifier = geoprovider.NewSimulated()
+	case "http":
+		if cfg.LocationAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("LOCATION_API_BASE is required when LOCATION_PROVIDER=http")
+		}
+		locationVerifier = geoprovider.NewHTTP(cfg.LocationAPIBase, cfg.LocationAPIKey, cfg.LocationMaxDistanceM, cfg.LocationTimeout)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported LOCATION_PROVIDER %q", cfg.LocationProvider)
 	}
 	// Outbound SMS sender. "webhook" (the default) has no async sender: replies
 	// are returned synchronously from /webhooks/sms, and outbox delivery for
@@ -343,6 +399,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
+		corporateRegistry: corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
 		smsSender: smsSender,
 		eventBus:  eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
@@ -527,6 +584,7 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Get("/w/{token}", a.webFlowPage)
 	router.With(publicLimit).Post("/w/{token}", a.webFlowSubmit)
 	router.With(publicLimit).Post("/w/{token}/media", a.webFlowMediaUpload)
+	router.With(publicLimit).Post("/w/{token}/location", a.webFlowLocation)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
@@ -628,6 +686,9 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance-request/approve", a.adminKYBAdvanceRequestApprove)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance-request/clear", a.adminKYBAdvanceRequestClear)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/review", a.adminKYBReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/review", a.adminKYBDocumentReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/registry", a.adminKYBCheckRegistry)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/location", a.adminKYBCheckLocation)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/tier-limits/{id}", a.adminTierLimitUpdate)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
