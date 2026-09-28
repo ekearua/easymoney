@@ -308,12 +308,8 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleMerchantRegistrationEmail(ctx, message.Channel, recipient, user, session, input)
 	case "merchant_register_email_code":
 		return s.handleMerchantRegistrationEmailCode(ctx, message.Channel, recipient, user, session, input)
-	case "merchant_register_name":
-		return s.handleMerchantRegistrationName(ctx, message.Channel, recipient, user, session, input)
-	case "merchant_register_category":
-		return s.handleMerchantRegistrationCategory(ctx, message.Channel, recipient, user, session, input)
-	case "merchant_register_description":
-		return s.handleMerchantRegistrationDescription(ctx, message.Channel, recipient, user, session, input)
+	case "merchant_register_details", "merchant_register_name", "merchant_register_category", "merchant_register_description":
+		return s.handleMerchantRegistrationDetails(ctx, message.Channel, recipient, user, session, input)
 	case "individual_email":
 		return s.handleIndividualEmail(ctx, message.Channel, recipient, user, session, input)
 	case "individual_email_code":

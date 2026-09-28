@@ -165,15 +165,72 @@ func TestParseEDDDetails(t *testing.T) {
 	}
 }
 
-func TestMissingPartsWording(t *testing.T) {
+func TestParseNameAndEmail(t *testing.T) {
 	t.Parallel()
-	if got := missingParts([]string{"a"}); got != "Still need your a." {
-		t.Fatalf("single = %q", got)
+	// One-message pair: name first, email second (the onboarding prompt's
+	// example order).
+	p := ParseNameAndEmail("Ada Obi\nada.obi@example.com")
+	if p.Name != "Ada Obi" || p.Email != "ada.obi@example.com" {
+		t.Fatalf("pair = %+v", p)
 	}
-	if got := missingParts([]string{"a", "b"}); got != "Still need your a and b." {
-		t.Fatalf("two = %q", got)
+	// Labeled in either order; the email is stored lower-cased.
+	p = ParseNameAndEmail("Email: ADA@Example.com\nName: Ada Obi")
+	if p.Name != "Ada Obi" || p.Email != "ada@example.com" {
+		t.Fatalf("labeled = %+v", p)
 	}
-	if got := missingParts([]string{"a", "b", "c"}); got != "Still need your a, b and c." {
-		t.Fatalf("three = %q", got)
+	// A bare multi-word line is the name even without a label; a lone email
+	// line is the email.
+	p = ParseNameAndEmail("Ada Obi")
+	if p.Name != "Ada Obi" || p.Email != "" {
+		t.Fatalf("name only = %+v", p)
+	}
+	p = ParseNameAndEmail("ada@example.com")
+	if p.Name != "" || p.Email != "ada@example.com" {
+		t.Fatalf("email only = %+v", p)
+	}
+	// Two name-like lines: the first is the name, the second is not
+	// swallowed into it.
+	p = ParseNameAndEmail("Ada Obi\nAda Enterprises")
+	if p.Name != "Ada Obi" || p.Email != "" {
+		t.Fatalf("two names = %+v", p)
+	}
+}
+
+func TestParseMerchantRegistrationDetails(t *testing.T) {
+	t.Parallel()
+	// Labeled form (the prompt's example).
+	d := ParseMerchantRegistrationDetails("Name: Ade's Kitchen\nCategory: Food\nDescription: Home-cooked Nigerian meals delivered across Lagos")
+	if d.BusinessName != "Ade's Kitchen" || d.Category != "Food" || d.Description == "" {
+		t.Fatalf("labeled = %+v", d)
+	}
+	if !d.Complete() {
+		t.Fatalf("complete set reported missing: %v", d.Missing())
+	}
+	// Unlabeled: a vocabulary word line is the category, the first remaining
+	// line the name, the longest the description.
+	d = ParseMerchantRegistrationDetails("Ade's Kitchen\nfood\nHome-cooked Nigerian meals delivered across Lagos mainland daily")
+	if d.Category != "food" || d.BusinessName != "Ade's Kitchen" || !strings.Contains(d.Description, "Home-cooked") {
+		t.Fatalf("unlabeled = %+v", d)
+	}
+	// A bad category is kept as a value (the validator names it) rather
+	// than silently dropped.
+	d = ParseMerchantRegistrationDetails("Name: Ade's Kitchen\nCategory: X\nDescription: Home-cooked Nigerian meals delivered across Lagos")
+	if d.Category != "X" {
+		t.Fatalf("short category dropped = %+v", d)
+	}
+	if ValidateMerchantRegistrationDetails(d) != "business category" {
+		t.Fatalf("validator = %q, want business category", ValidateMerchantRegistrationDetails(d))
+	}
+	// The captured note names the business name for the re-ask echo, and
+	// the two invalid/missing fields are what the re-ask demands.
+	partial := ParseMerchantRegistrationDetails("Name: Kola Foods\nDescription: short")
+	captured := strings.Join(partial.Captured(), ", ")
+	if !strings.Contains(captured, "business name") {
+		t.Fatalf("captured = %q, want the business name", captured)
+	}
+	// The too-short description is invalid (validator names it), so only
+	// the business name is still owed.
+	if got := partial.Missing(); len(got) != 1 {
+		t.Fatalf("missing = %v, want one", got)
 	}
 }

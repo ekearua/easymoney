@@ -62,55 +62,67 @@ func (s *ConversationService) handleMerchantRegistrationEmailCode(ctx context.Co
 	if !ok {
 		return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
 	}
-	session.State = "merchant_register_name"
+	session.State = "merchant_register_details"
 	session.Data = map[string]string{"email": email}
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Email verified for merchant registration.\n\nWhat is the business or merchant name?")
+	return s.sendText(ctx, channel, recipient, "Email verified for merchant registration.\n\n"+merchantDetailsPrompt())
 }
 
-func (s *ConversationService) handleMerchantRegistrationName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	name := strings.TrimSpace(input)
-	if len([]rune(name)) < 2 || len([]rune(name)) > 80 {
-		return s.sendText(ctx, channel, recipient, "Please send the merchant or business name. It should be between 2 and 80 characters.")
+// handleMerchantRegistrationDetails collects the whole merchant KYB form
+// (business name, category, description) in one message, then creates the
+// registration request. The legacy name/category/description states route
+// here too, so sessions saved before the aggregation complete; anything
+// earlier prompts collected (session.Data) is merged in.
+func (s *ConversationService) handleMerchantRegistrationDetails(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	details := ParseMerchantRegistrationDetails(input)
+	if details.BusinessName == "" {
+		details.BusinessName = session.Data["business_name"]
 	}
-	if session.Data == nil {
-		session.Data = map[string]string{}
+	if details.Category == "" {
+		details.Category = session.Data["category"]
 	}
-	session.State = "merchant_register_category"
-	session.Data["business_name"] = name
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	if details.Description == "" {
+		details.Description = session.Data["description"]
 	}
-	return s.sendText(ctx, channel, recipient, "What category best describes this business? Examples: Food, Retail, Services, Health, Education, Logistics.")
-}
-
-func (s *ConversationService) handleMerchantRegistrationCategory(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	category := strings.TrimSpace(input)
-	if len([]rune(category)) < 2 || len([]rune(category)) > 50 {
-		return s.sendText(ctx, channel, recipient, "Please send a short business category, such as Food, Retail, Services, Health, Education, or Logistics.")
+	var problem string
+	if field := ValidateMerchantRegistrationDetails(details); field != "" {
+		switch field {
+		case "business name":
+			problem = "The business name must be between 2 and 80 characters."
+			details.BusinessName = ""
+		case "business category":
+			problem = "The category must be a short label like Food, Retail, Services, Health, Education, or Logistics (2-50 characters)."
+			details.Category = ""
+		case "description":
+			problem = "The description must be between 10 and 240 characters."
+			details.Description = ""
+		}
 	}
-	if session.Data == nil {
-		session.Data = map[string]string{}
+	session.Data["business_name"] = details.BusinessName
+	session.Data["category"] = details.Category
+	session.Data["description"] = details.Description
+	if !details.Complete() {
+		session.State = "merchant_register_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		msg := ""
+		if problem != "" {
+			msg = problem + "\n\n"
+		}
+		if note := capturedNote(details.Captured()); note != "" {
+			msg += note + "\n"
+		}
+		msg += missingParts(details.Missing())
+		msg += "\n\n" + merchantDetailsPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
 	}
-	session.State = "merchant_register_description"
-	session.Data["category"] = category
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient, "Briefly describe what the business sells or does. One sentence is enough.")
-}
-
-func (s *ConversationService) handleMerchantRegistrationDescription(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	description := strings.TrimSpace(input)
-	if len([]rune(description)) < 10 || len([]rune(description)) > 240 {
-		return s.sendText(ctx, channel, recipient, "Please send a description between 10 and 240 characters.")
-	}
-	if session.Data == nil || strings.TrimSpace(session.Data["business_name"]) == "" || strings.TrimSpace(session.Data["category"]) == "" || strings.TrimSpace(session.Data["email"]) == "" {
+	if session.Data == nil || strings.TrimSpace(session.Data["email"]) == "" {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That merchant registration session expired. Please start again.")
 	}
-	request, err := s.store.CreateMerchantRegistration(ctx, user.ID, session.Data["business_name"], session.Data["category"], description, session.Data["email"])
+	request, err := s.store.CreateMerchantRegistration(ctx, user.ID, details.BusinessName, details.Category, details.Description, session.Data["email"])
 	if err != nil {
 		return err
 	}
@@ -123,6 +135,14 @@ func (s *ConversationService) handleMerchantRegistrationDescription(ctx context.
 		return err
 	}
 	return s.sendMenu(ctx, channel, recipient, user)
+}
+
+// merchantDetailsPrompt is the aggregated merchant KYB prompt shown once
+// instead of the old one-message-per-field chain.
+func merchantDetailsPrompt() string {
+	return "Send these three for your merchant registration, in one message:\n\n" +
+		promptListing([]string{"Business or merchant name", "Category (e.g. Food, Retail, Services, Health, Education, Logistics)", "A short description of what the business sells or does"}) +
+		"Example:\nName: Ade's Kitchen\nCategory: Food\nDescription: Home-cooked Nigerian meals delivered across Lagos"
 }
 
 func (s *ConversationService) sendMerchantDashboard(ctx context.Context, channel, recipient string, user store.User) error {

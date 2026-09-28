@@ -1274,11 +1274,14 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 **Steps**
 
 1. Choose 'Become individual' / the CBN Tier 2 upgrade flow.
-2. Select a government-issued photo ID (PASSPORT, DRIVERS LICENCE, NATIONAL ID, VOTERS CARD).
-3. Submit the 11-digit BVN and NIN (verified through the NIN/BVN Portal adapter).
-4. Observe the KYC result.
+2. Verify the email with the 6-digit code (in chat: `RESEND` / `CHANGE EMAIL` supported).
+3. Reply with the profile details block in one message — name, DOB (YYYY-MM-DD), gender (MALE/FEMALE), address, occupation. A garbled or partial message must be re-asked naming exactly what is missing while echoing what was captured (e.g. 'Got your date of birth (1992-05-24)').
+4. Reply with the photo ID block in one message — type (PASSPORT, DRIVERS LICENCE, NATIONAL ID, VOTERS CARD) plus the ID number.
+5. Reply with the 11-digit BVN and NIN in one message; a short or missing number is re-asked without discarding the captured one.
+6. Reply with the Tier-3 block in one message — address proof plus source of funds — then complete the liveness turn.
+7. Observe the KYC result.
 
-**Expected Result:** KYC advances to L2 (approved individual, screening clear); the customer can now create/join thrift groups and send individual payments. Admin can review the case in /admin/kyc.
+**Expected Result:** KYC advances to L2 (approved individual, screening clear); the customer can now create/join thrift groups and send individual payments. Each aggregated step accepts one message for the whole block (labeled lines like 'Name: ...' or a line per fact), re-asks name the missing fields without discarding captured ones, and legacy single-field messages still route to the same handlers. Admin can review the case in /admin/kyc.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -1291,9 +1294,9 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 **Steps**
 
 1. Choose 'Create thrift'.
-2. Enter group name, fixed contribution amount, weekly/monthly frequency, and 2-12 target members.
+2. Enter group name, fixed contribution amount, weekly/monthly frequency, and 2-12 target members (all fields in one message is accepted: 'My Circle, 5000, weekly, 5').
 
-**Expected Result:** Group is created with an invite code (XG-THRIFT-...). Creator can share the invite code.
+**Expected Result:** Group is created with an invite code (XG-THRIFT-...). Creator can share the invite code. A single-field message still works step by step, and a mixed message that parses fully skips straight to review.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -1562,11 +1565,11 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 **Steps**
 
 1. Choose 'Register merchant' from the menu.
-2. Enter the 6-digit email OTP.
-3. Enter business name, category, description.
-4. Confirm the request.
+2. Enter the 6-digit email OTP (`RESEND` / `CHANGE EMAIL` supported in chat).
+3. Reply with all three details in one message — business name, category (Food, Retail, Services, Health, Education, Logistics, ...), and a short description (e.g. "Name: Ade's Kitchen / Category: Food / Description: Home-cooked Nigerian meals delivered across Lagos").
+4. Try a garbled message first ('A' alone): the re-ask must name the business-name rule without discarding the session. Then a partial message with a too-short description: the re-ask must echo the captured business name and demand only the missing fields.
 
-**Expected Result:** Request created with status awaiting_approval; appears in /admin/merchants. User becomes the merchant owner upon admin approval.
+**Expected Result:** The aggregated details message creates the request with status awaiting_approval; the confirmation shows the business name, category and reference; the customer lands back on the menu. Appears in /admin/merchants. User becomes the merchant owner upon admin approval. A wrong code at the OTP step gets the friendly re-ask; five wrong entries lock code entry.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

@@ -619,6 +619,196 @@ func (d EDDDetails) Captured() []string {
 // Complete reports whether the whole EDD set was supplied.
 func (d EDDDetails) Complete() bool { return d.AddressProof != "" && d.SourceOfFunds != "" }
 
+// MerchantRegistrationDetails is the merchant KYB form: business name,
+// category, and a short description.
+type MerchantRegistrationDetails struct {
+	BusinessName string
+	Category     string
+	Description  string
+}
+
+// merchantCategoryVocabulary lists the category examples the prompts use (plus
+// common near-certain words) so an unlabeled single word can be recognized as
+// the category.
+var merchantCategoryVocabulary = []string{
+	"food", "retail", "services", "health", "education", "logistics",
+	"fashion", "beauty", "electronics", "grocery", "restaurant", "salon",
+}
+
+// ParseMerchantRegistrationDetails reads business name, category and
+// description from one labeled or line-per-fact message. Labeled fields win;
+// a lone category-vocabulary word is the category, the first remaining short
+// line the business name, and the longest remaining line the description.
+func ParseMerchantRegistrationDetails(input string) MerchantRegistrationDetails {
+	var out MerchantRegistrationDetails
+	var rest []string
+	for _, raw := range strings.Split(input, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		value := stripLabel(line)
+		switch {
+		case strings.HasPrefix(lower, "name"), strings.HasPrefix(lower, "business"), strings.HasPrefix(lower, "merchant"):
+			if out.BusinessName == "" {
+				out.BusinessName = value
+			}
+		case strings.HasPrefix(lower, "category"), strings.HasPrefix(lower, "type"):
+			if out.Category == "" {
+				out.Category = value
+			}
+		case strings.HasPrefix(lower, "description"), strings.HasPrefix(lower, "about"), strings.HasPrefix(lower, "what"):
+			if out.Description == "" {
+				out.Description = value
+			}
+		default:
+			rest = append(rest, line)
+		}
+	}
+	// Unlabeled lines: a vocabulary word is the category; of the rest, the
+	// first goes to the name (if unset) and the longest to the description.
+	var nameCandidates, descriptionCandidates []string
+	for _, line := range rest {
+		if out.Category == "" && merchantCategoryFor(line) != "" {
+			out.Category = merchantCategoryFor(line)
+			continue
+		}
+		nameCandidates = append(nameCandidates, line)
+	}
+	for _, line := range nameCandidates {
+		if out.BusinessName == "" {
+			out.BusinessName = line
+			continue
+		}
+		descriptionCandidates = append(descriptionCandidates, line)
+	}
+	if out.Description == "" {
+		best := ""
+		for _, line := range descriptionCandidates {
+			if len([]rune(line)) > len([]rune(best)) {
+				best = line
+			}
+		}
+		out.Description = best
+	}
+	return out
+}
+
+// merchantCategoryFor returns the canonical category word when the line is a
+// lone vocabulary word (case-insensitive), else "".
+func merchantCategoryFor(line string) string {
+	word := strings.ToLower(strings.TrimSpace(strings.TrimSuffix(stripLabel(line), ":")))
+	for _, known := range merchantCategoryVocabulary {
+		if word == known {
+			return word
+		}
+	}
+	return ""
+}
+
+// Missing reports which KYB parts are still owed (missingParts adds the
+// "Still need your ..." wrapper, so the field names stay bare).
+func (d MerchantRegistrationDetails) Missing() []string {
+	var missing []string
+	if d.BusinessName == "" {
+		missing = append(missing, "business name")
+	}
+	if d.Category == "" {
+		missing = append(missing, "business category (e.g. Food, Retail, Services)")
+	}
+	if d.Description == "" {
+		missing = append(missing, "short description of what the business sells or does")
+	}
+	return missing
+}
+
+// Captured lists the parts supplied, for the re-ask echo.
+func (d MerchantRegistrationDetails) Captured() []string {
+	var captured []string
+	if d.BusinessName != "" {
+		captured = append(captured, "the business name")
+	}
+	if d.Category != "" {
+		captured = append(captured, "the category ("+d.Category+")")
+	}
+	if d.Description != "" {
+		captured = append(captured, "the description")
+	}
+	return captured
+}
+
+// Complete reports whether the whole KYB set was supplied.
+func (d MerchantRegistrationDetails) Complete() bool { return len(d.Missing()) == 0 }
+
+// ValidateMerchantRegistrationDetails applies the existing per-field rules
+// (name 2-80, category 2-50, description 10-240). Returns the offending field
+// name, or "" when everything is valid.
+func ValidateMerchantRegistrationDetails(d MerchantRegistrationDetails) string {
+	if d.BusinessName != "" {
+		if n := len([]rune(d.BusinessName)); n < 2 || n > 80 {
+			return "business name"
+		}
+	}
+	if d.Category != "" {
+		if n := len([]rune(d.Category)); n < 2 || n > 50 {
+			return "business category"
+		}
+	}
+	if d.Description != "" {
+		if n := len([]rune(d.Description)); n < 10 || n > 240 {
+			return "description"
+		}
+	}
+	return ""
+}
+
+// NameAndEmail is the onboarding identity pair: display name and the email
+// to verify.
+type NameAndEmail struct {
+	Name  string
+	Email string
+}
+
+// ParseNameAndEmail reads the display name and the email from one message
+// (labeled or line-per-fact), so onboarding can collect both in a single turn
+// before the verification send. Either part may be absent.
+func ParseNameAndEmail(input string) NameAndEmail {
+	var out NameAndEmail
+	for _, raw := range strings.Split(input, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "email") {
+			if candidate := strings.TrimSpace(stripLabel(line)); out.Email == "" && isPlausibleEmail(candidate) {
+				out.Email = strings.ToLower(candidate)
+				continue
+			}
+		}
+		if candidate := strings.TrimSpace(stripLabel(line)); isPlausibleEmail(candidate) {
+			if out.Email == "" {
+				out.Email = strings.ToLower(candidate)
+			}
+			continue
+		}
+		if out.Name == "" {
+			// stripLabel drops a "Name:" style prefix so the stored display
+			// name never carries the label; a plain unlabeled line round-trips.
+			out.Name = stripLabel(line)
+		}
+	}
+	return out
+}
+
+// isPlausibleEmail is the lightweight email shape check shared by the
+// aggregated parsers (full validation stays with the callers).
+func isPlausibleEmail(s string) bool {
+	at := strings.Index(s, "@")
+	return at > 0 && at < len(s)-1 && len(s) <= 254 && !strings.ContainsAny(s, " \t")
+}
+
 // stripLabel removes a trailing "field:" label, returning just the value.
 func stripLabel(line string) string {
 	if i := strings.Index(line, ":"); i >= 0 {

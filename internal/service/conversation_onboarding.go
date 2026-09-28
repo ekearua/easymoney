@@ -91,20 +91,77 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return s.sendText(ctx, channel, recipient,
 			"Welcome to "+s.cfg.AppName+" — a simple way to pay merchants.\n\nWhat name should we use on your receipts?")
 	}
-	if session.State == "onboard_name" {
-		name := strings.TrimSpace(input)
-		if len(name) < 2 || len(name) > 80 {
-			return s.sendText(ctx, channel, recipient, "Please send the name you would like on receipts. It should be between 2 and 80 characters.")
+	if session.State == "onboard_name" || session.State == "onboard_email" {
+		// Aggregated identity pair: one message for the display name and the
+		// email to verify. A name-only message still advances (email comes
+		// next), so customers who prefer smaller steps are not blocked.
+		parts := ParseNameAndEmail(input)
+		name := parts.Name
+		email := parts.Email
+		if name == "" && session.State == "onboard_email" {
+			name = session.Data["name"]
 		}
-		if err := s.store.UpdateUserName(ctx, user.ID, name); err != nil {
-			return err
+		var problem string
+		if name == "" {
+			problem = "Please send the name you would like on receipts. It should be between 2 and 80 characters."
+			name = ""
+		} else if n := len([]rune(name)); n < 2 || n > 80 {
+			problem = "Please send the name you would like on receipts. It should be between 2 and 80 characters."
+			name = ""
 		}
-		session.State = "onboard_email"
-		session.Data = map[string]string{"name": name}
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
+		if email != "" {
+			if _, err := mail.ParseAddress(email); err != nil {
+				problem = "That email doesn't look quite right. Please send a valid address, like name@example.com."
+				email = ""
+			}
 		}
-		return s.sendText(ctx, channel, recipient, "Thanks. What email address should we use for checkout and receipts? We'll send it a 6-digit confirmation code.")
+		if name != "" && session.State == "onboard_name" {
+			if err := s.store.UpdateUserName(ctx, user.ID, name); err != nil {
+				return err
+			}
+		}
+		if name != "" && email != "" {
+			// Both captured: save the email and send the code in one turn.
+			if err := s.store.UpdateUserEmail(ctx, user.ID, strings.ToLower(email)); err != nil {
+				return err
+			}
+			session.Data["name"] = name
+			session.Data["email"] = strings.ToLower(email)
+			session.State = "onboard_email_code"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			if err := s.sendText(ctx, channel, recipient, "Thanks, "+name+". Sending your confirmation code now."); err != nil {
+				return err
+			}
+			return s.startEmailConfirmation(ctx, channel, recipient, user.ID, strings.ToLower(email))
+		}
+		if name != "" {
+			session.State = "onboard_email"
+			session.Data = map[string]string{"name": name}
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			msg := ""
+			if problem != "" {
+				msg = problem + "\n\n"
+			}
+			msg += "Thanks, " + name + ". Now send the email address to use for checkout and receipts, together with your name in one message if you like."
+			return s.sendText(ctx, channel, recipient, msg)
+		}
+		if email != "" {
+			// Email only (a name is already on file from a previous message).
+			if session.Data["name"] == "" {
+				problem = "Please start with the name you would like on receipts, then the email — both in one message is fine."
+				email = ""
+			}
+		}
+		msg := ""
+		if problem != "" {
+			msg = problem + "\n\n"
+		}
+		msg += nameAndEmailPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
 	}
 	// The emailed code is actually verified here (bcrypt-hashed codes,
 	// 5-attempt lockout and a resend cooldown live in VerifyEmailCode and
@@ -217,6 +274,14 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return err
 	}
 	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+}
+
+// nameAndEmailPrompt is the aggregated onboarding identity prompt: the
+// display name and the email to verify, in one message.
+func nameAndEmailPrompt() string {
+	return "Welcome to " + "Xego" + " — let's get your name and email in one message.\n\n" +
+		promptListing([]string{"The name for your receipts", "Your email (we'll send it a 6-digit confirmation code)"}) +
+		"Example:\nName: Ada Obi\nEmail: ada@example.com"
 }
 
 // tier1DetailsPrompt is the aggregated CBN Tier 1 collection prompt shown
