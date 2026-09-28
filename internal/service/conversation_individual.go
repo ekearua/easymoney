@@ -87,71 +87,78 @@ func (s *ConversationService) handleIndividualEmailCode(ctx context.Context, cha
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Email verified.\n\nSend your legal name for this demo individual profile.")
+	return s.sendText(ctx, channel, recipient, "Email verified.\n\n"+individualDetailsPrompt())
 }
 
-func (s *ConversationService) handleIndividualLegalName(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	name := strings.TrimSpace(input)
-	if len([]rune(name)) < 3 || len([]rune(name)) > 100 {
-		return s.sendText(ctx, channel, recipient, "Send your legal name, between 3 and 100 characters.")
+// handleIndividualDetails collects the whole individual-profile form (legal
+// name, DOB, gender, address, occupation) in one message, then runs the same
+// screening and L1 advance the old per-field chain did. The legacy
+// single-field states route here too, so sessions saved before the
+// aggregation complete; anything earlier prompts collected (session.Data) is
+// merged in, so a partial re-ask never retypes a captured field.
+func (s *ConversationService) handleIndividualDetails(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	details := ParseIndividualProfileDetails(input)
+	if details.LegalName == "" {
+		details.LegalName = session.Data["legal_name"]
 	}
-	session.State = "individual_dob"
-	session.Data["legal_name"] = name
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	if details.DOB == "" {
+		details.DOB = session.Data["dob"]
 	}
-	return s.sendText(ctx, channel, recipient, "Send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
-}
-
-func (s *ConversationService) handleIndividualDOB(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	dob, err := time.Parse("2006-01-02", strings.TrimSpace(input))
-	if err != nil || dob.After(time.Now().AddDate(-18, 0, 0)) {
-		return s.sendText(ctx, channel, recipient, "Send a valid date of birth as YYYY-MM-DD. For this demo, the individual must be at least 18.")
+	if details.Gender == "" {
+		details.Gender = session.Data["gender"]
 	}
-	session.State = "individual_gender"
-	session.Data["dob"] = dob.Format("2006-01-02")
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	if details.Address == "" {
+		details.Address = session.Data["address"]
 	}
-	return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
-}
-
-func (s *ConversationService) handleIndividualGender(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	gender := strings.ToLower(strings.TrimSpace(input))
-	if gender != "male" && gender != "female" {
-		return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
+	if details.Occupation == "" {
+		details.Occupation = session.Data["occupation"]
 	}
-	session.State = "individual_address"
-	session.Data["gender"] = gender
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	var problem string
+	if field := ValidateIndividualProfileDetails(details); field != "" {
+		switch field {
+		case "legal name":
+			problem = "The legal name must be between 3 and 100 characters."
+			details.LegalName = ""
+		case "date of birth":
+			problem = "The date of birth must be a real date in YYYY-MM-DD format, and for this demo the individual must be at least 18."
+			details.DOB = ""
+		case "gender":
+			problem = "Gender must be MALE or FEMALE."
+			details.Gender = ""
+		case "residential address":
+			problem = "The residential address must be between 10 and 240 characters."
+			details.Address = ""
+		case "occupation":
+			problem = "The occupation must be between 2 and 80 characters."
+			details.Occupation = ""
+		}
 	}
-	return s.sendText(ctx, channel, recipient, "Send your residential address for the demo profile.")
-}
-
-func (s *ConversationService) handleIndividualAddress(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	address := strings.TrimSpace(input)
-	if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
-		return s.sendText(ctx, channel, recipient, "Send an address between 10 and 240 characters.")
+	session.Data["legal_name"] = details.LegalName
+	session.Data["dob"] = details.DOB
+	session.Data["gender"] = details.Gender
+	session.Data["address"] = details.Address
+	session.Data["occupation"] = details.Occupation
+	if !details.Complete() {
+		session.State = "individual_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		msg := ""
+		if problem != "" {
+			msg = problem + "\n\n"
+		}
+		if note := capturedNote(details.Captured()); note != "" {
+			msg += note + "\n"
+		}
+		msg += missingParts(details.Missing())
+		msg += "\n\n" + individualDetailsPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
 	}
-	session.State = "individual_occupation"
-	session.Data["address"] = address
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient, "What is your occupation?")
-}
-
-func (s *ConversationService) handleIndividualOccupation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	occupation := strings.TrimSpace(input)
-	if len([]rune(occupation)) < 2 || len([]rune(occupation)) > 80 {
-		return s.sendText(ctx, channel, recipient, "Send an occupation between 2 and 80 characters.")
-	}
-	dob, err := time.Parse("2006-01-02", session.Data["dob"])
+	dob, err := time.Parse("2006-01-02", details.DOB)
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That individual onboarding session expired. Please start again.")
 	}
-	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, session.Data["legal_name"], dob, session.Data["address"], occupation, session.Data["gender"]); err != nil {
+	if _, err := s.store.UpsertIndividualProfile(ctx, user.ID, details.LegalName, dob, details.Address, details.Occupation, details.Gender); err != nil {
 		return err
 	}
 	decision, err := s.screenIndividual(ctx, user, session)
@@ -177,11 +184,26 @@ func (s *ConversationService) handleIndividualOccupation(ctx context.Context, ch
 	if _, err := s.store.RecomputeRiskScore(ctx, user.ID); err != nil {
 		return err
 	}
-	session.State = "individual_id_type"
+	session.State = "individual_id_details"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at CBN Tier 1 (basic details on file).\n\nTo reach CBN Tier 2, we need a government-issued photo ID, your BVN, and your NIN.\n\nWhich photo ID do you have? Send PASSPORT, DRIVERS LICENCE, NATIONAL ID, or VOTERS CARD.")
+	return s.sendText(ctx, channel, recipient, "Your Xego individual profile is approved at CBN Tier 1 (basic details on file).\n\nTo reach CBN Tier 2, we need a government-issued photo ID, your BVN, and your NIN.\n\n"+individualIDDetailsPrompt())
+}
+
+// individualDetailsPrompt is the aggregated individual-profile collection
+// prompt shown once instead of the old one-message-per-field chain.
+func individualDetailsPrompt() string {
+	return "Send these five for your individual profile, in one message:\n\n" +
+		promptListing([]string{"Legal name", "Date of birth as YYYY-MM-DD", "Gender: MALE or FEMALE", "Residential address", "Occupation"}) +
+		"Example:\nName: Ada Obi\nDOB: 1992-05-24\nGender: Female\n14 Admiralty Way, Lekki, Lagos\nOccupation: Software engineer"
+}
+
+// individualIDDetailsPrompt is the aggregated photo-ID prompt.
+func individualIDDetailsPrompt() string {
+	return "Send your photo ID type and its number in one message.\n\n" +
+		promptListing([]string{"ID type: PASSPORT, DRIVERS LICENCE, NATIONAL ID, or VOTERS CARD", "The ID number printed on the card"}) +
+		"Example:\nID type: Passport\nID number: A12345678"
 }
 
 func (s *ConversationService) screenIndividual(ctx context.Context, user store.User, session store.Session) (string, error) {
@@ -205,71 +227,131 @@ func (s *ConversationService) screenIndividual(ctx context.Context, user store.U
 	return result.Decision, nil
 }
 
-func (s *ConversationService) handleIndividualIDType(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	kind := canonicalPhotoIDType(input)
-	if kind == "" {
-		return s.sendText(ctx, channel, recipient, "Send one of: PASSPORT, DRIVERS LICENCE, NATIONAL ID, or VOTERS CARD.")
+// handleIndividualIDDetails collects the photo ID type and number in one
+// message and records the government_photo_id evidence. The legacy
+// id_type/id_number states route here too, so sessions saved before the
+// aggregation complete.
+func (s *ConversationService) handleIndividualIDDetails(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	details := ParsePhotoIDDetails(input)
+	if details.IDType == "" {
+		details.IDType = session.Data["photo_id_type"]
 	}
-	session.State = "individual_id_number"
-	session.Data["photo_id_type"] = kind
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	if details.IDNumber == "" {
+		details.IDNumber = session.Data["photo_id_number"]
 	}
-	return s.sendText(ctx, channel, recipient, "Send the ID number printed on your "+photoIDTypeLabel(kind)+".")
-}
-
-func (s *ConversationService) handleIndividualIDNumber(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	number := strings.TrimSpace(input)
-	if len([]rune(number)) < 6 || len([]rune(number)) > 25 {
-		return s.sendText(ctx, channel, recipient, "Send the full ID number printed on your card, between 6 and 25 characters.")
+	session.Data["photo_id_type"] = details.IDType
+	session.Data["photo_id_number"] = details.IDNumber
+	if details.IDNumber != "" && (len([]rune(details.IDNumber)) < 6 || len([]rune(details.IDNumber)) > 25) {
+		problem := "The ID number must be between 6 and 25 characters."
+		details.IDNumber = ""
+		session.Data["photo_id_number"] = ""
+		session.State = "individual_id_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		return s.sendText(ctx, channel, recipient, problem+"\n\n"+individualIDDetailsPrompt())
+	}
+	if !details.Complete() {
+		session.State = "individual_id_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		msg := ""
+		if note := capturedNote(details.Captured()); note != "" {
+			msg += note + "\n"
+		}
+		msg += missingParts(details.Missing()) + "\n\n" + individualIDDetailsPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
 	}
 	if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
 		UserID:           user.ID,
 		VerificationType: kyc.EvGovPhotoID,
 		Status:           "completed",
 		Provider:         "simulated",
-		Result:           map[string]any{"id_type": session.Data["photo_id_type"], "id_number": number},
+		Result:           map[string]any{"id_type": details.IDType, "id_number": details.IDNumber},
 	}); err != nil {
 		return err
 	}
-	session.State = "individual_bvn"
-	session.Data["photo_id_number"] = number
+	session.State = "individual_bvn_nin"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Now send your 11-digit Bank Verification Number (BVN).")
+	return s.sendText(ctx, channel, recipient, "Photo ID recorded.\n\n"+bvnNinPrompt())
 }
 
-func (s *ConversationService) handleIndividualBVN(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	number := strings.ReplaceAll(strings.TrimSpace(input), " ", "")
-	if len(number) != 11 || strings.Trim(number, "0123456789") != "" {
-		return s.sendText(ctx, channel, recipient, "That BVN is not 11 digits. Send your 11-digit BVN, like: 22222222222")
-	}
-	message, err := s.verifyIndividualID(ctx, user, session, "bvn", number)
-	if err != nil {
-		return s.sendText(ctx, channel, recipient, err.Error())
-	}
-	if message != "" {
-		return s.sendText(ctx, channel, recipient, message)
-	}
-	session.State = "individual_nin"
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
-	}
-	return s.sendText(ctx, channel, recipient, "Your BVN is verified.\n\nNow send your 11-digit National Identification Number (NIN).")
+// bvnNinPrompt is the aggregated electronic-identity prompt: both 11-digit
+// numbers in one message, either order.
+func bvnNinPrompt() string {
+	return "Send your 11-digit Bank Verification Number (BVN) and your 11-digit National Identification Number (NIN) in one message.\n\nExample:\nBVN: 22222222222\nNIN: 12345678901"
 }
 
-func (s *ConversationService) handleIndividualNIN(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	number := strings.ReplaceAll(strings.TrimSpace(input), " ", "")
-	if len(number) != 11 || strings.Trim(number, "0123456789") != "" {
-		return s.sendText(ctx, channel, recipient, "That NIN is not 11 digits. Send your 11-digit NIN, like: 12345678901")
+// handleIndividualBVNNIN collects both 11-digit numbers in one message and
+// verifies each through the electronic identity provider, recording the same
+// bvn_verified/nin_verified evidence the old two-step chain did. Numbers
+// already verified earlier in the session are not re-verified.
+func (s *ConversationService) handleIndividualBVNNIN(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	details := ParseBVNNIN(input)
+	if details.BVN == "" {
+		details.BVN = session.Data["bvn"]
 	}
-	message, err := s.verifyIndividualID(ctx, user, session, "nin", number)
-	if err != nil {
-		return s.sendText(ctx, channel, recipient, err.Error())
+	if details.NIN == "" {
+		details.NIN = session.Data["nin"]
 	}
-	if message != "" {
-		return s.sendText(ctx, channel, recipient, message)
+	var problems []string
+	for _, check := range []struct{ label, number string }{{"BVN", details.BVN}, {"NIN", details.NIN}} {
+		if check.number != "" && (len(check.number) != 11 || strings.Trim(check.number, "0123456789") != "") {
+			problems = append(problems, "The "+check.label+" must be exactly 11 digits.")
+			if check.label == "BVN" {
+				details.BVN = ""
+			} else {
+				details.NIN = ""
+			}
+		}
+	}
+	session.Data["bvn"] = details.BVN
+	session.Data["nin"] = details.NIN
+	if !details.Complete() {
+		session.State = "individual_bvn_nin"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		msg := ""
+		for _, problem := range problems {
+			msg += problem + "\n"
+		}
+		if note := capturedNote(details.Captured()); note != "" {
+			msg += note + "\n"
+		}
+		msg += missingParts(details.Missing()) + "\n\n" + bvnNinPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
+	}
+	if session.Data["bvn_verified"] != "1" {
+		message, err := s.verifyIndividualID(ctx, user, session, "bvn", details.BVN)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, err.Error())
+		}
+		if message != "" {
+			session.State = "individual_bvn_nin"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, message+"\n\n"+bvnNinPrompt())
+		}
+		session.Data["bvn_verified"] = "1"
+	}
+	if session.Data["nin_verified"] != "1" {
+		message, err := s.verifyIndividualID(ctx, user, session, "nin", details.NIN)
+		if err != nil {
+			return s.sendText(ctx, channel, recipient, err.Error())
+		}
+		if message != "" {
+			session.State = "individual_bvn_nin"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			return s.sendText(ctx, channel, recipient, message+"\n\n"+bvnNinPrompt())
+		}
+		session.Data["nin_verified"] = "1"
 	}
 	if _, err := s.store.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL2,
 		[]string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified}, nil); err != nil {
@@ -278,11 +360,11 @@ func (s *ConversationService) handleIndividualNIN(ctx context.Context, channel, 
 	if _, err := s.store.RecomputeRiskScore(ctx, user.ID); err != nil {
 		return err
 	}
-	session.State = "individual_address_proof"
+	session.State = "individual_edd_details"
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "Your NIN is verified. Your Xego individual profile is now approved at CBN Tier 2.\n\nTo reach CBN Tier 3, we need a structural proof of your residential address and an enhanced due-diligence check.\n\nSend a recent utility bill reference (like a prepaid meter or account number), or type SELF-DECLARED.")
+	return s.sendText(ctx, channel, recipient, "Your BVN and NIN are verified. Your Xego individual profile is now approved at CBN Tier 2.\n\nTo reach CBN Tier 3, we need a structural proof of your residential address and an enhanced due-diligence check.\n\n"+eddDetailsPrompt())
 }
 
 // verifyIndividualID verifies one electronic identity (BVN or NIN) against the
@@ -323,41 +405,60 @@ func (s *ConversationService) verifyIndividualID(ctx context.Context, user store
 	}
 }
 
-func (s *ConversationService) handleIndividualAddressProof(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	ref := strings.TrimSpace(input)
-	if len([]rune(ref)) < 4 {
-		return s.sendText(ctx, channel, recipient, "Send a utility bill reference or type SELF-DECLARED.")
+// handleIndividualEDDDetails collects the Tier 3 enhanced-due-diligence set
+// (address-proof reference or SELF-DECLARED, plus the source of funds) in one
+// message and records the same evidence rows the old two-step chain did. The
+// legacy address_proof/source_of_funds states route here too.
+func (s *ConversationService) handleIndividualEDDDetails(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
+	details := ParseEDDDetails(input)
+	if details.AddressProof == "" {
+		details.AddressProof = session.Data["address_proof"]
 	}
-	if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
-		UserID:           user.ID,
-		VerificationType: kyc.EvAddressProof,
-		Status:           "completed",
-		Provider:         "simulated",
-		Result:           map[string]any{"reference": ref, "address": session.Data["address"]},
-	}); err != nil {
-		return err
+	if details.SourceOfFunds == "" {
+		details.SourceOfFunds = session.Data["source_of_funds"]
 	}
-	session.State = "individual_source_of_funds"
-	session.Data["address_proof"] = ref
-	if err := s.saveSession(ctx, session); err != nil {
-		return err
+	session.Data["address_proof"] = details.AddressProof
+	session.Data["source_of_funds"] = details.SourceOfFunds
+	if !details.Complete() {
+		session.State = "individual_edd_details"
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		msg := ""
+		if note := capturedNote(details.Captured()); note != "" {
+			msg += note + "\n"
+		}
+		msg += missingParts(details.Missing()) + "\n\n" + eddDetailsPrompt()
+		return s.sendText(ctx, channel, recipient, msg)
 	}
-	return s.sendText(ctx, channel, recipient, "Address proof recorded.\n\nSelect your primary source of funds: SALARY, BUSINESS, INVESTMENTS, GIFTS, or OTHER.")
-}
-
-func (s *ConversationService) handleIndividualSourceOfFunds(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
-	source := strings.ToUpper(strings.TrimSpace(input))
-	switch source {
-	case "SALARY", "BUSINESS", "INVESTMENTS", "GIFTS", "OTHER":
-	default:
-		return s.sendText(ctx, channel, recipient, "Send one of: SALARY, BUSINESS, INVESTMENTS, GIFTS, or OTHER.")
+	if session.Data["address_proof_recorded"] != "1" {
+		if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
+			UserID:           user.ID,
+			VerificationType: kyc.EvAddressProof,
+			Status:           "completed",
+			Provider:         "simulated",
+			Result:           map[string]any{"reference": details.AddressProof, "address": session.Data["address"]},
+		}); err != nil {
+			return err
+		}
+		session.Data["address_proof_recorded"] = "1"
 	}
 	session.State = "individual_liveness"
-	session.Data["source_of_funds"] = source
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendText(ctx, channel, recipient, "To finish the enhanced due-diligence check, confirm you are completing this verification yourself in real time.\n\nType YES to confirm.")
+	return s.sendText(ctx, channel, recipient, "Address proof and source of funds recorded.\n\n"+eddLivenessPrompt())
+}
+
+// eddDetailsPrompt is the aggregated Tier 3 EDD prompt.
+func eddDetailsPrompt() string {
+	return "Send a recent utility bill reference (like a prepaid meter or account number), or SELF-DECLARED, together with your primary source of funds, in one message.\n\nExample:\nUtility ref: 12345678901\nSource of funds: SALARY"
+}
+
+// eddLivenessPrompt is the real-time self-attestation, kept deliberately as
+// its own single-purpose turn.
+func eddLivenessPrompt() string {
+	return "To finish the enhanced due-diligence check, confirm you are completing this verification yourself in real time.\n\nType YES to confirm."
 }
 
 func (s *ConversationService) handleIndividualLiveness(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {

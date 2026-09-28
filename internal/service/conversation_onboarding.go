@@ -82,8 +82,8 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowOnboard, "", "", nil)
 	}
 	if session.State != "onboard_name" && session.State != "onboard_email" && session.State != "onboard_email_code" &&
-		session.State != "onboard_dob" && session.State != "onboard_gender" && session.State != "onboard_address" &&
-		session.State != "onboard_confirm_account" {
+		session.State != "onboard_details" && session.State != "onboard_dob" && session.State != "onboard_gender" &&
+		session.State != "onboard_address" && session.State != "onboard_confirm_account" {
 		session.State = "onboard_name"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
@@ -136,50 +136,69 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		if !ok {
 			return s.sendText(ctx, channel, recipient, "That code is incorrect or has expired. Please try again, type RESEND, or type CHANGE EMAIL.")
 		}
-		session.State = "onboard_dob"
+		session.State = "onboard_details"
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
 		if err := s.sendText(ctx, channel, recipient, "Email verified."); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "As part of the CBN Tier 1 check, send your date of birth as YYYY-MM-DD. Example: 1992-05-24")
+		return s.sendText(ctx, channel, recipient, tier1DetailsPrompt())
 	}
-	if session.State == "onboard_dob" {
-		dob, err := time.Parse("2006-01-02", strings.TrimSpace(input))
-		if err != nil || dob.After(time.Now().AddDate(-18, 0, 0)) {
-			return s.sendText(ctx, channel, recipient, "Send a valid date of birth as YYYY-MM-DD. For this demo, you must be at least 18.")
+	if session.State == "onboard_details" || session.State == "onboard_dob" ||
+		session.State == "onboard_gender" || session.State == "onboard_address" {
+		// One aggregated message for the CBN Tier 1 self-declared set (DOB,
+		// gender, address). Legacy single-field states route here too, so a
+		// session saved before the aggregation still completes; anything the
+		// earlier prompts already collected (session.Data) is merged in.
+		details := ParseTier1Details(input)
+		if details.DOB == "" {
+			details.DOB = session.Data["dob"]
 		}
-		session.State = "onboard_gender"
-		session.Data["dob"] = dob.Format("2006-01-02")
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
+		if details.Gender == "" {
+			details.Gender = session.Data["gender"]
 		}
-		return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
-	}
-	if session.State == "onboard_gender" {
-		gender := strings.ToLower(strings.TrimSpace(input))
-		if gender != "male" && gender != "female" {
-			return s.sendText(ctx, channel, recipient, "Send your gender: MALE or FEMALE.")
+		if details.Address == "" {
+			details.Address = session.Data["address"]
 		}
-		session.State = "onboard_address"
-		session.Data["gender"] = gender
-		if err := s.saveSession(ctx, session); err != nil {
-			return err
+		var problem string
+		if field := ValidateTier1Details(details); field != "" {
+			switch field {
+			case "date of birth":
+				problem = "The date of birth must be a real date in YYYY-MM-DD format, and for this demo you must be at least 18."
+				details.DOB = ""
+			case "gender":
+				problem = "Gender must be MALE or FEMALE."
+				details.Gender = ""
+			case "residential address":
+				problem = "The residential address must be between 10 and 240 characters."
+				details.Address = ""
+			}
 		}
-		return s.sendText(ctx, channel, recipient, "Send your residential address for the demo profile.")
-	}
-	if session.State == "onboard_address" {
-		address := strings.TrimSpace(input)
-		if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
-			return s.sendText(ctx, channel, recipient, "Send an address between 10 and 240 characters.")
+		session.Data["dob"] = details.DOB
+		session.Data["gender"] = details.Gender
+		session.Data["address"] = details.Address
+		if !details.Complete() {
+			session.State = "onboard_details"
+			if err := s.saveSession(ctx, session); err != nil {
+				return err
+			}
+			msg := ""
+			if problem != "" {
+				msg = problem + "\n\n"
+			}
+			if note := capturedNote(details.Captured()); note != "" {
+				msg += note + "\n"
+			}
+			msg += missingParts(details.Missing())
+			msg += "\n\n" + tier1DetailsPrompt()
+			return s.sendText(ctx, channel, recipient, msg)
 		}
 		session.State = "onboard_confirm_account"
-		session.Data["address"] = address
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		if err := s.sendText(ctx, channel, recipient, "Address saved. One last step."); err != nil {
+		if err := s.sendText(ctx, channel, recipient, "Details saved. One last step."); err != nil {
 			return err
 		}
 		return s.sendAccountConfirmation(ctx, channel, recipient)
@@ -198,6 +217,14 @@ func (s *ConversationService) handleOnboarding(ctx context.Context, channel, rec
 		return err
 	}
 	return s.startEmailConfirmation(ctx, channel, recipient, user.ID, email)
+}
+
+// tier1DetailsPrompt is the aggregated CBN Tier 1 collection prompt shown
+// once instead of the old one-message-per-field chain.
+func tier1DetailsPrompt() string {
+	return "As part of the CBN Tier 1 check, send these three in one message:\n\n" +
+		promptListing([]string{"Date of birth as YYYY-MM-DD", "Gender: MALE or FEMALE", "Your residential address"}) +
+		"Example:\nDOB: 1992-05-24\nGender: Female\n14 Admiralty Way, Lekki, Lagos"
 }
 
 // handleNewChannelForApprovedUser is the non-blocking cross-channel handoff

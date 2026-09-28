@@ -242,8 +242,11 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 3. Reply 'not-an-email' first, then a valid email.
 4. Observe the 6-digit confirmation code (delivered by email; with `EMAIL_DEMO_CODE_IN_CHAT=true` for demos, in the chat itself).
 5. Reply '000000' (a wrong code), then the correct 6-digit code.
+6. Observe the aggregated Tier-1 details prompt (one message for DOB, gender, address).
+7. Reply with a partial message ('1992-05-24' only) and note the re-ask echoes the captured DOB and names what is missing.
+8. Reply with all three in one message: 'DOB: 1992-05-24', 'Gender: Female', and the residential address.
 
-**Expected Result:** Acknowledges the name, asks for email. Invalid email is rejected with a retry prompt; a valid email triggers a 6-digit confirmation code. A wrong code gets the re-ask offering `RESEND` / `CHANGE EMAIL`; the correct code advances to the number-confirmation step and sets `email_verified_at`. Five wrong entries lock code entry (start over or use `CHANGE EMAIL`); `RESEND` issues a fresh code after the cooldown.
+**Expected Result:** Acknowledges the name, asks for email. Invalid email is rejected with a retry prompt; a valid email triggers a 6-digit confirmation code. A wrong code gets the re-ask offering `RESEND` / `CHANGE EMAIL`; the correct code advances to the aggregated Tier-1 details step and sets `email_verified_at`. Five wrong entries lock code entry (start over or use `CHANGE EMAIL`); `RESEND` issues a fresh code after the cooldown. The details step accepts one message with DOB (YYYY-MM-DD or DD-MM-YYYY), gender (MALE/FEMALE), and address; a partial or invalid message re-asks naming exactly what is missing without discarding captured fields; the complete message advances to the number-confirmation step.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
@@ -251,7 +254,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** Onboarding
 - **Actor:** Individual   **Channel:** WhatsApp   **Priority:** P0
-- **Preconditions:** Onboarding in progress at the number-confirmation step.
+- **Preconditions:** Onboarding in progress at the number-confirmation step (after the aggregated Tier-1 details message).
 
 **Steps**
 

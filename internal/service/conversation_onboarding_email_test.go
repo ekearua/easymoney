@@ -114,11 +114,9 @@ func TestOnboardingEmailCodeVerification(t *testing.T) {
 		t.Fatalf("after correct code the last messages = %q, want 'Email verified'", tail)
 	}
 
-	// Continue: the rest of onboarding is unchanged, and completing it
-	// reaches L1 with an active wallet.
-	send("1992-05-24")
-	send("female")
-	send("14 Admiralty Way, Lekki, Lagos")
+	// Continue: the aggregated Tier-1 details message and confirm complete
+	// onboarding at L1 with an active wallet.
+	send("DOB: 1992-05-24\nGender: female\n14 Admiralty Way, Lekki, Lagos")
 	send("confirm")
 	user, err := svc.store.FindUserByWhatsAppNumber(ctx, normalizePhone(number))
 	if err != nil {

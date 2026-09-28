@@ -62,15 +62,10 @@ func TestOnboardingConfirmAdvancesToL1AndActivatesWallet(t *testing.T) {
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: code}); err != nil {
 		t.Fatalf("email code Handle failed: %v", err)
 	}
-	// CBN Tier-1 data collection runs before the confirm step.
-	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "1992-05-24"}); err != nil {
-		t.Fatalf("dob Handle failed: %v", err)
-	}
-	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "female"}); err != nil {
-		t.Fatalf("gender Handle failed: %v", err)
-	}
-	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "14 Admiralty Way, Lekki, Lagos"}); err != nil {
-		t.Fatalf("address Handle failed: %v", err)
+	// CBN Tier-1 data arrives in one aggregated message (DOB, gender,
+	// address) before the confirm step.
+	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "DOB: 1992-05-24\nGender: female\n14 Admiralty Way, Lekki, Lagos"}); err != nil {
+		t.Fatalf("tier1 details Handle failed: %v", err)
 	}
 	if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelWhatsApp, Sender: number, Recipient: number, Text: "confirm"}); err != nil {
 		t.Fatalf("confirm Handle failed: %v", err)

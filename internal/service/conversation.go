@@ -269,7 +269,7 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 	}
 
 	switch session.State {
-	case "onboard_name", "onboard_email", "onboard_email_code", "onboard_dob", "onboard_gender", "onboard_address":
+	case "onboard_name", "onboard_email", "onboard_email_code", "onboard_details", "onboard_dob", "onboard_gender", "onboard_address":
 		// Reachable via the optional "Complete profile" menu row after
 		// first contact auto-confirms the WhatsApp number. Incomplete
 		// onboarding still gates earlier in Handle for legacy users.
@@ -318,28 +318,14 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleIndividualEmail(ctx, message.Channel, recipient, user, session, input)
 	case "individual_email_code":
 		return s.handleIndividualEmailCode(ctx, message.Channel, recipient, user, session, input)
-	case "individual_legal_name":
-		return s.handleIndividualLegalName(ctx, message.Channel, recipient, user, session, input)
-	case "individual_dob":
-		return s.handleIndividualDOB(ctx, message.Channel, recipient, user, session, input)
-	case "individual_gender":
-		return s.handleIndividualGender(ctx, message.Channel, recipient, user, session, input)
-	case "individual_address":
-		return s.handleIndividualAddress(ctx, message.Channel, recipient, user, session, input)
-	case "individual_occupation":
-		return s.handleIndividualOccupation(ctx, message.Channel, recipient, user, session, input)
-	case "individual_id_type":
-		return s.handleIndividualIDType(ctx, message.Channel, recipient, user, session, input)
-	case "individual_id_number":
-		return s.handleIndividualIDNumber(ctx, message.Channel, recipient, user, session, input)
-	case "individual_bvn":
-		return s.handleIndividualBVN(ctx, message.Channel, recipient, user, session, input)
-	case "individual_nin":
-		return s.handleIndividualNIN(ctx, message.Channel, recipient, user, session, input)
-	case "individual_address_proof":
-		return s.handleIndividualAddressProof(ctx, message.Channel, recipient, user, session, input)
-	case "individual_source_of_funds":
-		return s.handleIndividualSourceOfFunds(ctx, message.Channel, recipient, user, session, input)
+	case "individual_details", "individual_legal_name", "individual_dob", "individual_gender", "individual_address", "individual_occupation":
+		return s.handleIndividualDetails(ctx, message.Channel, recipient, user, session, input)
+	case "individual_id_details", "individual_id_type", "individual_id_number":
+		return s.handleIndividualIDDetails(ctx, message.Channel, recipient, user, session, input)
+	case "individual_bvn_nin", "individual_bvn", "individual_nin":
+		return s.handleIndividualBVNNIN(ctx, message.Channel, recipient, user, session, input)
+	case "individual_edd_details", "individual_address_proof", "individual_source_of_funds":
+		return s.handleIndividualEDDDetails(ctx, message.Channel, recipient, user, session, input)
 	case "individual_liveness":
 		return s.handleIndividualLiveness(ctx, message.Channel, recipient, user, session, input)
 	case "kyb_request_select_merchant":
