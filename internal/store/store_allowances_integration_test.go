@@ -215,9 +215,16 @@ func TestAdvanceKYBTierGating(t *testing.T) {
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, nil, nil); err == nil {
 		t.Fatal("B0->B1 without evidence must fail")
 	}
+	// The evidence keys alone are a claim. The corporate hard gate refuses the
+	// advance until a reviewer has verified the document behind each key, so a
+	// bare upgrade request can never become a tier however it was approved.
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil); err == nil {
+		t.Fatal("B0->B1 asserting evidence keys without documents must fail")
+	}
+	seedVerifiedCorporateDocuments(t, ctx, repository, merchant.ID)
 	profile, err = repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil)
 	if err != nil || profile.Tier != kyc.TierB1 {
-		t.Fatalf("B0->B1 with corporate documents should pass: tier=%s err=%v", profile.Tier, err)
+		t.Fatalf("B0->B1 with verified corporate documents should pass: tier=%s err=%v", profile.Tier, err)
 	}
 
 	// Seed grandfathers merchants as screened-clear (migration 053), so a
@@ -286,6 +293,7 @@ func TestRequestKYBAdvancementStagesRequest(t *testing.T) {
 	if err := repository.RecordKYBScreening(ctx, merchant.ID, "clear", nil, 90*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
+	seedVerifiedCorporateDocuments(t, ctx, repository, merchant.ID)
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1,
 		[]string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}, nil); err != nil {
 		t.Fatalf("advance to B1 should pass: %v", err)

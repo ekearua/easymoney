@@ -132,6 +132,7 @@ func TestWalletLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedVerifiedCorporateDocuments(t, ctx, repository, merchant.ID)
 	kybProfile, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1,
 		[]string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}, nil)
 	if err != nil {

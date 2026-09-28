@@ -419,6 +419,42 @@ func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, e
 // KYBDocuments is the structured set of corporate documents a merchant
 // supplies with a self-service upgrade request (CAC, TIN, beneficial owners,
 // business address, SCUML, DNFBP self-certification).
+// KYB document review statuses.
+const (
+	// KYBDocumentVerified means a reviewer inspected the submitted document and
+	// accepted it as evidence for its key.
+	KYBDocumentVerified = "verified"
+	// KYBDocumentRejected means a reviewer inspected it and refused it.
+	KYBDocumentRejected = "rejected"
+)
+
+// KYBDocumentReview is one reviewer disposition on a single submitted piece of
+// corporate evidence. Only a review makes a document evidence: a document on
+// file is a claim, and "verified" has to name a person and a time.
+type KYBDocumentReview struct {
+	Status     string    `json:"status"`
+	Reviewer   string    `json:"reviewer"`
+	Note       string    `json:"note,omitempty"`
+	ReviewedAt time.Time `json:"reviewed_at"`
+}
+
+// KYBDocumentVerification is a third-party check result on one document (a
+// corporate registry, a tax authority, geocoding, or the browser's reported
+// position). It is advisory: it shows the operator what an outside source said
+// so their disposition is informed, but it never advances a tier by itself.
+type KYBDocumentVerification struct {
+	Status      string    `json:"status"`
+	Provider    string    `json:"provider"`
+	ProviderRef string    `json:"provider_ref,omitempty"`
+	MatchName   bool      `json:"match_name"`
+	Message     string    `json:"message,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
+// KYBDocuments is a merchant's self-service corporate evidence: what they typed
+// or uploaded, where they were when they submitted, the reviewer dispositions,
+// and the third-party verification proposals. The *_document fields hold
+// extracted text (OCR output or the typed value), never a raw uploaded file.
 type KYBDocuments struct {
 	MerchantID       uuid.UUID
 	CACRegNumber     string
@@ -427,19 +463,108 @@ type KYBDocuments struct {
 	BusinessAddress  string
 	SCUMLNumber      string
 	DNFBP            bool
-	RecordedAt       time.Time
-	UpdatedAt        time.Time
+
+	// CACDocument / TINDocument / AddressDocument are the readings of the
+	// uploaded certificates and utility bill.
+	CACDocument     string
+	TINDocument     string
+	AddressDocument string
+
+	// Location is the position the merchant confirmed in the browser, with the
+	// visitor's permission, at submission time.
+	LocationLat        *float64
+	LocationLng        *float64
+	LocationAccuracyM  *float64
+	LocationCapturedAt *time.Time
+	LocationStatus     string
+	LocationProvider   string
+
+	Reviews       map[string]KYBDocumentReview
+	Verifications map[string]KYBDocumentVerification
+
+	RecordedAt time.Time
+	UpdatedAt  time.Time
+}
+
+// DocumentForEvidence returns the submitted document text that backs an
+// evidence key, or "" when nothing was submitted for it. It is the single
+// mapping from the corporate hard gate's keys onto the merchant's documents.
+func (d KYBDocuments) DocumentForEvidence(key string) string {
+	switch key {
+	case kyc.EvCACVerified:
+		return firstNonBlank(d.CACDocument, d.CACRegNumber)
+	case kyc.EvTINVerified:
+		return firstNonBlank(d.TINDocument, d.TIN)
+	case kyc.EvUBOCleared:
+		return d.BeneficialOwners
+	case kyc.EvLocationVerified:
+		return firstNonBlank(d.AddressDocument, d.BusinessAddress)
+	case kyc.EvSCUMLSubmitted:
+		return d.SCUMLNumber
+	}
+	return ""
+}
+
+// DeriveKYBEvidence returns the evidence keys the merchant's submitted
+// documents justify. It is the honest input to an advancement request: a key
+// appears only when a document was actually supplied, never because a tier
+// happens to require it.
+func DeriveKYBEvidence(d KYBDocuments) []string {
+	out := make([]string, 0, 5)
+	for _, key := range BusinessEvidenceRequiredFor(kyc.TierB1) {
+		if strings.TrimSpace(d.DocumentForEvidence(key)) != "" {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// VerifiedKYBEvidence returns the evidence keys that are BOTH backed by a
+// submitted document AND confirmed by a reviewer. This is what the corporate
+// hard gate accepts at B0 -> B1; a self-asserted key cannot appear here.
+func VerifiedKYBEvidence(d KYBDocuments) []string {
+	submitted := DeriveKYBEvidence(d)
+	out := make([]string, 0, len(submitted))
+	for _, key := range submitted {
+		if review, ok := d.Reviews[key]; ok && review.Status == KYBDocumentVerified {
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 // UpsertKYBDocuments records (or replaces) the structured corporate documents
 // for a merchant. Callers record the documents together with the advisory
 // advancement request they accompany.
+//
+// Replacing a document invalidates every prior reviewer disposition: a CAC
+// certificate that has since been swapped out is not the certificate the
+// reviewer verified, so the reviews and verification proposals reset with the
+// change. An identical resubmission keeps them.
 func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, documents KYBDocuments) error {
 	documents.MerchantID = merchantID
-	_, err := s.pool.Exec(ctx, `
+	reviews, verifications := documents.Reviews, documents.Verifications
+	if existing, err := s.KYBDocumentsByMerchant(ctx, merchantID); err == nil {
+		reviews, verifications = existing.Reviews, existing.Verifications
+		if documentsChanged(existing, documents) {
+			reviews, verifications = nil, nil
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("load existing kyb documents: %w", err)
+	}
+	reviewsJSON, err := json.Marshal(orEmptyReviews(reviews))
+	if err != nil {
+		return fmt.Errorf("encode kyb document reviews: %w", err)
+	}
+	verificationsJSON, err := json.Marshal(orEmptyVerifications(verifications))
+	if err != nil {
+		return fmt.Errorf("encode kyb document verifications: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO business_kyb_documents(merchant_id, cac_reg_number, tin,
-			beneficial_owners, business_address, scuml_number, dnfbp)
-		VALUES($1,$2,$3,$4,$5,$6,$7)
+			beneficial_owners, business_address, scuml_number, dnfbp,
+			cac_document, tin_document, address_document, reviews, verifications)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb)
 		ON CONFLICT (merchant_id) DO UPDATE
 		SET cac_reg_number=EXCLUDED.cac_reg_number,
 		    tin=EXCLUDED.tin,
@@ -447,9 +572,116 @@ func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, do
 		    business_address=EXCLUDED.business_address,
 		    scuml_number=EXCLUDED.scuml_number,
 		    dnfbp=EXCLUDED.dnfbp,
+		    cac_document=EXCLUDED.cac_document,
+		    tin_document=EXCLUDED.tin_document,
+		    address_document=EXCLUDED.address_document,
+		    reviews=EXCLUDED.reviews,
+		    verifications=EXCLUDED.verifications,
 		    updated_at=now()`,
 		merchantID, documents.CACRegNumber, documents.TIN, documents.BeneficialOwners,
-		documents.BusinessAddress, documents.SCUMLNumber, documents.DNFBP)
+		documents.BusinessAddress, documents.SCUMLNumber, documents.DNFBP,
+		documents.CACDocument, documents.TINDocument, documents.AddressDocument,
+		string(reviewsJSON), string(verificationsJSON))
+	return err
+}
+
+// RecordKYBLocation stores the coordinates the merchant confirmed in the
+// browser (with the visitor's permission) and the outcome of comparing them
+// with the declared operating address. It leaves reviewer dispositions alone:
+// a re-capture is a new proposal to check, not a new document to verify.
+func (s *Store) RecordKYBLocation(ctx context.Context, merchantID uuid.UUID, lat, lng, accuracyM float64, status, provider string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_documents(merchant_id) VALUES($1)
+		ON CONFLICT (merchant_id) DO NOTHING`, merchantID); err != nil {
+		return fmt.Errorf("ensure kyb documents for location: %w", err)
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE business_kyb_documents
+		SET location_lat=$2, location_lng=$3, location_accuracy_m=$4,
+		    location_captured_at=now(), location_status=$5, location_provider=$6,
+		    updated_at=now()
+		WHERE merchant_id=$1`, merchantID, lat, lng, accuracyM, status, provider)
+	return err
+}
+
+// ReviewKYBDocument records a reviewer's disposition on one submitted
+// corporate document and audits it. It refuses to review a document the
+// merchant never submitted, so a disposition always refers to something real.
+func (s *Store) ReviewKYBDocument(ctx context.Context, merchantID uuid.UUID, key, status, reviewerEmail, note string) (KYBDocuments, error) {
+	if status != KYBDocumentVerified && status != KYBDocumentRejected {
+		return KYBDocuments{}, fmt.Errorf("invalid document review status %q", status)
+	}
+	d, err := s.KYBDocumentsByMerchant(ctx, merchantID)
+	if err != nil {
+		return KYBDocuments{}, fmt.Errorf("load kyb documents to review: %w", err)
+	}
+	if strings.TrimSpace(d.DocumentForEvidence(key)) == "" {
+		return KYBDocuments{}, fmt.Errorf("no %q document is on file to review", key)
+	}
+	reviews := d.Reviews
+	if reviews == nil {
+		reviews = map[string]KYBDocumentReview{}
+	}
+	reviews[key] = KYBDocumentReview{
+		Status:     status,
+		Reviewer:   reviewerEmail,
+		Note:       note,
+		ReviewedAt: time.Now().UTC(),
+	}
+	payload, err := json.Marshal(reviews)
+	if err != nil {
+		return KYBDocuments{}, fmt.Errorf("encode document review: %w", err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return KYBDocuments{}, fmt.Errorf("begin document review: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		UPDATE business_kyb_documents SET reviews=$2::jsonb, updated_at=now()
+		WHERE merchant_id=$1`, merchantID, string(payload)); err != nil {
+		return KYBDocuments{}, fmt.Errorf("record document review: %w", err)
+	}
+	entry := AuditLog{
+		ActorType:    "admin",
+		ActorEmail:   sql.NullString{String: reviewerEmail, Valid: reviewerEmail != ""},
+		Action:       "kyb.document.reviewed",
+		ResourceType: sql.NullString{String: "merchant", Valid: true},
+		ResourceID:   sql.NullString{String: merchantID.String(), Valid: true},
+		Details:      map[string]any{"evidence": key, "status": status, "note": note},
+	}
+	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
+		return KYBDocuments{}, fmt.Errorf("audit document review: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return KYBDocuments{}, fmt.Errorf("commit document review: %w", err)
+	}
+	return s.KYBDocumentsByMerchant(ctx, merchantID)
+}
+
+// SaveKYBVerification stores one third-party verification proposal for a
+// document. Advisory only: it informs a reviewer's disposition and never
+// advances a tier by itself.
+func (s *Store) SaveKYBVerification(ctx context.Context, merchantID uuid.UUID, key string, v KYBDocumentVerification) error {
+	d, err := s.KYBDocumentsByMerchant(ctx, merchantID)
+	if err != nil {
+		return fmt.Errorf("load kyb documents for verification: %w", err)
+	}
+	verifications := d.Verifications
+	if verifications == nil {
+		verifications = map[string]KYBDocumentVerification{}
+	}
+	if v.CheckedAt.IsZero() {
+		v.CheckedAt = time.Now().UTC()
+	}
+	verifications[key] = v
+	payload, err := json.Marshal(verifications)
+	if err != nil {
+		return fmt.Errorf("encode document verification: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE business_kyb_documents SET verifications=$2::jsonb, updated_at=now()
+		WHERE merchant_id=$1`, merchantID, string(payload))
 	return err
 }
 
@@ -457,13 +689,65 @@ func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, do
 // documents. A missing record returns pgx.ErrNoRows.
 func (s *Store) KYBDocumentsByMerchant(ctx context.Context, merchantID uuid.UUID) (KYBDocuments, error) {
 	var d KYBDocuments
+	var reviews, verifications []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT merchant_id, cac_reg_number, tin, beneficial_owners,
-		       business_address, scuml_number, dnfbp, recorded_at, updated_at
+		       business_address, scuml_number, dnfbp,
+		       cac_document, tin_document, address_document,
+		       location_lat, location_lng, location_accuracy_m,
+		       location_captured_at, location_status, location_provider,
+		       COALESCE(reviews::text,'{}'), COALESCE(verifications::text,'{}'),
+		       recorded_at, updated_at
 		FROM business_kyb_documents WHERE merchant_id=$1`, merchantID).Scan(
 		&d.MerchantID, &d.CACRegNumber, &d.TIN, &d.BeneficialOwners,
-		&d.BusinessAddress, &d.SCUMLNumber, &d.DNFBP, &d.RecordedAt, &d.UpdatedAt)
-	return d, err
+		&d.BusinessAddress, &d.SCUMLNumber, &d.DNFBP,
+		&d.CACDocument, &d.TINDocument, &d.AddressDocument,
+		&d.LocationLat, &d.LocationLng, &d.LocationAccuracyM,
+		&d.LocationCapturedAt, &d.LocationStatus, &d.LocationProvider,
+		&reviews, &verifications, &d.RecordedAt, &d.UpdatedAt)
+	if err != nil {
+		return KYBDocuments{}, err
+	}
+	_ = json.Unmarshal(reviews, &d.Reviews)
+	_ = json.Unmarshal(verifications, &d.Verifications)
+	return d, nil
+}
+
+// documentsChanged reports whether a resubmission altered any merchant-supplied
+// document, so prior reviewer dispositions must be discarded.
+func documentsChanged(old, next KYBDocuments) bool {
+	return old.CACRegNumber != next.CACRegNumber ||
+		old.TIN != next.TIN ||
+		old.BeneficialOwners != next.BeneficialOwners ||
+		old.BusinessAddress != next.BusinessAddress ||
+		old.SCUMLNumber != next.SCUMLNumber ||
+		old.CACDocument != next.CACDocument ||
+		old.TINDocument != next.TINDocument ||
+		old.AddressDocument != next.AddressDocument
+}
+
+func orEmptyReviews(m map[string]KYBDocumentReview) map[string]KYBDocumentReview {
+	if m == nil {
+		return map[string]KYBDocumentReview{}
+	}
+	return m
+}
+
+func orEmptyVerifications(m map[string]KYBDocumentVerification) map[string]KYBDocumentVerification {
+	if m == nil {
+		return map[string]KYBDocumentVerification{}
+	}
+	return m
+}
+
+// firstNonBlank returns the first trimmed non-empty value.
+func firstNonBlank(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // BusinessEvidenceRequiredFor returns the complete evidence set a one-step
@@ -672,6 +956,25 @@ func (s *Store) AdvanceKYBTier(ctx context.Context, merchantID uuid.UUID, to str
 	}
 	if kyc.BusinessOrder(to) >= 1 && kyc.BlockedByScreening(profile.LastScreeningDecision) {
 		return KYBProfile{}, fmt.Errorf("advance to %s blocked by screening decision %q", to, profile.LastScreeningDecision)
+	}
+	// Corporate hard gate: B0 -> B1 needs every key backed by a document a
+	// reviewer actually verified. An evidence key on its own is a claim, so a
+	// bare upgrade request (no documents on file) can never reach B1, however
+	// it was submitted and whoever approved it.
+	if to == kyc.TierB1 {
+		docs, err := s.KYBDocumentsByMerchant(ctx, merchantID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return KYBProfile{}, fmt.Errorf("load kyb documents for hard gate: %w", err)
+		}
+		verified := make(map[string]bool)
+		for _, key := range VerifiedKYBEvidence(docs) {
+			verified[key] = true
+		}
+		for _, key := range BusinessEvidenceRequiredFor(to) {
+			if !verified[key] {
+				return KYBProfile{}, fmt.Errorf("advance to %s requires a reviewer-verified %q document", to, key)
+			}
+		}
 	}
 	merged := mergeEvidence(profile.Evidence, evidence)
 	evidenceJSON, _ := json.Marshal(merged)
