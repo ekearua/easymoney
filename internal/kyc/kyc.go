@@ -15,6 +15,8 @@ package kyc
 import (
 	"errors"
 	"fmt"
+	"math"
+	"time"
 )
 
 // Tiers, lowest to highest.
@@ -129,10 +131,51 @@ const (
 )
 
 // RiskEventInput is one scored ML/FT observation contributing to the customer
-// risk score.
+// risk score. A negative Score is a correction: it cancels the contribution of
+// an observation that later turned out not to be suspicious (a false-positive
+// alert), which is why the score is not simply a sum of suspicions.
 type RiskEventInput struct {
 	EventType string
 	Score     float64
+	// OccurredAt is when the observation was made. An unset time is treated as
+	// "now" (full weight) so a missing timestamp can never silently erase a
+	// suspicion.
+	OccurredAt time.Time
+}
+
+// RiskScoring parameterizes how observations are aggregated.
+//
+// The zero value scores every event at full weight, which is what a caller
+// that has not adopted time decay gets. Decay is deliberately opt-in: turning
+// it on changes every existing band, so it is an operator's decision, not a
+// side effect of upgrading.
+type RiskScoring struct {
+	// Now is the reference instant decay is measured from. It travels with
+	// HalfLife: decay needs a clock the caller chose, so a zero Now disables
+	// decay exactly as a zero HalfLife does.
+	Now time.Time
+	// HalfLife is how long an observation's contribution takes to fall by
+	// half. Zero or negative disables decay.
+	HalfLife time.Duration
+}
+
+// RiskContribution returns how much of an observation's score still stands at
+// now: contributions decay geometrically, so with a 90-day half-life an event
+// observed 90 days ago is worth half its original weight, and one observed 180
+// days ago a quarter. An undated observation, and one dated in the future
+// (clock skew), counts in full — decay forgives age, not absence.
+func RiskContribution(score float64, occurredAt, now time.Time, halfLife time.Duration) float64 {
+	if score == 0 || halfLife <= 0 {
+		return score
+	}
+	if occurredAt.IsZero() || now.IsZero() {
+		return score
+	}
+	age := now.Sub(occurredAt)
+	if age <= 0 {
+		return score
+	}
+	return score * math.Pow(0.5, float64(age)/float64(halfLife))
 }
 
 // RiskResult is the outcome of scoring a customer.
@@ -155,19 +198,22 @@ func BandForScore(score float64) string {
 
 // ScoreRisk aggregates observed ML/FT risk events with profile context (tier,
 // last sanctions/PEP decision) into a 0-100 score and low/medium/high band.
-// Each event contributes its own 0-100 weight (capped at 100 per event);
-// screening and tier adjustments are additive and the total is clamped to
-// [0,100].
-func ScoreRisk(events []RiskEventInput, tier, screening string) RiskResult {
+//
+// Each event contributes its decayed weight, clamped to +/-100 so no single
+// observation can dominate either way. Negative contributions subtract (a
+// corrected false positive), so the aggregate follows the suspicions that are
+// still standing rather than everything ever flagged. Screening and tier
+// adjustments are additive and the total is clamped to [0,100].
+func ScoreRisk(events []RiskEventInput, tier, screening string, opts RiskScoring) RiskResult {
 	var score float64
 	var factors []string
 	for _, e := range events {
-		contribution := e.Score
+		contribution := RiskContribution(e.Score, e.OccurredAt, opts.Now, opts.HalfLife)
 		if contribution > 100 {
 			contribution = 100
 		}
-		if contribution < 0 {
-			contribution = 0
+		if contribution < -100 {
+			contribution = -100
 		}
 		if contribution == 0 {
 			continue

@@ -1,6 +1,10 @@
 package kyc
 
-import "testing"
+import (
+	"math"
+	"testing"
+	"time"
+)
 
 func TestOrder(t *testing.T) {
 	cases := map[string]int{
@@ -196,7 +200,7 @@ func TestScoreRisk(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ScoreRisk(tc.events, tc.tier, tc.screening)
+			got := ScoreRisk(tc.events, tc.tier, tc.screening, RiskScoring{})
 			if got.Score != tc.wantScore {
 				t.Errorf("score = %v, want %v", got.Score, tc.wantScore)
 			}
@@ -204,5 +208,80 @@ func TestScoreRisk(t *testing.T) {
 				t.Errorf("band = %q, want %q", got.Band, tc.wantBand)
 			}
 		})
+	}
+}
+
+// TestRiskContributionDecay pins the decay curve: a weight halves over one
+// half-life and quarters over two, counts in full when it is undated or dated
+// in the future (decay forgives age, never a missing timestamp or clock skew),
+// stands at full weight when decay is switched off, and applies to corrections
+// exactly as it does to suspicions.
+func TestRiskContributionDecay(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	halfLife := 90 * 24 * time.Hour
+	cases := []struct {
+		name     string
+		score    float64
+		occurred time.Time
+		halfLife time.Duration
+		want     float64
+	}{
+		{name: "fresh counts in full", score: 40, occurred: now, halfLife: halfLife, want: 40},
+		{name: "one half-life halves it", score: 40, occurred: now.Add(-halfLife), halfLife: halfLife, want: 20},
+		{name: "two half-lives quarter it", score: 40, occurred: now.Add(-2 * halfLife), halfLife: halfLife, want: 10},
+		{name: "undated counts in full", score: 40, halfLife: halfLife, want: 40},
+		{name: "future-dated counts in full", score: 40, occurred: now.Add(time.Hour), halfLife: halfLife, want: 40},
+		{name: "no half-life disables decay", score: 40, occurred: now.Add(-10 * halfLife), want: 40},
+		{name: "corrections decay too", score: -40, occurred: now.Add(-halfLife), halfLife: halfLife, want: -20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RiskContribution(tc.score, tc.occurred, now, tc.halfLife); math.Abs(got-tc.want) > 1e-9 {
+				t.Fatalf("contribution = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScoreRiskDecaysAndCorrects pins the two behaviours the aggregate score
+// gained: an aged observation weighs less than a fresh one, and a negative
+// correction cancels its observation exactly while never driving the score
+// below zero.
+func TestScoreRiskDecaysAndCorrects(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	opts := RiskScoring{Now: now, HalfLife: 90 * 24 * time.Hour}
+
+	// The same 35 points today and six months ago: the old one is worth an
+	// eighth, so it still counts but no longer dominates.
+	decayed := ScoreRisk([]RiskEventInput{
+		{EventType: "structuring", Score: 35, OccurredAt: now},
+		{EventType: "velocity", Score: 35, OccurredAt: now.Add(-180 * 24 * time.Hour)},
+	}, TierL3, ScreenClear, opts)
+	if decayed.Score >= 70 {
+		t.Fatalf("aged observation must weigh less than a fresh one, got %v", decayed.Score)
+	}
+	if decayed.Score <= 35 {
+		t.Fatalf("aged observation must still count for something, got %v", decayed.Score)
+	}
+
+	// An alert and its correction carry the same observation time, so under any
+	// half-life the pair cancels exactly however long the review took.
+	observed := now.Add(-200 * 24 * time.Hour)
+	corrected := ScoreRisk([]RiskEventInput{
+		{EventType: "velocity", Score: 60, OccurredAt: observed},
+		{EventType: "velocity_cleared", Score: -60, OccurredAt: observed},
+	}, TierL3, ScreenClear, opts)
+	if corrected.Score != 0 {
+		t.Fatalf("a correction must cancel its observation exactly, got %v", corrected.Score)
+	}
+
+	// A correction with nothing standing floors at low rather than negative.
+	floored := ScoreRisk([]RiskEventInput{
+		{EventType: "velocity_cleared", Score: -60, OccurredAt: now},
+	}, TierL3, ScreenClear, opts)
+	if floored.Score != 0 || floored.Band != RiskLow {
+		t.Fatalf("score should floor at 0/low, got %v/%q", floored.Score, floored.Band)
 	}
 }

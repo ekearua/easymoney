@@ -198,7 +198,7 @@ Status vocabulary used throughout (per the repository analysis): **Implemented**
 | Tax authority (FIRS TIN) | Optional live lookup; `FIRS_PROVIDER=simulated` by default | Compliance | Implemented | `internal/providers/firs/firs.go` |
 | Location verification | Geocodes the operating address and compares it with the browser-reported position; `LOCATION_PROVIDER=simulated` by default | Compliance | Implemented | `internal/providers/geo/geo.go` |
 | KYB document evidence | Merchant-submitted corporate documents; a reviewer disposition per document is what the B0→B1 gate accepts | Merchants, compliance | Implemented | `store_allowances.go` (`DeriveKYBEvidence`, `VerifiedKYBEvidence`, `ReviewKYBDocument`); `internal/app/webflow_kyb.go`; `internal/app/admin_kyb_documents.go`; migration 078 |
-| ML/FT risk scoring | 0–100 score, low/medium/high band | System | Implemented | `internal/kyc.ScoreRisk`; migration 027 |
+| ML/FT risk scoring | 0–100 score, low/medium/high band, aged by `RISK_DECAY_HALF_LIFE`, corrected when an alert is dismissed | System | Implemented | `internal/kyc.ScoreRisk`; migration 027 |
 | Transaction monitoring | Velocity, structuring, round amounts, high-risk categories | System, admins | Implemented | `kyc/monitor.go:82-197`; migration 028 |
 | Regulator reports | STR, CTR, PEP CSV generation | Admins/compliance | Implemented | `app/reports.go:38-90` |
 | DSR (access/erasure) | Consent records, full data export, erasure with archive | Admins/compliance, customers | Implemented | `store_dsr.go`; migration 029 |
@@ -647,8 +647,9 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 
 ### 12.4 ML/FT risk scoring
 
-- `internal/kyc.ScoreRisk` aggregates scored risk observations (`risk_events`) with the tier and last screening decision into a 0–100 score and a `low`/`medium`/`high` band. Evidence: README:192; migration 027.
-- Any `RecordRiskEvent` recomputes the band transactionally and audits `kyc.risk_scored`; rescreen worker and `recompute-risk` command refresh it. Evidence: README:192.
+- `internal/kyc.ScoreRisk` aggregates scored risk observations (`risk_events`) with the tier and last screening decision into a 0–100 score and a `low`/`medium`/`high` band. Each observation's weight decays geometrically under `RISK_DECAY_HALF_LIFE` (default 90 days, matching the rescreen period; `0` disables decay), and a negative observation subtracts — which is how a dismissed false positive stops pinning a band. Evidence: README:192; migration 027.
+- Any `RecordRiskEvent` recomputes the band transactionally and audits `kyc.risk_scored` (the audit details record the half-life the score was computed under); rescreen worker and `recompute-risk` command refresh it. Evidence: README:192.
+- **Feedback loop closed:** resolving an alert as a false positive appends `monitor_<rule>_cleared` — negated weight, dated with the observation it corrects, carrying the alert id — so the score returns exactly to its pre-alert value under any half-life and a re-resolve cannot double-count. Escalated alerts stand. Evidence: `internal/store/store_kyc.go` (`cancelAlertRisk`).
 - **Status:** Implemented.
 
 ### 12.5 Transaction monitoring (AML)

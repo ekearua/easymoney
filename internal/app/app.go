@@ -114,6 +114,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		return nil, err
 	}
 	repository.SetDataKey(cfg.DataEncryptionKey)
+	// Risk observations decay so a customer's score follows the suspicions
+	// still standing rather than every alert ever raised against them.
+	repository.RiskDecayHalfLife = cfg.RiskDecayHalfLife
 	// Interswitch is the sole payment gateway: card checkout (Hosted Fields /
 	// legacy redirect form), bank-transfer DVA collection, NIP payouts,
 	// refunds, and VTU data all ride on the same client.

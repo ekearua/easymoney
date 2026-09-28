@@ -209,6 +209,14 @@ type Config struct {
 	TuningFPPercent   float64
 	TuningMinLabelled int64
 
+	// RiskDecayHalfLife is how long one ML/FT risk observation's contribution
+	// to the customer's risk score takes to fall by half. Zero or negative
+	// disables decay, leaving every observation at full weight forever — which
+	// is what ratchets a customer who collects dismissed alerts. The default
+	// matches the 90-day KYC rescreen period, so a suspicion fades on the same
+	// clock the profile is re-checked on.
+	RiskDecayHalfLife time.Duration
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -402,6 +410,7 @@ func Load() (Config, error) {
 		RiskHighSingleLimitKobo:    EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
 		TuningFPPercent:            envFloat("TUNING_FP_PERCENT", 60),
 		TuningMinLabelled:          EnvInt64("TUNING_MIN_LABELLED", 10),
+		RiskDecayHalfLife:          envDuration("RISK_DECAY_HALF_LIFE", 90*24*time.Hour),
 		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		WebFlowsEnabled:            envBool("WEB_FLOWS_ENABLED", true),
@@ -559,6 +568,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AITokensPerNGN < 0 {
 		return Config{}, fmt.Errorf("AI_TOKENS_PER_NGN must not be negative")
+	}
+	if cfg.RiskDecayHalfLife < 0 {
+		return Config{}, fmt.Errorf("RISK_DECAY_HALF_LIFE must not be negative (0 disables decay)")
 	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
 		cfg.WhatsAppGraphVersion = "v23.0"

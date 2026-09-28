@@ -2640,9 +2640,10 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 **Steps**
 
 1. Open /admin/monitoring/alerts.
-2. Resolve an alert.
+2. Note the customer's risk score on /admin/kyc, then resolve an alert leaving the outcome at its false-positive default and reload the profile.
+3. Escalate a second alert and reload the profile.
 
-**Expected Result:** Alert resolves and is recorded; monitor cycle continues.
+**Expected Result:** Alert resolves and is recorded; monitor cycle continues. The score falls back to its pre-alert value on the false-positive resolve — the alert's weight is cancelled and a `monitor_<rule>_cleared` row appears in the customer's risk events — and never falls below the pre-alert value; re-resolving the same alert records no second cancellation. The escalated alert keeps its weight.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

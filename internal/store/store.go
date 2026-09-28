@@ -30,6 +30,14 @@ type Store struct {
 	// requested for the same user and email.
 	EmailResendCooldown time.Duration
 
+	// RiskDecayHalfLife is how long a single ML/FT risk observation's
+	// contribution to the customer's risk score takes to fall by half. Zero
+	// (the default, and what a bare Open gives a test harness) keeps the
+	// historic additive behaviour: every observation counts at full weight
+	// forever, which is what ratchets a score. The app wires this from
+	// RISK_DECAY_HALF_LIFE.
+	RiskDecayHalfLife time.Duration
+
 	// dataKey is the AES-256-GCM key for application-level encryption at rest.
 	// When empty the store runs in plaintext passthrough (dev without the env
 	// var); production requires DATA_ENCRYPTION_KEY in config.

@@ -910,6 +910,17 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		t.Fatalf("expected a structuring alert, got %+v", alerts)
 	}
 	// Medium/high alerts also open a manual review case and feed the risk score.
+	alerted, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alerted.RiskScore <= riskProfile.RiskScore {
+		t.Fatalf("risk score should rise after monitor alerts: before=%v after=%v", riskProfile.RiskScore, alerted.RiskScore)
+	}
+	// A resolve with no explicit disposition is a false positive (the common
+	// call when an alert closes without escalation), so the weight the alert
+	// added is cancelled: the customer's score follows the suspicions still
+	// standing rather than every alert ever raised.
 	if _, err := repository.ResolveTransactionAlert(ctx, alerts[0].ID, "resolved", "compliance@xego.test"); err != nil {
 		t.Fatalf("resolve transaction alert: %v", err)
 	}
@@ -917,8 +928,11 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if afterMonitor.RiskScore <= riskProfile.RiskScore {
-		t.Fatalf("risk score should rise after monitor alerts: before=%v after=%v", riskProfile.RiskScore, afterMonitor.RiskScore)
+	if afterMonitor.RiskScore >= alerted.RiskScore {
+		t.Fatalf("a dismissed false positive must cancel its weight: alerted=%v after=%v", alerted.RiskScore, afterMonitor.RiskScore)
+	}
+	if afterMonitor.RiskScore < riskProfile.RiskScore {
+		t.Fatalf("cancelling one alert must not undershoot the pre-alert score: before=%v after=%v", riskProfile.RiskScore, afterMonitor.RiskScore)
 	}
 }
 

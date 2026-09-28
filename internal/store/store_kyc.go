@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
 	"whatsapp-payment-demo/internal/kyc"
 )
 
@@ -587,10 +590,15 @@ func (s *Store) RecordRiskEvent(ctx context.Context, e RiskEvent) (RiskEvent, er
 // RecomputeRiskScore aggregates a user's ML/FT risk events with their KYC tier
 // and last screening decision into a 0-100 score and low/medium/high band,
 // persists it on the KYC profile, and audits the recalculation.
+//
+// Observations are weighted by age under RiskDecayHalfLife, so a score falls
+// as a customer's history recedes, and negative events (the corrections
+// written when a reviewer resolves an alert as a false positive) subtract the
+// weight they cancelled.
 func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCProfile, error) {
 	events := []kyc.RiskEventInput{}
 	rows, err := s.pool.Query(ctx, `
-		SELECT event_type, COALESCE(score,0) FROM risk_events
+		SELECT event_type, COALESCE(score,0), occurred_at FROM risk_events
 		WHERE user_id=$1 ORDER BY occurred_at ASC`, userID)
 	if err != nil {
 		return KYCProfile{}, err
@@ -598,7 +606,7 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 	defer rows.Close()
 	for rows.Next() {
 		var e kyc.RiskEventInput
-		if err := rows.Scan(&e.EventType, &e.Score); err != nil {
+		if err := rows.Scan(&e.EventType, &e.Score, &e.OccurredAt); err != nil {
 			return KYCProfile{}, err
 		}
 		events = append(events, e)
@@ -610,7 +618,10 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 	if err != nil {
 		return KYCProfile{}, err
 	}
-	result := kyc.ScoreRisk(events, profile.Tier, profile.LastScreeningDecision)
+	result := kyc.ScoreRisk(events, profile.Tier, profile.LastScreeningDecision, kyc.RiskScoring{
+		Now:      time.Now().UTC(),
+		HalfLife: s.RiskDecayHalfLife,
+	})
 	now := time.Now().UTC()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -634,10 +645,11 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 		ResourceType: sql.NullString{String: "user", Valid: true},
 		ResourceID:   sql.NullString{String: userID.String(), Valid: true},
 		Details: map[string]any{
-			"score":   result.Score,
-			"band":    result.Band,
-			"factors": result.Factors,
-			"events":  len(events),
+			"score":              result.Score,
+			"band":               result.Band,
+			"factors":            result.Factors,
+			"events":             len(events),
+			"decay_half_life_ms": s.RiskDecayHalfLife.Milliseconds(),
 		},
 	}
 	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {
@@ -953,17 +965,26 @@ func (s *Store) insertTransactionAlert(ctx context.Context, userID uuid.UUID, al
 	if len(alert.PaymentIDs) > 0 {
 		paymentID = &alert.PaymentIDs[0]
 	}
-	if _, err := s.pool.Exec(ctx, `
+	var alertID int64
+	if err := s.pool.QueryRow(ctx, `
 		INSERT INTO transaction_alerts(user_id,payment_id,rule,severity,details)
-		VALUES($1,$2,$3,$4,$5::jsonb)`,
-		userID, paymentID, alert.Rule, alert.Severity, string(encoded)); err != nil {
+		VALUES($1,$2,$3,$4,$5::jsonb)
+		RETURNING id`,
+		userID, paymentID, alert.Rule, alert.Severity, string(encoded)).Scan(&alertID); err != nil {
 		return fmt.Errorf("insert transaction alert: %w", err)
+	}
+	// The alert id rides along on the risk observation so a reviewer's
+	// subsequent disposition can cancel exactly the weight this alert added,
+	// instead of guessing at it from the rule and severity.
+	riskDetails := map[string]any{"alert_id": alertID}
+	for key, value := range alert.Details {
+		riskDetails[key] = value
 	}
 	if _, err := s.RecordRiskEvent(ctx, RiskEvent{
 		UserID:    userID,
-		EventType: "monitor_" + alert.Rule,
+		EventType: monitorRiskEventType(alert.Rule),
 		Score:     kyc.AlertScore(alert.Severity),
-		Details:   alert.Details,
+		Details:   riskDetails,
 	}); err != nil {
 		return fmt.Errorf("risk event for alert: %w", err)
 	}
@@ -1022,6 +1043,14 @@ func (s *Store) resolveTransactionAlert(ctx context.Context, alertID int64, stat
 	if oerr != nil {
 		return TransactionAlert{}, oerr
 	}
+	// A false positive cancels the risk score the alert added. Without this a
+	// dismissed alert sat in the score forever, so a customer collecting
+	// clean reviews never climbed back down (M4 feedback loop, closed).
+	if label == "false_positive" {
+		if err := s.cancelAlertRisk(ctx, a, reviewerEmail); err != nil {
+			return TransactionAlert{}, err
+		}
+	}
 	a.PaymentID = paymentID
 	a.ReviewedAt = reviewedAt
 	_ = json.Unmarshal(details, &a.Details)
@@ -1052,6 +1081,73 @@ func (s *Store) recordAlertOutcome(ctx context.Context, alertID int64, rule, sev
 		return "", fmt.Errorf("record alert outcome: %w", err)
 	}
 	return label, nil
+}
+
+// Alert-backed risk observations are logged as monitor_<rule>; a reviewer
+// clearing one appends monitor_<rule>_cleared. Both carry the originating alert
+// id in details, which is what ties a disposition to the weight it corrects.
+func monitorRiskEventType(rule string) string { return "monitor_" + rule }
+
+func monitorRiskEventClearedType(rule string) string { return "monitor_" + rule + "_cleared" }
+
+// cancelAlertRisk appends the negative observation that cancels the weight an
+// alert contributed, once a reviewer has labelled it a false positive.
+//
+// The correction is dated at the observation it corrects, so under any decay
+// half-life the pair cancels exactly — both age identically — and the score
+// returns to what it was before the alert was raised rather than to a value
+// that depends on how long the review took. It is idempotent: re-resolving the
+// same alert (acknowledged, then resolved) records one correction, not two.
+// When the original observation is missing — alerts raised before the alert id
+// travelled on risk events — it falls back to cancelling the rule's severity
+// weight as of the resolution.
+func (s *Store) cancelAlertRisk(ctx context.Context, alert TransactionAlert, reviewerEmail string) error {
+	alertRef := strconv.FormatInt(alert.ID, 10)
+	var cleared bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT true FROM risk_events
+		WHERE user_id=$1 AND event_type=$2 AND details->>'alert_id'=$3
+		LIMIT 1`,
+		alert.UserID, monitorRiskEventClearedType(alert.Rule), alertRef).Scan(&cleared)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("check cleared risk event: %w", err)
+	}
+	if cleared {
+		return nil
+	}
+	score := -kyc.AlertScore(alert.Severity)
+	occurredAt := time.Now().UTC()
+	var standing float64
+	var observedAt time.Time
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(score,0), occurred_at FROM risk_events
+		WHERE user_id=$1 AND event_type=$2 AND details->>'alert_id'=$3
+		ORDER BY id DESC LIMIT 1`,
+		alert.UserID, monitorRiskEventType(alert.Rule), alertRef).Scan(&standing, &observedAt)
+	switch {
+	case err == nil:
+		score = -standing
+		occurredAt = observedAt
+	case !errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("load alert risk event: %w", err)
+	}
+	if _, err := s.RecordRiskEvent(ctx, RiskEvent{
+		UserID:     alert.UserID,
+		EventType:  monitorRiskEventClearedType(alert.Rule),
+		Score:      score,
+		OccurredAt: occurredAt,
+		Details: map[string]any{
+			"alert_id":   alert.ID,
+			"rule":       alert.Rule,
+			"severity":   alert.Severity,
+			"reviewer":   reviewerEmail,
+			"cleared_at": time.Now().UTC().Format(time.RFC3339),
+			"reason":     "reviewer resolved the alert as a false positive",
+		},
+	}); err != nil {
+		return fmt.Errorf("record alert risk cancellation: %w", err)
+	}
+	return nil
 }
 
 // alertOutcomeTx inserts exactly one outcome row per (alert, status) change.
