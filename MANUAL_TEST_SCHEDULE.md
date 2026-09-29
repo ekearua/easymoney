@@ -2458,13 +2458,14 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 | TC-14-012 | Monitoring | Admin | Console | Transaction monitoring alert resolution | P1 |
 | TC-14-013 | KYB | Admin | Console | KYB profile advancement | P1 |
 | TC-14-014 | KYB | Admin | Console | KYB advance-request approve/clear | P2 |
-| TC-14-016 | KYB | Merchant + Admin | Browser/Console | KYB document submission and per-document verification | P1 |
+| TC-14-021 | KYB | Merchant + Admin | Browser/Console | KYB document submission and per-document verification | P1 |
 | TC-14-015 | Allowances | Admin | Console | Tier limit update | P2 |
 | TC-14-016 | Thrift | Admin | Console | Thrift groups management | P1 |
 | TC-14-017 | Data | Admin | Console | Data orders list | P2 |
 | TC-14-018 | Messaging | Admin | Console | Messaging cost meter | P2 |
 | TC-14-019 | Operators | Admin | Console | Operator management (create/role/enable/password) | P1 |
 | TC-14-020 | Auth | Admin | Console | Admin factor revoke + merchant MFA reset | P2 |
+| TC-14-022 | Network | Admin | Console | Shared-device signal and ring case disposition move the risk band | P2 |
 
 <details>
 <summary>Step-by-step details for Phase 14</summary>
@@ -2651,7 +2652,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Module:** KYB
 - **Actor:** Admin   **Channel:** Console   **Priority:** P1
-- **Preconditions:** Registered merchants with B0 profiles; the merchant has submitted the five corporate documents (see TC-14-016) and a reviewer has verified each one.
+- **Preconditions:** Registered merchants with B0 profiles; the merchant has submitted the five corporate documents (see TC-14-021) and a reviewer has verified each one.
 
 **Steps**
 
@@ -2677,7 +2678,7 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 
-#### TC-14-016 - KYB document submission and per-document verification
+#### TC-14-021 - KYB document submission and per-document verification
 
 - **Module:** KYB
 - **Actor:** Merchant + Admin   **Channel:** Browser (`/w/{token}`) and Console   **Priority:** P1
@@ -2786,6 +2787,23 @@ Demo invoice recipient numbers (allow-list): `+2347061975340`, `+2348033072780`.
 3. Sign in as that merchant and confirm enrollment starts over.
 
 **Expected Result:** Removal and reset are recorded in the audit log; the reset merchant enrolls again at next sign-in.
+
+- **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
+
+#### TC-14-022 - Shared-device signal and ring case disposition move the risk band
+
+- **Module:** Network
+- **Actor:** Admin   **Channel:** Console   **Priority:** P2
+- **Preconditions:** Two customers and one machine: either a shared settlement account, or the same browser (same user agent + language, so the same fingerprint) signed in as both. To make a shared-device link, sign in as both from the same browser profile — the fingerprint is coarse, not a hardware id.
+
+**Steps**
+
+1. Note both customers' risk scores on /admin/kyc, then sign the second customer in from a browser the first has already used and reload their profiles.
+2. Open /admin/network and confirm the ring appears with both members and their bands.
+3. Raise a confirmed alert on one member (resolve a monitoring alert as confirmed) and reload /admin/kyc.
+4. Confirm the other member's band moved as well, then resolve the ring's case as **false positive** at /admin/network and reload both profiles.
+
+**Expected Result:** Step 1 records `network_shared_device` for **both** identities (symmetric, once each — the first customer is backfilled), and each score rises by 15 for one co-user. Step 3 records `network_ring_member` for each member and moves the non-alerted member's band too. Step 4 cancels each member's membership weight exactly (a `network_ring_member_cleared` row, dated with the original observation) and returns both scores to their pre-ring values; the shared-device weight remains, because sharing a browser is a fact and only ages out. No customer's own risk record (or data export) names the other customer.
 
 - **Result (Pass/Fail/Blocked):** ________________    **Notes:** ________________
 

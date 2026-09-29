@@ -1102,50 +1102,87 @@ func monitorRiskEventClearedType(rule string) string { return "monitor_" + rule 
 // travelled on risk events — it falls back to cancelling the rule's severity
 // weight as of the resolution.
 func (s *Store) cancelAlertRisk(ctx context.Context, alert TransactionAlert, reviewerEmail string) error {
-	alertRef := strconv.FormatInt(alert.ID, 10)
+	ref := strconv.FormatInt(alert.ID, 10)
+	return s.cancelRiskEventFor(ctx,
+		alert.UserID, monitorRiskEventType(alert.Rule), monitorRiskEventClearedType(alert.Rule),
+		"alert_id", ref,
+		// Alerts raised before the id travelled on the risk event have nothing
+		// to look up, so their weight is cancelled as of the resolution.
+		func() (float64, time.Time) {
+			return -kyc.AlertScore(alert.Severity), time.Now().UTC()
+		},
+		map[string]any{
+			"rule":       alert.Rule,
+			"severity":   alert.Severity,
+			"reviewer":   reviewerEmail,
+			"cleared_at": time.Now().UTC().Format(time.RFC3339),
+			"reason":     "reviewer resolved the alert as a false positive",
+		})
+}
+
+// cancelRiskEventFor appends the negative observation that cancels the weight a
+// standing observation contributed, for one subject. It is the one way a
+// reviewer's disposition gives risk weight back, shared by the monitoring and
+// network signals.
+//
+// Two properties matter. The correction is dated with the observation it
+// corrects, so under any decay half-life the pair cancels exactly — both age
+// identically — rather than leaving a residue proportional to the review
+// latency. And it is idempotent: the standing event and its correction are
+// matched on (keyField, keyValue), so re-resolving the same finding records one
+// correction, never two. clearedType must differ from eventType so a correction
+// can never be mistaken for the observation it cancels.
+//
+// With no standing observation the optional fallback decides the cancellation
+// to write anyway; a nil fallback means there is nothing to cancel and the call
+// is a no-op.
+func (s *Store) cancelRiskEventFor(ctx context.Context, userID uuid.UUID, eventType, clearedType, keyField, keyValue string, fallback func() (float64, time.Time), details map[string]any) error {
 	var cleared bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT true FROM risk_events
-		WHERE user_id=$1 AND event_type=$2 AND details->>'alert_id'=$3
+		WHERE user_id=$1 AND event_type=$2 AND details->>$3=$4
 		LIMIT 1`,
-		alert.UserID, monitorRiskEventClearedType(alert.Rule), alertRef).Scan(&cleared)
+		userID, clearedType, keyField, keyValue).Scan(&cleared)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("check cleared risk event: %w", err)
 	}
 	if cleared {
 		return nil
 	}
-	score := -kyc.AlertScore(alert.Severity)
-	occurredAt := time.Now().UTC()
+	var score float64
+	var occurredAt time.Time
 	var standing float64
-	var observedAt time.Time
 	err = s.pool.QueryRow(ctx, `
 		SELECT COALESCE(score,0), occurred_at FROM risk_events
-		WHERE user_id=$1 AND event_type=$2 AND details->>'alert_id'=$3
+		WHERE user_id=$1 AND event_type=$2 AND details->>$3=$4
 		ORDER BY id DESC LIMIT 1`,
-		alert.UserID, monitorRiskEventType(alert.Rule), alertRef).Scan(&standing, &observedAt)
+		userID, eventType, keyField, keyValue).Scan(&standing, &occurredAt)
 	switch {
 	case err == nil:
 		score = -standing
-		occurredAt = observedAt
-	case !errors.Is(err, pgx.ErrNoRows):
-		return fmt.Errorf("load alert risk event: %w", err)
+	case errors.Is(err, pgx.ErrNoRows) && fallback != nil:
+		score, occurredAt = fallback()
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	default:
+		return fmt.Errorf("load standing risk event: %w", err)
 	}
+	if score == 0 {
+		return nil
+	}
+	copyDetails := make(map[string]any, len(details)+1)
+	for key, value := range details {
+		copyDetails[key] = value
+	}
+	copyDetails[keyField] = keyValue
 	if _, err := s.RecordRiskEvent(ctx, RiskEvent{
-		UserID:     alert.UserID,
-		EventType:  monitorRiskEventClearedType(alert.Rule),
+		UserID:     userID,
+		EventType:  clearedType,
 		Score:      score,
 		OccurredAt: occurredAt,
-		Details: map[string]any{
-			"alert_id":   alert.ID,
-			"rule":       alert.Rule,
-			"severity":   alert.Severity,
-			"reviewer":   reviewerEmail,
-			"cleared_at": time.Now().UTC().Format(time.RFC3339),
-			"reason":     "reviewer resolved the alert as a false positive",
-		},
+		Details:    copyDetails,
 	}); err != nil {
-		return fmt.Errorf("record alert risk cancellation: %w", err)
+		return fmt.Errorf("record risk cancellation: %w", err)
 	}
 	return nil
 }

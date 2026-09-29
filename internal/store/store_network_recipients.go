@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -10,6 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"whatsapp-payment-demo/internal/kyc"
 )
 
 // Recipient-account link edges and ring triage. user_payout_destinations
@@ -418,9 +424,90 @@ func (s *Store) EnsureNetworkCases(ctx context.Context, rings []ScoredRing, minC
 		}
 		if tag.RowsAffected() > 0 {
 			n++
+			if err := s.recordRingMembershipRisk(ctx, ring, key); err != nil {
+				return n, err
+			}
 		}
 	}
 	return n, nil
+}
+
+// ringRiskRef is the opaque reference a ring's risk observations carry. The
+// members_key is a list of user ids, and a risk event's details land in the
+// customer's own record (and their data export), so the ring is named by a
+// digest instead of by the identities in it.
+func ringRiskRef(membersKey string) string {
+	sum := sha256.Sum256([]byte(membersKey))
+	return hex.EncodeToString(sum[:8])
+}
+
+// recordRingMembershipRisk records one network_ring_member observation per
+// member of a ring whose case carries confirmed evidence, once per member per
+// ring. Membership is a judgement about who an identity moves with — unlike a
+// shared browser, which is just a fact — so it is cancellable, and resolving
+// the case as a false positive cancels it (ResolveNetworkCase).
+func (s *Store) recordRingMembershipRisk(ctx context.Context, ring ScoredRing, membersKey string) error {
+	score := kyc.RingMembershipRisk(int(ring.ConfirmedHits), len(ring.Members))
+	if score <= 0 {
+		return nil
+	}
+	ref := ringRiskRef(membersKey)
+	for _, member := range ring.Members {
+		id, err := uuid.Parse(member.Subject)
+		if err != nil {
+			continue
+		}
+		var exists bool
+		err = s.pool.QueryRow(ctx, `
+			SELECT true FROM risk_events
+			WHERE user_id=$1 AND event_type=$2 AND details->>'ring_ref'=$3
+			LIMIT 1`, id, kyc.RiskEventRingMember, ref).Scan(&exists)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check ring membership risk event: %w", err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.RecordRiskEvent(ctx, RiskEvent{
+			UserID:    id,
+			EventType: kyc.RiskEventRingMember,
+			Score:     score,
+			Details: map[string]any{
+				"ring_ref":         ref,
+				"member_count":     len(ring.Members),
+				"confirmed_alerts": ring.ConfirmedHits,
+				"link_kinds":       ring.Kinds,
+				"reason":           "member of a ring with confirmed alert evidence",
+			},
+		}); err != nil {
+			return fmt.Errorf("record ring membership risk: %w", err)
+		}
+	}
+	return nil
+}
+
+// cancelRingMembershipRisk gives back the weight a cleared ring added to each
+// member. Only the false-positive disposition cancels: a case resolved as
+// confirmed keeps the observation (and the allowance freeze that goes with it).
+func (s *Store) cancelRingMembershipRisk(ctx context.Context, c NetworkCase, reviewerEmail string) error {
+	ref := ringRiskRef(c.MembersKey)
+	for _, member := range c.Members {
+		id, err := uuid.Parse(member)
+		if err != nil {
+			continue
+		}
+		if err := s.cancelRiskEventFor(ctx, id, kyc.RiskEventRingMember, kyc.RiskEventRingMember+"_cleared",
+			"ring_ref", ref, nil,
+			map[string]any{
+				"member_count": c.MemberCount,
+				"reviewer":     reviewerEmail,
+				"cleared_at":   time.Now().UTC().Format(time.RFC3339),
+				"reason":       "reviewer resolved the network case as a false positive",
+			}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // memberSubjects extracts a ring's member ids as strings.
@@ -489,5 +576,13 @@ func (s *Store) ResolveNetworkCase(ctx context.Context, caseID int64, status, re
 	}
 	_ = json.Unmarshal([]byte(membersRaw), &c.Members)
 	_ = json.Unmarshal([]byte(kindsRaw), &c.LinkKinds)
+	// A cleared case releases the membership weight it added, exactly as a
+	// dismissed alert does: the whole point of scoring membership is that the
+	// score follows the suspicions a reviewer still stands behind.
+	if status == "false_positive" {
+		if err := s.cancelRingMembershipRisk(ctx, c, reviewerEmail); err != nil {
+			return NetworkCase{}, err
+		}
+	}
 	return c, nil
 }

@@ -4,10 +4,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"whatsapp-payment-demo/internal/kyc"
 )
 
 // TrustedDevice is one browser a subject has used on a portal surface,
@@ -27,6 +32,9 @@ type TrustedDevice struct {
 // TouchTrustedDevice upserts one device observation for a user: the first
 // sighting inserts, later sightings only advance last_seen_at, so the row
 // stays stable across sessions (UNIQUE (user_id, device_fingerprint)).
+//
+// A sighting is also the moment a browser turns out to be shared, so it feeds
+// the network risk signal for every identity on that fingerprint.
 func (s *Store) TouchTrustedDevice(ctx context.Context, userID uuid.UUID, fingerprint, label string) error {
 	if userID == uuid.Nil || fingerprint == "" {
 		return nil
@@ -36,7 +44,75 @@ func (s *Store) TouchTrustedDevice(ctx context.Context, userID uuid.UUID, finger
 		VALUES($1, $2, $3, now(), now())
 		ON CONFLICT (user_id, device_fingerprint)
 		DO UPDATE SET last_seen_at = now()`, userID, fingerprint, label)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.recordSharedDeviceRisk(ctx, fingerprint, label)
+}
+
+// recordSharedDeviceRisk records one network_shared_device observation for
+// every identity on a fingerprint used by more than one, once each. It is
+// symmetric on purpose: the identity that happened to sign in second must not
+// be the only one carrying the link, and the one that was already there gets
+// its observation backfilled the moment the share becomes knowable.
+//
+// Sharing a browser is a fact, not a suspicion, so nothing cancels it — a
+// family laptop is still a family laptop after a reviewer clears the case. It
+// ages on the risk-decay clock like every other observation, and the details
+// carry no other identity's identifiers: a customer's own risk record must not
+// name the strangers they share a machine with.
+func (s *Store) recordSharedDeviceRisk(ctx context.Context, fingerprint, label string) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT user_id FROM trusted_devices
+		WHERE device_fingerprint=$1
+		ORDER BY first_seen_at ASC`, fingerprint)
+	if err != nil {
+		return err
+	}
+	var users []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		users = append(users, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(users) < 2 {
+		return nil
+	}
+	coUsers := len(users) - 1
+	for _, id := range users {
+		var exists bool
+		err := s.pool.QueryRow(ctx, `
+			SELECT true FROM risk_events
+			WHERE user_id=$1 AND event_type=$2 AND details->>'fingerprint'=$3
+			LIMIT 1`, id, kyc.RiskEventSharedDevice, fingerprint).Scan(&exists)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check shared device risk event: %w", err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := s.RecordRiskEvent(ctx, RiskEvent{
+			UserID:    id,
+			EventType: kyc.RiskEventSharedDevice,
+			Score:     kyc.SharedDeviceRisk(coUsers),
+			Details: map[string]any{
+				"fingerprint":   fingerprint,
+				"device_label":  label,
+				"co_user_count": coUsers,
+				"reason":        "browser fingerprint shared with another identity",
+			},
+		}); err != nil {
+			return fmt.Errorf("record shared device risk: %w", err)
+		}
+	}
+	return nil
 }
 
 // TrustedDevicesForUser lists a user's known devices, most recently seen
