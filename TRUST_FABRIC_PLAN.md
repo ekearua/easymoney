@@ -8,6 +8,12 @@ already exists per layer, and defines milestones M0–M5 with concrete
 acceptance criteria. Status vocabulary: **exists** (in production code),
 **partial** (some path wired), **missing**.
 
+**Compliance mapping:** the regulatory reading of these layers — the CBN
+AML/CFT/CPF obligations each layer satisfies and the gap register — lives in
+`CBN_AML_COMPLIANCE_SPEC.md`; the screening-vendor decision lives in
+`AML_VENDOR_DECISION_RECORD.md`. This file stays the architecture plan; the
+spec stays the obligation map. Keep the two in sync when a wave moves both.
+
 The doctrine's calendar cadence (0–3 / 3–6 / 6–12 / 12–24 months) maps to
 M0–M1 / M2–M3 / M4 / M5 here — but the milestones are ordered by dependency,
 not dates: a layer's milestone only starts when the layer below it exists.
@@ -33,7 +39,7 @@ layer joins on.
   never re-onboarded on another; account linking merges channel rows into
   one surviving primary (`store_link_accounts.go`).
 
-## Layer 2 — Signal ("what is happening around this identity?") — partial
+## Layer 2 — Signal ("what is happening around this identity?") — exists
 
 - **Transaction signals — exists.** The rail-aware monitor scores every
   settled money movement (payments, top-ups, standing credits, refunds,
@@ -42,62 +48,71 @@ layer joins on.
   and idempotent dedupe.
 - **Screening signals — exists** at onboarding and on the 90-day rescreen
   worker (`KYC_RESCREEN_PERIOD`).
-- **Device/IP signals — missing.** Migration 026 created `trusted_devices`
-  but nothing writes to it. Web sign-in and checkout capture no IP or user
-  agent. This is the biggest blind spot: velocity rules see the *account*,
-  never the *device*, so one actor rotating ten accounts is invisible.
+- **Device signals — exists** (was the biggest blind spot). Web sign-in and
+  checkout capture request context; `trusted_devices` is touched on every
+  sign-in/checkout, the KYC profile lists devices, and shared-device
+  co-usage feeds the risk score symmetrically for every identity on the
+  fingerprint (`RiskEventSharedDevice`, capped at 45).
 - **Session/channel signals — partial.** Sessions are keyed per channel and
-  channel linking is audited, but nothing scores "new device + high-value
-  action".
+  channel linking is audited; "new device + high-value action" scoring is
+  still not wired.
 
-## Layer 3 — Decision ("what action should the platform take?") — partial
+## Layer 3 — Decision ("what action should the platform take?") — exists
 
-- **Decisions that exist:** tier gates refuse payments above ceilings
+- **Decisions wired:** tier gates refuse payments above ceilings
   (`ReserveAllowance` validates single/daily/monthly against
   `kyc_tier_limits`); a blocking screening decision halts advancement and
   downgrades; medium/high monitoring alerts open a `monitoring` review case
   and feed the risk score.
-- **The gap:** `kyc.ScoreRisk` computes a 0–100 score and a low/medium/high
-  band and persists it on the KYC profile (`risk_score`, `risk_band`) — but
-  **nothing reads the band back to change behaviour**. The score is
-  display-only. The doctrine's decision layer (approve / block / escalate /
-  step-up / limit) has exactly one wired action (review case) and one
-  unwired instrument (the band).
+- **The band bites (was the gap):** `kyc.ScoreRisk` computes the 0–100 score
+  with **decay** (`RISK_DECAY_HALF_LIFE`, 90d default) and **false-positive
+  cancellation** (a dismissed alert cancels exactly its dated weight), and a
+  **high** band caps the single ceiling at `RISK_HIGH_SINGLE_LIMIT_KOBO`
+  inside `ReserveAllowance` until a review clears. Alert outcomes are
+  first-class data (false_positive/confirmed/undetermined) feeding the
+  tuning loop (`TUNING_FP_PERCENT`, `TUNING_MIN_LABELLED`).
+- **Still unwired:** step-up authentication as a band action; screening
+  hold/interdiction at payment time (spec G2).
 
-## Layer 4 — Network ("how is this entity connected to others?") — missing
+## Layer 4 — Network ("how is this entity connected to others?") — partial
 
-No entity resolution, no graph. What partially compensates: the cross-rail
-monitor correlates *movements* per user; channel linking correlates
-*accounts* (but only when the customer declares them); the structuring rule
-detects split patterns for one identity. Cross-identity patterns — many
-accounts sharing a device, a bank account receiving from structuring
-clusters — are undetectable until devices (M2) and recipient links (future)
-exist.
+- **Entity-link analysis — exists.** Network edges over shared trusted
+  devices, shared payout/recipient bank accounts (`user_payout_destinations`,
+  written by the individual-pay and payout rails), and channel identities;
+  ring detection with **weighted edges** (sightings + recency) and a triage
+  queue at `/admin/network` showing member risk bands and tiers.
+- **Ring judgements — exists.** A confirmed alert raises one linked case
+  across all ring members (`EnsureNetworkCases` fires on the alert-resolution
+  path, not just on admin load); resolving as false positive cancels each
+  member's ring weight exactly; confirmed keeps the weight and freezes
+  allowances in one action. Ring membership feeds the risk score
+  (`RiskEventRingMember`, capped at 70; zero without a confirmed hit).
+- **Still missing:** cross-institution/consortium federation (governance
+  project, out of scope below).## Layer 5 — Intelligence ("how does the system learn?") — partial
 
-## Layer 5 — Intelligence ("how does the system learn?") — missing
-
-Every ingredient exists as data: alerts with reviewer dispositions
-(`ResolveTransactionAlert`), risk events with timestamps and scores, a
-kyc audit log, false-positive-prone rules with thresholds in config. What
-is missing is the loop: a resolved alert records no outcome label, no
-threshold was ever tuned from outcomes, and no dashboard answers "are the
-rules getting better?". The doctrine's warning — *episodic verification
-produces episodic intelligence* — applies: without outcome labels captured
-now, any future model work has no training data.
+- **Outcome loop — exists (was missing).** Every terminal alert status
+  records exactly one outcome row; per-rule false-positive counts feed the
+  tuning suggestion; the 7-day FP rate drives tuning suggestions; risk
+  events carry timestamps, decay, and cancellation provenance — so the
+  labels a future model needs are already accumulating.
+- **KPIs — partial:** signal coverage and risk-band distribution are
+  computed on the admin dashboard; median alert-resolution time and the
+  doc's full KPI section are the remaining M5 items.
+- **ML scoring — still missing,** deliberately: blocked on M4 outcome
+  volume; deterministic `ScoreRisk` weights stay until labels exist.
 
 ---
 
 ## Milestones
 
-### M0 — Foundations and truth (mostly done)
+### M0 — Foundations and truth — done
 
 - **M0.1 (done, `932bf95`)** — provider env template truthful, pinned by a
   load test; retired-rail cases purged from docs and workbooks.
-- **M0.2 (this wave)** — the plan itself versioned (this file); decision
-  knobs inventoried in one place so M3 has a surface to act on:
-  `kyc_tier_limits` (ceilings), `REPORT_CTR_THRESHOLD_KOBO` (structuring
-  boundary), `MONITOR_*` (rule thresholds), `risk_band` (the unused
-  instrument).
+- **M0.2 (done)** — the plan versioned; decision knobs inventoried
+  (`kyc_tier_limits`, `REPORT_CTR_THRESHOLD_KOBO`, `MONITOR_*`, `risk_band`).
+- **M0.3 (done)** — the CBN obligation→control mapping and gap register
+  versioned as `CBN_AML_COMPLIANCE_SPEC.md`.
 - **Acceptance:** a reviewer can read this file, open each named symbol,
   and find the code as described. CI keeps docs honest via the existing
   template-load and coverage drift guards.
@@ -113,66 +128,60 @@ instead of starting empty.
   the admin can see it on the KYC profile view; no PII beyond IP/UA;
   unit + integration coverage.
 
-### M2 — Device signals: make `trusted_devices` real
+### M2 — Device signals: make `trusted_devices` real — done
 
-Fingerprint web sessions (stable hash of UA + accepted-language class at
-M1; upgraded to real device attestation later), record/touch rows on
-sign-in and checkout, and surface the device list on the KYC profile.
+Fingerprinting, touch-on-sign-in/checkout, profile device list, and the
+shared-device risk signal all shipped (see Layer 2); migration 079 added the
+fingerprint index the lookups needed.
 
-- **Acceptance:** repeated visits upsert one row (`UNIQUE (user_id,
-  device_fingerprint)` honoured); `last_seen_at` advances; profile view
-  shows devices; integration test covers first-touch and repeat-touch.
+- **Acceptance (met):** repeated visits upsert one row; `last_seen_at`
+  advances; profile view shows devices; integration tests cover
+  first-touch, repeat-touch, and the symmetric co-user risk emission.
 
-### M3 — Decision: make the risk band bite
+### M3 — Decision: make the risk band bite — done
 
-`risk_band` becomes an input: a **high** band caps the individual
-money-in/money-out single ceiling (config knob
-`RISK_HIGH_SINGLE_LIMIT_KOBO`, default the L1 single ceiling) until a
-review case clears; **medium** keeps current limits but is surfaced on the
-admin profile. The cap joins `ReserveAllowance`'s existing tier validation
-— one more ceiling check in the same audited transaction.
+The high band caps the single ceiling (`RISK_HIGH_SINGLE_LIMIT_KOBO`) inside
+`ReserveAllowance` until a review clears; the decay/cancellation machinery
+(`8e8341d`) and the network signals (`c547db0`) landed on top.
 
-- **Acceptance:** a high-band user is capped at the configured ceiling
-  regardless of tier; clearing the review (recompute with clear evidence)
-  restores the tier ceiling; store tests cover cap, restore, and
-  replay-idempotency; the admin profile view shows the active ceiling.
+- **Acceptance (met):** cap, restore, and replay-idempotency covered by
+  store tests; the admin profile shows the active ceiling; false-positive
+  cancellation returns the score to baseline exactly.
 
-### M4 — Feedback: outcomes become first-class data
+### M4 — Feedback: outcomes become first-class data — done
 
-Resolving a monitoring alert records the disposition as an outcome row
-(`false_positive` / `confirmed` / `undetermined` via the existing resolve
-statuses: acknowledged→undetermined, escalated→confirmed, resolved→
-reviewer-chosen). Outcomes are visible as counts per rule on the
-compliance queue, so threshold tuning has evidence.
+Terminal alert statuses record outcome rows
+(`false_positive` / `confirmed` / `undetermined`), the compliance queue
+shows per-rule counts, and the 7-day FP-rate crossing a threshold surfaces
+a tuning suggestion in the queue.
 
-- **Acceptance:** every terminal alert status writes exactly one outcome
-  row; the queue shows per-rule outcome counts; integration test covers
-  the three statuses.
+- **Acceptance (met):** exactly one outcome row per terminal status;
+  per-rule counts on the queue; integration tests cover the statuses and
+  the suggestion path.
 
-### M5 — Intelligence: the doctrine's KPIs, computed
+### M5 — Intelligence: the doctrine's KPIs, computed — partial
 
-The admin metrics dashboard gains the doc's own KPI section, computed from
-existing tables: false-positive rate by rule (M4 outcomes), median time
-from alert to resolution, signal coverage (share of movements arriving
-through the monitored rails), and risk-band distribution. No learning
-system yet — the point is that when one is built, its labels and baseline
-metrics already exist.
+False-positive rate by rule, signal coverage, and risk-band distribution
+are on the admin dashboard; **median alert-resolution time and the full KPI
+section remain**, plus the trust timeline already shipped on the KYC
+profile (alerts + device sightings + audit entries in one feed).
 
-- **Acceptance:** the dashboard renders the four KPIs from seeded data;
-  browser smoke proves the page; the numbers reconcile with the
-  underlying tables in an integration test.
+- **Acceptance (remaining):** dashboard renders the full KPI set from
+  seeded data; the numbers reconcile with the underlying tables in an
+  integration test.
 
 ---
 
 ## Explicitly out of scope for now
 
-- **Network layer (graph/entity resolution).** Gated on M2 device data
-  accumulating and on a real multi-identity fraud pattern to justify the
-  schema. The doctrine's own "consortium" layer is a governance project,
-  not a feature.
+- **Cross-institution/consortium federation.** The doctrine's own
+  "consortium" layer is a governance project, not a feature; the intra-
+  platform graph now exists (Layer 4).
 - **Vendor signal breadth** (behavioural biometrics, phone/email
-  reputation). The doctrine's "signal breadth beats model sophistication"
-  is agreed, but each vendor adds a data-processing agreement; revisit
-  after M3/M4 prove the decision loop.
+  reputation). Each vendor adds a data-processing agreement; revisit after
+  the screening-vendor decision (`AML_VENDOR_DECISION_RECORD.md`) lands.
 - **ML scoring.** Blocked on M4 outcome volume; deterministic
   `ScoreRisk` weights stay until labels exist.
+- **Screening hold/interdiction at payment time** (spec G2) and the other
+  spec gaps — tracked in `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated
+  here.
