@@ -49,13 +49,20 @@ def row(n, cells):
     return '<row r="%d">%s</row>' % (n, "".join(cells))
 
 def sheet_xml(rows, cols=None):
+    # CT_Worksheet element order matters to Excel: dimension, sheetViews,
+    # cols, then sheetData. Emitting cols after sheetData makes Excel reject
+    # the whole file, even though the XML is well-formed.
     colxml = ""
     if cols:
         colxml = "<cols>%s</cols>" % "".join(
             '<col min="%d" max="%d" width="%s" customWidth="1"/>' % c for c in cols)
+    maxrow = max(int(r.split('"')[1]) for r in rows) if rows else 1
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<worksheet xmlns="%s"><sheetData>%s</sheetData>%s'
-            '</worksheet>' % (NS, "".join(rows), colxml))
+            '<worksheet xmlns="%s">'
+            '<dimension ref="A1:%s%d"/>'
+            '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
+            '%s<sheetData>%s</sheetData>'
+            '</worksheet>' % (NS, "D" if cols else "A", maxrow + 2, colxml, "".join(rows)))
 
 # ---------- styles: 0 plain, 1 bold header, 2 editable input (yellow),
 #                     3 formula/result (light gray), 4 money format -----------
@@ -107,7 +114,8 @@ def workbook_xml(names):
         for i, n in enumerate(names))
     return ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<workbook xmlns="%s" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-            '<sheets>%s</sheets></workbook>' % (NS, sheets))
+            '<sheets>%s</sheets>'
+            '<calcPr calcId="124519" fullCalcOnLoad="1"/></workbook>' % (NS, sheets))
 
 def wb_rels(n):
     rels = "".join(
