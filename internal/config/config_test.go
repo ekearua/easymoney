@@ -466,3 +466,37 @@ func TestAIProductionGuard(t *testing.T) {
 		t.Fatalf("expected zero-RPM rejection in production, got %v", err)
 	}
 }
+
+// TestAMLRecordRetentionValidation pins the G6 record-keeping floor: config
+// refuses a retention period below the MLPPA five-year boundary, refuses a
+// RETENTION_PERIOD that asks to purge past the floor, and accepts both the
+// documented default and an explicit zero (the dev/harness escape hatch).
+func TestAMLRecordRetentionValidation(t *testing.T) {
+	t.Setenv("AML_RECORD_RETENTION", "2160h") // 90 days: below the floor
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "AML_RECORD_RETENTION") {
+		t.Fatalf("expected sub-five-year AML retention rejection, got %v", err)
+	}
+
+	t.Setenv("AML_RECORD_RETENTION", "43800h") // 5y, but RETENTION_PERIOD asks for 10y
+	t.Setenv("RETENTION_PERIOD", "87600h")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "RETENTION_PERIOD") {
+		t.Fatalf("expected RETENTION_PERIOD-above-floor rejection, got %v", err)
+	}
+
+	t.Setenv("RETENTION_PERIOD", "2160h") // the template's 90d sits under the floor
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("5y floor with 90d retention period should load, got %v", err)
+	}
+	if cfg.AMLRecordRetention != 5*365*24*3600*1e9 {
+		t.Fatalf("expected 5y AML floor, got %s", cfg.AMLRecordRetention)
+	}
+
+	t.Setenv("AML_RECORD_RETENTION", "0") // documented dev escape hatch
+	_, err = Load()
+	if err != nil {
+		t.Fatalf("explicit zero should disable the floor, got %v", err)
+	}
+}

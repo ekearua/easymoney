@@ -117,6 +117,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// Risk observations decay so a customer's score follows the suspicions
 	// still standing rather than every alert ever raised against them.
 	repository.RiskDecayHalfLife = cfg.RiskDecayHalfLife
+	// The AML record-keeping floor (G6): retention may archive financial
+	// history but never hard-delete AML-scope records younger than the
+	// MLPPA five-year boundary the config validates.
+	repository.AMLRecordRetention = cfg.AMLRecordRetention
 	// Interswitch is the sole payment gateway: card checkout (Hosted Fields /
 	// legacy redirect form), bank-transfer DVA collection, NIP payouts,
 	// refunds, and VTU data all ride on the same client.

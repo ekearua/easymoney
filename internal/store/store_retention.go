@@ -148,6 +148,24 @@ func (s *Store) appendArchive(ctx context.Context, tx pgx.Tx, recordType, subjec
 	return err
 }
 
+// appendArchiveGuarded is the re-run-safe variant of appendArchive used by
+// the retention archivers: if a previous purge run already snapshotted this
+// (record_type, subject_id) — e.g. it crashed between the ledger insert and
+// the delete — the existing snapshot is kept and no duplicate row is written.
+// The purge caller then re-attempts the delete, which is what makes a
+// retried PurgeBefore converge instead of doubling ledger rows.
+func (s *Store) appendArchiveGuarded(ctx context.Context, tx pgx.Tx, recordType, subjectID string, payload []byte) error {
+	var existing []byte
+	err := tx.QueryRow(ctx, `SELECT payload FROM archive_ledger WHERE record_type=$1 AND subject_id=$2 ORDER BY id DESC LIMIT 1`, recordType, subjectID).Scan(&existing)
+	if err == nil {
+		return nil // already snapshotted by an earlier run
+	}
+	if err != pgx.ErrNoRows {
+		return err
+	}
+	return s.appendArchive(ctx, tx, recordType, subjectID, payload)
+}
+
 // archivedSubject returns true when a legal hold covers a subject, so the purge
 // worker skips it.
 func (s *Store) archivedSubject(ctx context.Context, tx pgx.Tx, subjectType, subjectID string) (bool, error) {
@@ -172,6 +190,11 @@ type PurgeReport struct {
 	AuditArchived     int64
 	AuditPurged       int64
 	RowsSkippedByHold int64
+	// AMLFloorClamped is true when the AML record-keeping floor
+	// (AMLRecordRetention) overrode the requested cutoff for the AML-scope
+	// classes, i.e. the operator asked to purge past the MLPPA floor and
+	// retention refused for those classes.
+	AMLFloorClamped bool
 }
 
 // PurgeBefore removes demo personal data and operational records older than
@@ -182,6 +205,20 @@ type PurgeReport struct {
 func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport, error) {
 	var report PurgeReport
 	batch := 500
+
+	// G6: the AML record-keeping floor (MLPPA 2022, five years) overrides
+	// the requested cutoff for every AML-scope class. Operational classes
+	// keep the caller's cutoff — only the classes the Act obliges us to
+	// keep are clamped. Zero disables the floor (dev/harness escape).
+	now := time.Now()
+	amlCutoff := cutoff
+	if s.AMLRecordRetention > 0 {
+		floor := now.Add(-s.AMLRecordRetention)
+		if amlCutoff.After(floor) {
+			amlCutoff = floor
+			report.AMLFloorClamped = true
+		}
+	}
 
 	holds, err := s.ListLegalHolds(ctx)
 	if err != nil {
@@ -221,7 +258,6 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 		{"inbound_messages", "provider_message_id", `received_at < $1`},
 		{"message_outbox", "id", `created_at < $1`},
 		{"sms_requests", "provider_message_id", `received_at < $1`},
-		{"merchant_registrations", "id", `created_at < $1`},
 	} {
 		n, err := s.purgeBatch(ctx, t.table, t.key, t.pred, batch, cutoff)
 		if err != nil {
@@ -230,22 +266,30 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 		report.OperationalPurged += n
 	}
 
+	// Merchant registrations are KYB/CDD records (G6): archive them into the
+	// ledger before purging, on the AML clock, not the operational one.
+	_, regPurged, err := s.archiveAndPurgeMerchantRegistrations(ctx, amlCutoff)
+	if err != nil {
+		return report, err
+	}
+	report.OperationalPurged += regPurged
+
 	// Financial records: archive first, then hard-delete in batches.
-	paymentsArchived, paymentsPurged, err := s.archiveAndPurgePayments(ctx, cutoff)
+	paymentsArchived, paymentsPurged, err := s.archiveAndPurgePayments(ctx, amlCutoff)
 	if err != nil {
 		return report, err
 	}
 	report.PaymentsArchived = paymentsArchived
 	report.PaymentsPurged = paymentsPurged
 
-	invoicesArchived, invoicesPurged, err := s.archiveAndPurgeInvoices(ctx, cutoff)
+	invoicesArchived, invoicesPurged, err := s.archiveAndPurgeInvoices(ctx, amlCutoff)
 	if err != nil {
 		return report, err
 	}
 	report.InvoicesArchived = invoicesArchived
 	report.InvoicesPurged = invoicesPurged
 
-	thriftPurged, err := s.archiveAndPurgeThrift(ctx, cutoff)
+	thriftPurged, err := s.archiveAndPurgeThrift(ctx, amlCutoff)
 	if err != nil {
 		return report, err
 	}
@@ -258,15 +302,19 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 	}
 	report.OperationalPurged += n
 
-	auditArchived, auditPurged, err := s.archiveAndPurgeAudit(ctx, cutoff)
+	auditArchived, auditPurged, err := s.archiveAndPurgeAudit(ctx, amlCutoff)
 	if err != nil {
 		return report, err
 	}
 	report.AuditArchived = auditArchived
 	report.AuditPurged = auditPurged
 
-	// Users: only those inactive beyond the cutoff with no financial footprint
-	// and no active legal hold. Everything else cascades or is skipped.
+	// Users: only those inactive beyond the AML floor with no financial
+	// footprint and no active legal hold. Everything else cascades or is
+	// skipped. The sweep uses the AML cutoff rather than the caller's:
+	// account records are CDD data (G6), so a customer's identity is not
+	// deleted while their five-year window is open even if they never
+	// transacted.
 	for {
 		var id uuid.UUID
 		err := s.pool.QueryRow(ctx, `
@@ -279,7 +327,7 @@ func (s *Store) PurgeBefore(ctx context.Context, cutoff time.Time) (PurgeReport,
 			  AND NOT EXISTS (SELECT 1 FROM merchant_owners mo WHERE mo.user_id=u.id)
 			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='user' AND h.subject_id=u.id::text
 			    AND (h.expires_at IS NULL OR h.expires_at > now()))
-			ORDER BY u.id LIMIT 1`, cutoff).Scan(&id)
+			ORDER BY u.id LIMIT 1`, amlCutoff).Scan(&id)
 		if err == pgx.ErrNoRows {
 			break
 		}
@@ -344,12 +392,77 @@ func (s *Store) archiveAndPurgePayments(ctx context.Context, cutoff time.Time) (
 				_ = tx.Rollback(ctx)
 				return archived, purged, err
 			}
-			if err := s.appendArchive(ctx, tx, "payment", id.String(), payload); err != nil {
+			if err := s.appendArchiveGuarded(ctx, tx, "payment", id.String(), payload); err != nil {
 				_ = tx.Rollback(ctx)
 				return archived, purged, err
 			}
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM payments WHERE id = ANY($1)`, ids)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return archived, purged, err
+		}
+		archived += int64(len(ids))
+		purged += tag.RowsAffected()
+	}
+	return archived, purged, nil
+}
+
+// archiveAndPurgeMerchantRegistrations snapshots KYB/CDD merchant
+// registration requests (G6: these are CDD records, previously hard-deleted
+// unarchived after the operational retention period) into the ledger before
+// deleting them, skipping anything under a legal hold.
+func (s *Store) archiveAndPurgeMerchantRegistrations(ctx context.Context, cutoff time.Time) (int64, int64, error) {
+	var archived, purged int64
+	for {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return archived, purged, err
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT id FROM merchant_registrations
+			WHERE created_at < $1
+			  AND NOT EXISTS (SELECT 1 FROM legal_holds h WHERE h.subject_type='merchant_registration' AND h.subject_id=id::text
+			    AND (h.expires_at IS NULL OR h.expires_at > now()))
+			ORDER BY id LIMIT 100`, cutoff)
+		if err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		var ids []uuid.UUID
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			_ = tx.Rollback(ctx)
+			return archived, purged, err
+		}
+		if len(ids) == 0 {
+			_ = tx.Commit(ctx)
+			break
+		}
+		for _, id := range ids {
+			payload, err := merchantRegistrationArchivePayload(ctx, tx, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+			if err := s.appendArchiveGuarded(ctx, tx, "merchant_registration", id.String(), payload); err != nil {
+				_ = tx.Rollback(ctx)
+				return archived, purged, err
+			}
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM merchant_registrations WHERE id = ANY($1)`, ids)
 		if err != nil {
 			_ = tx.Rollback(ctx)
 			return archived, purged, err
@@ -408,7 +521,7 @@ func (s *Store) archiveAndPurgeInvoices(ctx context.Context, cutoff time.Time) (
 				_ = tx.Rollback(ctx)
 				return archived, purged, err
 			}
-			if err := s.appendArchive(ctx, tx, "invoice", id.String(), payload); err != nil {
+			if err := s.appendArchiveGuarded(ctx, tx, "invoice", id.String(), payload); err != nil {
 				_ = tx.Rollback(ctx)
 				return archived, purged, err
 			}
@@ -474,7 +587,7 @@ func (s *Store) archiveAndPurgeThrift(ctx context.Context, cutoff time.Time) (in
 				_ = tx.Rollback(ctx)
 				return purged, err
 			}
-			if err := s.appendArchive(ctx, tx, "thrift_group", id.String(), payload); err != nil {
+			if err := s.appendArchiveGuarded(ctx, tx, "thrift_group", id.String(), payload); err != nil {
 				_ = tx.Rollback(ctx)
 				return purged, err
 			}
@@ -603,6 +716,32 @@ func rerootAuditChain(ctx context.Context, tx pgx.Tx) error {
 	hash := auditHash("", entry)
 	_, err = tx.Exec(ctx, `UPDATE audit_logs SET prev_hash='', hash=$2 WHERE id=$1`, id, hash)
 	return err
+}
+
+func merchantRegistrationArchivePayload(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]byte, error) {
+	var (
+		registrationID, userID              uuid.UUID
+		reference, businessName             string
+		category, description, contactEmail string
+		status                              string
+		createdAt, updatedAt                time.Time
+	)
+	err := tx.QueryRow(ctx, `
+		SELECT id, user_id, reference, business_name, category, description, contact_email, status, created_at, updated_at
+		FROM merchant_registrations WHERE id=$1`, id).Scan(
+		&registrationID, &userID, &reference, &businessName, &category, &description, &contactEmail, &status,
+		&createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]any{
+		"merchant_registration": map[string]any{
+			"id": registrationID, "user_id": userID, "reference": reference,
+			"business_name": businessName, "category": category, "description": description,
+			"contact_email": contactEmail, "status": status,
+			"created_at": createdAt, "updated_at": updatedAt,
+		},
+	})
 }
 
 func paymentArchivePayload(ctx context.Context, tx pgx.Tx, id uuid.UUID) ([]byte, error) {

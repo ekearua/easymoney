@@ -217,6 +217,14 @@ type Config struct {
 	// clock the profile is re-checked on.
 	RiskDecayHalfLife time.Duration
 
+	// AMLRecordRetention (G6, spec §5) is the MLPPA 2022 record-keeping
+	// floor: five years. The retention purge clamps every AML-scope class
+	// (payments, invoices, thrift, audit, merchant registrations) to this
+	// boundary — financial classes are additionally archived before any
+	// purge, so the ledger retains them indefinitely. Zero disables the
+	// floor (dev/harness escape hatch).
+	AMLRecordRetention time.Duration
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -394,16 +402,20 @@ func Load() (Config, error) {
 		PaymentMinKobo:                  EnvInt64("PAYMENT_MIN_KOBO", 10_000),
 		PaymentMaxKobo:                  EnvInt64("PAYMENT_MAX_KOBO", 1_000_000_000),
 		RetentionPeriod:                 envDuration("RETENTION_PERIOD", 90*24*time.Hour),
-		KYCRescreenPeriod:               envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
-		MonitorVelocityWindow:           envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
-		MonitorVelocityLimit:            int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
-		MonitorStructuringWindow:        envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
-		MonitorStructuringCount:         int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
-		MonitorStructuringFloor:         EnvInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
-		MonitorStructuringCeil:          EnvInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
-		MonitorRoundAmountStep:          EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
-		MonitorRoundAmountMin:           EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
-		ReportCTRThresholdKobo:          EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
+		// G6 (AML spec §5): hard-deleting AML-scope records younger than
+		// five years violates the MLPPA record-keeping floor, so the
+		// retention clamp refuses any configured period below it.
+		AMLRecordRetention:       envDuration("AML_RECORD_RETENTION", 5*365*24*time.Hour),
+		KYCRescreenPeriod:        envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
+		MonitorVelocityWindow:    envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
+		MonitorVelocityLimit:     int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
+		MonitorStructuringWindow: envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
+		MonitorStructuringCount:  int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
+		MonitorStructuringFloor:  EnvInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
+		MonitorStructuringCeil:   EnvInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
+		MonitorRoundAmountStep:   EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
+		MonitorRoundAmountMin:    EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
+		ReportCTRThresholdKobo:   EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
 		// M3 Trust Fabric step-up: a high-risk-band profile has its
 		// single-transaction allowance capped at this ceiling until the
 		// review clears. Zero disables the step-up.
@@ -571,6 +583,15 @@ func Load() (Config, error) {
 	}
 	if cfg.RiskDecayHalfLife < 0 {
 		return Config{}, fmt.Errorf("RISK_DECAY_HALF_LIFE must not be negative (0 disables decay)")
+	}
+	if cfg.AMLRecordRetention < 0 {
+		return Config{}, fmt.Errorf("AML_RECORD_RETENTION must not be negative (0 disables the AML floor)")
+	}
+	if cfg.AMLRecordRetention != 0 && cfg.AMLRecordRetention < 5*365*24*time.Hour {
+		return Config{}, fmt.Errorf("AML_RECORD_RETENTION must be at least 5 years (MLPPA 2022 record-keeping floor); got %s", cfg.AMLRecordRetention)
+	}
+	if cfg.AMLRecordRetention != 0 && cfg.RetentionPeriod > cfg.AMLRecordRetention {
+		return Config{}, fmt.Errorf("RETENTION_PERIOD (%s) cannot exceed AML_RECORD_RETENTION (%s)", cfg.RetentionPeriod, cfg.AMLRecordRetention)
 	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
 		cfg.WhatsAppGraphVersion = "v23.0"

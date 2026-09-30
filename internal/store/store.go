@@ -38,6 +38,16 @@ type Store struct {
 	// RISK_DECAY_HALF_LIFE.
 	RiskDecayHalfLife time.Duration
 
+	// AMLRecordRetention (G6, spec §5) is the MLPPA 2022 five-year
+	// record-keeping floor. PurgeBefore clamps its AML-scope classes
+	// (payments, invoices, thrift, audit, merchant registrations) to
+	// now-minus-this even when the caller passes an older cutoff, and the
+	// never-transacted-user sweep is clamped to it too. Zero — the default
+	// a bare Open gives a test harness — keeps the pre-G6 unclamped
+	// behaviour. The app wires this from AML_RECORD_RETENTION, whose
+	// default (and minimum) is five years.
+	AMLRecordRetention time.Duration
+
 	// dataKey is the AES-256-GCM key for application-level encryption at rest.
 	// When empty the store runs in plaintext passthrough (dev without the env
 	// var); production requires DATA_ENCRYPTION_KEY in config.
