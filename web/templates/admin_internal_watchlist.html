@@ -1,0 +1,54 @@
+{{define "admin_internal_watchlist.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">AML · Spec G3</p><h1>Internal watchlist</h1></div></header>
+
+<section class="panel">
+  <p class="muted">The platform's own list of identities that must never be auto-cleared by any screening provider. A match during onboarding or rescreening rewrites the screening decision to <strong>blocked</strong> and opens a review case, regardless of what the vendor said. Entries are reviewer-owned: every listing carries a reason and the admin who listed it.</p>
+  <form method="post" action="/admin/internal-watchlist" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Full name <input name="full_name" required placeholder="As it appears on identity documents"></label>
+    <label>Date of birth (optional, YYYY-MM-DD) <input name="date_of_birth" placeholder="1990-01-31"></label>
+    <label>Phone number (optional) <input name="phone_number" placeholder="+234..."></label>
+    <label>Bank account reference (optional) <input name="bank_account_ref"></label>
+    <label>Reason for listing <input name="reason" required placeholder="Why this identity must never be auto-cleared"></label>
+    <button type="submit">List identity</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Listed identities</h2>
+  <form method="get" action="/admin/internal-watchlist" class="stack">
+    <label>Filter by name <input name="q" value="{{.Query}}"></label>
+    <button type="submit">Filter</button>
+  </form>
+  {{if .Entries}}
+  <table>
+    <thead><tr><th>Name</th><th>DOB</th><th>Phone</th><th>Bank ref</th><th>Reason</th><th>Listed by</th><th>Listed</th><th></th></tr></thead>
+    <tbody>
+    {{range .Entries}}
+      <tr>
+        <td>{{.FullName}}</td>
+        <td>{{if .DateOfBirth}}{{.DateOfBirth.Format "2006-01-02"}}{{else}}—{{end}}</td>
+        <td>{{.PhoneNumber}}</td>
+        <td>{{.BankAccountRef}}</td>
+        <td>{{.Reason}}</td>
+        <td>{{.ListedBy}}</td>
+        <td>{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td>
+          <form method="post" action="/admin/internal-watchlist/{{.ID}}/remove">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No identities listed.</p>{{end}}
+</section>
+</main></body></html>
+{{end}}

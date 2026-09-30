@@ -255,12 +255,19 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
+	// The recorded decision is authoritative: RecordScreeningResult rewrites
+	// it to blocked when the identity is on the platform's internal
+	// watchlist (G3), so the case below fires for vendor and internal
+	// interdictions alike.
+	recorded, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
 		UserID: user.ID, Provider: s.screeningProviderName,
 		Decision: result.Decision, MatchedNames: result.MatchedNames,
-	}, s.cfg.KYCRescreenPeriod); err != nil {
+		LegalName: strings.TrimSpace(legalName), PhoneNumber: user.WhatsAppNumber,
+	}, s.cfg.KYCRescreenPeriod)
+	if err != nil {
 		return "", err
 	}
+	result.Decision = recorded.Decision
 	if kyc.BlockedByScreening(result.Decision) {
 		if _, err := s.store.CreateManualReviewCase(ctx, store.ManualReviewCase{
 			UserID: user.ID, CaseType: "screening", Reason: "screening decision " + result.Decision,

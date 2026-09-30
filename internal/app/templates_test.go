@@ -160,7 +160,7 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatalf("parse templates: %v", err)
 	}
 
-	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html", "admin_chat_guard.html"} {
+	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html", "admin_chat_guard.html", "admin_internal_watchlist.html"} {
 		if tmpl.Lookup(name) == nil {
 			t.Fatalf("%s not found in parsed templates", name)
 		}

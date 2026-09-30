@@ -68,6 +68,16 @@ type ScreeningResult struct {
 	MatchedNames []string
 	ScreenedAt   time.Time
 	RescreenDue  *time.Time
+	// G3 internal-watchlist inputs and marker. Callers pass the identity
+	// they screened; when the platform's own list matches, the recorded
+	// decision is rewritten to blocked with provider internal_watchlist
+	// and the listing's id is stamped here.
+	LegalName           string
+	DateOfBirth         *time.Time
+	PhoneNumber         string
+	BankAccountRef      string
+	InternalWatchlistID uuid.UUID
+	Message             string
 }
 
 // RiskEvent is one ML/FT risk observation.
@@ -512,6 +522,21 @@ func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerifi
 // the decision through to the KYC profile so the ladder can enforce it. The
 // rescreen due date is advanced by rescreenPeriod (0 keeps the caller value).
 func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, rescreenPeriod time.Duration) (ScreeningResult, error) {
+	// G3 (spec §5): the platform's own list outranks every vendor. An
+	// identity on the internal watchlist is never auto-cleared — the
+	// decision is rewritten to blocked before anything is persisted, so
+	// onboarding gates, the rescreen worker and reporting all see the
+	// interdiction, and the reviewer sees the listing that caused it.
+	if listed, entry, err := s.IsInternallyWatchlisted(ctx, r.LegalName, r.DateOfBirth, r.PhoneNumber, r.BankAccountRef); err != nil {
+		return ScreeningResult{}, fmt.Errorf("internal watchlist check: %w", err)
+	} else if listed {
+		r.LegalName = entry.FullName
+		r.Decision = kyc.ScreenBlocked
+		r.Provider = "internal_watchlist"
+		r.InternalWatchlistID = entry.ID
+		r.MatchedNames = []string{entry.FullName}
+		r.Message = "listed on the platform's internal watchlist: " + entry.Reason
+	}
 	if r.ScreenedAt.IsZero() {
 		r.ScreenedAt = time.Now().UTC()
 	}
@@ -529,10 +554,13 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	err = tx.QueryRow(ctx, `
-		INSERT INTO screening_results(user_id,provider,decision,matched_names,screened_at,rescreen_due)
-		VALUES($1,$2,$3,$4::jsonb,$5,$6)
+		INSERT INTO screening_results(user_id,provider,decision,matched_names,screened_at,rescreen_due,
+		                             legal_name,date_of_birth,phone_number,bank_account_ref,internal_watchlist_id)
+		VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id, screened_at, rescreen_due`,
-		r.UserID, r.Provider, r.Decision, string(names), r.ScreenedAt, r.RescreenDue).Scan(&r.ID, &r.ScreenedAt, &r.RescreenDue)
+		r.UserID, r.Provider, r.Decision, string(names), r.ScreenedAt, r.RescreenDue,
+		r.LegalName, r.DateOfBirth, r.PhoneNumber, r.BankAccountRef,
+		nullUUID(r.InternalWatchlistID)).Scan(&r.ID, &r.ScreenedAt, &r.RescreenDue)
 	if err != nil {
 		return ScreeningResult{}, fmt.Errorf("record screening: %w", err)
 	}
@@ -555,6 +583,7 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 			"decision":     r.Decision,
 			"matched":      r.MatchedNames,
 			"rescreen_due": r.RescreenDue,
+			"message":      r.Message,
 		},
 	}
 	if err := appendAuditLogTx(ctx, tx, &entry); err != nil {

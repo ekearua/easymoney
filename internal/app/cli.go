@@ -188,13 +188,18 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			a.logger.WarnContext(ctx, "rescreen provider error", "user_id", profile.UserID.String(), "error", err)
 			continue
 		}
-		if _, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
+		// The recorded decision is authoritative: RecordScreeningResult
+		// rewrites it to blocked when the identity is on the platform's
+		// internal watchlist (G3).
+		recorded, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
 			UserID: profile.UserID, Provider: a.screeningProviderName, Decision: decision.Decision,
-			MatchedNames: decision.MatchedNames,
-		}, a.cfg.KYCRescreenPeriod); err != nil {
+			MatchedNames: decision.MatchedNames, LegalName: individual.LegalName,
+		}, a.cfg.KYCRescreenPeriod)
+		if err != nil {
 			a.logger.WarnContext(ctx, "rescreen record failed", "user_id", profile.UserID.String(), "error", err)
 			continue
 		}
+		decision.Decision = recorded.Decision
 		if _, err := a.store.RecomputeRiskScore(ctx, profile.UserID); err != nil {
 			a.logger.WarnContext(ctx, "rescreen risk recompute failed", "user_id", profile.UserID.String(), "error", err)
 		}

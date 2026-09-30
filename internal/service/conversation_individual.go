@@ -216,15 +216,21 @@ func (s *ConversationService) screenIndividual(ctx context.Context, user store.U
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
+	// The recorded decision is authoritative: RecordScreeningResult rewrites
+	// it to blocked when the identity is on the platform's internal
+	// watchlist (G3).
+	recorded, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
 		UserID:       user.ID,
 		Provider:     s.screeningProviderName,
 		Decision:     result.Decision,
 		MatchedNames: result.MatchedNames,
-	}, s.cfg.KYCRescreenPeriod); err != nil {
+		LegalName:    name,
+		PhoneNumber:  user.WhatsAppNumber,
+	}, s.cfg.KYCRescreenPeriod)
+	if err != nil {
 		return "", err
 	}
-	return result.Decision, nil
+	return recorded.Decision, nil
 }
 
 // handleIndividualIDDetails collects the photo ID type and number in one
