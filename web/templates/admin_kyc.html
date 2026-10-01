@@ -30,7 +30,18 @@
     <td>{{.Reason}}</td>
     <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
     <td>
-      {{if eq .Status "pending"}}
+      {{if eq .Status "pending"}}{{if eq .CaseType "pep_edd"}}
+      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="sm_approve">
+        <button class="btn btn-small" type="submit">SM approve</button>
+      </form>
+      <form method="post" action="/admin/kyc/cases/{{.ID}}/review" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="sm_reject">
+        <button class="btn btn-small btn-danger" type="submit">SM reject</button>
+      </form>
+      {{else}}
       <form method="post" action="/admin/kyc/cases/{{.ID}}/review" class="inline-block">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="decision" value="approve">
@@ -41,8 +52,8 @@
         <input type="hidden" name="decision" value="reject">
         <button class="btn btn-small btn-danger" type="submit">Reject</button>
       </form>
-      {{else}}
-      <span class="status {{if eq .Status "approved"}}ok{{else}}disabled{{end}}">{{.Status}}{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</span>
+      {{end}}{{else}}
+      <span class="status {{if or (eq .Status "approved") (eq .Status "sm_approved")}}ok{{else}}disabled{{end}}">{{.Status}}{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</span>
       {{end}}
     </td>
   </tr>

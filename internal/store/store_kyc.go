@@ -310,6 +310,14 @@ func (s *Store) AdvanceKYCTier(ctx context.Context, userID uuid.UUID, to string,
 	if kyc.Order(to) >= kyc.Order(kyc.TierL2) && kyc.BlockedByScreening(profile.LastScreeningDecision) {
 		return KYCProfile{}, fmt.Errorf("advance to %s blocked by screening decision %q", to, profile.LastScreeningDecision)
 	}
+	// G1 (spec §3.3a): an open pep_edd case means senior management has not
+	// approved the PEP determination — no tier movement anywhere, to any
+	// tier, until the SM disposition lands.
+	if open, err := s.HasOpenPEPEDDCase(ctx, userID); err != nil {
+		return KYCProfile{}, fmt.Errorf("pep_edd gate: %w", err)
+	} else if open {
+		return KYCProfile{}, fmt.Errorf("advance to %s blocked by an open pep_edd case (senior-management approval required)", to)
+	}
 	merged := mergeEvidence(profile.Evidence, evidence)
 	evidenceJSON, _ := json.Marshal(merged)
 	tx, err := s.pool.Begin(ctx)
@@ -591,6 +599,16 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return ScreeningResult{}, fmt.Errorf("commit screening: %w", err)
+	}
+	// G1 (spec §3.3a): a PEP determination (possible, strong, or blocked)
+	// opens — or keeps open — the user's pep_edd review case. The case is
+	// disposed only by senior management (ReviewPEPEDDCase), and while it is
+	// open AdvanceKYCTier refuses every movement (the gate below).
+	if r.Decision == kyc.ScreenPossible || r.Decision == kyc.ScreenStrong || r.Decision == kyc.ScreenBlocked {
+		if _, _, err := s.EnsurePEPEDDCase(ctx, r.UserID,
+			"PEP determination from screening ("+r.Provider+"): "+strings.TrimSpace(r.Message), r.ID); err != nil {
+			return ScreeningResult{}, fmt.Errorf("ensure pep_edd case: %w", err)
+		}
 	}
 	return r, nil
 }
@@ -1341,6 +1359,12 @@ func (s *Store) ReviewManualReviewCase(ctx context.Context, caseID int64, approv
 	}
 	if c.Status != "pending" {
 		return ManualReviewCase{}, fmt.Errorf("review case %d already %s", c.ID, c.Status)
+	}
+	// G1 (spec §3.3a): a pep_edd case is disposed only through the
+	// senior-management path (ReviewPEPEDDCase) — the ordinary approve/reject
+	// must never be able to clear a PEP determination.
+	if c.CaseType == "pep_edd" {
+		return ManualReviewCase{}, fmt.Errorf("case %d is pep_edd: senior-management disposition required", c.ID)
 	}
 	status := "rejected"
 	if approve {

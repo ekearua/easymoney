@@ -326,6 +326,20 @@ func (a *App) adminKYCReview(w http.ResponseWriter, r *http.Request) {
 		ActorEmail: sql.NullString{String: adminEmail, Valid: true},
 		IP:         sql.NullString{String: clientIP(r), Valid: true},
 	}
+	// G1 (spec §3.3a): a pep_edd case is disposed by senior management with
+	// its own decision vocabulary (sm_approve / sm_reject) — the ordinary
+	// approve/reject must not be able to clear a PEP determination.
+	if strings.TrimSpace(r.FormValue("decision")) == "sm_approve" || strings.TrimSpace(r.FormValue("decision")) == "sm_reject" {
+		c, err := a.store.ReviewPEPEDDCase(r.Context(), caseID, strings.TrimSpace(r.FormValue("decision")) == "sm_approve", adminEmail, note, actor)
+		if err != nil {
+			a.logger.WarnContext(r.Context(), "pep_edd review failed", "case_id", caseID, "error", err)
+			http.Error(w, "pep_edd review failed", http.StatusInternalServerError)
+			return
+		}
+		a.logger.InfoContext(r.Context(), "pep_edd case reviewed", "case_id", c.ID, "status", c.Status, "user_id", c.UserID.String())
+		http.Redirect(w, r, "/admin/kyc", http.StatusSeeOther)
+		return
+	}
 	c, err := a.store.ReviewManualReviewCase(r.Context(), caseID, approve, adminEmail, note, actor)
 	if err != nil {
 		a.logger.WarnContext(r.Context(), "review kyc case failed", "case_id", caseID, "error", err)
