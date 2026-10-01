@@ -1,0 +1,47 @@
+{{define "admin_compliance.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">AML · Spec G8</p><h1>Compliance attestations</h1></div></header>
+
+<section class="panel">
+  <p class="muted">The annual independent-validation attestation (CBN Baseline Standards): each validation cycle records <strong>who validated what scope</strong>, the findings, the remediation, and where the signed report lives. A cycle turns <strong>overdue</strong> when its due date passes without a submitted attestation — that is the evidence gap a reviewer would see.</p>
+</section>
+
+{{range .Cycles}}
+<section class="panel">
+  <h2>Cycle {{.CycleYear}}
+    <span class="muted">· due {{.DueDate.Format "2006-01-02"}}</span>
+    {{if .IsOverdue $.Now}}<span class="danger">OVERDUE</span>
+    {{else if eq .Status "submitted"}}<span class="muted">· submitted</span>
+    {{else}}<span class="muted">· {{.Status}}</span>{{end}}
+  </h2>
+  <form method="post" action="/admin/compliance/{{.ID}}/record" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Scope <input name="scope" value="{{.Scope}}" required></label>
+    <label>Summary <textarea name="summary" rows="2">{{.Summary}}</textarea></label>
+    <label>Findings <textarea name="findings" rows="3">{{.Findings}}</textarea></label>
+    <label>Remediation <textarea name="remediation" rows="3">{{.Remediation}}</textarea></label>
+    <label>Evidence URL <input name="evidence_url" value="{{.EvidenceURL}}" placeholder="Signed report location"></label>
+    <div class="stack">
+      <label>Status
+        <select name="status">
+          <option value="" {{if not .Status}}selected{{end}}>— keep current —</option>
+          <option value="scheduled" {{if eq .Status "scheduled"}}selected{{end}}>Scheduled</option>
+          <option value="in_progress" {{if eq .Status "in_progress"}}selected{{end}}>In progress</option>
+          <option value="submitted" {{if eq .Status "submitted"}}selected{{end}}>Submitted</option>
+        </select>
+      </label>
+      <label>Completed on (required when submitting) <input name="completed_at" value="{{if .CompletedAt}}{{.CompletedAt.Format "2006-01-02"}}{{end}}" placeholder="YYYY-MM-DD"></label>
+    </div>
+    <label>Due date <input name="due_date" value="{{.DueDate.Format "2006-01-02"}}" required></label>
+    <button type="submit">Record attestation</button>
+  </form>
+</section>
+{{else}}
+<section class="panel"><p class="muted">No validation cycles on the clock yet.</p></section>
+{{end}}
+</main></body></html>
+{{end}}

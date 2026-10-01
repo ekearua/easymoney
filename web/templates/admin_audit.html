@@ -13,6 +13,29 @@
   {{else}}
     <p><span class="status disabled">Tampered</span> — entry #{{.ChainBroken}} fails hash verification. Investigate immediately.</p>
   {{end}}
+  <p class="muted">A scheduled sweep re-verifies the chain every hour and raises an alert on a clean→broken transition, so a tamper event surfaces without waiting for this page.</p>
+  {{if .HasChainAlert}}
+  <div class="panel">
+    <h3>Open chain alert — break at entry #{{.ChainAlert.BrokenAtRow}}</h3>
+    <p>Opened {{.ChainAlert.OpenedAt.Format "02 Jan 2006 15:04"}}. Disposing records your decision in the audit trail; a later clean sweep marks the alert recovered automatically.</p>
+    <form method="post" action="/admin/audit/chain-alerts/{{.ChainAlert.ID}}/dispose" class="stack">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Outcome note <input name="outcome_note" required placeholder="What was found and what happens next"></label>
+      <label><input type="checkbox" name="confirm_tampering"> Confirm as tampering (leave unchecked to acknowledge as a bug)</label>
+      <button type="submit" class="danger">Dispose alert</button>
+    </form>
+  </div>
+  {{end}}
+  {{if .ChainChecks}}
+  <div class="table-wrap"><table><thead><tr><th>Swept</th><th>Rows verified</th><th>Result</th><th>Alert live</th></tr></thead><tbody>
+    {{range .ChainChecks}}<tr>
+      <td class="nowrap">{{.CheckedAt.Format "02 Jan 2006 15:04:05"}}</td>
+      <td>{{.RowsChecked}}</td>
+      <td>{{if eq .BrokenAt -1}}<span class="status ok">intact</span>{{else}}<span class="status disabled">break at #{{.BrokenAt}}</span>{{end}}</td>
+      <td>{{if .AlertOpen}}yes{{else}}—{{end}}</td>
+    </tr>{{end}}
+  </tbody></table></div>
+  {{else}}<p class="muted">No scheduled sweeps recorded yet — the hourly worker records one per tick.</p>{{end}}
 </section>
 
 <section class="panel">

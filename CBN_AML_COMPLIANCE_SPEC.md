@@ -164,8 +164,8 @@ per-row filing clocks surfaced on `/admin/reports`.
 |---|---|---|
 | **Keep records ≥5 years** (MLPPA; Reg. 2022) | `AML_RECORD_RETENTION` (floor 5y, `0` dev escape) clamps every AML-scope purge class, including merchant registrations | `store_retention.go`; `config.go` validation |
 | **Records sufficient to reconstruct transactions** (MLPPA) | Ledger, payments, alerts, cases, screening results, audit log — all persisted | Store schema |
-| **Tamper-proof audit trail** (Baseline Std) | Hash-chained audit log (`prev_hash` + row hash) on every state change, verified on admin load — the residual sliver is a scheduled verification job that alerts on a broken chain rather than waiting for a page view | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
-| **Annual independent validation** (Baseline Std) | **Gap (G8)** — not a code obligation; an operator duty to schedule | §5 |
+| **Tamper-proof audit trail** (Baseline Std) | Hash-chained audit log (`prev_hash` + row hash) on every state change; a scheduled sweep re-verifies the chain every `AUDIT_CHAIN_VERIFY_INTERVAL` (default 1h), records each run, and raises one alert on a clean→broken transition with a reviewer disposition (acknowledged bug vs confirmed tampering) | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); `store_audit_chain.go` (`VerifyAuditChainScheduled`); migrations 023/025/030/084 |
+| **Annual independent validation** (Baseline Std) | One attestation row per validation cycle (created on the clock at startup), recording validator scope, findings, remediation and the signed-evidence location; overdue cycles are highlighted until submitted, and every recording is audited | `store_compliance.go`; migration 083; `/admin/compliance` checklist |
 
 ### 3.6 Programme obligations (operator duties, listed for completeness)
 
@@ -214,13 +214,15 @@ action list.
 | **G5** | ~~**Filing-clock tracking**~~ — **closed.** `report_filing_clocks` (migration 082) holds one idempotent clock per report reference: STR due 24h from the alert, CTR due the 7th of the following month (`FilingDeadline`); bundle generation syncs and resolution completes them; `/admin/reports` shows due clocks with overdue counts | NFIU timelines; missed clocks are reportable failures | `store_reports_clocks.go`; `internal/app/reports.go` sync; clocks panel in `admin_reports.html`; `store_reports_clocks_integration_test.go` |
 | **G6** | ~~**AML 5-year retention floor**~~ — **closed.** `AML_RECORD_RETENTION` (default and minimum 5y, `0` = dev escape) clamps every AML-scope purge class — payments, invoices, thrift, audit, and merchant registrations (previously hard-deleted unarchived after the 90-day operational period); account records of never-transacted users are clamped to the same floor; the archive writer is re-run-safe (`appendArchiveGuarded`); config rejects sub-5y values and a `RETENTION_PERIOD` above the floor | MLPPA/Reg. 2022 | `store_retention.go` (`amlCutoff`, `archiveAndPurgeMerchantRegistrations`); `config.go` validation; `store_amlretention_integration_test.go` |
 | **G7** | ~~**Audit tamper-evidence**~~ — **closed.** `audit_logs` carries a hash chain (`prev_hash` + row hash, migration 023) written on every `RecordAudit`; `VerifyAuditChain` recomputes and checks linkage, and `/admin` renders chain status. The same pattern covers the retention archive (025) and the ledger (030). Residual nuance, tracked as a hardening item rather than a gap: verification runs on admin page load — a scheduled job that alerts on a broken chain is the remaining sliver | Baseline Std "tamper-proof audit" | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
-| **G8** | **Annual independent validation evidence** | Baseline Std; operator duty | Checklist + evidence store in the admin console (document + date + scope) |
+| **G8** | ~~**Annual independent validation evidence**~~ — **closed.** `compliance_attestations` (migration 083) holds one row per validation cycle with scope, summary, findings, remediation, evidence URL, status (scheduled → in_progress → submitted) and completion date; the current cycle is ensured at startup; `/admin/compliance` renders the checklist with overdue highlighting and per-cycle record forms, every recording audited. The operator duty to *commission* the validation remains a people obligation (§3.6) — the code now stores and surfaces the evidence | Baseline Std; operator duty | `store_compliance.go`; `admin_compliance.go` + template; `store_compliance_integration_test.go` |
 | **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase — tracked in the vendor record §7, not re-specified here |
 
 **Scheduling note:** G2 and G9 resolve in the vendor-record lane (§8 of the
-vendor record). Of the owned builds, G1, G3–G7 are closed; **G8** (annual
-attestation hook) is the last one. Nothing in the register blocks another
-item; all are additive.
+vendor record). Every owned build is closed: G1, G3–G8. The G7 residual
+(scheduled chain-verification alerting) shipped with the G8 wave —
+`audit_chain_checks`/`audit_chain_alerts` (migration 084) plus the
+`AUDIT_CHAIN_VERIFY_INTERVAL` worker. Nothing in the register blocks
+another item; all are additive.
 
 ---
 
@@ -263,7 +265,8 @@ real; the list breadth and match quality are the vendor's to prove.**
    demonstrate the pattern: claims pinned by tests.
 2. **Programme evidence check** — the operator duties (§2.2, §3.6) get an
    annual attestation: MLRO named, training done, SCUML status current,
-   independent validation scheduled. **Gap (G8)** is the code-side hook.
+   independent validation scheduled. The code-side hook is the
+   `/admin/compliance` attestation checklist (G8).
 3. **Regulator-facing rehearsal** — `/admin/reports` must produce, on demand,
    an STR/CTR/PEP bundle a compliance officer would hand over — now with the
    goAML encoding (G4) and filing clocks (G5) beside it.
@@ -279,7 +282,7 @@ milestones align as follows:
 |---|---|---|
 | **Shipped** | G1 PEP EDD + SM approval · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + verification) | Owned builds — small commits |
 | **Vendor track** | G2 payment screening + hold · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
-| **Open** | G8 attestation hook · G7 sliver: scheduled chain-verification alerting | Owned builds, small |
+| **Open** | — every owned build (G1, G3–G8) and the G7 chain-alarm residual have shipped; the register's open items resolve in the vendor-record lane | Owned builds complete |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule
 activates), perimeter change (licence status), vendor signed (G2/G9

@@ -509,6 +509,12 @@ func (a *App) RunServer(ctx context.Context) error {
 			a.logger.WarnContext(ctx, "bootstrap admin sync skipped (run migrate first)", "error", err)
 		}
 	}
+	// G8 (AML spec §5): make sure the current validation cycle is on the
+	// clock at startup, so the attestation checklist never opens empty.
+	if _, _, err := a.store.EnsureComplianceAttestation(ctx, time.Now().UTC().Year(),
+		"Automated AML/CFT/CPF solution (CBN Baseline Standards)", time.Now()); err != nil {
+		a.logger.WarnContext(ctx, "compliance attestation clock sync skipped", "error", err)
+	}
 	if err := a.encryptLegacyAtRest(ctx); err != nil {
 		return fmt.Errorf("startup: %w", err)
 	}
@@ -668,6 +674,7 @@ func (a *App) routes() http.Handler {
 		admin.Post("/admin/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeAdmin))
 		admin.Post("/admin/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeAdmin))
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/audit", a.adminAuditLog)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/audit/chain-alerts/{id}/dispose", a.adminAuditChainDispose)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports", a.adminReports)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/reports/{kind}/download", a.adminReportDownload)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/data-subjects", a.adminDataSubjects)
@@ -690,6 +697,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/internal-watchlist", a.adminInternalWatchlist)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist", a.adminInternalWatchlistAdd)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist/{id}/remove", a.adminInternalWatchlistRemove)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/compliance", a.adminCompliance)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/compliance/{id}/record", a.adminComplianceRecord)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/network/cases/{id}/resolve", a.adminResolveNetworkCase)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyb", a.adminKYB)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance", a.adminKYBAdvance)

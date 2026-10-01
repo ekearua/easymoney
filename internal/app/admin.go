@@ -109,10 +109,25 @@ func (a *App) adminAuditLog(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
+	// Scheduled sweep history and the open chain alert (G7 residual): the
+	// dashboard shows the on-demand verdict alongside the persistent record.
+	chainChecks, err := a.store.RecentAuditChainChecks(r.Context(), 10)
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	openAlert, hasAlert, err := a.store.OpenAuditChainAlert(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
 	a.renderAdmin(w, "admin_audit.html", r, "Audit log", map[string]any{
-		"Entries":     entries,
-		"ChainCount":  count,
-		"ChainBroken": broken,
+		"Entries":       entries,
+		"ChainCount":    count,
+		"ChainBroken":   broken,
+		"ChainChecks":   chainChecks,
+		"ChainAlert":    openAlert,
+		"HasChainAlert": hasAlert,
 	})
 }
 

@@ -184,7 +184,8 @@ from existing tables, and the trust timeline ships on the KYC profile
   the screening-vendor decision (`AML_VENDOR_DECISION_RECORD.md`) lands.
 - **ML scoring.** Blocked on M4 outcome volume; deterministic
   `ScoreRisk` weights stay until labels exist.
-- **Screening hold/interdiction at payment time** (spec G2) and the other
-  open spec gaps (G2, G8, G9, plus the G7 chain-alarm residual) — tracked
-  in `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated here. G1, G3, G4, G5,
-  and G6 are closed.
+- **Screening hold/interdiction at payment time** (spec G2) and adverse
+  media/domestic lists (G9) — the register's remaining items, both in the
+  vendor-record lane — tracked in `CBN_AML_COMPLIANCE_SPEC.md` §5, not
+  duplicated here. G1, G3, G4, G5, G6, G8 and the G7 chain-alarm residual
+  (scheduled verification with alerting) are closed.

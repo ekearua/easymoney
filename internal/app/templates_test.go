@@ -343,6 +343,60 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatal("empty window must not render a trend sparkline")
 	}
 
+	// G8: the attestation checklist executes with one overdue in-progress
+	// cycle and renders the record form, and with no cycles at all.
+	buf.Reset()
+	execAttest := map[string]any{
+		"AppName": "Faya", "Title": "Compliance attestations", "CSRF": "x", "AdminRole": "compliance",
+		"Cycles": []store.ComplianceAttestation{{
+			ID: 7, CycleYear: 2026, Scope: "Automated AML solution",
+			Status:  store.AttestationInProgress,
+			DueDate: time.Now().Add(-24 * time.Hour),
+		}},
+		"Now": time.Now(),
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_compliance.html", execAttest); err != nil {
+		t.Fatalf("execute admin_compliance.html: %v", err)
+	}
+	attestRendered := buf.String()
+	if !strings.Contains(attestRendered, "OVERDUE") || !strings.Contains(attestRendered, "/admin/compliance/7/record") {
+		t.Fatal("admin_compliance.html must flag overdue cycles and post to the record endpoint")
+	}
+	buf.Reset()
+	if err := tmpl.ExecuteTemplate(&buf, "admin_compliance.html", map[string]any{
+		"AppName": "Faya", "Title": "Compliance attestations", "CSRF": "x", "AdminRole": "compliance",
+		"Cycles": []store.ComplianceAttestation{}, "Now": time.Now(),
+	}); err != nil {
+		t.Fatalf("execute empty admin_compliance.html: %v", err)
+	}
+
+	// G7 residual: the audit page renders the scheduled sweep history and
+	// the open alert's disposition form, and executes cleanly without them.
+	buf.Reset()
+	execAudit := map[string]any{
+		"AppName": "Faya", "Title": "Audit log", "CSRF": "x", "AdminRole": "compliance",
+		"Entries":    []store.AuditLog{},
+		"ChainCount": 3, "ChainBroken": -1,
+		"ChainChecks":   []store.AuditChainCheck{{ID: 1, CheckedAt: time.Now(), RowsChecked: 3, BrokenAt: -1, AlertOpen: false}},
+		"ChainAlert":    store.AuditChainAlert{ID: 9, BrokenAtRow: 2, OpenedAt: time.Now()},
+		"HasChainAlert": true,
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_audit.html", execAudit); err != nil {
+		t.Fatalf("execute admin_audit.html (chain panels): %v", err)
+	}
+	auditRendered := buf.String()
+	if !strings.Contains(auditRendered, "/admin/audit/chain-alerts/9/dispose") {
+		t.Fatal("admin_audit.html must render the open chain alert's disposition form")
+	}
+	buf.Reset()
+	if err := tmpl.ExecuteTemplate(&buf, "admin_audit.html", map[string]any{
+		"AppName": "Faya", "Title": "Audit log", "CSRF": "x", "AdminRole": "compliance",
+		"Entries": []store.AuditLog{}, "ChainCount": 0, "ChainBroken": -1,
+		"ChainChecks": []store.AuditChainCheck{}, "ChainAlert": store.AuditChainAlert{}, "HasChainAlert": false,
+	}); err != nil {
+		t.Fatalf("execute admin_audit.html (no sweeps): %v", err)
+	}
+
 	buf.Reset()
 	flowPage := webFlowPage{
 		AppName: "Xego", FlowType: "pay", Token: strings.Repeat("a", 40), Title: "Review your payment",

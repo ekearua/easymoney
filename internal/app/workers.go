@@ -22,6 +22,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	recon3Ticker := time.NewTicker(24 * time.Hour)
 	retentionTicker := time.NewTicker(24 * time.Hour)
 	rescreenTicker := time.NewTicker(24 * time.Hour)
+	auditChainTicker := time.NewTicker(a.cfg.AuditChainVerifyInterval)
 	monitorTicker := time.NewTicker(15 * time.Minute)
 	settlementTicker := time.NewTicker(10 * time.Second)
 	defer outboxTicker.Stop()
@@ -30,6 +31,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer recon3Ticker.Stop()
 	defer retentionTicker.Stop()
 	defer rescreenTicker.Stop()
+	defer auditChainTicker.Stop()
 	defer monitorTicker.Stop()
 	defer settlementTicker.Stop()
 	a.startEventConsumers(ctx)
@@ -76,6 +78,12 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.workerWg.Add(1)
 			if err := a.RescreenDue(ctx); err != nil {
 				a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
+			}
+			a.workerWg.Done()
+		case <-auditChainTicker.C:
+			a.workerWg.Add(1)
+			if err := a.RunAuditChainVerification(ctx); err != nil {
+				a.logger.WarnContext(ctx, "scheduled audit chain verification failed", "error", err)
 			}
 			a.workerWg.Done()
 		case <-monitorTicker.C:

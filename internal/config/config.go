@@ -225,6 +225,13 @@ type Config struct {
 	// floor (dev/harness escape hatch).
 	AMLRecordRetention time.Duration
 
+	// AuditChainVerifyInterval (G7 residual, spec §5) is the cadence of the
+	// scheduled audit-chain verification sweep. The sweep recomputes the
+	// hash chain, records each run in audit_chain_checks and raises one
+	// alert (audit_chain_alerts) on a clean→broken transition — so a
+	// tamper event surfaces without waiting for an admin page view.
+	AuditChainVerifyInterval time.Duration
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -406,6 +413,7 @@ func Load() (Config, error) {
 		// five years violates the MLPPA record-keeping floor, so the
 		// retention clamp refuses any configured period below it.
 		AMLRecordRetention:       envDuration("AML_RECORD_RETENTION", 5*365*24*time.Hour),
+		AuditChainVerifyInterval: envDuration("AUDIT_CHAIN_VERIFY_INTERVAL", time.Hour),
 		KYCRescreenPeriod:        envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		MonitorVelocityWindow:    envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
 		MonitorVelocityLimit:     int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
