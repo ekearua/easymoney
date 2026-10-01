@@ -194,6 +194,43 @@ type SanctionsScreener interface {
 	Screen(context.Context, ScreeningRequest) (ScreeningDecision, error)
 }
 
+// PaymentScreenRequest carries the counterparty facts of one money-out
+// movement: who receives the funds and how much is moving. Screening vendors
+// match these against sanctions, PEP and internal lists at payment time.
+type PaymentScreenRequest struct {
+	// CounterpartyName is the account holder name of the payout destination.
+	CounterpartyName string
+	// AccountNumber and BankCode identify the receiving account.
+	AccountNumber string
+	BankCode      string
+	// AmountKobo is the gross movement amount in kobo.
+	AmountKobo int64
+	// SubjectID is the platform user (or merchant) initiating the movement,
+	// for internal-watchlist correlation and vendor reference trails.
+	SubjectID string
+	// Rail names the movement kind (merchant_payout, wallet_withdrawal) for
+	// vendor-side routing and the audit trail.
+	Rail string
+}
+
+// PaymentScreenDecision is the provider-neutral outcome of a payment-time
+// counterparty screen. Decision uses the same vocabulary as onboarding
+// screening (kyc.Screen*): clear, possible, strong, blocked.
+type PaymentScreenDecision struct {
+	Decision     string
+	MatchedNames []string
+	ProviderRef  string
+	Message      string
+}
+
+// PaymentScreener isolates payment-time counterparty screening from a
+// specific vendor. It is the G2 seam: confirmed matches (blocked) must stop
+// a payout before dispatch, ambiguous ones (possible/strong) hold it for
+// review, and clear passes.
+type PaymentScreener interface {
+	ScreenPayment(context.Context, PaymentScreenRequest) (PaymentScreenDecision, error)
+}
+
 // Verification statuses shared by the corporate registry, tax authority and
 // location adapters. They are the vocabulary the reviewer's disposition is
 // informed by; none of them advances a tier.

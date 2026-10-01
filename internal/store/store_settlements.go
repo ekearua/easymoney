@@ -32,13 +32,16 @@ const (
 	SettlementBatchFailed    = "failed"
 )
 
-// Payout statuses.
+// Payout statuses. PayoutHeld is the G2 counterparty-screening hold: an
+// ambiguous screen outcome parks the payout for review while its money-out
+// reservation stays in place; only the admin queue can release or reject it.
 const (
 	PayoutQueued     = "queued"
 	PayoutProcessing = "processing"
 	PayoutCompleted  = "completed"
 	PayoutFailed     = "failed"
 	PayoutReversed   = "reversed"
+	PayoutHeld       = "held"
 )
 
 // SettlementProviderDefault is the payout rail recorded on new payout rows:

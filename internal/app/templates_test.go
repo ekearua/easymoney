@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/providers/interswitch"
 	"whatsapp-payment-demo/internal/store"
 	"whatsapp-payment-demo/web"
@@ -368,6 +369,40 @@ func TestTemplatesParse(t *testing.T) {
 		"Cycles": []store.ComplianceAttestation{}, "Now": time.Now(),
 	}); err != nil {
 		t.Fatalf("execute empty admin_compliance.html: %v", err)
+	}
+
+	// G2: the payment-screening queue executes with one open hold (the
+	// disposition form posts to the per-row endpoint with the CSRF field)
+	// and with an empty queue.
+	buf.Reset()
+	holdAt := time.Now()
+	execScreening := map[string]any{
+		"AppName": "Faya", "Title": "Payment screening", "CSRF": "x", "AdminRole": "compliance",
+		"Holds": []store.PaymentScreening{{
+			ID: 9, Rail: store.RailMerchantPayout, MovementRef: "payout:BATCH-X:abc",
+			AmountKobo: 2_500_000, CounterpartyName: "Similar Sanctioned Ltd",
+			AccountNumber: "0123456790", BankCode: "044", Provider: "simulated",
+			Decision: kyc.ScreenStrong, MatchedNames: []string{"Similar Sanctioned Ltd"},
+			Message: "fuzzy hit", CreatedAt: holdAt,
+		}},
+		"Recent": []store.PaymentScreening{},
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_payment_screenings.html", execScreening); err != nil {
+		t.Fatalf("execute admin_payment_screenings.html: %v", err)
+	}
+	screeningRendered := buf.String()
+	if !strings.Contains(screeningRendered, "/admin/payment-screenings/9/dispose") || !strings.Contains(screeningRendered, "csrf_token") {
+		t.Fatal("admin_payment_screenings.html must post dispositions to the per-row endpoint with a CSRF field")
+	}
+	if strings.Contains(screeningRendered, "No open holds") {
+		t.Fatal("open hold must render, not the empty-queue message")
+	}
+	buf.Reset()
+	if err := tmpl.ExecuteTemplate(&buf, "admin_payment_screenings.html", map[string]any{
+		"AppName": "Faya", "Title": "Payment screening", "CSRF": "x", "AdminRole": "compliance",
+		"Holds": []store.PaymentScreening{}, "Recent": []store.PaymentScreening{},
+	}); err != nil {
+		t.Fatalf("execute empty admin_payment_screenings.html: %v", err)
 	}
 
 	// G7 residual: the audit page renders the scheduled sweep history and

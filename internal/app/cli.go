@@ -134,6 +134,47 @@ func (a *App) WalletWithdraw(ctx context.Context, phone string, amountKobo int64
 	}); err != nil {
 		return err
 	}
+	// G2: screen the wallet→bank counterparty before the ledger debit. The
+	// reservation (above) is deliberate: on an ambiguous or blocked screen
+	// the withdrawal is refused but the reservation stays, so the amount
+	// keeps counting against the subject's ceiling — the hold semantics
+	// hold the money, not just the transfer.
+	if a.paymentScreener != nil {
+		wallet, err := a.store.WalletByOwner(ctx, "user", user.ID)
+		if err != nil {
+			_ = a.store.ReleaseAllowance(ctx, reservationRef)
+			return err
+		}
+		decision, err := a.store.ScreenUserWithdrawal(ctx, user.ID, reservationRef, amountKobo, wallet.AccountName,
+			func(ctx context.Context) (string, string, string, string, []string, error) {
+				dec, err := a.paymentScreener.ScreenPayment(ctx, ports.PaymentScreenRequest{
+					CounterpartyName: wallet.AccountName,
+					AmountKobo:       amountKobo,
+					SubjectID:        user.ID.String(),
+					Rail:             store.RailWalletWithdrawal,
+				})
+				if err != nil {
+					return "", "", "", "", nil, err
+				}
+				return dec.Decision, a.screeningProviderName, dec.ProviderRef, dec.Message, dec.MatchedNames, nil
+			})
+		if err != nil {
+			// Provider outage: refuse and release — no reviewer release path
+			// exists for withdrawal reservations, so a system failure must not
+			// silently eat the user's ceiling.
+			_ = a.store.ReleaseAllowance(ctx, reservationRef)
+			return fmt.Errorf("withdrawal screening unavailable: %w", err)
+		}
+		switch decision {
+		case kyc.ScreenClear:
+			// proceed below
+		default:
+			// Ambiguous or blocked: refuse the withdrawal, keep the reservation
+			// (money held, not released), and tell the customer the withdrawal
+			// is under compliance review. The screening row is in the queue.
+			return errors.New("withdrawal is under compliance review; contact support")
+		}
+	}
 	if err := a.store.WithdrawFromUserWallet(ctx, user.ID, amountKobo, reservationRef,
 		"Wallet withdrawal "+phone); err != nil {
 		_ = a.store.ReleaseAllowance(ctx, reservationRef)

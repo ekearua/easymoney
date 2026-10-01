@@ -34,6 +34,11 @@ type SettlementService struct {
 	payoutDailyCount   int
 
 	riskHighSingleLimitKobo int64
+
+	// G2: payment-time counterparty screening. Nil disables the gate (only
+	// acceptable in tests); production wiring always supplies one.
+	paymentScreener ports.PaymentScreener
+	screenerName    string
 }
 
 // NewSettlementService constructs the settlement orchestrator. feeBps is the
@@ -69,6 +74,18 @@ func WithPayoutLimits(minKobo, maxKobo, dailyCapKobo int64, dailyCount int) Sett
 func WithRiskStepUp(singleLimitKobo int64) SettlementOption {
 	return func(s *SettlementService) {
 		s.riskHighSingleLimitKobo = singleLimitKobo
+	}
+}
+
+// WithPaymentScreener installs the G2 payment-time counterparty screening
+// gate in the ReserveAllowance → dispatch window. The screener's provider
+// name is recorded on every screening row.
+func WithPaymentScreener(screener ports.PaymentScreener) SettlementOption {
+	return func(s *SettlementService) {
+		s.paymentScreener = screener
+		if namer, ok := screener.(interface{ ProviderName() string }); ok {
+			s.screenerName = namer.ProviderName()
+		}
 	}
 }
 
@@ -168,6 +185,38 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 		RiskHighSingleLimitKobo: s.riskHighSingleLimitKobo,
 	}); err != nil {
 		return store.Payout{}, err
+	}
+	// G2: counterparty screening inside the ReserveAllowance → dispatch
+	// window. The reservation is already in place, so a hold or interdiction
+	// keeps the amount counted against the merchant's ceiling — the movement
+	// cannot be re-attempted past the screen. A blocked destination fails the
+	// payout outright; an ambiguous one holds it for the admin queue.
+	if s.paymentScreener != nil {
+		var err error
+		payout, err = s.store.ScreenPayout(ctx, payout, batch.BatchNo, destination,
+			func(ctx context.Context) (string, string, string, string, []string, error) {
+				dec, err := s.paymentScreener.ScreenPayment(ctx, ports.PaymentScreenRequest{
+					CounterpartyName: destination.AccountName,
+					AccountNumber:    destination.AccountNumber,
+					BankCode:         destination.BankCode,
+					AmountKobo:       payoutAmount,
+					SubjectID:        batch.MerchantID.String(),
+					Rail:             store.RailMerchantPayout,
+				})
+				if err != nil {
+					return "", "", "", "", nil, err
+				}
+				return dec.Decision, s.screenerName, dec.ProviderRef, dec.Message, dec.MatchedNames, nil
+			})
+		if err != nil {
+			if errors.Is(err, store.ErrMovementHeld) {
+				s.logger.Warn("payout held by counterparty screening",
+					"batch", batch.BatchNo, "amount_kobo", payoutAmount,
+					"destination", destination.AccountName)
+				return store.Payout{}, store.ErrMovementHeld
+			}
+			return store.Payout{}, err
+		}
 	}
 	return s.dispatch(ctx, payout)
 }

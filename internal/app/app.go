@@ -42,6 +42,7 @@ import (
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
+	paymentscreening "whatsapp-payment-demo/internal/providers/paymentscreening"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	smsprovider "whatsapp-payment-demo/internal/providers/sms"
 	"whatsapp-payment-demo/internal/providers/telegram"
@@ -77,6 +78,11 @@ type App struct {
 	totpKey               []byte
 	sanctionsScreener     ports.SanctionsScreener
 	screeningProviderName string
+
+	// G2: payment-time counterparty screening for money-out rails (merchant
+	// payout, wallet withdrawal). Defaults to the deterministic simulator so
+	// the hold/interdiction semantics are live without a vendor contract.
+	paymentScreener ports.PaymentScreener
 
 	// KYB document verification. These default to their deterministic
 	// simulators, so the admin review panel always has a proposal to show
@@ -398,6 +404,18 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// refund API (the only supported real rails).
 	payoutProvider := ports.PayoutProvider(interswitchClient)
 	refundProvider := ports.RefundProvider(interswitchClient)
+	// G2: payment-time counterparty screening for money-out rails. The
+	// deterministic simulator is the default so the hold/interdiction
+	// semantics run without a vendor contract; the live vendor adapter is
+	// the screening purchase named in AML_VENDOR_DECISION_RECORD.md (G9).
+	var paymentScreener ports.PaymentScreener
+	switch strings.ToLower(cfg.PaymentScreeningProvider) {
+	case "", "simulated":
+		paymentScreener = paymentscreening.NewSimulated()
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" exists until the screening vendor adapter lands)", cfg.PaymentScreeningProvider)
+	}
 	app := &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
 		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
@@ -407,10 +425,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
 		corporateRegistry: corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
-		smsSender: smsSender,
-		eventBus:  eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
+		paymentScreener: paymentScreener,
+		smsSender:       smsSender,
+		eventBus:        eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo)),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithPaymentScreener(paymentScreener)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
 		imageReader:      imageReader,
@@ -697,6 +716,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/internal-watchlist", a.adminInternalWatchlist)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist", a.adminInternalWatchlistAdd)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist/{id}/remove", a.adminInternalWatchlistRemove)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/payment-screenings", a.adminPaymentScreenings)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/payment-screenings/{id}/dispose", a.adminPaymentScreeningDispose)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/compliance", a.adminCompliance)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/compliance/{id}/record", a.adminComplianceRecord)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/network/cases/{id}/resolve", a.adminResolveNetworkCase)

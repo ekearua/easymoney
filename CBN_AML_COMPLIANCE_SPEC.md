@@ -120,7 +120,7 @@ whole repo.
 | Obligation (source) | Control | Evidence |
 |---|---|---|
 | **Screen customers against watchlists** (Reg. 2022; Baseline Std: domestic + international lists, PEP, adverse media) | Screening at onboarding + rescreen; decision vocabulary clear/possible/strong; blocking halts advancement and downgrades | `SanctionsScreener` port; `screening_results` (`provider`, `decision`, `matched_names`, `rescreen_due`) |
-| **Screen payments for counterparty risk** (Baseline Std: automated interdiction on confirmed matches) | **Gap (G2)** — payment-time counterparty screening does not exist; the pre-flight window (`ReserveAllowance` → `CreatePayout`) is the seam named in the vendor record §8 | §5 |
+| **Screen payments for counterparty risk** (Baseline Std: automated interdiction on confirmed matches) | Payment-time counterparty screening in the `ReserveAllowance` → dispatch window: confirmed hits interdict, ambiguous hits hold with the allowance reserved, screener outages hold (never clear) | §5 |
 | **Internal watchlist** (Baseline Std, named) | **Gap (G3)** — no owned list table or enforcement | §5 |
 | **Fuzzy/AI matching, real-time list updates** (Baseline Std) | **Vendor lane** — the decision record's R3/R6/R8; the spec does not re-decide the vendor | Vendor record §6–§7 |
 
@@ -208,7 +208,7 @@ action list.
 | # | Gap | Why it matters | Evidence check that closes it |
 |---|---|---|---|
 | **G1** | ~~**PEP EDD + senior-management approval**~~ — **closed.** A PEP determination auto-opens one `pep_edd` review case (migration 081 extends the case-type check; unique partial index enforces one open case per user); the ordinary approve/reject path refuses `pep_edd` cases so only the SM disposition lands; `ReviewPEPEDDCase` stamps `sm_approved`/`sm_rejected` (audited, its own status) and an approval attaches the `edd_completed` evidence key; `AdvanceKYCTier` refuses every tier move while a `pep_edd` case is open | Reg. 2022 PEP obligations; CBN PEP guidance expects documented approval | `store_pep_edd.go`; `store_kyc.go` hook + gate + refuse-guard; SM buttons on `/admin/kyc`; `store_pep_edd_integration_test.go` |
-| **G2** | **Payment-time counterparty screening + hold/interdiction** | Baseline Std automated interdiction; NIP is irreversible | Pre-flight screen in the `ReserveAllowance` window; confirmed → block, ambiguous → hold (allowance reserved, dispatch deferred); cache-on-beneficiary for cost |
+| **G2** | ~~**Payment-time counterparty screening + hold/interdiction**~~ — **closed against the simulated vendor.** `PaymentScreener` port with a deterministic simulated adapter (`PAYMENT_SCREENING_PROVIDER`, default `simulated`; the live vendor adapter is the G9 screening purchase); `ScreenPayout` gates the settlement `ReserveAllowance` → dispatch window — `blocked` fails the payout outright, `possible`/`strong` move it to the new `held` status (migration 086) and return `ErrMovementHeld`, an outage holds rather than clears; the money-out reservation is never touched by the gate, so a held or interdicted movement keeps counting against the ceiling. `ScreenUserWithdrawal` applies the same semantics to wallet withdrawals (refusal keeps the reservation; an outage releases it because withdrawals have no reviewer release path). `payment_screenings` (migration 085) records every decision keyed by rail + movement ref — payouts are destination-keyed so a re-created payout to a different account re-screens; replays reuse the recorded decision without a vendor call. Dispositions at `/admin/payment-screenings`: release re-queues the payout and marks the screening `manually_cleared`; reject reverses it, releases the reservation, and reopens the batch for re-settlement to a different destination | Baseline Std automated interdiction; NIP is irreversible | `ports.go` (`PaymentScreener`); `providers/paymentscreening` (+ test); `store_payment_screening.go`; `settlement.go` seam; `cli.go` withdrawal seam; `admin_payment_screening.go` + template; migrations 085/086; `settlement_screening_test.go`; `store_payment_screening_integration_test.go` |
 | **G3** | ~~**Internal watchlist**~~ — **closed.** `internal_watchlist` table (migration 080) with normalised-identity uniqueness; enforcement in `RecordScreeningResult` rewrites any screening of a listed identity to `blocked` with provider `internal_watchlist` and the listing id stamped on the result, so onboarding gates, the rescreen worker and reporting all see the interdiction; admin CRUD at `/admin/internal-watchlist` with audited add/remove | Baseline Std names it; vendor record §8.2 scoped the build | `store_internal_watchlist.go`; `store_kyc.go` enforcement; `admin_internal_watchlist.go` + template; `store_internal_watchlist_integration_test.go` |
 | **G4** | ~~**goAML XML filing format**~~ — **closed.** `STRgoAML`/`CTRgoAML`/`PEPgoAML` emit the goAML XML envelope (`goaml/4.0-nfiu-ng`) beside the CSV/JSON writers, with `ValidateGoAML` checking element counts and required fields before download; `/admin/reports` serves the XML beside the existing formats | NFIU files via goAML; CSV rows do not file | `reports_goaml.go`; `reports_goaml_test.go`; `/admin/reports` links |
 | **G5** | ~~**Filing-clock tracking**~~ — **closed.** `report_filing_clocks` (migration 082) holds one idempotent clock per report reference: STR due 24h from the alert, CTR due the 7th of the following month (`FilingDeadline`); bundle generation syncs and resolution completes them; `/admin/reports` shows due clocks with overdue counts | NFIU timelines; missed clocks are reportable failures | `store_reports_clocks.go`; `internal/app/reports.go` sync; clocks panel in `admin_reports.html`; `store_reports_clocks_integration_test.go` |
@@ -217,8 +217,10 @@ action list.
 | **G8** | ~~**Annual independent validation evidence**~~ — **closed.** `compliance_attestations` (migration 083) holds one row per validation cycle with scope, summary, findings, remediation, evidence URL, status (scheduled → in_progress → submitted) and completion date; the current cycle is ensured at startup; `/admin/compliance` renders the checklist with overdue highlighting and per-cycle record forms, every recording audited. The operator duty to *commission* the validation remains a people obligation (§3.6) — the code now stores and surfaces the evidence | Baseline Std; operator duty | `store_compliance.go`; `admin_compliance.go` + template; `store_compliance_integration_test.go` |
 | **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase — tracked in the vendor record §7, not re-specified here |
 
-**Scheduling note:** G2 and G9 resolve in the vendor-record lane (§8 of the
-vendor record). Every owned build is closed: G1, G3–G8. The G7 residual
+**Scheduling note:** G9 resolves in the vendor-record lane (§8 of the
+vendor record); G2's seam ships against the simulated vendor and its live
+adapter drops in behind the same port when the screening contract is signed.
+Every owned build is closed: G1–G8. The G7 residual
 (scheduled chain-verification alerting) shipped with the G8 wave —
 `audit_chain_checks`/`audit_chain_alerts` (migration 084) plus the
 `AUDIT_CHAIN_VERIFY_INTERVAL` worker. Nothing in the register blocks
@@ -280,8 +282,8 @@ milestones align as follows:
 
 | Wave | Items | Lane |
 |---|---|---|
-| **Shipped** | G1 PEP EDD + SM approval · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + verification) | Owned builds — small commits |
-| **Vendor track** | G2 payment screening + hold · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
+| **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + verification) | Owned builds — small commits |
+| **Vendor track** | G2 live screening adapter (port + seam already in place) · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
 | **Open** | — every owned build (G1, G3–G8) and the G7 chain-alarm residual have shipped; the register's open items resolve in the vendor-record lane | Owned builds complete |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule

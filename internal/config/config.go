@@ -153,6 +153,11 @@ type Config struct {
 	ScreeningTimeout    time.Duration
 	KYCRescreenPeriod   time.Duration
 
+	// G2 payment-time counterparty screening for money-out rails. Defaults
+	// to the deterministic simulator until the screening vendor's payment-
+	// screening adapter lands (AML_VENDOR_DECISION_RECORD.md).
+	PaymentScreeningProvider string
+
 	// Corporate-registry (CAC), tax-authority (FIRS) and location
 	// verification. Unlike identity and screening these default to their
 	// deterministic simulators, because their live vendors are optional: the
@@ -447,7 +452,8 @@ func Load() (Config, error) {
 		RateLimitScanPerMinute:     int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
 		RateLimitAPIKeysPerMinute:  int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
-		SettlementFeeBps: int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
+		SettlementFeeBps:         int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
+		PaymentScreeningProvider: strings.ToLower(env("PAYMENT_SCREENING_PROVIDER", "simulated")),
 
 		PayoutMinKobo:         EnvInt64("PAYOUT_MIN_KOBO", 100_00),
 		PayoutMaxKobo:         EnvInt64("PAYOUT_MAX_KOBO", 10_000_00),
@@ -506,6 +512,11 @@ func Load() (Config, error) {
 	case "", "http":
 	default:
 		return Config{}, fmt.Errorf("SCREENING_PROVIDER must be \"http\", got %q", cfg.ScreeningProvider)
+	}
+	switch cfg.PaymentScreeningProvider {
+	case "", "simulated":
+	default:
+		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" (the live screening-vendor adapter is pending, see AML_VENDOR_DECISION_RECORD.md), got %q", cfg.PaymentScreeningProvider)
 	}
 	switch cfg.DataProvider {
 	case "", "vtpass", "interswitch":
