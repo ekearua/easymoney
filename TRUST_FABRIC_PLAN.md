@@ -117,16 +117,17 @@ layer joins on.
   and find the code as described. CI keeps docs honest via the existing
   template-load and coverage drift guards.
 
-### M1 — Capture the signals that already pass through the server
+### M1 — Capture the signals that already pass through the server — done
 
 Trust-relevant boundaries (web sign-in, checkout pages, web-flow submits)
 log the client IP (honouring `X-Forwarded-For` behind the tunnel) and user
 agent into one audited place, so device intelligence later has history
 instead of starting empty.
 
-- **Acceptance:** a sign-in and a checkout submit persist request context;
-  the admin can see it on the KYC profile view; no PII beyond IP/UA;
-  unit + integration coverage.
+- **Acceptance (met):** sign-in (`TouchTrustedDevice` in `auth.go`) and
+  checkout (`checkout.go`) persist request context; the KYC profile view
+  lists devices with first/last seen; no PII beyond IP/UA; covered by the
+  device-store integration tests that M2's wave extended.
 
 ### M2 — Device signals: make `trusted_devices` real — done
 
@@ -159,16 +160,17 @@ a tuning suggestion in the queue.
   per-rule counts on the queue; integration tests cover the statuses and
   the suggestion path.
 
-### M5 — Intelligence: the doctrine's KPIs, computed — partial
+### M5 — Intelligence: the doctrine's KPIs, computed — nearly done
 
-False-positive rate by rule, signal coverage, and risk-band distribution
-are on the admin dashboard; **median alert-resolution time and the full KPI
-section remain**, plus the trust timeline already shipped on the KYC
-profile (alerts + device sightings + audit entries in one feed).
+False-positive rate, **median alert-resolution time**
+(`store_trust_kpis.go` `MedianAlertResolutionMins`, rendered on the admin
+dashboard), signal coverage, and risk-band distribution are all computed
+from existing tables, and the trust timeline ships on the KYC profile
+(alerts + device sightings + audit entries in one feed).
 
-- **Acceptance (remaining):** dashboard renders the full KPI set from
-  seeded data; the numbers reconcile with the underlying tables in an
-  integration test.
+- **Acceptance (remaining):** the dashboard's KPI numbers reconcile with
+  the underlying tables in an integration test; the doc's full KPI section
+  beyond these five is deliberate scope, not a gap.
 
 ---
 
@@ -183,5 +185,6 @@ profile (alerts + device sightings + audit entries in one feed).
 - **ML scoring.** Blocked on M4 outcome volume; deterministic
   `ScoreRisk` weights stay until labels exist.
 - **Screening hold/interdiction at payment time** (spec G2) and the other
-  spec gaps — tracked in `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated
-  here.
+  open spec gaps (G2, G8, G9, plus the G7 chain-alarm residual) — tracked
+  in `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated here. G1, G3, G4, G5,
+  and G6 are closed.

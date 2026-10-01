@@ -1,4 +1,4 @@
-# Xego AML/CFT/CPF compliance specification
+# Faya AML/CFT/CPF compliance specification
 
 **Status:** Draft for compliance review. This document is the regulatory
 specification for the platform's AML obligations: what CBN and NFIU require,
@@ -20,7 +20,7 @@ not make it.
 
 ## 1. Regulatory instruments and applicability
 
-| Instrument | What it is | Applicability to Xego |
+| Instrument | What it is | Applicability to Faya |
 |---|---|---|
 | **Money Laundering (Prevention and Prohibition) Act 2022 (MLPPA)** | The principal Act: defines ML/FT/PF offences, CDD, record-keeping (5 years), reporting duties, PEP definition, the **Terrorism (Prevention and Prohibition) Act 2022 (TPPA)** cross-references sanctions obligations | Applies as a reporting entity under the designated non-financial business / OFI perimeter |
 | **CBN AML/CFT/CPF Regulations 2022** (issued under s.63 MLPPA) | Operational regulations: CDD tiers, PEP/EDD, record-keeping, programme requirements, monitoring and reporting duties | Applies to all AML-scoped CBN institutions; governs the KYC ladder and programme |
@@ -70,7 +70,7 @@ before mapping controls. As built:
 - ❌ **No cash in or out.** The platform never handles physical cash; CTR
   obligations attach to the *reporting* boundary we monitor for structuring
   detection, not to teller operations.
-- ❌ **No mass-payout or payroll product** where Xego is the originator of
+- ❌ **No mass-payout or payroll product** where Faya is the originator of
   funds on behalf of a merchant's employees.
 
 ### 2.1 Perimeter-facing obligations this cut produces
@@ -111,7 +111,7 @@ whole repo.
 | **Tier 3 (EDD): address proof + source of wealth/occupation** | `address_proof` + `edd_completed` keys gate L3 | `AdvanceKYCTier` |
 | **Corporate KYB: CAC, TIN, UBO, SCUML evidence** (CDD Reg 2023 Part on legal persons) | B0→B1 gated on **reviewer-verified documents** — chat aggregation (`kyb_request_details`) or browser upload with per-document review | `DeriveKYBEvidence`/`VerifiedKYBEvidence`; migration 078; `AdvanceKYBTier` refuses unverified B1 |
 | **PEP status determination** (Reg. 2022 Part; CBN PEP Guidelines) | Screening produces the PEP list; PEP **report** exists (`reports.TypePEP`) | `SanctionsScreener` port; `screening_results`; `/admin/reports` PEP bundle |
-| **PEP: EDD + senior-management approval** | **Gap (G1)** — screening decision exists but no EDD workflow/SM approval step on a PEP hit | §5 |
+| **PEP: EDD + senior-management approval** | A PEP determination auto-opens one `pep_edd` review case; while open, `AdvanceKYCTier` refuses every advancement; disposal is the SM's own audited status (`sm_approved`/`sm_rejected`) with the EDD evidence attached on approval | `store_pep_edd.go` (`EnsurePEPEDDCase`, `ReviewPEPEDDCase`); migration 081; `store_kyc.go` hook + gate; SM buttons on `/admin/kyc` |
 | **EDD triggers: high-risk business, unusual activity, complex ownership** | Risk band drives caps; high-risk counterparty rule in monitor | `RISK_HIGH_SINGLE_LIMIT_KOBO`; monitor `high_risk_counterparty` |
 | **Ongoing CDD / periodic review** | 90-day rescreen worker (`KYC_RESCREEN_PERIOD`) | Worker in `app.New` wiring |
 
@@ -137,9 +137,9 @@ whole repo.
 ### 3.3a PEP handling (consolidated)
 
 - **Determination** — the screening lane + `TypePEP` report.
-- **Gap (G1, restated as its own item because CBN treats PEP handling as its
-  own obligation family):** no EDD workflow, no senior-management approval
-  step, and no heightened-ongoing-monitoring flag on a PEP determination.
+- **Closed (G1):** a PEP determination now opens the EDD workflow with a
+  senior-management approval disposition that blocks tier advancement while
+  open — see the §3.1 row and the gap register.
 - Note: CBN PEP guidance expects a **database-driven** determination with
   source provenance — which is one more reason the vendor lane (fuzzy
   matching + PEP DB) is a purchase, not a table we maintain.
@@ -151,21 +151,20 @@ whole repo.
 | **CTR over the threshold** (NFIU CTR instruction; boundary configured) | CTR rows from audited movement data at `REPORT_CTR_THRESHOLD_KOBO` | `internal/reports/reports.go` `TypeCTR`; store query |
 | **STR on suspicious activity** (MLPPA; NFIU STR instruction) | STR rows derived from confirmed monitor alerts + case status | `TypeSTR` rows carry alert rule/severity/status + case status |
 | **PEP reporting** | PEP report rows from screening data | `TypePEP` |
-| **goAML XML filing format** (NFIU goAML portal) | **Gap (G4)** — CSV/JSON rows, not the goAML XML schema | §5 |
-| **Timelines: STR within 24h of suspicion; CTR by the 7th...** (NFIU instructions) | **Gap (G5)** — no filing-clock tracking or due-date surfacing | §5 |
+| **goAML XML filing format** (NFIU goAML portal) | `STRgoAML`/`CTRgoAML`/`PEPgoAML` encoders beside the CSV/JSON writers; element-count + required-field validation before the bytes leave | `internal/reports/reports_goaml.go` (`GoAMLSchemaVersion goaml/4.0-nfiu-ng`, `ValidateGoAML`); `/admin/reports` XML download links |
+| **Timelines: STR within 24h of suspicion; CTR by the 7th...** (NFIU instructions) | One idempotent filing clock per report row, keyed by stable reference; STR due 24h from the alert, CTR due the 7th of the following month; completion stamped by alert resolution, overdue clocks surfaced on the reports page | `store_reports_clocks.go` (`FilingDeadline`, `SyncReportFilingClocks`, `DueReportFilingClocks`); migration 082; `internal/app/reports.go` sync + `/admin/reports` clocks panel |
 
-**G4/G5 gap note:** `reports.ReportBundle` writes NFIU/CBN-shaped rows
-(customer identity, reference, amount, counterparty, flag reason) — the
-data contract is right; the *filing* mechanics (goAML XML, filing clock)
-are what is missing.
+**G4/G5 closed note:** the NFIU/CBN-shaped `reports.ReportBundle` rows now
+have their filing mechanics: the goAML XML encoders (§3.4) and the
+per-row filing clocks surfaced on `/admin/reports`.
 
 ### 3.5 Record-keeping and audit
 
 | Obligation (source) | Control | Evidence |
 |---|---|---|
-| **Keep records ≥5 years** (MLPPA; Reg. 2022) | **Gap (G6)** — audit/transaction retention is configured via `store_retention.go` but the AML 5-year floor is not asserted anywhere | §5 |
+| **Keep records ≥5 years** (MLPPA; Reg. 2022) | `AML_RECORD_RETENTION` (floor 5y, `0` dev escape) clamps every AML-scope purge class, including merchant registrations | `store_retention.go`; `config.go` validation |
 | **Records sufficient to reconstruct transactions** (MLPPA) | Ledger, payments, alerts, cases, screening results, audit log — all persisted | Store schema |
-| **Tamper-proof audit trail** (Baseline Std) | Audit log on every state change; tamper-evidence **Gap (G7)** — no hash-chaining/WORM store | §5 |
+| **Tamper-proof audit trail** (Baseline Std) | Hash-chained audit log (`prev_hash` + row hash) on every state change, verified on admin load — the residual sliver is a scheduled verification job that alerts on a broken chain rather than waiting for a page view | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
 | **Annual independent validation** (Baseline Std) | **Gap (G8)** — not a code obligation; an operator duty to schedule | §5 |
 
 ### 3.6 Programme obligations (operator duties, listed for completeness)
@@ -208,20 +207,20 @@ action list.
 
 | # | Gap | Why it matters | Evidence check that closes it |
 |---|---|---|---|
-| **G1** | **PEP EDD + senior-management approval workflow** — screening produces the PEP list but no EDD workflow or SM approval step on a PEP determination | Reg. 2022 PEP obligations; CBN PEP guidance expects documented approval | A PEP hit opens a `pep_edd` case with an SM-approval disposition; `AdvanceKYCTier` refuses advancement while one is open |
+| **G1** | ~~**PEP EDD + senior-management approval**~~ — **closed.** A PEP determination auto-opens one `pep_edd` review case (migration 081 extends the case-type check; unique partial index enforces one open case per user); the ordinary approve/reject path refuses `pep_edd` cases so only the SM disposition lands; `ReviewPEPEDDCase` stamps `sm_approved`/`sm_rejected` (audited, its own status) and an approval attaches the `edd_completed` evidence key; `AdvanceKYCTier` refuses every tier move while a `pep_edd` case is open | Reg. 2022 PEP obligations; CBN PEP guidance expects documented approval | `store_pep_edd.go`; `store_kyc.go` hook + gate + refuse-guard; SM buttons on `/admin/kyc`; `store_pep_edd_integration_test.go` |
 | **G2** | **Payment-time counterparty screening + hold/interdiction** | Baseline Std automated interdiction; NIP is irreversible | Pre-flight screen in the `ReserveAllowance` window; confirmed → block, ambiguous → hold (allowance reserved, dispatch deferred); cache-on-beneficiary for cost |
 | **G3** | ~~**Internal watchlist**~~ — **closed.** `internal_watchlist` table (migration 080) with normalised-identity uniqueness; enforcement in `RecordScreeningResult` rewrites any screening of a listed identity to `blocked` with provider `internal_watchlist` and the listing id stamped on the result, so onboarding gates, the rescreen worker and reporting all see the interdiction; admin CRUD at `/admin/internal-watchlist` with audited add/remove | Baseline Std names it; vendor record §8.2 scoped the build | `store_internal_watchlist.go`; `store_kyc.go` enforcement; `admin_internal_watchlist.go` + template; `store_internal_watchlist_integration_test.go` |
-| **G4** | **goAML XML filing format** | NFIU files via goAML; CSV rows do not file | `internal/reports` gains the goAML XML encoder beside CSV/JSON; schema-validated output |
-| **G5** | **Filing-clock tracking** (STR 24h, CTR cadence) | NFIU timelines; missed clocks are reportable failures | Report rows gain due/completed timestamps surfaced in `/admin/reports` |
+| **G4** | ~~**goAML XML filing format**~~ — **closed.** `STRgoAML`/`CTRgoAML`/`PEPgoAML` emit the goAML XML envelope (`goaml/4.0-nfiu-ng`) beside the CSV/JSON writers, with `ValidateGoAML` checking element counts and required fields before download; `/admin/reports` serves the XML beside the existing formats | NFIU files via goAML; CSV rows do not file | `reports_goaml.go`; `reports_goaml_test.go`; `/admin/reports` links |
+| **G5** | ~~**Filing-clock tracking**~~ — **closed.** `report_filing_clocks` (migration 082) holds one idempotent clock per report reference: STR due 24h from the alert, CTR due the 7th of the following month (`FilingDeadline`); bundle generation syncs and resolution completes them; `/admin/reports` shows due clocks with overdue counts | NFIU timelines; missed clocks are reportable failures | `store_reports_clocks.go`; `internal/app/reports.go` sync; clocks panel in `admin_reports.html`; `store_reports_clocks_integration_test.go` |
 | **G6** | ~~**AML 5-year retention floor**~~ — **closed.** `AML_RECORD_RETENTION` (default and minimum 5y, `0` = dev escape) clamps every AML-scope purge class — payments, invoices, thrift, audit, and merchant registrations (previously hard-deleted unarchived after the 90-day operational period); account records of never-transacted users are clamped to the same floor; the archive writer is re-run-safe (`appendArchiveGuarded`); config rejects sub-5y values and a `RETENTION_PERIOD` above the floor | MLPPA/Reg. 2022 | `store_retention.go` (`amlCutoff`, `archiveAndPurgeMerchantRegistrations`); `config.go` validation; `store_amlretention_integration_test.go` |
-| **G7** | **Audit tamper-evidence** | Baseline Std "tamper-proof audit" | Hash-chain (`prev_hash` + row hash) or WORM storage on `audit_logs`; verification job |
+| **G7** | ~~**Audit tamper-evidence**~~ — **closed.** `audit_logs` carries a hash chain (`prev_hash` + row hash, migration 023) written on every `RecordAudit`; `VerifyAuditChain` recomputes and checks linkage, and `/admin` renders chain status. The same pattern covers the retention archive (025) and the ledger (030). Residual nuance, tracked as a hardening item rather than a gap: verification runs on admin page load — a scheduled job that alerts on a broken chain is the remaining sliver | Baseline Std "tamper-proof audit" | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
 | **G8** | **Annual independent validation evidence** | Baseline Std; operator duty | Checklist + evidence store in the admin console (document + date + scope) |
 | **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase — tracked in the vendor record §7, not re-specified here |
 
-**Scheduling note:** G2, G3, G9 resolve in the vendor-record lane (§8 of the
-vendor record). G1, G4–G8 are **owned builds** — small, severable, and each
-converts directly into a repo-style commit. Nothing in the register blocks
-another item; all are additive.
+**Scheduling note:** G2 and G9 resolve in the vendor-record lane (§8 of the
+vendor record). Of the owned builds, G1, G3–G7 are closed; **G8** (annual
+attestation hook) is the last one. Nothing in the register blocks another
+item; all are additive.
 
 ---
 
@@ -266,8 +265,8 @@ real; the list breadth and match quality are the vendor's to prove.**
    annual attestation: MLRO named, training done, SCUML status current,
    independent validation scheduled. **Gap (G8)** is the code-side hook.
 3. **Regulator-facing rehearsal** — `/admin/reports` must produce, on demand,
-   an STR/CTR/PEP bundle a compliance officer would hand over. G4/G5 are
-   what stand between the current bundle and a filing.
+   an STR/CTR/PEP bundle a compliance officer would hand over — now with the
+   goAML encoding (G4) and filing clocks (G5) beside it.
 
 ---
 
@@ -278,9 +277,9 @@ milestones align as follows:
 
 | Wave | Items | Lane |
 |---|---|---|
-| **Now** | G3 internal watchlist (owned, vendor-independent) · G6 retention floor · G5 filing-clock fields | Owned builds — small commits |
+| **Shipped** | G1 PEP EDD + SM approval · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + verification) | Owned builds — small commits |
 | **Vendor track** | G2 payment screening + hold · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
-| **Later** | G1 PEP EDD workflow (needs the vendor's PEP DB first to be meaningful) · G4 goAML XML · G7 tamper-evidence · G8 attestation hook | Owned builds after the vendor track |
+| **Open** | G8 attestation hook · G7 sliver: scheduled chain-verification alerting | Owned builds, small |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule
 activates), perimeter change (licence status), vendor signed (G2/G9
