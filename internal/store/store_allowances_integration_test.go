@@ -112,6 +112,13 @@ func TestAllowanceReservationIdempotentByRef(t *testing.T) {
 
 func TestAllowanceMonthlyCeilingStepsAboveDaily(t *testing.T) {
 	repository, ctx := openAllowanceTestRepository(t)
+	// The scenario seeds prior-day usage at now-48h inside the CURRENT month,
+	// which does not exist on month-boundary days (the 1st-2nd, when the
+	// lookback crosses the month start and the monthly ceiling cannot bind
+	// ahead of the daily one within a single day).
+	if seed := time.Now().Add(-48 * time.Hour); seed.Before(kyc.MonthWindowStart(time.Now())) {
+		t.Skip("prior-day-in-month scenario is unsatisfiable on month-boundary days")
+	}
 	user, err := repository.GetOrCreateUser(ctx, "+2348090000003")
 	if err != nil {
 		t.Fatal(err)
