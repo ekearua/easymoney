@@ -748,14 +748,31 @@ func TestPostgresKYCTierLadder(t *testing.T) {
 		t.Fatal("advance while screening decision is 'strong' should fail")
 	}
 
-	// Clearing the block (manually_cleared) re-enables advancement.
+	// Clearing the block (manually_cleared) re-enables the screening-lane
+	// gate — but the PEP determination also opened a pep_edd case (spec G1),
+	// and that gate lifts only on the senior-management disposition. The
+	// manual clear alone must NOT re-enable advancement.
 	if _, err := repository.RecordScreeningResult(ctx, ScreeningResult{
 		UserID: user.ID, Provider: "simulated", Decision: "manually_cleared",
 	}, 30*24*time.Hour); err != nil {
 		t.Fatalf("record cleared screening: %v", err)
 	}
+	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil); err == nil {
+		t.Fatal("advance after manual clear must still require the pep_edd SM disposition")
+	}
+	openCases, err := repository.ListManualReviewCases(ctx, "pending", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range openCases {
+		if c.CaseType == "pep_edd" && c.UserID == user.ID {
+			if _, err := repository.ReviewPEPEDDCase(ctx, c.ID, true, "sm@xego", "EDD complete", nil); err != nil {
+				t.Fatalf("SM disposition: %v", err)
+			}
+		}
+	}
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL3, []string{kyc.EvAddressProof, kyc.EvEDDCompleted}, nil); err != nil {
-		t.Fatalf("advance after manual clear: %v", err)
+		t.Fatalf("advance after manual clear and SM disposition: %v", err)
 	}
 
 	// Drop back below L3 so the review approval is the step that raises the
