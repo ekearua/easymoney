@@ -25,6 +25,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	auditChainTicker := time.NewTicker(a.cfg.AuditChainVerifyInterval)
 	monitorTicker := time.NewTicker(15 * time.Minute)
 	settlementTicker := time.NewTicker(10 * time.Second)
+	onboardReminderTicker := time.NewTicker(a.cfg.OnboardingReminderInterval)
 	bulkTicker := time.NewTicker(2 * time.Second)
 	defer outboxTicker.Stop()
 	defer eventTicker.Stop()
@@ -35,6 +36,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer auditChainTicker.Stop()
 	defer monitorTicker.Stop()
 	defer settlementTicker.Stop()
+	defer onboardReminderTicker.Stop()
 	defer bulkTicker.Stop()
 	a.startEventConsumers(ctx)
 	for {
@@ -101,13 +103,20 @@ func (a *App) runWorkers(ctx context.Context) {
 			})
 		case <-settlementTicker.C:
 			a.dispatch(ctx, a.workerPools.misc, "settlement", a.runSettlementDispatcher)
+		case <-onboardReminderTicker.C:
+			a.dispatch(ctx, a.workerPools.misc, "onboard_reminders", func(ctx context.Context) {
+				if _, err := a.onboardReminders.RunSweep(ctx); err != nil {
+					a.logger.WarnContext(ctx, "onboarding reminder sweep failed", "error", err)
+				}
+			})
 		case <-bulkTicker.C:
 			a.runBulkJobs(ctx)
-
 		}
 	}
 }
 
+// runBulkJobs claims due bulk jobs and runs them on bounded workers so a burst
+// of large batches cannot exhaust the tick loop.
 func (a *App) runBulkJobs(ctx context.Context) {
 	if a.bulkPayments == nil {
 		return
@@ -219,9 +228,18 @@ func inboundGroupKey(message store.InboundMessage) string {
 	return message.Channel + "\x00" + message.Sender
 }
 
-// handleInboundMessage runs one message through the FSM and marks it done or
-// schedules its bounded retry.
+// handleInboundMessage runs one message through the FSM (or the bulk-location
+// side path) and marks it done or schedules its bounded retry.
 func (a *App) handleInboundMessage(ctx context.Context, message store.InboundMessage) {
+	if message.HasLocation && a.bulkPayments != nil {
+		handled, locErr := a.bulkPayments.RecordLocation(ctx, message.Recipient, message.Latitude, message.Longitude, message.Accuracy)
+		if locErr != nil {
+			a.logger.WarnContext(ctx, "record bulk location", "message_id", message.ID, "channel", message.Channel, "error", locErr)
+		} else if handled {
+			_ = a.store.CompleteInboundMessage(ctx, message.ID)
+			return
+		}
+	}
 	if err := a.conversation.Handle(ctx, message); err != nil {
 		a.logger.ErrorContext(ctx, "process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
 		_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())

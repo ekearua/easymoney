@@ -97,16 +97,14 @@ type App struct {
 	settlements       *service.SettlementService
 	refunds           *service.RefundService
 	disputes          *service.DisputeService
+	onboardReminders  *service.OnboardingReminderService
+	bulkPayments      *service.BulkPaymentsService
+	bulkSlots         chan struct{}
 	workerWg          sync.WaitGroup
 	// workerPools holds the bounded worker-pool slots and per-handler gates
 	// that let every tick handler run concurrently without overlapping itself
 	// (internal/app/worker_pool.go).
 	workerPools workerPools
-
-	// Location-aware bulk disbursements: the orchestrator plus a bounded slot
-	// pool that caps how many bulk jobs run at once (BULK_WORKER_CONCURRENCY).
-	bulkPayments *service.BulkPaymentsService
-	bulkSlots    chan struct{}
 
 	// Transactional email, used for merchant confirmation and for emailed
 	// second-factor codes.
@@ -425,8 +423,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" exists until the screening vendor adapter lands)", cfg.PaymentScreeningProvider)
 	}
-	// Bulk workers pull their jobs from the pool on a short ticker; the
-	// concurrency semaphore bounds how many run at once per instance.
 	bulkConcurrency := cfg.BulkWorkerConcurrency
 	if bulkConcurrency <= 0 {
 		bulkConcurrency = 4
@@ -447,6 +443,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithPaymentScreener(paymentScreener)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
+		onboardReminders: service.NewOnboardingReminderService(cfg, repository, logger),
 		bulkPayments: service.NewBulkPaymentsService(repository, messengers, logger, service.BulkPaymentsConfig{
 			RadiusM:        cfg.BulkRadiusM,
 			MaxAccuracyM:   cfg.BulkMaxAccuracyM,
@@ -820,15 +817,6 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/events/{id}/edit", a.merchantEventUpdate)
 		m.Post("/merchant/events/{id}/toggle", a.merchantEventToggle)
 		m.Get("/merchant/events/{id}/tickets", a.merchantEventTickets)
-		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
-		m.Get("/merchant/security", a.securityPage(store.MFAScopeMerchant))
-		m.Post("/merchant/security/totp", a.securityStartTOTP(store.MFAScopeMerchant))
-		m.Post("/merchant/security/totp/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
-		m.Post("/merchant/security/email", a.securityStartEmail(store.MFAScopeMerchant))
-		m.Post("/merchant/security/email/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
-		m.Post("/merchant/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeMerchant))
-		m.Post("/merchant/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeMerchant))
-		m.Post("/merchant/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeMerchant))
 		m.Get("/merchant/bulk/centers", a.merchantBulkCenters)
 		m.Post("/merchant/bulk/centers", a.merchantBulkCenterCreate)
 		m.Get("/merchant/bulk/centers/{id}", a.merchantBulkCenterDetail)
@@ -839,6 +827,15 @@ func (a *App) routes() http.Handler {
 		m.Get("/merchant/bulk/batches", a.merchantBulkBatches)
 		m.Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
 		m.Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
+		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
+		m.Get("/merchant/security", a.securityPage(store.MFAScopeMerchant))
+		m.Post("/merchant/security/totp", a.securityStartTOTP(store.MFAScopeMerchant))
+		m.Post("/merchant/security/totp/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/email", a.securityStartEmail(store.MFAScopeMerchant))
+		m.Post("/merchant/security/email/verify", a.securityVerifyFactor(store.MFAScopeMerchant))
+		m.Post("/merchant/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeMerchant))
+		m.Post("/merchant/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeMerchant))
+		m.Post("/merchant/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeMerchant))
 		m.Post("/merchant/logout", a.merchantLogout)

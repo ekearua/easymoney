@@ -1,0 +1,42 @@
+{{define "admin_onboarding_reminders.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Onboarding</p><h1>Onboarding reminders</h1></div></header>
+
+<section class="panel">
+  <h2>What this is</h2>
+  <p class="muted">The chat-side nudge that reaches users whose onboarding or merchant registration stalled. The sweep runs on its own 6-hour ticker and only ever sends one message per stage attempt; anything outside Meta's 24-hour WhatsApp service window needs an approved template, and with <code>ONBOARDING_REMINDER_TEMPLATE</code> unset the attempt is recorded as <code>pending_template</code> and skipped instead of burning the number's quality rating. This panel is read-only — a bug here cannot corrupt onboarding state.</p>
+</section>
+
+<section class="panel">
+  <h2>Conversion</h2>
+  <p>Users nudged (a sent or delivered reminder in the last 7 days) who are now on board: <strong>{{.Stats.CompletedAfterReminder}}</strong></p>
+  <p class="muted">This is the number that decides whether the feature earns its message budget. The sweep never writes it — it is a read-side metric only.</p>
+</section>
+
+<section class="panel">
+  <h2>Stalled users by stage</h2>
+  <p class="muted">Incomplete users currently appearing in the sweep candidate set, classified the same way as the reminder copy (the raw FSM state is folded into a stage label so a user who quit mid form still gets the right nudge).</p>
+  <table><thead><tr><th>Stage</th><th>Stalled</th></tr></thead><tbody>
+    {{range $stage, $n := .Stats.StalledByStage}}<tr><td>{{$stage}}</td><td>{{$n}}</td></tr>{{end}}
+  </tbody></table>
+</section>
+
+<section class="panel">
+  <h2>Last 24 hours</h2>
+  <table><thead><tr><th>Outcome</th><th>Attempts</th></tr></thead><tbody>
+    <tr><td>sent / delivered</td><td>{{.Stats.Sent24h}}</td></tr>
+    <tr><td>pending template (not sent)</td><td>{{.Stats.Pending24h}}</td></tr>
+    <tr><td>failed</td><td>{{.Stats.Failed24h}}</td></tr>
+  </tbody></table>
+  <p class="muted">Sent and delivered are the terminal good outcomes. Pending template means the WhatsApp service window was closed and no approved template was configured, so the attempt was claimed and recorded but no raw text was sent. Failed is a real send that did not land.</p>
+</section>
+
+<section class="panel">
+  <h2>Deliverability guard</h2>
+  <p class="muted">When the recent WhatsApp failure/delivery ratio meets or exceeds <code>ONBOARDING_REMINDER_DELIVERY_GUARD_FAILURE_RATIO</code> over the last <code>ONBOARDING_REMINDER_DELIVERY_GUARD_WINDOW</code>, the reminder sweep is paused for the current tick so a degraded number is not hammered. Zero-disabled.</p>
+</section>
+</main></body></html>
+{{end}}

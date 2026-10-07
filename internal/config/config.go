@@ -267,6 +267,32 @@ type Config struct {
 	// tamper event surfaces without waiting for an admin page view.
 	AuditChainVerifyInterval time.Duration
 
+	// Onboarding reminders (chat-side nudge for incomplete onboarding). The
+	// worker sweeps stalled users every OnboardingReminderInterval; each
+	// stage gets at most OnboardingReminderMax reminders spaced at least
+	// OnboardingReminderGap apart, never inside OnboardingReminderQuietStart
+	// to OnboardingReminderQuietEnd platform time. A WhatsApp reminder
+	// outside the 24-hour service window needs an approved template: with
+	// OnboardingReminderTemplate unset the attempt is recorded as
+	// 'pending_template' and skipped instead of burning quality rating.
+	OnboardingReminderInterval    time.Duration
+	OnboardingReminderStartAfter  time.Duration
+	OnboardingReminderStallAfter  time.Duration
+	OnboardingReminderGap         time.Duration
+	OnboardingReminderMax         int
+	OnboardingReminderQuietStart  int
+	OnboardingReminderQuietEnd    int
+	OnboardingReminderTemplate    string
+	OnboardingReminderTemplateLoc string
+	// OnboardingReminderDeliveryGuardWindow is the trailing window (default
+	// 1 hour) over which the reminder guard computes the recent WhatsApp
+	// outbox failure/block ratio. When that ratio meets or exceeds
+	// OnboardingReminderDeliveryGuardFailureRatio, the reminder sweep is
+	// paused for the rest of the current tick so a degraded number's Meta
+	// quality rating is not hammered by nudges. Zero disables the guard.
+	OnboardingReminderDeliveryGuardWindow       time.Duration
+	OnboardingReminderDeliveryGuardFailureRatio float64
+
 	PaymentMinKobo  int64
 	PaymentMaxKobo  int64
 	RetentionPeriod time.Duration
@@ -480,25 +506,36 @@ func Load() (Config, error) {
 		// M3 Trust Fabric step-up: a high-risk-band profile has its
 		// single-transaction allowance capped at this ceiling until the
 		// review clears. Zero disables the step-up.
-		RiskHighSingleLimitKobo:    EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
-		TuningFPPercent:            envFloat("TUNING_FP_PERCENT", 60),
-		TuningMinLabelled:          EnvInt64("TUNING_MIN_LABELLED", 10),
-		RiskDecayHalfLife:          envDuration("RISK_DECAY_HALF_LIFE", 90*24*time.Hour),
-		SessionTTL:                 envDuration("CONVERSATION_TTL", 30*time.Minute),
-		ReceiptTTL:                 envDuration("RECEIPT_TTL", 90*24*time.Hour),
-		WebFlowsEnabled:            envBool("WEB_FLOWS_ENABLED", true),
-		MessageLogEnabled:          envBool("MESSAGE_LOG_ENABLED", true),
-		MessageCostServiceNGN:      EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
-		MessageCostMarketingNGN:    EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
-		AITokensPerNGN:             EnvInt64("AI_TOKENS_PER_NGN", 250),
-		RedisURL:                   strings.TrimSpace(os.Getenv("REDIS_URL")),
-		EventBus:                   strings.ToLower(env("EVENT_BUS", "memory")),
-		EventBusPartitions:         int(EnvInt64("EVENT_BUS_PARTITIONS", 4)),
-		KafkaGroupID:               env("KAFKA_GROUP_ID", "xego"),
-		RateLimitWebhooksPerMinute: int(EnvInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
-		RateLimitPublicPerMinute:   int(EnvInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
-		RateLimitScanPerMinute:     int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
-		RateLimitAPIKeysPerMinute:  int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
+		RiskHighSingleLimitKobo:                     EnvInt64("RISK_HIGH_SINGLE_LIMIT_KOBO", 50_000),
+		TuningFPPercent:                             envFloat("TUNING_FP_PERCENT", 60),
+		TuningMinLabelled:                           EnvInt64("TUNING_MIN_LABELLED", 10),
+		RiskDecayHalfLife:                           envDuration("RISK_DECAY_HALF_LIFE", 90*24*time.Hour),
+		SessionTTL:                                  envDuration("CONVERSATION_TTL", 30*time.Minute),
+		ReceiptTTL:                                  envDuration("RECEIPT_TTL", 90*24*time.Hour),
+		OnboardingReminderInterval:                  envDuration("ONBOARDING_REMINDER_INTERVAL", 6*time.Hour),
+		OnboardingReminderStartAfter:                envDuration("ONBOARDING_REMINDER_START_AFTER", 24*time.Hour),
+		OnboardingReminderStallAfter:                envDuration("ONBOARDING_REMINDER_STALL_AFTER", 12*time.Hour),
+		OnboardingReminderGap:                       envDuration("ONBOARDING_REMINDER_GAP", 48*time.Hour),
+		OnboardingReminderMax:                       int(EnvInt64("ONBOARDING_REMINDER_MAX", 3)),
+		OnboardingReminderQuietStart:                int(EnvInt64("ONBOARDING_REMINDER_QUIET_START", 20)),
+		OnboardingReminderQuietEnd:                  int(EnvInt64("ONBOARDING_REMINDER_QUIET_END", 8)),
+		OnboardingReminderTemplate:                  strings.TrimSpace(os.Getenv("ONBOARDING_REMINDER_TEMPLATE")),
+		OnboardingReminderTemplateLoc:               env("ONBOARDING_REMINDER_TEMPLATE_LOCALE", "en"),
+		OnboardingReminderDeliveryGuardWindow:       envDuration("ONBOARDING_REMINDER_DELIVERY_GUARD_WINDOW", time.Hour),
+		OnboardingReminderDeliveryGuardFailureRatio: envFloat("ONBOARDING_REMINDER_DELIVERY_GUARD_FAILURE_RATIO", 0.5),
+		WebFlowsEnabled:                             envBool("WEB_FLOWS_ENABLED", true),
+		MessageLogEnabled:                           envBool("MESSAGE_LOG_ENABLED", true),
+		MessageCostServiceNGN:                       EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
+		MessageCostMarketingNGN:                     EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
+		AITokensPerNGN:                              EnvInt64("AI_TOKENS_PER_NGN", 250),
+		RedisURL:                                    strings.TrimSpace(os.Getenv("REDIS_URL")),
+		EventBus:                                    strings.ToLower(env("EVENT_BUS", "memory")),
+		EventBusPartitions:                          int(EnvInt64("EVENT_BUS_PARTITIONS", 4)),
+		KafkaGroupID:                                env("KAFKA_GROUP_ID", "xego"),
+		RateLimitWebhooksPerMinute:                  int(EnvInt64("RATE_LIMIT_WEBHOOKS_PER_MINUTE", 120)),
+		RateLimitPublicPerMinute:                    int(EnvInt64("RATE_LIMIT_PUBLIC_PER_MINUTE", 60)),
+		RateLimitScanPerMinute:                      int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
+		RateLimitAPIKeysPerMinute:                   int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
 		SettlementFeeBps:         int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
 		PaymentScreeningProvider: strings.ToLower(env("PAYMENT_SCREENING_PROVIDER", "simulated")),
@@ -565,6 +602,20 @@ func Load() (Config, error) {
 	case "", "simulated":
 	default:
 		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" (the live screening-vendor adapter is pending, see AML_VENDOR_DECISION_RECORD.md), got %q", cfg.PaymentScreeningProvider)
+	}
+	if cfg.OnboardingReminderMax < 1 || cfg.OnboardingReminderMax > 10 {
+		return Config{}, fmt.Errorf("ONBOARDING_REMINDER_MAX must be between 1 and 10, got %d", cfg.OnboardingReminderMax)
+	}
+	for name, hour := range map[string]int{
+		"ONBOARDING_REMINDER_QUIET_START": cfg.OnboardingReminderQuietStart,
+		"ONBOARDING_REMINDER_QUIET_END":   cfg.OnboardingReminderQuietEnd,
+	} {
+		if hour < 0 || hour > 23 {
+			return Config{}, fmt.Errorf("%s must be an hour 0-23, got %d", name, hour)
+		}
+	}
+	if cfg.OnboardingReminderDeliveryGuardFailureRatio < 0 || cfg.OnboardingReminderDeliveryGuardFailureRatio > 1 {
+		return Config{}, fmt.Errorf("ONBOARDING_REMINDER_DELIVERY_GUARD_FAILURE_RATIO must be between 0 and 1, got %g", cfg.OnboardingReminderDeliveryGuardFailureRatio)
 	}
 	switch cfg.DataProvider {
 	case "", "vtpass", "interswitch":

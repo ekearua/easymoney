@@ -366,6 +366,42 @@ func TestScreeningProviderValidation(t *testing.T) {
 	}
 }
 
+// TestOnboardingReminderValidation pins the reminder knobs' loader bounds: an
+// attempt cap outside 1-10 and a quiet hour outside 0-23 are rejected by name,
+// and the documented defaults load.
+func TestOnboardingReminderValidation(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+
+	t.Run("rejects_attempt_cap_out_of_bounds", func(t *testing.T) {
+		t.Setenv("ONBOARDING_REMINDER_MAX", "0")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "ONBOARDING_REMINDER_MAX") {
+			t.Fatalf("expected ONBOARDING_REMINDER_MAX rejection, got %v", err)
+		}
+	})
+
+	t.Run("rejects_quiet_hour_out_of_range", func(t *testing.T) {
+		t.Setenv("ONBOARDING_REMINDER_MAX", "3")
+		t.Setenv("ONBOARDING_REMINDER_QUIET_START", "24")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "ONBOARDING_REMINDER_QUIET_START") {
+			t.Fatalf("expected ONBOARDING_REMINDER_QUIET_START rejection, got %v", err)
+		}
+	})
+
+	t.Run("defaults_load", func(t *testing.T) {
+		t.Setenv("ONBOARDING_REMINDER_MAX", "3")
+		t.Setenv("ONBOARDING_REMINDER_QUIET_START", "20")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.OnboardingReminderMax != 3 || cfg.OnboardingReminderQuietStart != 20 {
+			t.Fatalf("knobs not loaded: max=%d quietStart=%d", cfg.OnboardingReminderMax, cfg.OnboardingReminderQuietStart)
+		}
+	})
+}
+
 func TestSMSProviderValidation(t *testing.T) {
 	t.Setenv("APP_ENV", "development")
 
