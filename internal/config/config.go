@@ -267,6 +267,18 @@ type Config struct {
 	// tamper event surfaces without waiting for an admin page view.
 	AuditChainVerifyInterval time.Duration
 
+	// Backup staleness thresholds (pre-deploy resilience prerequisites):
+	// the admin metrics panel ages each backup_runs heartbeat and turns
+	// red when the newest row of a kind is older than its threshold.
+	// Defaults match the timer cadences in deploy/systemd: a daily base
+	// backup (26h allows one missed run), a 15-min WAL ship (45m allows
+	// three missed runs — beyond BACKUP_RPO=1h the RPO guarantee is
+	// gone), and a weekly restore drill (8d allows one missed week).
+	// Zero disables that alert.
+	BackupBaseStaleAfter   time.Duration
+	WALShipStaleAfter      time.Duration
+	RestoreDrillStaleAfter time.Duration
+
 	// Onboarding reminders (chat-side nudge for incomplete onboarding). The
 	// worker sweeps stalled users every OnboardingReminderInterval; each
 	// stage gets at most OnboardingReminderMax reminders spaced at least
@@ -493,6 +505,9 @@ func Load() (Config, error) {
 		// retention clamp refuses any configured period below it.
 		AMLRecordRetention:       envDuration("AML_RECORD_RETENTION", 5*365*24*time.Hour),
 		AuditChainVerifyInterval: envDuration("AUDIT_CHAIN_VERIFY_INTERVAL", time.Hour),
+		BackupBaseStaleAfter:     envDuration("BACKUP_BASE_STALE_AFTER", 26*time.Hour),
+		WALShipStaleAfter:        envDuration("WAL_SHIP_STALE_AFTER", 45*time.Minute),
+		RestoreDrillStaleAfter:   envDuration("RESTORE_DRILL_STALE_AFTER", 8*24*time.Hour),
 		KYCRescreenPeriod:        envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		MonitorVelocityWindow:    envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
 		MonitorVelocityLimit:     int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),

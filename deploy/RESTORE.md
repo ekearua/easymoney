@@ -71,7 +71,22 @@ deploy/backup.sh --rclone sync---> <bucket>/<prefix>/{base,wal}
 
 ## Scheduling
 
-Native VPS (systemd timer), e.g. daily base backup every 24h:
+Unit files ship in `deploy/systemd/` (install into `/etc/systemd/system/`,
+then `systemctl daemon-reload && systemctl enable --now <unit>.timer`):
+
+| Unit | Cadence | Heartbeat it records |
+| --- | --- | --- |
+| `xego-backup.timer` | daily 02:30 | `base` (+ `wal` — the run ships both) |
+| `xego-backup-wal-ship.timer` | every 15 min | `wal` — the WAL-ship split that makes `BACKUP_RPO=1h` real |
+| `xego-restore-drill.timer` | weekly Mon 03:00 | `drill` |
+
+Heartbeats land in `backup_runs` (migration 089) and are aged by the
+*Backup & PITR health* panel on `/admin/metrics` against
+`BACKUP_BASE_STALE_AFTER` / `WAL_SHIP_STALE_AFTER` /
+`RESTORE_DRILL_STALE_AFTER`. Heartbeats are success-only: a failed run
+stops producing rows and the panel goes red — silence is the alarm.
+
+Native VPS equivalent, daily base backup every 24h:
 
 ```ini
 # /etc/systemd/system/xego-backup.service

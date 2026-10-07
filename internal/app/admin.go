@@ -62,6 +62,23 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 	data["AISpendKobo"] = spendKobo
 	data["TrustKPIs"] = kpis
 	data["MedianResolutionLabel"] = resolutionLabel
+	// Backup/PITR health: age the scheduler's heartbeats against the
+	// staleness thresholds so a dead WAL ship or missed drill is visible
+	// here, not at restore time. Failure degrades the panel, never the
+	// page — an operator still needs the rest of the dashboard when the
+	// backup table itself is unreachable.
+	backupHealth, err := a.store.BackupHealth(r.Context())
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "backup health", "error", err)
+	}
+	backupPanel := buildBackupPanel(backupHealth, time.Now(),
+		a.cfg.BackupBaseStaleAfter, a.cfg.WALShipStaleAfter, a.cfg.RestoreDrillStaleAfter)
+	if backupHealth.LastBaseBackupAt == nil && backupHealth.LastWALShipAt == nil && backupHealth.ArchiverUnavailable == "" {
+		// First boot / harness: no heartbeats recorded yet. The panel still
+		// renders (everything "never"), but the page-level nudge says why.
+		data["BackupNeverRun"] = true
+	}
+	data["BackupPanel"] = backupPanel
 	a.renderAdmin(w, "metrics.html", r, "Metrics", data)
 }
 
@@ -321,6 +338,16 @@ func (a *App) adminResolveTransactionAlert(w http.ResponseWriter, r *http.Reques
 }
 
 // adminKYCReview approves or rejects a manual review case.
+func (a *App) adminOnboardingReminders(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.store.OnboardingReminderStats(r.Context())
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "onboarding reminder stats", "error", err)
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderAdmin(w, "admin_onboarding_reminders.html", r, "Onboarding reminders", map[string]any{"Stats": stats})
+}
+
 func (a *App) adminKYCReview(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)

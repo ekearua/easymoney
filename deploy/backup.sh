@@ -23,6 +23,13 @@
 #   bash deploy/backup.sh --restore-check
 #   bash deploy/backup.sh --restore-drill        (full PITR drill on NEWEST backup)
 #   bash deploy/backup.sh --restore-drill --drill-stamp=20260812T020000Z  (specific base)
+#   bash deploy/backup.sh --wal-ship             (WAL-only offsite sync; the
+#        15-min timer that makes BACKUP_RPO=1h real instead of "whenever the
+#        daily base backup last ran")
+#
+# Every successful step records a heartbeat row in backup_runs (kind base|wal|
+# drill) so the admin metrics panel can age it; heartbeats are success-only —
+# a failed run just stops producing rows and the panel goes red.
 
 set -Eeuo pipefail
 
@@ -39,14 +46,17 @@ PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-postgres}"
 PGPASSWORD="${PGPASSWORD:-}"
+PGDATABASE="${PGDATABASE:-whatsapp_payment}"
 
 RESTORE_CHECK=0
 RESTORE_DRILL=0
+WAL_SHIP_ONLY=0
 DRILL_STAMP=""
 for arg in "$@"; do
   case "$arg" in
     --restore-check) RESTORE_CHECK=1 ;;
     --restore-drill) RESTORE_DRILL=1 ;;
+    --wal-ship) WAL_SHIP_ONLY=1 ;;
     --drill-stamp=*) DRILL_STAMP="${arg#--drill-stamp=}" ;;
   esac
 done
@@ -63,6 +73,24 @@ require_command() {
 fail() {
   echo "backup failed: $*" >&2
   exit 1
+}
+
+# record_heartbeat writes the success marker the admin backup panel ages
+# (backup_runs, kind base|wal|drill). Best-effort by design: a host without
+# psql, or a pre-migration database, must not fail an otherwise successful
+# backup — the failure direction is a stale-looking panel (alert), never a
+# skipped backup. psql errors are printed so the timer journal explains a
+# panel that stays red despite green backup runs.
+record_heartbeat() {
+  local kind="$1" detail="$2"
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "note: psql not found; skipping ${kind} heartbeat" >&2
+    return 0
+  fi
+  PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
+    -v ON_ERROR_STOP=1 -q \
+    -c "INSERT INTO backup_runs (kind, detail) VALUES ('${kind}', '${detail}')" \
+    || echo "warning: ${kind} heartbeat not recorded (panel may read stale)" >&2
 }
 
 require_command pg_basebackup
@@ -99,6 +127,16 @@ if [[ ! -d "$WAL_LOCAL" ]]; then
   echo "first backup, otherwise the base backup cannot be replayed to PITR."
 fi
 
+if [[ "$WAL_SHIP_ONLY" == "1" ]]; then
+  echo "== WAL ship only (--wal-ship): syncing local WAL archive offsite =="
+  "${RCLONE[@]}" sync "$WAL_LOCAL" "$WAL_REMOTE" \
+    || fail "sync of WAL archive failed"
+  record_heartbeat wal "wal-ship-only sync"
+  echo
+  echo "WAL shipped; skipping base backup, prune and drill (--wal-ship)."
+  exit 0
+fi
+
 echo "== Step 1: pg_basebackup (full) =="
 rm -rf "$BASE_LOCAL"
 mkdir -p "$BASE_LOCAL"
@@ -113,6 +151,11 @@ echo "== Step 2: ship base backup and WAL to object storage =="
   || fail "upload of base backup failed"
 "${RCLONE[@]}" sync "$WAL_LOCAL" "$WAL_REMOTE" \
   || fail "sync of WAL archive failed"
+# Both legs landed: base is the primary heartbeat, and the WAL sync in the
+# same run genuinely refreshed the offsite WAL, so it counts as a 'wal'
+# heartbeat too (the 15-min timer is what keeps WAL fresh *between* runs).
+record_heartbeat base "base backup $STAMP + WAL shipped"
+record_heartbeat wal "offsite WAL sync during base run"
 
 echo "== Step 3: prune remote backups older than ${BACKUP_RETENTION_DAYS} days =="
 if command -v date >/dev/null 2>&1; then
@@ -215,6 +258,7 @@ EOF
     fail "restore drill: payments relation not found after WAL replay (see $DRILL_LOG)"
   fi
   echo "restore drill: PITR succeeded, payments rows = ${DRILL_ROWS:-0}"
+  record_heartbeat drill "PITR replay verified, payments rows = ${DRILL_ROWS:-0}"
   rm -rf "$DRILL_SCRIPT_DIR"
 fi
 

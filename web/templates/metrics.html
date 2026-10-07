@@ -30,6 +30,19 @@
   </section>
   <p class="small-text">Computed from alert outcomes, rail-aware monitoring coverage and KYC risk bands — the Trust Fabric plan's own KPIs.</p>
 </section>{{end}}
+{{if .BackupPanel}}<section class="panel"><h2>Backup &amp; PITR health</h2>
+  {{if .BackupNeverRun}}<p class="small-text">No backup heartbeat recorded yet — schedule <code>deploy/backup.sh</code> (see <code>deploy/systemd/</code>) so this panel can track freshness.</p>{{end}}
+  <section class="metrics">
+    {{range .BackupPanel.Rows}}<article><span>{{.Label}}</span><strong{{if .Stale}} class="danger-text"{{end}}>{{.Age}}</strong><em class="small-text">
+      {{- if .Disabled}}alert off{{else if .Stale}}over {{.Threshold}}{{else}}within {{.Threshold}}{{end -}}
+    </em></article>{{end}}
+    <article><span>WAL archiver (local)</span><strong{{if .BackupPanel.ArchiverFailing}} class="danger-text"{{end}}>{{if .BackupPanel.ArchiverUnknown}}unknown{{else}}{{.BackupPanel.ArchiverAge}}{{end}}</strong>
+      <em class="small-text">
+        {{- if .BackupPanel.ArchiverUnknown}}stats unavailable: {{.BackupPanel.ArchiverError}}{{else if .BackupPanel.ArchiverFailing}}{{.BackupPanel.ArchiverError}}{{else}}last segment archived{{end -}}
+      </em></article>
+  </section>
+  <p class="small-text">Heartbeats come from the backup scheduler (<code>base</code>/<code>wal</code>/<code>drill</code> rows in <code>backup_runs</code>); thresholds are <code>BACKUP_BASE_STALE_AFTER</code>, <code>WAL_SHIP_STALE_AFTER</code> and <code>RESTORE_DRILL_STALE_AFTER</code>. A red age means the PITR promise (<code>BACKUP_RPO</code>) no longer holds.</p>
+</section>{{end}}
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
 <section class="panel"><h2>Two-factor authentication</h2>
   {{if .MFAEnforced}}<p>Two-step sign-in is <strong>required</strong> on this deployment, so every account passes a second step after its password.</p>{{end}}
