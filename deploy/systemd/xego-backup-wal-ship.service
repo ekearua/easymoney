@@ -1,0 +1,14 @@
+[Unit]
+Description=Xego offsite WAL archive sync (the WAL-ship half of the backup split)
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/whatsapp-payment.env
+# WAL-only mode: syncs BACKUP_DIR/wal to object storage and records the
+# 'wal' heartbeat the admin backup panel ages (WAL_SHIP_STALE_AFTER).
+# The daily base backup (xego-backup.timer) records the 'base' heartbeat;
+# the weekly drill (xego-restore-drill.timer) records 'drill'.
+ExecStart=/opt/whatsapp-payment/deploy/backup.sh --wal-ship

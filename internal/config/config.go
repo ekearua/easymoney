@@ -279,6 +279,12 @@ type Config struct {
 	WALShipStaleAfter      time.Duration
 	RestoreDrillStaleAfter time.Duration
 
+	PaymentMinKobo  int64
+	PaymentMaxKobo  int64
+	RetentionPeriod time.Duration
+	SessionTTL      time.Duration
+	ReceiptTTL      time.Duration
+
 	// Onboarding reminders (chat-side nudge for incomplete onboarding). The
 	// worker sweeps stalled users every OnboardingReminderInterval; each
 	// stage gets at most OnboardingReminderMax reminders spaced at least
@@ -304,12 +310,6 @@ type Config struct {
 	// quality rating is not hammered by nudges. Zero disables the guard.
 	OnboardingReminderDeliveryGuardWindow       time.Duration
 	OnboardingReminderDeliveryGuardFailureRatio float64
-
-	PaymentMinKobo  int64
-	PaymentMaxKobo  int64
-	RetentionPeriod time.Duration
-	SessionTTL      time.Duration
-	ReceiptTTL      time.Duration
 
 	// WebFlowsEnabled moves transactional flows from WhatsApp chat into the
 	// browser (migration 060): chat sends only the link message and the
@@ -475,9 +475,7 @@ func Load() (Config, error) {
 		BulkWorkerConcurrency: int(EnvInt64("BULK_WORKER_CONCURRENCY", 8)),
 		BulkSendRatePerSec:    int(EnvInt64("BULK_SEND_RATE_PER_SEC", 20)),
 		BulkMaxTargets:        int(EnvInt64("BULK_MAX_TARGETS", 100000)),
-		BulkStage1Template:    env("BULK_STAGE1_TEMPLATE", ""),
-
-		DBMaxConns:                 int(EnvInt64("DB_POOL_MAX", 25)),
+		BulkStage1Template:    env("BULK_STAGE1_TEMPLATE", ""), DBMaxConns: int(EnvInt64("DB_POOL_MAX", 25)),
 		DBMinConns:                 int(EnvInt64("DB_POOL_MIN", 5)),
 		WorkerInboundConcurrency:   int(EnvInt64("WORKER_INBOUND_CONCURRENCY", 10)),
 		WorkerOutboxConcurrency:    int(EnvInt64("WORKER_OUTBOX_CONCURRENCY", 5)),

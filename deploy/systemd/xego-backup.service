@@ -1,0 +1,13 @@
+[Unit]
+Description=Xego PostgreSQL base backup + offsite ship
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/whatsapp-payment.env
+# pg_basebackup + ship base and WAL to object storage, prune expired bases,
+# then record the 'base' and 'wal' heartbeats the admin backup panel ages
+# (BACKUP_BASE_STALE_AFTER, default 26h = one missed daily run before red).
+ExecStart=/opt/whatsapp-payment/deploy/backup.sh

@@ -1,0 +1,84 @@
+# Edge stack for the second app server (dual-Caddy plan): Caddy + one app
+# replica, no database. Run this on server 2 alongside the full compose.yaml
+# on server 1, then put a floating IP in front of both (or health-checked DNS
+# failover) — deploy/Caddyfile is identical on both hosts, so the ingress
+# config stays single-sourced.
+#
+#   server 1: docker compose up -d --build            (db, pgbouncer, migrate,
+#                                                       app x2, caddy, backup)
+#   server 2: docker compose -f compose.edge.yaml up -d --build
+#
+# Server 2's app points DATABASE_URL at server 1's PgBouncer over the private
+# network (PRIMARY_DB_HOST), so both app replicas share one PostgreSQL and a
+# database failure takes out the primary path while server 2's replica keeps
+# serving cached/read paths... in practice: if server 1 dies entirely, server
+# 2 keeps answering /health/ready=false until the DB is restored — the point
+# of the edge is ingress continuity, not database HA (that's the standby in
+# deploy/setup-standby.sh).
+#
+# Migrations must NOT run here: they are pinned to the primary (migrate
+# one-shot in compose.yaml). The edge app assumes the schema exists.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Primary's PgBouncer over the private network; sslmode=require because
+      # this crosses hosts (the same-host compose path uses sslmode=disable).
+      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@${PRIMARY_DB_HOST}:6432/whatsapp_payment?sslmode=require
+      HTTP_ADDR: :8080
+      DB_POOL_MAX: "30"
+      DB_POOL_MIN: "5"
+      WORKER_INBOUND_CONCURRENCY: "10"
+      WORKER_OUTBOX_CONCURRENCY: "5"
+      WORKER_WEBHOOK_CONCURRENCY: "4"
+      WORKER_DATA_CONCURRENCY: "4"
+      WORKER_RECONCILE_CONCURRENCY: "3"
+      WORKER_MISC_CONCURRENCY: "3"
+      # Inbound/outbox claims are lease-based (store_payments.go), so two
+      # stacks draining the same tables never double-process a message.
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "/demo", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks: [edge]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256m
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [edge]
+
+networks:
+  edge:
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,6 +1,21 @@
 {$PUBLIC_HOST} {
 	encode zstd gzip
-	reverse_proxy app:8080
+
+	# Edge health: actively probe each app instance's readiness endpoint so an
+	# instance that cannot reach PostgreSQL is ejected instead of receiving
+	# traffic (/health/ready answers 503 until the DB ping succeeds). The same
+	# file runs identically on both app servers for the dual-Caddy plan —
+	# either side of a floating IP or both A records behind DNS failover — so
+	# there is exactly one ingress config to keep in sync.
+	reverse_proxy app:8080 {
+		health_uri /health/ready
+		health_interval 10s
+		health_timeout 3s
+		health_status 200
+		fail_duration 30s
+		max_fails 2
+		dial_timeout 3s
+	}
 
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

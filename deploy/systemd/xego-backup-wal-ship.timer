@@ -1,0 +1,15 @@
+[Unit]
+Description=Xego offsite WAL archive sync every 15 minutes
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+
+[Timer]
+# OnCalendar minute granularity: fires at :00, :15, :30, :45. Combined with
+# WAL_SHIP_STALE_AFTER=45m on the admin panel, three consecutive misses trip
+# the alert before BACKUP_RPO=1h is exceeded.
+OnCalendar=*:0/15
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

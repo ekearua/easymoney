@@ -1,0 +1,16 @@
+[Unit]
+Description=Xego weekly PITR restore drill (backup + WAL replay proof)
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/whatsapp-payment.env
+# Full point-in-time recovery drill against the newest base backup: unpacks,
+# replays archived WAL via rclone, verifies the payments relation, then
+# records the 'drill' heartbeat the admin backup panel ages
+# (RESTORE_DRILL_STALE_AFTER, default 8d = one missed week before red).
+# Measure the elapsed time against BACKUP_RTO — the journal line
+# "restore drill: PITR succeeded" is the RTO proof.
+ExecStart=/opt/whatsapp-payment/deploy/backup.sh --restore-drill

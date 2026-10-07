@@ -1,0 +1,15 @@
+[Unit]
+Description=Xego weekly PITR restore drill
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+
+[Timer]
+# Weekly, Monday 03:00 — after the daily base backup window so the drill
+# always replays a fresh base. The dashboard's RESTORE_DRILL_STALE_AFTER
+# (default 8d) turns red after one missed week.
+OnCalendar=Mon *-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

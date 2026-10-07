@@ -1,0 +1,12 @@
+[Unit]
+Description=Xego PostgreSQL base backup every day
+Documentation=file:/opt/whatsapp-payment/deploy/RESTORE.md
+After=network-online.target
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target
