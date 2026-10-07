@@ -43,7 +43,7 @@ func TestBuildBackupPanel(t *testing.T) {
 				LastArchivedWALAt:  ago(8 * time.Minute),
 			},
 			base: 26 * time.Hour, wal: 45 * time.Minute, drill: 8 * 24 * time.Hour,
-			fresh: []string{"Base backup", "WAL ship (offsite)", "PITR restore drill"},
+			fresh:  []string{"Base backup", "WAL ship (offsite)", "PITR restore drill"},
 			archOK: true,
 		},
 		{
@@ -54,8 +54,8 @@ func TestBuildBackupPanel(t *testing.T) {
 				LastArchivedWALAt: ago(8 * time.Minute),
 			},
 			base: 26 * time.Hour, wal: 45 * time.Minute, drill: 8 * 24 * time.Hour,
-			stale: []string{"WAL ship (offsite)"},
-			fresh: []string{"Base backup"},
+			stale:  []string{"WAL ship (offsite)"},
+			fresh:  []string{"Base backup"},
 			archOK: true,
 		},
 		{

@@ -20,8 +20,8 @@ import (
 // view of WAL activity. Nil timestamps mean "no successful run ever" —
 // the oldest possible age, which every threshold treats as stale.
 type BackupHealth struct {
-	LastBaseBackupAt  *time.Time
-	LastWALShipAt     *time.Time
+	LastBaseBackupAt   *time.Time
+	LastWALShipAt      *time.Time
 	LastRestoreDrillAt *time.Time
 
 	// Archiver stats straight from pg_stat_archiver: when the newest WAL
@@ -31,9 +31,9 @@ type BackupHealth struct {
 	// caller compares the two times. ArchiverUnavailable carries the
 	// error text when the view cannot be read (permissions), so the panel
 	// can say "unknown" rather than pretending everything is fine.
-	LastArchivedWALAt *time.Time
-	LastWALFailedAt    *time.Time
-	LastFailedWAL      string
+	LastArchivedWALAt   *time.Time
+	LastWALFailedAt     *time.Time
+	LastFailedWAL       string
 	ArchiverUnavailable string
 }
 

@@ -38,15 +38,15 @@ func TestDeliveryGuard(t *testing.T) {
 		expectRatioError bool
 	}{
 		{
-			name:      "stays quiet below threshold",
-			outcomes:  []string{"delivered", "failed", "delivered"},
-			ratio:     0.5,
+			name:     "stays quiet below threshold",
+			outcomes: []string{"delivered", "failed", "delivered"},
+			ratio:    0.5,
 		},
 		{
-			name:          "fires at threshold",
-			outcomes:      []string{"delivered", "failed", "delivered", "failed"},
-			ratio:         0.5,
-			expectPaused:  true,
+			name:         "fires at threshold",
+			outcomes:     []string{"delivered", "failed", "delivered", "failed"},
+			ratio:        0.5,
+			expectPaused: true,
 		},
 		{
 			name:         "fires above threshold",
