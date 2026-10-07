@@ -19,6 +19,40 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4g
+    networks: [private]
+
+  # PgBouncer (requirements workbook #2): transaction pooling multiplexes
+  # both app replicas' connection pools (DB_MAX_CONNS each) onto
+  # DEFAULT_POOL_SIZE server connections, so replicas never compete for
+  # PostgreSQL max_connections slots. max_prepared_statements keeps pgx's
+  # cached statements working under transaction pooling.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.0-p0
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@db:5432/whatsapp_payment
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "30"
+      MAX_PREPARED_STATEMENTS: "100"
+      AUTH_TYPE: scram-sha-256
+      # Server side (PgBouncer -> PostgreSQL) keeps the TLS posture the app
+      # had when it connected directly; the client side stays plain inside
+      # the private compose network.
+      SERVER_TLS_SSLMODE: require
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256m
+    depends_on:
+      db:
+        condition: service_healthy
     networks: [private]
 
   backup:
@@ -41,6 +75,11 @@ services:
     volumes:
       - xego_backup:/var/lib/xego-backup
       - ${RCLONE_CONFIG:-./deploy/rclone.conf}:/etc/xego-backup/rclone.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
     depends_on:
       db:
         condition: service_healthy
@@ -51,7 +90,15 @@ services:
     command: ["migrate"]
     env_file: .env
     environment:
+      # Migrations run straight against PostgreSQL (not through PgBouncer):
+      # the multi-statement migration files and the session-level advisory
+      # lock both need a direct, session-pinned connection.
       DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@db:5432/whatsapp_payment?sslmode=require
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
     depends_on:
       db:
         condition: service_healthy
@@ -63,11 +110,36 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@db:5432/whatsapp_payment?sslmode=require
+      # Through PgBouncer (transaction pool) rather than direct to PostgreSQL.
+      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@pgbouncer:6432/whatsapp_payment?sslmode=disable
       HTTP_ADDR: :8080
+      # Pool and worker sizing (requirements workbook #1 and #3): 30
+      # connections per replica into PgBouncer's pool of 30 server
+      # connections; concurrent worker pools per class instead of one
+      # sequential tick loop. Names match the workbook's section-6 env vars.
+      DB_POOL_MAX: "30"
+      DB_POOL_MIN: "5"
+      WORKER_INBOUND_CONCURRENCY: "10"
+      WORKER_OUTBOX_CONCURRENCY: "5"
+      WORKER_WEBHOOK_CONCURRENCY: "4"
+      WORKER_DATA_CONCURRENCY: "4"
+      WORKER_RECONCILE_CONCURRENCY: "3"
+      WORKER_MISC_CONCURRENCY: "3"
+    deploy:
+      # Phase 1 of the deployment plan: two replicas behind Caddy (compose
+      # DNS round-robins the service name), each bounded so one replica
+      # cannot starve the host (requirements #4 and #5). Requires Docker
+      # Compose v2, which applies deploy.replicas and deploy.resources.
+      replicas: 2
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1g
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_started
     healthcheck:
       test: ["CMD", "/demo", "health"]
       interval: 30s
@@ -85,6 +157,11 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256m
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

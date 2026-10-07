@@ -256,6 +256,14 @@ func metadataValue(raw json.RawMessage) string {
 
 // Open establishes a PostgreSQL connection pool with tuned settings.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
+	return OpenWithPool(ctx, databaseURL, 25, 5)
+}
+
+// OpenWithPool is Open with explicit pool bounds (config DB_POOL_MAX /
+// DB_POOL_MIN, requirements workbook #1). Bounds are clamped defensively:
+// at least one connection, and MinConns never above MaxConns, so a bad env
+// value degrades instead of breaking startup.
+func OpenWithPool(ctx context.Context, databaseURL string, maxConns, minConns int) (*Store, error) {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, errors.New("DATABASE_URL is required")
 	}
@@ -263,8 +271,8 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
-	cfg.MaxConns = 25
-	cfg.MinConns = 5
+	cfg.MaxConns = int32(max(maxConns, 1))
+	cfg.MinConns = int32(min(max(minConns, 1), max(maxConns, 1)))
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

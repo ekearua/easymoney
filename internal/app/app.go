@@ -98,6 +98,10 @@ type App struct {
 	refunds           *service.RefundService
 	disputes          *service.DisputeService
 	workerWg          sync.WaitGroup
+	// workerPools holds the bounded worker-pool slots and per-handler gates
+	// that let every tick handler run concurrently without overlapping itself
+	// (internal/app/worker_pool.go).
+	workerPools workerPools
 
 	// Transactional email, used for merchant confirmation and for emailed
 	// second-factor codes.
@@ -115,7 +119,7 @@ type App struct {
 // New creates all application dependencies.
 func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, error) {
 	logger = slog.New(logging.WithRequestID(logger.Handler()))
-	repository, err := store.Open(ctx, cfg.DatabaseURL)
+	repository, err := store.OpenWithPool(ctx, cfg.DatabaseURL, cfg.DBMaxConns, cfg.DBMinConns)
 	if err != nil {
 		return nil, err
 	}
@@ -432,6 +436,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithPaymentScreener(paymentScreener)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
+		workerPools:      newWorkerPools(cfg),
 		imageReader:      imageReader,
 		speechToText:     speechToText,
 		chatAI:           chatAI,

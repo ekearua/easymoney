@@ -177,6 +177,26 @@ type Config struct {
 	LocationTimeout           time.Duration
 	LocationMaxDistanceM      float64
 
+	// Database connection-pool sizing (requirements workbook #1): the store
+	// pool was hardcoded at 25/5, so raising it for production needed a
+	// rebuild. The knobs use the workbook's own names (sheet "Concurrency &
+	// Pool Tuning", section 6): DB_POOL_MAX / DB_POOL_MIN, so a deployment
+	// can scale the pool (e.g. 75 behind PgBouncer) from the environment.
+	DBMaxConns int
+	DBMinConns int
+
+	// Background worker pool sizing (requirements workbook #3): concurrent
+	// worker pools replace the single sequential tick loop where every
+	// handler ran inline. Defaults follow the workbook's stated target (10
+	// inbound, 5 outbox, 3 reconcilers) with the webhook, data and misc
+	// classes sized alongside them; every value is floored at 1.
+	WorkerInboundConcurrency   int
+	WorkerOutboxConcurrency    int
+	WorkerWebhookConcurrency   int
+	WorkerDataConcurrency      int
+	WorkerReconcileConcurrency int
+	WorkerMiscConcurrency      int
+
 	// AI / OCR / STT configuration (Phase 3-5).
 	AIEnabled  bool
 	AIProvider string
@@ -399,21 +419,30 @@ func Load() (Config, error) {
 		LocationAPIKey:                  os.Getenv("LOCATION_API_KEY"),
 		LocationTimeout:                 envDuration("LOCATION_TIMEOUT", 30*time.Second),
 		LocationMaxDistanceM:            float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
-		AIEnabled:                       envBool("AI_ENABLED", false),
-		AIProvider:                      strings.ToLower(env("AI_PROVIDER", "openai")),
-		AIAPIKey:                        os.Getenv("AI_API_KEY"),
-		AIAIModel:                       env("AI_MODEL", ""),
-		AITimeout:                       envDuration("AI_TIMEOUT", 30*time.Second),
-		AIMaxRPM:                        int(EnvInt64("AI_MAX_REQUESTS_PER_MINUTE", 30)),
-		VTPassBaseURL:                   strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
-		VTPassAPIKey:                    os.Getenv("VTPASS_API_KEY"),
-		VTPassPublicKey:                 os.Getenv("VTPASS_PUBLIC_KEY"),
-		VTPassSecretKey:                 os.Getenv("VTPASS_SECRET_KEY"),
-		VTPassWebhookSecret:             os.Getenv("VTPASS_WEBHOOK_SECRET"),
-		VTPassTimeout:                   envDuration("VTPASS_TIMEOUT", 45*time.Second),
-		PaymentMinKobo:                  EnvInt64("PAYMENT_MIN_KOBO", 10_000),
-		PaymentMaxKobo:                  EnvInt64("PAYMENT_MAX_KOBO", 1_000_000_000),
-		RetentionPeriod:                 envDuration("RETENTION_PERIOD", 90*24*time.Hour),
+
+		DBMaxConns:                 int(EnvInt64("DB_POOL_MAX", 25)),
+		DBMinConns:                 int(EnvInt64("DB_POOL_MIN", 5)),
+		WorkerInboundConcurrency:   int(EnvInt64("WORKER_INBOUND_CONCURRENCY", 10)),
+		WorkerOutboxConcurrency:    int(EnvInt64("WORKER_OUTBOX_CONCURRENCY", 5)),
+		WorkerWebhookConcurrency:   int(EnvInt64("WORKER_WEBHOOK_CONCURRENCY", 4)),
+		WorkerDataConcurrency:      int(EnvInt64("WORKER_DATA_CONCURRENCY", 4)),
+		WorkerReconcileConcurrency: int(EnvInt64("WORKER_RECONCILE_CONCURRENCY", 3)),
+		WorkerMiscConcurrency:      int(EnvInt64("WORKER_MISC_CONCURRENCY", 3)),
+		AIEnabled:                  envBool("AI_ENABLED", false),
+		AIProvider:                 strings.ToLower(env("AI_PROVIDER", "openai")),
+		AIAPIKey:                   os.Getenv("AI_API_KEY"),
+		AIAIModel:                  env("AI_MODEL", ""),
+		AITimeout:                  envDuration("AI_TIMEOUT", 30*time.Second),
+		AIMaxRPM:                   int(EnvInt64("AI_MAX_REQUESTS_PER_MINUTE", 30)),
+		VTPassBaseURL:              strings.TrimRight(env("VTPASS_BASE_URL", "https://sandbox.vtpass.com/api"), "/"),
+		VTPassAPIKey:               os.Getenv("VTPASS_API_KEY"),
+		VTPassPublicKey:            os.Getenv("VTPASS_PUBLIC_KEY"),
+		VTPassSecretKey:            os.Getenv("VTPASS_SECRET_KEY"),
+		VTPassWebhookSecret:        os.Getenv("VTPASS_WEBHOOK_SECRET"),
+		VTPassTimeout:              envDuration("VTPASS_TIMEOUT", 45*time.Second),
+		PaymentMinKobo:             EnvInt64("PAYMENT_MIN_KOBO", 10_000),
+		PaymentMaxKobo:             EnvInt64("PAYMENT_MAX_KOBO", 1_000_000_000),
+		RetentionPeriod:            envDuration("RETENTION_PERIOD", 90*24*time.Hour),
 		// G6 (AML spec §5): hard-deleting AML-scope records younger than
 		// five years violates the MLPPA record-keeping floor, so the
 		// retention clamp refuses any configured period below it.

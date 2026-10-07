@@ -172,18 +172,68 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 }
 
 // ClaimInboundMessages leases pending messages to one worker.
+// ClaimInboundMessages leases one batch of due inbound messages. The claim is
+// safe for concurrent app replicas: it first discovers the due conversations
+// (recipients) that have no active lease, takes a transaction-scoped advisory
+// lock per recipient in a stable order so two claimers cannot interleave or
+// deadlock, and then claims only those conversations' rows. That is what keeps
+// the FSM's session load-modify-save cycle serial per conversation even when
+// several replicas claim at once; the locks release automatically at commit.
+// Rows leased by a crashed worker (available_at pushed five minutes into the
+// future) unblock their conversation when the lease expires, preserving the
+// previous at-least-once behaviour.
 func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundMessage, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
+
+	// 1) Discover due conversations with no active lease, ordered so every
+	//    claimer acquires the locks in the same sequence.
+	var recipients []string
+	due, err := tx.Query(ctx, `
+		SELECT DISTINCT m.recipient
+		FROM inbound_messages m
+		WHERE m.status IN ('pending','processing') AND m.available_at <= now()
+		  AND NOT EXISTS (
+		    SELECT 1 FROM inbound_messages l
+		    WHERE l.recipient = m.recipient
+		      AND l.status = 'processing' AND l.available_at > now())
+		ORDER BY m.recipient
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	for due.Next() {
+		var recipient string
+		if err := due.Scan(&recipient); err != nil {
+			due.Close()
+			return nil, err
+		}
+		recipients = append(recipients, recipient)
+	}
+	due.Close()
+	if err := due.Err(); err != nil {
+		return nil, err
+	}
+	if len(recipients) == 0 {
+		return nil, tx.Commit(ctx)
+	}
+	for _, recipient := range recipients {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('inbound:'||$1, 0))`, recipient); err != nil {
+			return nil, err
+		}
+	}
+
+	// 2) Claim due rows for exactly those locked conversations.
 	rows, err := tx.Query(ctx, `
 		SELECT provider_message_id,channel,sender,recipient,payload,attempts,media_type,media_id,media_url,media_mime,caption
 		FROM inbound_messages
 		WHERE status IN ('pending','processing') AND available_at <= now()
+		  AND recipient = ANY($2)
 		ORDER BY received_at
-		FOR UPDATE SKIP LOCKED LIMIT $1`, limit)
+		FOR UPDATE SKIP LOCKED LIMIT $1`, limit, recipients)
 	if err != nil {
 		return nil, err
 	}

@@ -40,62 +40,66 @@ func (a *App) runWorkers(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-outboxTicker.C:
-			a.workerWg.Add(1)
-			a.processInboundMessages(ctx)
-			a.processGatewayWebhooks(ctx)
-			a.processVTPassWebhooks(ctx)
-			a.processDataFulfilments(ctx)
-			a.deliverOutbox(ctx)
-			a.processMerchantWebhooks(ctx)
-			a.expireCheckouts(ctx)
-			a.processPendingPaymentHooks(ctx)
-			a.workerWg.Done()
+			// Each pipeline stage dispatches onto its own gate, so a slow
+			// provider call or a big inbound batch no longer stalls the rest
+			// of the cycle the way the old inline loop did. Every class stays
+			// bounded by its WORKER_*_CONCURRENCY pool; a saturated or
+			// still-running handler drops this tick instead of queueing it.
+			// Inbound and outbox carry a nil class because they fan their
+			// claimed batch out internally.
+			a.dispatch(ctx, nil, "inbound", a.processInboundMessages)
+			a.dispatch(ctx, a.workerPools.webhook, "gateway_webhooks", a.processGatewayWebhooks)
+			a.dispatch(ctx, a.workerPools.webhook, "vtpass_webhooks", a.processVTPassWebhooks)
+			a.dispatch(ctx, a.workerPools.webhook, "merchant_webhooks", a.processMerchantWebhooks)
+			a.dispatch(ctx, a.workerPools.data, "data_fulfilments", a.processDataFulfilments)
+			a.dispatch(ctx, nil, "outbox", a.deliverOutbox)
+			a.dispatch(ctx, a.workerPools.misc, "expire_checkouts", a.expireCheckouts)
+			a.dispatch(ctx, a.workerPools.misc, "pending_payment_hooks", a.processPendingPaymentHooks)
 		case <-eventTicker.C:
-			a.workerWg.Add(1)
-			if err := a.publisher.Drain(ctx); err != nil {
-				a.logger.WarnContext(ctx, "event publisher failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.misc, "event_drain", func(ctx context.Context) {
+				if err := a.publisher.Drain(ctx); err != nil {
+					a.logger.WarnContext(ctx, "event publisher failed", "error", err)
+				}
+			})
 		case <-reconcileTicker.C:
-			a.workerWg.Add(1)
-			if err := a.payments.Reconcile(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.recon, "reconcile", func(ctx context.Context) {
+				if err := a.payments.Reconcile(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
+				}
+			})
 		case <-recon3Ticker.C:
-			a.workerWg.Add(1)
-			if _, err := a.runReconciliationAuto(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled three-way reconciliation failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.recon, "recon3", func(ctx context.Context) {
+				if _, err := a.runReconciliationAuto(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled three-way reconciliation failed", "error", err)
+				}
+			})
 		case <-retentionTicker.C:
-			a.workerWg.Add(1)
-			if err := a.PurgeExpiredData(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled retention failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.recon, "retention", func(ctx context.Context) {
+				if err := a.PurgeExpiredData(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled retention failed", "error", err)
+				}
+			})
 		case <-rescreenTicker.C:
-			a.workerWg.Add(1)
-			if err := a.RescreenDue(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.misc, "rescreen", func(ctx context.Context) {
+				if err := a.RescreenDue(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled KYC rescreen failed", "error", err)
+				}
+			})
 		case <-auditChainTicker.C:
-			a.workerWg.Add(1)
-			if err := a.RunAuditChainVerification(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled audit chain verification failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.misc, "audit_chain", func(ctx context.Context) {
+				if err := a.RunAuditChainVerification(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled audit chain verification failed", "error", err)
+				}
+			})
 		case <-monitorTicker.C:
-			a.workerWg.Add(1)
-			if err := a.MonitorTransactions(ctx); err != nil {
-				a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
-			}
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.misc, "monitor", func(ctx context.Context) {
+				if err := a.MonitorTransactions(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
+				}
+			})
 		case <-settlementTicker.C:
-			a.workerWg.Add(1)
-			a.runSettlementDispatcher(ctx)
-			a.workerWg.Done()
+			a.dispatch(ctx, a.workerPools.misc, "settlement", a.runSettlementDispatcher)
+
 		}
 	}
 }
@@ -126,20 +130,54 @@ func (a *App) startEventConsumers(ctx context.Context) {
 	}
 }
 
+// processInboundMessages claims one batch and fans it out across the inbound
+// worker pool. The batch is grouped by conversation first, so different
+// conversations are handled in parallel while one conversation's messages
+// stay strictly ordered — the FSM session is a load-modify-save cycle, and
+// interleaving it is how a conversation gets stuck. The handler gate keeps
+// one batch at a time per replica; cross-replica ordering is the
+// per-recipient advisory lock taken by ClaimInboundMessages. The call stays
+// synchronous — it waits for the whole batch — because the simulations and
+// channel smoke tests drive it one step at a time.
 func (a *App) processInboundMessages(ctx context.Context) {
 	messages, err := a.store.ClaimInboundMessages(ctx, 20)
 	if err != nil {
 		a.logger.WarnContext(ctx, "claim inbound messages", "error", err)
 		return
 	}
-	for _, message := range messages {
-		if err := a.conversation.Handle(ctx, message); err != nil {
-			a.logger.ErrorContext(ctx, "process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
-			_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())
-			continue
+	a.processInboundBatch(ctx, messages)
+}
+
+// processInboundBatch runs each conversation's messages in order on a bounded
+// inbound slot and waits for the whole batch to finish.
+func (a *App) processInboundBatch(ctx context.Context, messages []store.InboundMessage) {
+	groups := groupByKey(messages, inboundGroupKey)
+	runPooled(a.workerPools.inbound, groups, func(group []store.InboundMessage) {
+		for _, message := range group {
+			a.handleInboundMessage(ctx, message)
 		}
-		_ = a.store.CompleteInboundMessage(ctx, message.ID)
+	})
+}
+
+// inboundGroupKey identifies the conversation a message belongs to: its
+// channel plus the recipient chat, falling back to the sender where a
+// channel records only one identity.
+func inboundGroupKey(message store.InboundMessage) string {
+	if message.Recipient != "" {
+		return message.Channel + "\x00" + message.Recipient
 	}
+	return message.Channel + "\x00" + message.Sender
+}
+
+// handleInboundMessage runs one message through the FSM and marks it done or
+// schedules its bounded retry.
+func (a *App) handleInboundMessage(ctx context.Context, message store.InboundMessage) {
+	if err := a.conversation.Handle(ctx, message); err != nil {
+		a.logger.ErrorContext(ctx, "process inbound message", "message_id", message.ID, "channel", message.Channel, "error", err)
+		_ = a.store.RetryInboundMessage(ctx, message.ID, message.Attempts, err.Error())
+		return
+	}
+	_ = a.store.CompleteInboundMessage(ctx, message.ID)
 }
 
 func (a *App) processGatewayWebhooks(ctx context.Context) {
@@ -213,60 +251,75 @@ func (a *App) processDataFulfilments(ctx context.Context) {
 	}
 }
 
+// deliverOutbox claims one batch of outbound messages and fans it out across
+// the outbound worker pool, grouped by conversation so one recipient's
+// messages go out in order while different recipients send in parallel. It
+// waits for the whole batch, matching the synchronous step the tests drive.
 func (a *App) deliverOutbox(ctx context.Context) {
 	messages, err := a.store.ClaimOutbox(ctx, 20)
 	if err != nil {
 		a.logger.WarnContext(ctx, "claim outbox", "error", err)
 		return
 	}
-	for _, message := range messages {
-		var sendErr error
-		switch message.Kind {
-		case "text":
-			var payload struct {
-				Body string `json:"body"`
-			}
-			if err := json.Unmarshal(message.Payload, &payload); err != nil {
-				sendErr = err
-			} else {
-				providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
-				sendErr = err
-				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
-			}
-		case "image":
-			var payload struct {
-				ImageData string `json:"image_data"`
-				Caption   string `json:"caption"`
-			}
-			if err := json.Unmarshal(message.Payload, &payload); err != nil {
-				sendErr = err
-			} else {
-				providerRef, err := a.sendOutboxImage(ctx, message.Channel, message.Recipient, payload.ImageData, payload.Caption)
-				sendErr = err
-				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
-			}
-		case "template":
-			var payload struct {
-				Name       string   `json:"name"`
-				Parameters []string `json:"parameters"`
-			}
-			if err := json.Unmarshal(message.Payload, &payload); err != nil {
-				sendErr = err
-			} else if message.Channel == service.ChannelWhatsApp {
-				sendErr = a.whatsapp.SendTemplate(ctx, message.Recipient, payload.Name, payload.Parameters)
-			} else {
-				providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, strings.Join(payload.Parameters, "\n"))
-				sendErr = err
-				a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
-			}
-		default:
-			sendErr = fmt.Errorf("unsupported outbox kind %q", message.Kind)
+	groups := groupByKey(messages, func(message store.OutboxMessage) string {
+		return message.Channel + "\x00" + message.Recipient
+	})
+	runPooled(a.workerPools.outbox, groups, func(group []store.OutboxMessage) {
+		for _, message := range group {
+			a.deliverOutboxMessage(ctx, message)
 		}
-		if sendErr == nil {
-			_ = a.store.CompleteOutbox(ctx, message.ID)
+	})
+}
+
+// deliverOutboxMessage sends one outbox row and records its terminal outcome
+// (complete, or bounded retry).
+func (a *App) deliverOutboxMessage(ctx context.Context, message store.OutboxMessage) {
+	var sendErr error
+	switch message.Kind {
+	case "text":
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			sendErr = err
 		} else {
-			_ = a.store.RetryOutbox(ctx, message.ID, message.Attempts, sendErr.Error())
+			providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, payload.Body)
+			sendErr = err
+			a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
 		}
+	case "image":
+		var payload struct {
+			ImageData string `json:"image_data"`
+			Caption   string `json:"caption"`
+		}
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			sendErr = err
+		} else {
+			providerRef, err := a.sendOutboxImage(ctx, message.Channel, message.Recipient, payload.ImageData, payload.Caption)
+			sendErr = err
+			a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
+		}
+	case "template":
+		var payload struct {
+			Name       string   `json:"name"`
+			Parameters []string `json:"parameters"`
+		}
+		if err := json.Unmarshal(message.Payload, &payload); err != nil {
+			sendErr = err
+		} else if message.Channel == service.ChannelWhatsApp {
+			sendErr = a.whatsapp.SendTemplate(ctx, message.Recipient, payload.Name, payload.Parameters)
+		} else {
+			providerRef, err := a.sendOutboxText(ctx, message.Channel, message.Recipient, strings.Join(payload.Parameters, "\n"))
+			sendErr = err
+			a.persistOutboxProviderRef(ctx, message, sendErr == nil, providerRef)
+		}
+	default:
+		sendErr = fmt.Errorf("unsupported outbox kind %q", message.Kind)
+	}
+	if sendErr == nil {
+		_ = a.store.CompleteOutbox(ctx, message.ID)
+	} else {
+		_ = a.store.RetryOutbox(ctx, message.ID, message.Attempts, sendErr.Error())
 	}
 }
 
