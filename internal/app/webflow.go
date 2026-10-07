@@ -278,7 +278,7 @@ func (a *App) webFlowPage(w http.ResponseWriter, r *http.Request) {
 		page := a.wfPage(flow)
 		page.Expired = true
 		page.Title = "This link has expired"
-		page.Intro = "Reopen the flow from your Xego chat to get a fresh link. Your details are safe and nothing was charged."
+		page.Intro = "Reopen the flow from your Faya chat to get a fresh link. Your details are safe and nothing was charged."
 		a.renderStatus(w, "webflow.html", page, http.StatusGone)
 		return
 	}
@@ -551,7 +551,7 @@ func wfMethodOptions(includeWallet bool) []webFlowOption {
 		{Value: service.ProviderBankTransfer, Label: "Bank transfer", Description: "Complete a bank transfer on the Interswitch checkout"},
 	}
 	if includeWallet {
-		opts = append(opts, webFlowOption{Value: service.ProviderWallet, Label: "Pay from wallet", Description: "Instant payment from your Xego wallet balance"})
+		opts = append(opts, webFlowOption{Value: service.ProviderWallet, Label: "Pay from wallet", Description: "Instant payment from your Faya wallet balance"})
 	}
 	return opts
 }

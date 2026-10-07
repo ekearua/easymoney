@@ -52,7 +52,7 @@ func (a *App) wfInvoiceCreateStep(r *http.Request, flow store.WebFlow, user stor
 		}
 		if len(merchants) == 0 {
 			page.Title = "No approved merchant"
-			page.Intro = "Invoice generation is available after your merchant registration is approved. Register your business from the Xego menu."
+			page.Intro = "Invoice generation is available after your merchant registration is approved. Register your business from the Faya menu."
 			page.Done = true
 			return page, nil
 		}
@@ -297,7 +297,7 @@ func (a *App) wfInvoiceCreateSubmit(w http.ResponseWriter, r *http.Request, flow
 		}
 		a.conversation.NotifyInvoiceCustomer(r.Context(), invoice)
 		link := a.cfg.BaseURL + "/invoices/" + invoice.Reference
-		msg := fmt.Sprintf("Invoice created.\n\nMerchant: %s\nCustomer: %s\nTotal: %s\nReference: %s\n\nCustomer payment link: %s\nThey can also send PAY %s to Xego on WhatsApp.",
+		msg := fmt.Sprintf("Invoice created.\n\nMerchant: %s\nCustomer: %s\nTotal: %s\nReference: %s\n\nCustomer payment link: %s\nThey can also send PAY %s to Faya on WhatsApp.",
 			invoice.MerchantName, invoice.CustomerWhatsAppNumber, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "The invoice was created but the confirmation could not be sent."), nil
@@ -408,7 +408,7 @@ func (a *App) wfThriftCreateSubmit(w http.ResponseWriter, r *http.Request, flow 
 			return a.wfPageWithError(flow, page, "The group could not be created: "+err.Error()), nil
 		}
 		link := a.cfg.BaseURL + "/thrift/" + group.Name
-		msg := fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link for members to join: %s\nOr tell them to send JOIN %s to Xego. When everyone has joined, send START %s to choose the payout rotation.",
+		msg := fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link for members to join: %s\nOr tell them to send JOIN %s to Faya. When everyone has joined, send START %s to choose the payout rotation.",
 			group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, link, group.Name, group.Name)
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "The group was created but the confirmation could not be sent."), nil
@@ -499,9 +499,9 @@ func (a *App) wfThriftJoinSubmit(w http.ResponseWriter, r *http.Request, flow st
 		}
 		group, member, err := a.store.JoinThriftGroup(r.Context(), flow.Payload["thrift_name"], user.ID)
 		if err != nil {
-			return a.wfPageWithError(flow, page, "Xego could not join that thrift group: "+err.Error()), nil
+			return a.wfPageWithError(flow, page, "Faya could not join that thrift group: "+err.Error()), nil
 		}
-		msg := fmt.Sprintf("You're in.\n\nThrift: %s\nMember: %s\nMembers: %d of %d\n\nWhen the creator activates the group, Xego will show your contribution prompt.",
+		msg := fmt.Sprintf("You're in.\n\nThrift: %s\nMember: %s\nMembers: %d of %d\n\nWhen the creator activates the group, Faya will show your contribution prompt.",
 			group.Name, member.UserName, group.MemberCount, group.TargetMemberCount)
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "You joined, but the confirmation could not be sent."), nil
@@ -562,7 +562,7 @@ func (a *App) wfOnboardStep(r *http.Request, flow store.WebFlow, user store.User
 			{Term: "Address", Desc: flow.Payload["address"]},
 			{Term: "Account", Desc: user.WhatsAppNumber},
 		}
-		page.Intro = "Xego uses your WhatsApp number as your account identity. Confirm to finish setup at CBN Tier 1."
+		page.Intro = "Faya uses your WhatsApp number as your account identity. Confirm to finish setup at CBN Tier 1."
 		page.Actions = []webFlowAction{{Name: "confirm", Label: "Confirm my account"}}
 		return page, nil
 	}
@@ -628,7 +628,7 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if err != nil {
 			errs = append(errs, "Enter your date of birth as YYYY-MM-DD.")
 		} else if parsed.After(time.Now().AddDate(-18, 0, 0)) {
-			errs = append(errs, "You must be at least 18 to open a Xego account.")
+			errs = append(errs, "You must be at least 18 to open a Faya account.")
 		}
 		if gender != "male" && gender != "female" {
 			errs = append(errs, "Select your gender.")
@@ -667,7 +667,7 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if _, err := a.store.EnsureStandingAccount(r.Context(), user.ID); err != nil {
 			return a.wfPageWithError(flow, page, "Could not provision your standing account number. Try again."), nil
 		}
-		msg := "You're all set. Your account is confirmed (CBN Tier 1) and your Xego wallet is now active. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
+		msg := "You're all set. Your account is confirmed (CBN Tier 1) and your Faya wallet is now active. Send MENU anytime to pay merchants, buy data, run thrift groups and more."
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Your account is confirmed."), nil
 		}
@@ -722,7 +722,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		page.Done = true
 		page.DoneTitle = "Already verified"
 		if user.AccountLevel == "individual" {
-			page.DoneBody = "Your Xego individual profile is already approved at level " + tier + ". Return to WhatsApp and send MENU to continue."
+			page.DoneBody = "Your Faya individual profile is already approved at level " + tier + ". Return to WhatsApp and send MENU to continue."
 		} else {
 			// Tier vouches L2+ but the account label gates P2P/thrift: offer
 			// a one-tap repair instead of a dead end.
@@ -753,7 +753,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		return page, nil
 	case "profile":
 		page.Title = "Your details"
-		page.Intro = "Xego verifies this identity before approving your individual profile."
+		page.Intro = "Faya verifies this identity before approving your individual profile."
 		page.Fields = []webFlowField{
 			{Name: "legal_name", Label: "Legal name", Type: "text", Required: true},
 			{Name: "dob", Label: "Date of birth (YYYY-MM-DD)", Type: "date", Required: true},
@@ -1025,7 +1025,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		if _, err := a.store.RecomputeRiskScore(r.Context(), user.ID); err != nil {
 			return a.wfPageWithError(flow, page, "Could not refresh your risk profile."), nil
 		}
-		if err := a.wfFinish(r.Context(), flow, "Your BVN and NIN are verified. Your Xego individual profile is approved at CBN Tier 2. Continue in the browser to reach CBN Tier 3 (uncapped)."); err != nil {
+		if err := a.wfFinish(r.Context(), flow, "Your BVN and NIN are verified. Your Faya individual profile is approved at CBN Tier 2. Continue in the browser to reach CBN Tier 3 (uncapped)."); err != nil {
 			return a.wfPageWithError(flow, page, "Tier 2 recorded."), nil
 		}
 		payload := clonePayload(flow.Payload)
@@ -1033,7 +1033,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		return nil, nil
 	case "tier3":
 		if action == "skip" {
-			msg := "No problem. Your Xego individual profile is CBN Tier 2 and approved. You can browse the menu; send MENU anytime."
+			msg := "No problem. Your Faya individual profile is CBN Tier 2 and approved. You can browse the menu; send MENU anytime."
 			if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 				return a.wfPageWithError(flow, page, "Profile saved."), nil
 			}
@@ -1089,7 +1089,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not refresh your risk profile."), nil
 		}
-		msg := fmt.Sprintf("Enhanced due diligence complete. Your Xego individual profile is now approved at CBN Tier 3 (uncapped). Risk profile: %s. Send MENU anytime.", strings.ToUpper(riskProfile.RiskBand))
+		msg := fmt.Sprintf("Enhanced due diligence complete. Your Faya individual profile is now approved at CBN Tier 3 (uncapped). Risk profile: %s. Send MENU anytime.", strings.ToUpper(riskProfile.RiskBand))
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Due diligence recorded."), nil
 		}
@@ -1146,7 +1146,7 @@ func (a *App) wfMerchantRegisterStep(r *http.Request, flow store.WebFlow, user s
 			{Term: "Description", Desc: flow.Payload["description"]},
 			{Term: "Email", Desc: flow.Payload["email"]},
 		}
-		page.Intro = "Xego reviews every merchant before it can start collecting payments."
+		page.Intro = "Faya reviews every merchant before it can start collecting payments."
 		page.Actions = []webFlowAction{{Name: "submit", Label: "Submit for approval"}}
 		return page, nil
 	}
@@ -1220,7 +1220,7 @@ func (a *App) wfMerchantRegisterSubmit(w http.ResponseWriter, r *http.Request, f
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Registration failed: "+err.Error()), nil
 		}
-		msg := fmt.Sprintf("Merchant registration submitted.\n\nBusiness: %s\nCategory: %s\nReference: %s\nStatus: Awaiting approval\n\nXego will use your verified email for follow-up.",
+		msg := fmt.Sprintf("Merchant registration submitted.\n\nBusiness: %s\nCategory: %s\nReference: %s\nStatus: Awaiting approval\n\nFaya will use your verified email for follow-up.",
 			request.BusinessName, request.Category, request.Reference)
 		if err := a.wfFinish(r.Context(), flow, msg); err != nil {
 			return a.wfPageWithError(flow, page, "Registration submitted."), nil
@@ -1253,7 +1253,7 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 		}
 		if len(merchants) == 0 {
 			page.Title = "No approved merchant"
-			page.Intro = "You need an approved merchant before requesting a business tier upgrade. Register a business from the Xego menu."
+			page.Intro = "You need an approved merchant before requesting a business tier upgrade. Register a business from the Faya menu."
 			page.Done = true
 			return page, nil
 		}
@@ -1293,7 +1293,7 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 			{Name: "address_document", Label: "Utility bill for the operating address", Type: "upload", Value: flow.Payload["address_document"],
 				MediaPrompt: "Read this utility bill. Reply with the account or meter reference and the service address printed on it, on one line."},
 			{Name: "location", Label: "Where you are now", Type: "location", Value: flow.Payload["location_summary"],
-				Hint: "Your browser asks for permission once. Xego records only the position and the time."},
+				Hint: "Your browser asks for permission once. Faya records only the position and the time."},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil

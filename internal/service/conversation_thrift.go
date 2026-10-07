@@ -105,7 +105,7 @@ func (s *ConversationService) handleThriftTarget(ctx context.Context, channel, r
 		return err
 	}
 	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Faya. When all members have joined, send START %s to choose payout rotation.",
 		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, webLink, group.Name, group.Name))
 }
 
@@ -197,7 +197,7 @@ func (s *ConversationService) handleThriftConcatReview(ctx context.Context, chan
 		return err
 	}
 	webLink := s.cfg.BaseURL + "/thrift/" + url.PathEscape(group.Name)
-	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Xego. When all members have joined, send START %s to choose payout rotation.",
+	return s.sendText(ctx, channel, recipient, fmt.Sprintf("Thrift group created.\n\nName: %s\nContribution: %s %s\nMembers: 1 of %d\n\nShare this link with members so they can join:\n%s\n\nOr tell them to send JOIN %s to Faya. When all members have joined, send START %s to choose payout rotation.",
 		group.Name, domain.FormatNGN(group.ContributionAmountKobo), group.Frequency, group.TargetMemberCount, webLink, group.Name, group.Name))
 }
 

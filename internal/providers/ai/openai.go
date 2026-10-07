@@ -69,7 +69,7 @@ var knownIntents = []string{
 }
 
 func (o *OpenAI) ClassifyIntent(ctx context.Context, userMessage string, contextLines []string) (ports.IntentResult, error) {
-	systemPrompt := `You are an intent classifier for a WhatsApp payment assistant called Xego.
+	systemPrompt := `You are an intent classifier for a WhatsApp payment assistant called Faya.
 Given the user message and conversation context, classify it into exactly one intent and extract any entities.
 
 Known intents:

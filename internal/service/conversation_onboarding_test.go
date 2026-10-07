@@ -28,6 +28,7 @@ func (m *testMessenger) SendCheckout(_ context.Context, _, _, _ string) error   
 func (m *testMessenger) SendLink(_ context.Context, _, _, _, _ string) error                  { return nil }
 func (m *testMessenger) SendTemplate(_ context.Context, _, _ string, _ []string) error        { return nil }
 func (m *testMessenger) SendImage(_ context.Context, _ string, _ []byte, _ string) error      { return nil }
+func (m *testMessenger) SendLocationRequest(_ context.Context, _, _ string) error             { return nil }
 
 func (m *testMessenger) lastText() string {
 	m.mu.Lock()

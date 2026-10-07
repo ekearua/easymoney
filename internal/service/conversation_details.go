@@ -243,7 +243,7 @@ func (s *ConversationService) sendMyDetailsChat(ctx context.Context, channel, re
 	}
 	lines = append(lines, "\nRecent payments")
 	if len(summary.Payments) == 0 {
-		lines = append(lines, "• You don't have any Xego payments yet.")
+		lines = append(lines, "• You don't have any Faya payments yet.")
 	} else {
 		for _, payment := range summary.Payments {
 			lines = append(lines, "• "+payment.Desc)

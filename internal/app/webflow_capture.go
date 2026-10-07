@@ -40,7 +40,7 @@ func wfBillCaptureFields() []webFlowField {
 	return []webFlowField{
 		{Name: wfBillPhotoField, Label: "Snap the bill instead (optional)", Type: "upload", BarIcon: "file",
 			MediaPrompt: "This photo shows a bill or receipt. Reply with the merchant name and the total amount in naira, e.g. \"MERCHANT Ade's Kitchen | AMOUNT 2500\".",
-			Hint:        "Upload a photo of the bill — Xego reads the merchant and amount to prefill the review."},
+			Hint:        "Upload a photo of the bill — Faya reads the merchant and amount to prefill the review."},
 		{Name: wfBillVoiceField, Label: "Or say the amount (optional)", Type: "voice", BarIcon: "mic",
 			Hint: "Record a short note, e.g. \"pay Ade's Kitchen two thousand five hundred\"."},
 	}
@@ -73,7 +73,7 @@ func wfIndividualAskField(payload map[string]string) webFlowField {
 	return webFlowField{
 		Name: wfIndAskField, Label: "Who to pay", Type: "aisearch",
 		Value: payload[wfIndAskField],
-		Hint:  "e.g. “send 5000 to 08012345678 GTBank 0123456789” — Xego reads it and prefills the fields below, or use the icons to snap or say it.",
+		Hint:  "e.g. “send 5000 to 08012345678 GTBank 0123456789” — Faya reads it and prefills the fields below, or use the icons to snap or say it.",
 	}
 }
 
@@ -85,7 +85,7 @@ func wfIndividualCaptureFields() []webFlowField {
 	return []webFlowField{
 		{Name: wfIndPhotoField, Label: "Snap the instruction instead (optional)", Type: "upload", BarIcon: "file",
 			MediaPrompt: "This photo shows a money-transfer instruction. Reply with the recipient phone number, the amount in naira, the bank name, and the 10-digit account number, e.g. \"PHONE 08012345678 | AMOUNT 2500 | BANK GTBank | ACCOUNT 0123456789\".",
-			Hint:        "Upload a photo — Xego reads recipient, amount, bank, and account to prefill the form."},
+			Hint:        "Upload a photo — Faya reads recipient, amount, bank, and account to prefill the form."},
 		{Name: wfIndVoiceField, Label: "Or say the instruction (optional)", Type: "voice", BarIcon: "mic",
 			Hint: "Record it, e.g. \"send five thousand to 08012345678 GTBank account 0123456789\"."},
 	}

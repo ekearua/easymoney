@@ -56,6 +56,9 @@ func (m *carryoverMessenger) SendInteractive(_ context.Context, msg ports.Intera
 }
 
 func (m *carryoverMessenger) SendCheckout(_ context.Context, _, _, _ string) error { return nil }
+func (m *carryoverMessenger) SendLocationRequest(_ context.Context, _, _ string) error {
+	return nil
+}
 func (m *carryoverMessenger) SendLink(_ context.Context, _, _, _, _ string) error  { return nil }
 func (m *carryoverMessenger) SendTemplate(_ context.Context, _, _ string, _ []string) error {
 	return nil
@@ -184,7 +187,7 @@ func TestApprovedIndividualOnFreshChannelGetsIntroNotOnboarding(t *testing.T) {
 	}
 	anyMenu := false
 	for _, body := range msg.allSentInteractive() {
-		if strings.Contains(body, "Welcome back to Xego") {
+		if strings.Contains(body, "Welcome back to Faya") {
 			anyMenu = true
 		}
 	}

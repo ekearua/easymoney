@@ -170,7 +170,7 @@ func (s *ConversationService) sendLatestStatus(ctx context.Context, channel, rec
 		return err
 	}
 	if len(payments) == 0 {
-		return s.sendText(ctx, channel, recipient, "You don't have any Xego payments yet. Choose Make payment to try one.")
+		return s.sendText(ctx, channel, recipient, "You don't have any Faya payments yet. Choose Make payment to try one.")
 	}
 	payment := payments[0]
 	return s.sendText(ctx, channel, recipient,

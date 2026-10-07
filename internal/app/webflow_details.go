@@ -14,8 +14,8 @@ import (
 // client sends one) re-renders the same page.
 func (a *App) wfMyDetailsStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
 	page := a.wfPage(flow)
-	page.Title = "Your Xego details"
-	page.Intro = "Your Xego account, wallet, and limits — all in one place."
+	page.Title = "Your Faya details"
+	page.Intro = "Your Faya account, wallet, and limits — all in one place."
 	summary := a.conversation.MyDetailsSummaryOf(r.Context(), user)
 	review := make([]webFlowLine, 0, 12+len(summary.PayingLines)+len(summary.Merchants)+len(summary.Payments))
 	review = append(review,
@@ -45,7 +45,7 @@ func (a *App) wfMyDetailsStep(r *http.Request, flow store.WebFlow, user store.Us
 		review = append(review, webFlowLine{Term: merchant.Heading, Desc: strings.Join(parts, "\n")})
 	}
 	if len(summary.Payments) == 0 {
-		review = append(review, webFlowLine{Term: "Recent payments", Desc: "You don't have any Xego payments yet."})
+		review = append(review, webFlowLine{Term: "Recent payments", Desc: "You don't have any Faya payments yet."})
 	} else {
 		var paymentParts []string
 		for _, payment := range summary.Payments {

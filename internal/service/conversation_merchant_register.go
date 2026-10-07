@@ -178,7 +178,7 @@ func (s *ConversationService) NotifyMerchantApproved(ctx context.Context, owner 
 		return
 	}
 	msg := fmt.Sprintf(
-		"Your merchant account has been approved!\n\nBusiness: %s\n\nYou can now generate invoices and receive payments through Xego. Send MENU to get started.",
+		"Your merchant account has been approved!\n\nBusiness: %s\n\nYou can now generate invoices and receive payments through Faya. Send MENU to get started.",
 		merchantName)
 	if setPasswordURL != "" {
 		msg += fmt.Sprintf("\n\nSet your merchant dashboard password here:\n%s", setPasswordURL)

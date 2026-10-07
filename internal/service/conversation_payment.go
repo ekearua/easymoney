@@ -573,7 +573,7 @@ func (s *ConversationService) sendCardReview(ctx context.Context, channel, recip
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount), feeLine),
+		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure card checkout?", merchant.Name, domain.FormatNGN(amount), feeLine),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Continue"},
 			{ID: "cancel_payment", Title: "Cancel"},
@@ -592,7 +592,7 @@ func (s *ConversationService) sendBankTransferReview(ctx context.Context, channe
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure checkout with Interswitch?", merchant.Name, domain.FormatNGN(amount), feeLine),
+		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s\n\nContinue to secure checkout with Interswitch?", merchant.Name, domain.FormatNGN(amount), feeLine),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Continue"},
 			{ID: "cancel_payment", Title: "Cancel"},
@@ -621,7 +621,7 @@ func (s *ConversationService) sendWalletReview(ctx context.Context, channel, rec
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Xego payment:\n\nMerchant: %s\nAmount: %s%s%s\n\nPay instantly from your Xego wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine),
+		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s%s\n\nPay instantly from your Faya wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},

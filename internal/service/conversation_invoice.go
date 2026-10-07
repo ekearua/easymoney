@@ -906,7 +906,7 @@ func invoiceReferenceFromPAY(input string) (string, bool) {
 
 func (s *ConversationService) notifyInvoiceCustomer(ctx context.Context, invoice store.InvoiceView) {
 	link := s.cfg.BaseURL + "/invoices/" + invoice.Reference
-	emailBody := fmt.Sprintf("Xego invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nTo pay, visit the link above or open WhatsApp and send PAY %s to Xego.",
+	emailBody := fmt.Sprintf("Faya invoice from %s\n\nAmount: %s\nReference: %s\nLink: %s\n\nTo pay, visit the link above or open WhatsApp and send PAY %s to Faya.",
 		invoice.MerchantName, domain.FormatNGN(invoice.TotalKobo), invoice.Reference, link, invoice.Reference)
 	if s.email != nil && invoice.CustomerEmail != "" {
 		_ = s.email.Send(ctx, invoice.CustomerEmail, "Xego invoice "+invoice.Reference, emailBody)

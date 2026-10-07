@@ -66,8 +66,7 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 // CreateCollectionDraft creates a plain merchant collection where the Xego
 // collection fee is added on top of the merchant's base amount. The customer
 // pays base+fee; the merchant receives the full base amount. The base and fee
-// are carried in payment metadata so the split posting can credit the merchant
-// the full base and book the fee to Xego.
+// are carried in payment metadata so the split posting can credit the merchant	// the full base and book the fee to Faya.
 func (s *PaymentService) CreateCollectionDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
 	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider(provider), baseKobo).FeeKobo
 	return s.createDraftCore(ctx, user, merchant, baseKobo+fee, provider, channel, recipient, map[string]any{
@@ -667,7 +666,7 @@ func (s *PaymentService) applyIndividualPaySettlement(ctx context.Context, payme
 	return nil
 }
 
-// applyCollectionSplits computes the Xego platform fee and records the split
+// applyCollectionSplits computes the Faya platform fee and records the split
 // rows (fee + merchant receivable) for a plain merchant collection payment.
 // Invoice, thrift, and data payments skip splits: their ledger flows are
 // handled by their own hooks. For collection payments created via
@@ -848,7 +847,7 @@ func isTerminal(status domain.PaymentStatus) bool {
 func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue domain.PaymentStatus) store.OutboxSpec {
 	status := strings.ToUpper(string(statusValue))
 	receiptURL := s.cfg.BaseURL + "/receipts/" + payment.ReceiptToken
-	body := fmt.Sprintf("Xego payment update\n\nStatus: %s\nMerchant: %s\nAmount: %s\nReceipt: %s", status, payment.MerchantName, domain.FormatNGN(payment.AmountKobo), receiptURL)
+	body := fmt.Sprintf("Faya payment update\n\nStatus: %s\nMerchant: %s\nAmount: %s\nReceipt: %s", status, payment.MerchantName, domain.FormatNGN(payment.AmountKobo), receiptURL)
 	kind := "text"
 	payload, _ := json.Marshal(map[string]any{"body": body})
 	if time.Since(payment.LastInboundAt) < 23*time.Hour {

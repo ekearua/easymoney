@@ -182,7 +182,7 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendText(ctx, channel, recipient, "I'm Xego's AI assistant. Ask me anything about payments, data, or thrift groups. Type MENU to exit.")
+		return s.sendText(ctx, channel, recipient, "I'm Faya's AI assistant. Ask me anything about payments, data, or thrift groups. Type MENU to exit.")
 	default:
 		return s.sendMenu(ctx, channel, recipient, user)
 	}
@@ -204,7 +204,7 @@ func (s *ConversationService) sendMenu(ctx context.Context, channel, recipient s
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:          recipient,
-		Body:        "Welcome back to Xego. What would you like to do?",
+		Body:        "Welcome back to Faya. What would you like to do?",
 		ButtonLabel: "Open menu",
 		Sections: []ports.InteractiveSection{{
 			Title: "Xego",
