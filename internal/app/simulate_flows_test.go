@@ -91,6 +91,11 @@ func (m *simMessenger) SendInteractive(_ context.Context, msg ports.InteractiveM
 	return nil
 }
 
+func (m *simMessenger) SendLocationRequest(_ context.Context, to, body string) error {
+	m.record("location_request", to, body, "", "")
+	return nil
+}
+
 func (m *simMessenger) SendCheckout(_ context.Context, to, body, link string) error {
 	m.record("checkout", to, body, link, "")
 	return nil

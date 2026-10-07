@@ -103,6 +103,11 @@ type App struct {
 	// (internal/app/worker_pool.go).
 	workerPools workerPools
 
+	// Location-aware bulk disbursements: the orchestrator plus a bounded slot
+	// pool that caps how many bulk jobs run at once (BULK_WORKER_CONCURRENCY).
+	bulkPayments *service.BulkPaymentsService
+	bulkSlots    chan struct{}
+
 	// Transactional email, used for merchant confirmation and for emailed
 	// second-factor codes.
 	email ports.EmailSender
@@ -420,6 +425,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" exists until the screening vendor adapter lands)", cfg.PaymentScreeningProvider)
 	}
+	// Bulk workers pull their jobs from the pool on a short ticker; the
+	// concurrency semaphore bounds how many run at once per instance.
+	bulkConcurrency := cfg.BulkWorkerConcurrency
+	if bulkConcurrency <= 0 {
+		bulkConcurrency = 4
+	}
 	app := &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
 		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
@@ -436,12 +447,23 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithPaymentScreener(paymentScreener)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
-		workerPools:      newWorkerPools(cfg),
-		imageReader:      imageReader,
-		speechToText:     speechToText,
-		chatAI:           chatAI,
-		email:            emailSender,
-		webAuthn:         webAuthn,
+		bulkPayments: service.NewBulkPaymentsService(repository, messengers, logger, service.BulkPaymentsConfig{
+			RadiusM:        cfg.BulkRadiusM,
+			MaxAccuracyM:   cfg.BulkMaxAccuracyM,
+			ChunkSize:      cfg.BulkChunkSize,
+			SendRatePerSec: cfg.BulkSendRatePerSec,
+			MaxTargets:     cfg.BulkMaxTargets,
+			Stage1Template: cfg.BulkStage1Template,
+			BaseURL:        cfg.BaseURL,
+			LocationTTL:    cfg.BulkLocationTTL,
+		}),
+		bulkSlots:    make(chan struct{}, bulkConcurrency),
+		workerPools:  newWorkerPools(cfg),
+		imageReader:  imageReader,
+		speechToText: speechToText,
+		chatAI:       chatAI,
+		email:        emailSender,
+		webAuthn:     webAuthn,
 	}
 	convo.SetMediaDownloader(app)
 	return app, nil
@@ -622,6 +644,8 @@ func (a *App) routes() http.Handler {
 	router.With(publicLimit).Post("/w/{token}", a.webFlowSubmit)
 	router.With(publicLimit).Post("/w/{token}/media", a.webFlowMediaUpload)
 	router.With(publicLimit).Post("/w/{token}/location", a.webFlowLocation)
+	router.With(publicLimit).Get("/bulk/loc", a.publicBulkLocationPage)
+	router.With(publicLimit).Post("/bulk/loc", a.publicBulkLocationCapture)
 	router.With(publicLimit).Get("/receipts/{token}", a.receipt)
 	router.With(publicLimit).Get("/receipts/{token}/scan-qr.png", a.receiptScanQR)
 	router.With(publicLimit).Get("/invoices/{reference}", a.invoice)
@@ -805,6 +829,16 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeMerchant))
 		m.Post("/merchant/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeMerchant))
+		m.Get("/merchant/bulk/centers", a.merchantBulkCenters)
+		m.Post("/merchant/bulk/centers", a.merchantBulkCenterCreate)
+		m.Get("/merchant/bulk/centers/{id}", a.merchantBulkCenterDetail)
+		m.Post("/merchant/bulk/centers/{id}/delete", a.merchantBulkCenterDelete)
+		m.Post("/merchant/bulk/centers/{id}/recipients", a.merchantBulkRecipientAdd)
+		m.Post("/merchant/bulk/centers/{id}/recipients/upload", a.merchantBulkRecipientUpload)
+		m.Post("/merchant/bulk/centers/{id}/recipients/{recipientID}/delete", a.merchantBulkRecipientDelete)
+		m.Get("/merchant/bulk/batches", a.merchantBulkBatches)
+		m.Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
+		m.Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
 		m.Post("/merchant/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeMerchant))
 		m.Post("/merchant/logout", a.merchantLogout)

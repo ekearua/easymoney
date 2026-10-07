@@ -106,6 +106,10 @@ type Messenger interface {
 	SendLink(context.Context, string, string, string, string) error
 	SendTemplate(context.Context, string, string, []string) error
 	SendImage(ctx context.Context, to string, imageData []byte, caption string) error
+	// SendLocationRequest asks the recipient to share their current location
+	// using the channel's native location affordance (WhatsApp
+	// location_request_message, Telegram request_location keyboard).
+	SendLocationRequest(ctx context.Context, to, body string) error
 }
 
 // EmailSender sends transactional onboarding and receipt email messages.

@@ -79,7 +79,7 @@ type Config struct {
 	// RefundProvider selects the reversal rail: "interswitch" (refund API).
 	RefundProvider string
 
-	// Fee configuration (kobo). These control the Xego platform fee
+	// Fee configuration (kobo). These control the Faya platform fee
 	// applied as a split on merchant collection payments.
 	FeeCardBPS           int64
 	FeeCardFixedKobo     int64
@@ -176,6 +176,16 @@ type Config struct {
 	LocationAPIKey            string
 	LocationTimeout           time.Duration
 	LocationMaxDistanceM      float64
+
+	// Bulk payments (location-aware disbursements).
+	BulkLocationTTL       time.Duration
+	BulkRadiusM           int
+	BulkMaxAccuracyM      float64
+	BulkChunkSize         int
+	BulkWorkerConcurrency int
+	BulkSendRatePerSec    int
+	BulkMaxTargets        int
+	BulkStage1Template    string
 
 	// Database connection-pool sizing (requirements workbook #1): the store
 	// pool was hardcoded at 25/5, so raising it for production needed a
@@ -419,6 +429,15 @@ func Load() (Config, error) {
 		LocationAPIKey:                  os.Getenv("LOCATION_API_KEY"),
 		LocationTimeout:                 envDuration("LOCATION_TIMEOUT", 30*time.Second),
 		LocationMaxDistanceM:            float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
+
+		BulkLocationTTL:       envDuration("BULK_LOCATION_TTL", 5*time.Minute),
+		BulkRadiusM:           int(EnvInt64("BULK_RADIUS_M", 50)),
+		BulkMaxAccuracyM:      float64(EnvInt64("BULK_MAX_ACCURACY_M", 50)),
+		BulkChunkSize:         int(EnvInt64("BULK_CHUNK_SIZE", 500)),
+		BulkWorkerConcurrency: int(EnvInt64("BULK_WORKER_CONCURRENCY", 8)),
+		BulkSendRatePerSec:    int(EnvInt64("BULK_SEND_RATE_PER_SEC", 20)),
+		BulkMaxTargets:        int(EnvInt64("BULK_MAX_TARGETS", 100000)),
+		BulkStage1Template:    env("BULK_STAGE1_TEMPLATE", ""),
 
 		DBMaxConns:                 int(EnvInt64("DB_POOL_MAX", 25)),
 		DBMinConns:                 int(EnvInt64("DB_POOL_MIN", 5)),

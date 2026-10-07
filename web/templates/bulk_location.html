@@ -1,0 +1,15 @@
+{{define "bulk_location.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Confirm your location · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body><main class="checkout">
+  <h1>Confirm your location</h1>
+  <p class="muted">Share your current location to receive your payment. This link is valid for a few minutes.</p>
+  <div class="panel" data-bulk-location data-item="{{.ItemID}}">
+    <button type="button" data-bulk-share>Share my location</button>
+    <p class="muted" data-bulk-status hidden></p>
+  </div>
+</main>
+<script src="/static/bulk-location.js" defer></script>
+</body></html>
+{{end}}

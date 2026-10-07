@@ -1,0 +1,34 @@
+{{define "merchant_bulk_batch_detail.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow"><a href="/merchant/bulk/batches">Bulk payments</a></p><h1>{{.Batch.BatchNo}}</h1></div>
+  </header>
+  <div class="panel">
+    <p class="muted">{{.Center.Name}} · {{money .Batch.AmountKobo}} per recipient · status {{.Batch.Status}}</p>
+    <dl class="stats">
+      <div><dt>Targets</dt><dd>{{.Batch.TotalTargets}}</dd></div>
+      <div><dt>Requested</dt><dd>{{.Batch.RequestedCount}}</dd></div>
+      <div><dt>Responded</dt><dd>{{.Batch.RespondedCount}}</dd></div>
+      <div><dt>Eligible</dt><dd>{{.Batch.EligibleCount}}</dd></div>
+      <div><dt>Paid</dt><dd>{{.Batch.PaidCount}}</dd></div>
+      <div><dt>Failed</dt><dd>{{.Batch.FailedCount}}</dd></div>
+      <div><dt>Expired</dt><dd>{{.Batch.ExpiredCount}}</dd></div>
+      <div><dt>Debited</dt><dd>{{money .Batch.TotalDebitedKobo}}</dd></div>
+    </dl>
+    {{if .Batch.ComplianceFlag}}<div class="alert error">Flagged for compliance review (batch total exceeds the payout ceiling).</div>{{end}}
+  </div>
+  {{if .Items}}
+  <div class="table-wrap"><table><thead><tr><th>Recipient</th><th>Channel</th><th>Status</th><th>Distance</th><th>Accuracy</th><th>Reason</th></tr></thead><tbody>
+  {{range .Items}}<tr>
+    <td>{{.Phone}}</td>
+    <td>{{if .Channel}}{{.Channel}}{{else}}—{{end}}</td>
+    <td>{{.Status}}</td>
+    <td>{{.Distance}}</td>
+    <td>{{.Accuracy}}</td>
+    <td>{{if .Reason}}<span class="muted">{{.Reason}}</span>{{else}}—{{end}}</td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No recipients in this batch.</p></div>{{end}}
+</main></body></html>
+{{end}}

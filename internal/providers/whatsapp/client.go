@@ -40,6 +40,11 @@ type InboundMessage struct {
 	MediaID     string
 	MediaMime   string
 	Caption     string
+	// Latitude/Longitude carry a shared live/static location reply.
+	Latitude    float64
+	Longitude   float64
+	Accuracy    float64
+	HasLocation bool
 	Timestamp   time.Time
 }
 
@@ -94,6 +99,13 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 								Title string `json:"title"`
 							} `json:"list_reply"`
 						} `json:"interactive"`
+						Location struct {
+							Latitude  float64 `json:"latitude"`
+							Longitude float64 `json:"longitude"`
+							Accuracy  float64 `json:"accuracy"`
+							Name      string  `json:"name"`
+							Address   string  `json:"address"`
+						} `json:"location"`
 						Image struct {
 							ID       string `json:"id"`
 							MimeType string `json:"mime_type"`
@@ -161,6 +173,11 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 					parsed.MediaType = "sticker"
 					parsed.MediaID = message.Sticker.ID
 					parsed.MediaMime = message.Sticker.MimeType
+				case "location":
+					parsed.HasLocation = true
+					parsed.Latitude = message.Location.Latitude
+					parsed.Longitude = message.Location.Longitude
+					parsed.Accuracy = message.Location.Accuracy
 				}
 				if unix, err := strconv.ParseInt(message.Timestamp, 10, 64); err == nil {
 					parsed.Timestamp = time.Unix(unix, 0)
@@ -243,6 +260,22 @@ func (c *Client) SendInteractive(ctx context.Context, message ports.InteractiveM
 		"to":                recipientForCloudAPI(message.To),
 		"type":              "interactive",
 		"interactive":       interactive,
+	})
+}
+
+// SendLocationRequest asks the recipient to share their location using
+// WhatsApp's native location_request_message interactive.
+func (c *Client) SendLocationRequest(ctx context.Context, to, body string) error {
+	return c.send(ctx, map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"to":                recipientForCloudAPI(to),
+		"type":              "interactive",
+		"interactive": map[string]any{
+			"type":   "location_request_message",
+			"body":   map[string]any{"text": body},
+			"action": map[string]any{"name": "send_location"},
+		},
 	})
 }
 

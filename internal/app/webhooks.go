@@ -61,6 +61,7 @@ func (a *App) receiveWhatsAppWebhook(w http.ResponseWriter, r *http.Request) {
 		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
 			ID: message.ID, Channel: service.ChannelWhatsApp, Sender: message.From, Recipient: message.From, Text: message.Text, Interactive: message.Interactive,
 			MediaType: message.MediaType, MediaID: message.MediaID, MediaMime: message.MediaMime, Caption: message.Caption,
+			Latitude: message.Latitude, Longitude: message.Longitude, Accuracy: message.Accuracy, HasLocation: message.HasLocation,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)
@@ -119,6 +120,10 @@ func (a *App) receiveTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 			MediaID:     update.MediaID,
 			MediaMime:   update.MediaMime,
 			Caption:     update.Caption,
+			Latitude:    update.Latitude,
+			Longitude:   update.Longitude,
+			Accuracy:    update.Accuracy,
+			HasLocation: update.HasLocation,
 		}); err != nil {
 			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
 			http.Error(w, "storage error", http.StatusServiceUnavailable)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,6 +91,12 @@ type InboundMessage struct {
 	MediaURL    string // provider-signed download URL when supplied (Instagram, TikTok)
 	MediaMime   string
 	Caption     string
+	// Location fields carry a shared live location (WhatsApp/Telegram location
+	// request replies). HasLocation distinguishes a real capture from 0,0.
+	Latitude    float64
+	Longitude   float64
+	Accuracy    float64
+	HasLocation bool
 	Attempts    int
 }
 
@@ -157,7 +164,7 @@ func (s *Store) EnqueueInboundMessage(ctx context.Context, message InboundMessag
 	if message.Recipient == "" {
 		message.Recipient = message.Sender
 	}
-	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "union_id": message.UnionID, "media_type": message.MediaType, "media_id": message.MediaID, "media_url": message.MediaURL, "media_mime": message.MediaMime, "caption": message.Caption})
+	payload, err := json.Marshal(map[string]string{"text": message.Text, "interactive": message.Interactive, "username": message.Username, "union_id": message.UnionID, "media_type": message.MediaType, "media_id": message.MediaID, "media_url": message.MediaURL, "media_mime": message.MediaMime, "caption": message.Caption, "latitude": formatBulkCoord(message.Latitude), "longitude": formatBulkCoord(message.Longitude), "accuracy": formatBulkCoord(message.Accuracy), "has_location": boolString(message.HasLocation)})
 	if err != nil {
 		return false, err
 	}
@@ -259,6 +266,18 @@ func (s *Store) ClaimInboundMessages(ctx context.Context, limit int) ([]InboundM
 		message.Interactive = normalized["interactive"]
 		message.Username = normalized["username"]
 		message.UnionID = normalized["union_id"]
+		if normalized["has_location"] != "" {
+			if lat, err := strconv.ParseFloat(normalized["latitude"], 64); err == nil {
+				message.Latitude = lat
+			}
+			if lng, err := strconv.ParseFloat(normalized["longitude"], 64); err == nil {
+				message.Longitude = lng
+			}
+			if acc, err := strconv.ParseFloat(normalized["accuracy"], 64); err == nil {
+				message.Accuracy = acc
+			}
+			message.HasLocation = true
+		}
 		messages = append(messages, message)
 	}
 	rows.Close()
@@ -375,7 +394,7 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		// C16: money-in posting. Customer funds arrive into the operating bank
 		// account as a customer float liability; purpose-specific allocations
 		// (invoice, thrift pool, sales revenue) follow in their own hooks.
-		// Plain merchant collection splits (Xego fee + merchant receivable) are
+		// Plain merchant collection splits (Faya fee + merchant receivable) are
 		// recorded by ApplyPaymentSplits called from PaymentService after the
 		// transition succeeds.
 		var isInvoice, isThrift, isData bool
@@ -933,4 +952,17 @@ func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 		payments = append(payments, view)
 	}
 	return payments, rows.Err()
+}
+
+// formatBulkCoord renders a coordinate for storage in the inbound payload map.
+func formatBulkCoord(v float64) string {
+	return strconv.FormatFloat(v, 'f', 6, 64)
+}
+
+// boolString renders true as "1" and false as "" (keeps the payload compact).
+func boolString(b bool) string {
+	if b {
+		return "1"
+	}
+	return ""
 }

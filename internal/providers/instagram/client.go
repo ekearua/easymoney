@@ -292,6 +292,12 @@ func (c *Client) SendImage(ctx context.Context, to string, imageData []byte, cap
 	})
 }
 
+// SendLocationRequest is unsupported on Instagram; callers fall back to the
+// browser location-capture link.
+func (c *Client) SendLocationRequest(ctx context.Context, to, body string) error {
+	return errors.New("Instagram does not support native location requests")
+}
+
 // DownloadFile retrieves media bytes for OCR/STT. Instagram attachments arrive
 // with a signed URL; when only an attachment id is available the Graph API
 // /{attachment-id} endpoint resolves it. Xego's processMedia passes nil bytes

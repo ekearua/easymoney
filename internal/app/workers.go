@@ -25,6 +25,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	auditChainTicker := time.NewTicker(a.cfg.AuditChainVerifyInterval)
 	monitorTicker := time.NewTicker(15 * time.Minute)
 	settlementTicker := time.NewTicker(10 * time.Second)
+	bulkTicker := time.NewTicker(2 * time.Second)
 	defer outboxTicker.Stop()
 	defer eventTicker.Stop()
 	defer reconcileTicker.Stop()
@@ -34,6 +35,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer auditChainTicker.Stop()
 	defer monitorTicker.Stop()
 	defer settlementTicker.Stop()
+	defer bulkTicker.Stop()
 	a.startEventConsumers(ctx)
 	for {
 		select {
@@ -99,8 +101,56 @@ func (a *App) runWorkers(ctx context.Context) {
 			})
 		case <-settlementTicker.C:
 			a.dispatch(ctx, a.workerPools.misc, "settlement", a.runSettlementDispatcher)
+		case <-bulkTicker.C:
+			a.runBulkJobs(ctx)
 
 		}
+	}
+}
+
+func (a *App) runBulkJobs(ctx context.Context) {
+	if a.bulkPayments == nil {
+		return
+	}
+	limit := cap(a.bulkSlots) - len(a.bulkSlots)
+	if limit <= 0 {
+		return
+	}
+	jobs, err := a.store.ClaimBulkJobs(ctx, limit)
+	if err != nil {
+		a.logger.WarnContext(ctx, "claim bulk jobs", "error", err)
+		return
+	}
+	for _, job := range jobs {
+		job := job
+		a.bulkSlots <- struct{}{}
+		a.workerWg.Add(1)
+		go func() {
+			defer a.workerWg.Done()
+			defer func() { <-a.bulkSlots }()
+			if err := a.handleBulkJob(ctx, job); err != nil {
+				a.logger.WarnContext(ctx, "bulk job failed", "kind", job.Kind, "batch", job.BatchID, "error", err)
+				if retryErr := a.store.RetryBulkJob(ctx, job.ID, err.Error()); retryErr != nil {
+					a.logger.WarnContext(ctx, "retry bulk job", "job", job.ID, "error", retryErr)
+				}
+				return
+			}
+			if err := a.store.CompleteBulkJob(ctx, job.ID); err != nil {
+				a.logger.WarnContext(ctx, "complete bulk job", "job", job.ID, "error", err)
+			}
+		}()
+	}
+}
+
+// handleBulkJob dispatches one claimed bulk job to the matching stage.
+func (a *App) handleBulkJob(ctx context.Context, job store.BulkJob) error {
+	switch job.Kind {
+	case store.BulkJobStage1:
+		return a.bulkPayments.RunStage1(ctx, job.BatchID)
+	case store.BulkJobStage2:
+		return a.bulkPayments.RunStage2(ctx, job.BatchID)
+	default:
+		return fmt.Errorf("unknown bulk job kind %q", job.Kind)
 	}
 }
 

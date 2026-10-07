@@ -1,0 +1,61 @@
+{{define "merchant_bulk_center_detail.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow"><a href="/merchant/bulk/centers">Payment locations</a></p><h1>{{.Center.Name}}</h1></div>
+    <a class="btn-scan" href="/merchant/bulk/batches">Bulk batches</a>
+  </header>
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+  {{if .Saved}}<div class="alert success">Recipients updated.</div>{{end}}
+  <div class="panel">
+    <p class="muted">Center at {{.Center.Latitude}}, {{.Center.Longitude}} · radius {{.Center.RadiusM}} m · wallet balance {{money .Balance}}</p>
+  </div>
+
+  <div class="panel">
+    <h2>Add a recipient</h2>
+    <form method="post" action="/merchant/bulk/centers/{{.Center.ID}}/recipients">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Phone <input type="text" name="phone" required placeholder="+2348012345678"></label>
+      <label>Name (optional) <input type="text" name="name"></label>
+      <button type="submit">Add</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Upload CSV / XLSX</h2>
+    <p class="muted">Column A is the phone number; column B (optional) is the name.</p>
+    <form method="post" action="/merchant/bulk/centers/{{.Center.ID}}/recipients/upload" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="file" name="file" accept=".csv,.xlsx" required>
+      <button type="submit">Upload</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Start a bulk payment</h2>
+    <p class="muted">Each eligible recipient inside the radius receives the same amount.</p>
+    <form method="post" action="/merchant/bulk/batches">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="center_id" value="{{.Center.ID}}">
+      <label>Amount per recipient (kobo) <input type="number" name="amount_kobo" min="1" required placeholder="50000"></label>
+      <button type="submit">Start batch</button>
+    </form>
+  </div>
+
+  {{if .Users}}
+  <div class="table-wrap"><table><thead><tr><th>Phone</th><th>Name</th><th>Source</th><th>Actions</th></tr></thead><tbody>
+  {{range .Users}}<tr>
+    <td>{{.PhoneE164}}</td>
+    <td>{{if .DisplayName}}{{.DisplayName}}{{else}}—{{end}}</td>
+    <td>{{.Source}}</td>
+    <td>
+      <form method="post" action="/merchant/bulk/centers/{{$.Center.ID}}/recipients/{{.ID}}/delete" class="inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="link-button">Remove</button>
+      </form>
+    </td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No recipients yet.</p></div>{{end}}
+</main></body></html>
+{{end}}

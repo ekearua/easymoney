@@ -268,6 +268,12 @@ func (c *Client) SendImage(ctx context.Context, to string, imageData []byte, cap
 	return c.SendText(ctx, to, caption)
 }
 
+// SendLocationRequest is unsupported on TikTok; callers fall back to the
+// browser location-capture link.
+func (c *Client) SendLocationRequest(ctx context.Context, to, body string) error {
+	return errors.New("TikTok does not support native location requests")
+}
+
 func (c *Client) sendImageMedia(ctx context.Context, to string, imageData []byte, caption string) error {
 	if c.accessToken == "" {
 		return errors.New("TikTok access token is not configured")

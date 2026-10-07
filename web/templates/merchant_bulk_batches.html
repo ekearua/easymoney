@@ -1,0 +1,24 @@
+{{define "merchant_bulk_batches.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Bulk payments</h1></div>
+    <a class="btn-scan" href="/merchant/bulk/centers">Payment locations</a>
+  </header>
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+  {{if .Batches}}
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>Paid</th><th>Failed</th><th>Expired</th><th>Created</th><th></th></tr></thead><tbody>
+  {{range .Batches}}<tr>
+    <td><strong>{{.BatchNo}}</strong>{{if .ComplianceFlag}} <span class="status failed">Flagged</span>{{end}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Status}}</td>
+    <td>{{.PaidCount}}/{{.TotalTargets}}</td>
+    <td>{{.FailedCount}}</td>
+    <td>{{.ExpiredCount}}</td>
+    <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td><a href="/merchant/bulk/batches/{{.ID}}">View</a></td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No batches yet. Open a location to start one.</p></div>{{end}}
+</main></body></html>
+{{end}}

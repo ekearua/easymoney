@@ -1,0 +1,38 @@
+{{define "merchant_bulk_centers.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Payment locations</h1></div>
+    <a class="btn-scan" href="/merchant/bulk/batches">Bulk batches</a>
+  </header>
+  {{if .Created}}<div class="alert success">Location saved.</div>{{end}}
+  <div class="panel">
+    <h2>New location</h2>
+    <form method="post" action="/merchant/bulk/centers">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Name <input type="text" name="name" required placeholder="Ikeja City Mall"></label>
+      <label>Latitude <input type="text" name="latitude" required placeholder="6.6018"></label>
+      <label>Longitude <input type="text" name="longitude" required placeholder="3.3515"></label>
+      <label>Radius (metres) <input type="number" name="radius_m" value="{{.DefaultRadiusM}}" min="1"></label>
+      <button type="submit">Save location</button>
+    </form>
+  </div>
+  {{if .Centers}}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Coordinates</th><th>Radius</th><th>Recipients</th><th>Actions</th></tr></thead><tbody>
+  {{range .Centers}}<tr>
+    <td><strong>{{.Name}}</strong></td>
+    <td>{{.Latitude}}, {{.Longitude}}</td>
+    <td>{{.RadiusM}} m</td>
+    <td><a href="/merchant/bulk/centers/{{.ID}}">Manage</a></td>
+    <td>
+      <a href="/merchant/bulk/centers/{{.ID}}">Open</a>
+      <form method="post" action="/merchant/bulk/centers/{{.ID}}/delete" class="inline" onsubmit="return confirm('Delete this location and its recipients?');">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="link-button">Delete</button>
+      </form>
+    </td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No locations yet. Add one to start a bulk payment.</p></div>{{end}}
+</main></body></html>
+{{end}}

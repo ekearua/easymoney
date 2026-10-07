@@ -39,6 +39,11 @@ type InboundMessage struct {
 	MediaMime       string
 	Caption         string
 	CallbackQueryID string
+	// Latitude/Longitude carry a shared location (request_location reply).
+	Latitude    float64
+	Longitude   float64
+	Accuracy    float64
+	HasLocation bool
 }
 
 // New creates a Telegram Bot API client.
@@ -98,6 +103,11 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 				FileID   string `json:"file_id"`
 				MimeType string `json:"mime_type"`
 			} `json:"video"`
+			Location *struct {
+				Latitude  float64 `json:"latitude"`
+				Longitude float64 `json:"longitude"`
+				Accuracy  float64 `json:"horizontal_accuracy"`
+			} `json:"location"`
 		} `json:"message"`
 		CallbackQuery *struct {
 			ID      string `json:"id"`
@@ -153,6 +163,12 @@ func ParseInbound(body []byte) ([]InboundMessage, error) {
 			msg.MediaType = "video"
 			msg.MediaID = update.Message.Video.FileID
 			msg.MediaMime = update.Message.Video.MimeType
+		}
+		if update.Message.Location != nil {
+			msg.HasLocation = true
+			msg.Latitude = update.Message.Location.Latitude
+			msg.Longitude = update.Message.Location.Longitude
+			msg.Accuracy = update.Message.Location.Accuracy
 		}
 		return []InboundMessage{msg}, nil
 	}
@@ -220,6 +236,20 @@ func (c *Client) SendLink(ctx context.Context, to, body, url, label string) erro
 		"reply_markup": map[string]any{"inline_keyboard": [][]map[string]string{{
 			{"text": label, "url": url},
 		}}},
+	})
+}
+
+// SendLocationRequest asks the recipient to share their location using a
+// reply keyboard button with request_location.
+func (c *Client) SendLocationRequest(ctx context.Context, to, body string) error {
+	return c.send(ctx, "sendMessage", map[string]any{
+		"chat_id": to,
+		"text":    body,
+		"reply_markup": map[string]any{
+			"keyboard":          [][]map[string]any{{{ "text": "📍 Share my location", "request_location": true }}},
+			"resize_keyboard":   true,
+			"one_time_keyboard": true,
+		},
 	})
 }
 
