@@ -2,6 +2,7 @@
 
 **Status:** Proposed — pending a paid trial (see §7). Not yet an approved purchase.
 **Date:** 2026-09-29
+**Vendor facts last verified against published material:** 2026-10-08 (§4.2).
 **Decision owner:** Compliance + Platform (joint — this touches both the regulatory
 programme and the payment path).
 
@@ -112,6 +113,38 @@ API-first group), R10 (a self-serve entry tier exists, so a small-volume start i
 commercially reachable), R3 (source metadata per hit). **Uncertain:** R2 — the payment
 screening product is months old, so its inline behaviour under our latency budget is untested
 rather than proven.
+
+**Verified from current published documentation (2026-10-08):**
+
+- **Payment-screening latency.** Mesh's synchronous transaction ingestion is
+  documented as sub-second, with a **250 ms target for payment screening
+  alone**. The same material warns the target is lost if synchronous
+  transaction monitoring shares the flow — sync PS must be paired with async
+  TM. This is the vendor's own target, not a measured result; §7(1) still has
+  to hold it under our load profile.
+- **Payment-screening response shape.** `POST /v3/transaction/process`
+  (synchronous PS) returns a **PROCESS / HOLD** outcome. Payment Screening
+  **cannot be asynchronous**, and synchronous PS combined with synchronous
+  fraud-only TM is rejected. The verdict maps onto our clear / held semantics
+  directly, but the **hit-level detail R3/R4 needs requires the alerting
+  step** (slower) or a follow-up alert fetch — §7(3) must confirm the score,
+  entity type, source list and list version come back, not just the verdict.
+- **Customer screening.** `POST /v2/workflows/sync/create-and-screen` runs
+  synchronously to the screening step, typically **1–3 s**, returning
+  `HAS_PROFILES`/`NO_PROFILES` and, with the alerting step requested, the alert
+  identifiers. Fine for onboarding and rescreen; it is not an inline payment
+  call — the §8(4) save-time screen plus list-version cache is the right cost
+  lever.
+- **Commercial floor (R10).** A **self-serve Starter tier from ~$99/month**
+  (annual, API included, minimum 100 monitored entities) covers customer
+  screening, adverse media, PEPs and ongoing monitoring. Payment Screening
+  reads as an **Enterprise / price-on-application add-on** (ComplyAdvantage's
+  own FAQ scopes "optional transaction screening/monitoring" to Enterprise),
+  so §7(6) must pin the payment-screening quote at our volume in writing.
+- **One engine, four applications.** The same Mesh API serves Customer
+  Screening, Ongoing Monitoring, Transaction Monitoring and Payment
+  Screening. That makes the §6 single-engine position operationally cleaner —
+  provided we deliberately do **not** activate their TM (§2).
 
 ### 4.3 Firco / Actimize / FICO incumbents
 
@@ -258,6 +291,12 @@ signed.
   each vendor: the **Nigeria Sanctions Committee (NSC) list** under the Terrorism
   (Prevention and Prohibition) Act 2022, and any CBN/NFIU domestic designations, alongside
   OFAC/UN/EU/UK. Confirm coverage in writing before signing — this is R6 and it is fatal.
+- **NSC fallback feeds if the vendor lacks the list.** The list itself is obtainable as
+  *data*: the Nigeria Sanctions Committee runs an API connection programme
+  (`nigsac.gov.ng/ApiRequest`), and the NSC list is republished daily (138 entities) as
+  `ng_nigsac_sanctions` by OpenSanctions. Either can feed our owned `internal_watchlist`
+  (G3) — a data import into an owned control, which is the open question below's "data
+  decision, not a second engine" path, not a second screening engine.
 - **Vendor lock-in on the data.** Neither vendor sells its lists as a downloadable dataset;
   switching later means re-screening the whole book. The port keeps the code cost low; the
   data cost is not removable, so the contract should permit a bulk re-screen export.
@@ -281,3 +320,7 @@ signed.
   and pricing are exactly the things §7 tests.
 - ComplyAdvantage's real-time Payment Screening on Mesh is dated from its May 2026
   announcement; treat its maturity as unproven until the trial.
+- The §4.2 "verified" facts were checked against current Mesh documentation
+  (support and docs pages) and public pricing on 2026-10-08. They are **vendor
+  claims**, dated, not live measurements or an executed contract; §7 is what
+  turns them into evidence.

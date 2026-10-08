@@ -14,13 +14,14 @@ package app
 //
 //  1. the register's rows are exactly G1..G15, numbered contiguously and once
 //     each (a deleted or renumbered row fails);
-//  2. the closed set is exactly G1-G8 (strikethrough rows) and the open set is
-//     exactly G9-G15 (so flipping a gap to closed requires editing this table
-//     too, which is the point - the claim cannot change silently);
+//  2. the closed set is exactly G1-G8 plus G10-G11 (strikethrough rows) and the
+//     open set is exactly G9 and G12-G15 (so flipping a gap to closed requires
+//     editing this table too, which is the point - the claim cannot change
+//     silently);
 //  3. no closed row carries stale open-work language;
 //  4. the §5 scheduling note names every open gap;
 //  5. the §8 roadmap splits open work the way the register does: G9 in the
-//     vendor track, G10-G15 in the owned-unscheduled row.
+//     vendor track, G12-G15 in the owned-unscheduled row.
 //
 // When a gap genuinely closes, update the tables here and the doc together.
 
@@ -28,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,12 +38,12 @@ import (
 const amlSpecPath = "CBN_AML_COMPLIANCE_SPEC.md"
 
 // amlSpecClosed and amlSpecOpen are the canonical status of every register row.
-var amlSpecClosed = []int{1, 2, 3, 4, 5, 6, 7, 8}
-var amlSpecOpen = []int{9, 10, 11, 12, 13, 14, 15}
+var amlSpecClosed = []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11}
+var amlSpecOpen = []int{9, 12, 13, 14, 15}
 
 // amlSpecOwnedOpen is the subset of open gaps that is ours to build (G9 is the
 // vendor lane, so it appears in the vendor-track row instead).
-var amlSpecOwnedOpen = []int{10, 11, 12, 13, 14, 15}
+var amlSpecOwnedOpen = []int{12, 13, 14, 15}
 
 // amlSpecStaleOpenPhrases are sentences that mean "work remains" and therefore
 // must never appear in a closed register row. "the remaining sliver" is the
@@ -130,6 +132,7 @@ func TestAMLGapRegisterStatusMatchesSpec(t *testing.T) {
 	}
 
 	want := append(append([]int{}, amlSpecClosed...), amlSpecOpen...)
+	sort.Ints(want)
 	var got []int
 	for id := 1; id <= 200; id++ {
 		if _, ok := rows[id]; ok {

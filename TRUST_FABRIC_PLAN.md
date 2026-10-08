@@ -33,8 +33,9 @@ layer joins on.
   ninbvnportal adapter), `address_proof` + `edd_completed` for L3.
 - Sanctions/PEP screening with a blocking decision halting advancement and
   downgrading the profile; KYB corporate gates (CAC, TIN, UBO, location,
-  SCUML) for B0→B1; `approved_simulated` on the Tier-1 profile remains the
-  known C9 remediation item.
+  SCUML) for B0→B1; the Tier-1 profile carries no simulated-approval residue
+  — it is a self-declaration recorded as `customer_declaration` evidence
+  (C9 closed, migration 091).
 - Cross-channel identity carry-over: a customer approved on one channel is
   never re-onboarded on another; account linking merges channel rows into
   one surviving primary (`store_link_accounts.go`).
@@ -71,8 +72,9 @@ layer joins on.
   inside `ReserveAllowance` until a review clears. Alert outcomes are
   first-class data (false_positive/confirmed/undetermined) feeding the
   tuning loop (`TUNING_FP_PERCENT`, `TUNING_MIN_LABELLED`).
-- **Still unwired:** step-up authentication as a band action; screening
-  hold/interdiction at payment time (spec G2).
+- **Still unwired:** step-up authentication as a band action (spec G13).
+  Screening hold/interdiction at payment time ships against the simulated
+  vendor (spec G2 closed); the live vendor adapter is a vendor-lane item.
 
 ## Layer 4 — Network ("how is this entity connected to others?") — partial
 
@@ -88,16 +90,19 @@ layer joins on.
   allowances in one action. Ring membership feeds the risk score
   (`RiskEventRingMember`, capped at 70; zero without a confirmed hit).
 - **Still missing:** cross-institution/consortium federation (governance
-  project, out of scope below).## Layer 5 — Intelligence ("how does the system learn?") — partial
+  project, out of scope below).
+
+## Layer 5 — Intelligence ("how does the system learn?") — partial
 
 - **Outcome loop — exists (was missing).** Every terminal alert status
   records exactly one outcome row; per-rule false-positive counts feed the
   tuning suggestion; the 7-day FP rate drives tuning suggestions; risk
   events carry timestamps, decay, and cancellation provenance — so the
   labels a future model needs are already accumulating.
-- **KPIs — partial:** signal coverage and risk-band distribution are
-  computed on the admin dashboard; median alert-resolution time and the
-  doc's full KPI section are the remaining M5 items.
+- **KPIs — exists:** false-positive rate, median alert-resolution time,
+  signal coverage and the risk-band mix are computed from existing tables
+  and rendered on the admin dashboard (`metrics.html`); the doctrine's
+  fuller KPI section beyond these is deliberate scope (M5), not a gap.
 - **ML scoring — still missing,** deliberately: blocked on M4 outcome
   volume; deterministic `ScoreRisk` weights stay until labels exist.
 
@@ -160,7 +165,7 @@ a tuning suggestion in the queue.
   per-rule counts on the queue; integration tests cover the statuses and
   the suggestion path.
 
-### M5 — Intelligence: the doctrine's KPIs, computed — nearly done
+### M5 — Intelligence: the doctrine's KPIs, computed — done
 
 False-positive rate, **median alert-resolution time**
 (`store_trust_kpis.go` `MedianAlertResolutionMins`, rendered on the admin
@@ -168,9 +173,10 @@ dashboard), signal coverage, and risk-band distribution are all computed
 from existing tables, and the trust timeline ships on the KYC profile
 (alerts + device sightings + audit entries in one feed).
 
-- **Acceptance (remaining):** the dashboard's KPI numbers reconcile with
-  the underlying tables in an integration test; the doc's full KPI section
-  beyond these five is deliberate scope, not a gap.
+- **Acceptance (met):** the KPI aggregate reconciles with the underlying
+  tables in `store_trust_kpis_integration_test.go` and the dashboard
+  renders that same aggregate; the doc's full KPI section beyond these
+  five is deliberate scope, not a gap.
 
 ---
 
@@ -184,8 +190,11 @@ from existing tables, and the trust timeline ships on the KYC profile
   the screening-vendor decision (`AML_VENDOR_DECISION_RECORD.md`) lands.
 - **ML scoring.** Blocked on M4 outcome volume; deterministic
   `ScoreRisk` weights stay until labels exist.
-- **Screening hold/interdiction at payment time** (spec G2) and adverse
-  media/domestic lists (G9) — the register's remaining items, both in the
-  vendor-record lane — tracked in `CBN_AML_COMPLIANCE_SPEC.md` §5, not
-  duplicated here. G1, G3, G4, G5, G6, G8 and the G7 chain-alarm residual
-  (scheduled verification with alerting) are closed.
+- **Screening vendor lane** — the spec G2 live adapter and adverse
+  media/domestic lists (G9) — plus the open owned builds **G12–G15**
+  (document authenticity, fraud engine + step-up authentication,
+  geography/expected-activity inputs, AIF report type): tracked in
+  `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated here. Closed: G1–G8
+  (including the G7 chain-alarm residual — scheduled verification with
+  alerting), G10 liveness, G11 duplicate-identity, and the G2 seam itself,
+  which ships against the simulated vendor.

@@ -183,10 +183,10 @@ whole; the only code-side hook is the **programme evidence check** in §7.
 
 | Obligation (source) | Why §3 does not cover it | Gap | Evidence check that closes it |
 |---|---|---|---|
-| **Liveness / biometric face verification** (framework §2; CBN identity guidance) | The Tier-3 EDD step records a **self-attestation** ("I confirm I'm completing this verification myself in real time") and stamps `liveness: passed`; there is no provider call, so the control is a declaration, not a verification | **G10** | A `LivenessVerifier` port with a deterministic simulated default, wired into the individual EDD step so `EvEDDCompleted` is granted only on a provider pass, recorded with provider + reference like every other verification |
-| **Duplicate-identity detection** (multiple-identity risk; Reg. 2022) | Nothing enforces one person → one customer: no BVN/NIN uniqueness or overlap check exists, and the Trust Fabric links *phones, devices and bank accounts*, which is a different edge | **G11** | Identity-key uniqueness/overlap query; a second profile on the same BVN/NIN is refused and opens a review case |
+| **Liveness / biometric face verification** (framework §2; CBN identity guidance) | The Tier-3 EDD step *used to* record a self-attestation and stamp `liveness: passed` with no provider call — a declaration, not a verification | **G10 — closed** | A `LivenessVerifier` port with a deterministic simulated default is wired into both EDD tracks, so `EvEDDCompleted` is granted only on a provider pass, recorded with provider + reference like every other verification |
+| **Duplicate-identity detection** (multiple-identity risk; Reg. 2022) | *Used to be* unenforced: nothing bound one person → one customer across BVN/NIN, and the Trust Fabric links *phones, devices and bank accounts*, a different edge | **G11 — closed** | Identity-key uniqueness/overlap query (`identity_keys`, migration 090); a second profile on the same BVN/NIN is refused and opens a review case |
 | **ID/document authenticity** (CDD Reg 2023) | Documents are uploaded, OCR'd for NIN/BVN, and per-document **human**-reviewed; no tamper/authenticity provider and no face-to-document comparison | **G12** | An authenticity verdict per document from a provider port, surfaced beside the human decision in the reviewer panel and required before that document's evidence key counts |
-| **Fraud monitoring as a distinct engine** (framework §10; Baseline Std adjacency) | The monitor is AML-shaped — velocity, structuring, round amounts, counterparty risk. No account-takeover, authentication-anomaly or payment-fraud rules exist | **G13** | A fraud rule set with its own alert type and queue; device/network and authentication signals feed fraud, PEP/sanctions/adverse-media feed AML, and the two remain separable |
+| **Fraud monitoring as a distinct engine, plus step-up authentication as a band action** (framework §10; Baseline Std adjacency) | The monitor is AML-shaped — velocity, structuring, round amounts, counterparty risk. No account-takeover, authentication-anomaly or payment-fraud rules exist, and no band can yet demand re-authentication before a sensitive action | **G13** | A fraud rule set with its own alert type and queue (device/network and authentication signals feed fraud, PEP/sanctions/adverse-media feed AML, and the two remain separable), and a step-up re-authentication action the high band can require |
 | **Geography and expected-activity risk inputs** (risk-based approach, Reg. 2022) | The risk engine has no country/jurisdiction field and no expected-volume or expected-geography capture, so two of the inputs a risk-based approach names cannot move a band | **G14** | Country-of-residence/operation and an expected-volume band captured on the profile, a geography weight in the score, and the values visible on the customer record |
 | **AIF and other NFIU report types** (NFIU reporting instructions) | §3.4 generates STR, CTR and PEP only; no AIF or other NFIU form exists | **G15** | An AIF encoder beside the goAML writers, a bundle row, and a filing-clock class validated like STR/CTR |
 
@@ -233,10 +233,10 @@ action list.
 | **G7** | ~~**Audit tamper-evidence**~~ — **closed.** `audit_logs` carries a hash chain (`prev_hash` + row hash, migration 023) written on every `RecordAudit`; `VerifyAuditChain` recomputes and checks linkage, and `/admin` renders chain status. The same pattern covers the retention archive (025) and the ledger (030). Residual nuance, **closed** with the G8 wave: verification no longer waits for a page load — `VerifyAuditChainScheduled` re-verifies every `AUDIT_CHAIN_VERIFY_INTERVAL` (default 1h), records each run in `audit_chain_checks` (migration 084), and raises one alert in `audit_chain_alerts` on a clean→broken transition for reviewer disposition (acknowledged bug vs confirmed tampering) | Baseline Std "tamper-proof audit" | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
 | **G8** | ~~**Annual independent validation evidence**~~ — **closed.** `compliance_attestations` (migration 083) holds one row per validation cycle with scope, summary, findings, remediation, evidence URL, status (scheduled → in_progress → submitted) and completion date; the current cycle is ensured at startup; `/admin/compliance` renders the checklist with overdue highlighting and per-cycle record forms, every recording audited. The operator duty to *commission* the validation remains a people obligation (§3.6) — the code now stores and surfaces the evidence | Baseline Std; operator duty | `store_compliance.go`; `admin_compliance.go` + template; `store_compliance_integration_test.go` |
 | **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase: the pre-signature trial and the signature-day checklist live in `AML_VENDOR_EVIDENCE_PACK.md` (vendor record §7—§8) |
-| **G10** | **Liveness / face verification** — the Tier-3 EDD step is a self-attestation stamped `liveness: passed`; no provider call exists, so the control is a declaration rather than a verification | CBN identity guidance; framework §2 | See §3.7 — a `LivenessVerifier` port (simulated default) that `EvEDDCompleted` depends on |
-| **G11** | **Duplicate-identity detection** — nothing enforces one person → one customer across BVN/NIN | Multiple-identity risk; Reg. 2022 | See §3.7 — identity-key uniqueness/overlap check; a second profile is refused and opens a case |
+| **G10** | ~~**Liveness / face verification**~~ — **closed.** The Tier-3 EDD step no longer trusts the customer's own word: a `LivenessVerifier` port (deterministic simulated default, `LIVENESS_PROVIDER`) runs the check in both tracks, and `EvEDDCompleted` is recorded only on a provider pass — with the provider name, reference and confidence in the evidence row. A failed, absent or unconfigured verifier leaves the profile at Tier 2 with a friendly re-ask | CBN identity guidance; framework §2 | `ports.LivenessVerifier`; `providers/liveness`; chat `handleIndividualLiveness` and browser `tier3` step; `TestIndividualLivenessGate` |
+| **G11** | ~~**Duplicate-identity detection**~~ — **closed.** `identity_keys` (migration 090) owns each BVN/NIN under a non-reversible SHA-256 key; `RecordCustomerVerification` claims the identity in the same transaction that writes the evidence, so a second profile presenting an already-verified number is refused with `ErrIdentityInUse` (no evidence recorded) and the collision opens one idempotent `identity` review case. `IdentityKeyOwner` is the overlap query; the chat and browser tracks both surface a friendly re-ask | Multiple-identity risk; Reg. 2022 | `store_identity_keys.go`; migration 090; `TestIdentityKeyUniqueness`; the `identity` case type on `/admin/kyc` |
 | **G12** | **ID/document authenticity** — documents are OCR'd and human-reviewed, but never authenticity-checked | CDD Reg 2023 | See §3.7 — provider authenticity verdict per document, beside the human decision |
-| **G13** | **Fraud engine, distinct from the AML monitor** — no account-takeover, authentication-anomaly or payment-fraud rules | Baseline Std adjacency; framework §10 | See §3.7 — fraud rules with their own alert type and queue |
+| **G13** | **Fraud engine, distinct from the AML monitor, plus step-up authentication** — no account-takeover, authentication-anomaly or payment-fraud rules; the risk band cannot demand re-authentication before a sensitive action | Baseline Std adjacency; framework §10 | See §3.7 — fraud rules with their own alert type and queue, plus a step-up re-authentication band action |
 | **G14** | **Geography + expected-activity risk inputs** — no jurisdiction field, no expected-volume capture, no score weight for either | Risk-based approach; Reg. 2022 | See §3.7 — jurisdiction field + expected-volume band, with score weights |
 | **G15** | **AIF and other NFIU report types** — only STR, CTR and PEP are generated | NFIU reporting instructions | See §3.7 — encoder, bundle row, filing-clock class |
 
@@ -246,8 +246,11 @@ adapter drops in behind the same port when the screening contract is signed.
 Every gap this spec's §2 cut produces is closed: G1–G8. The G7
 residual (scheduled chain-verification alerting) shipped with the G8 wave —
 `audit_chain_checks`/`audit_chain_alerts` (migration 084) plus the
-`AUDIT_CHAIN_VERIFY_INTERVAL` worker. G9 is the vendor lane.
-**Open owned builds: G10** liveness · **G11** duplicate identity · **G12** document
+`AUDIT_CHAIN_VERIFY_INTERVAL` worker. G9 is the vendor lane, and the first two
+wider-perimeter gaps have closed too — **G10** liveness (a provider pass now
+gates `EvEDDCompleted`) and **G11** duplicate identity (`identity_keys`, the
+refusal and the review case).
+**Open owned builds: G12** document
 authenticity · **G13** fraud engine · **G14** geography/expected activity ·
 **G15** AIF — the wider-perimeter set in §3.7,
 unscheduled. Nothing in the register blocks another item; all are additive.
@@ -279,9 +282,13 @@ must be blocked, funds reported. The platform's screening lane produces
 decisions on customers; the vendor record's R6 question (domestic list
 coverage, NSC list) is what makes freezing real. Until the vendor is
 signed, the platform's honest position — recorded here so no one mistakes
-it for an implementation claim — is: **screening exists with a simulated
-default provider and the decision vocabulary and blocking behaviour are
-real; the list breadth and match quality are the vendor's to prove.**
+it for an implementation claim — is: **the decision vocabulary and
+blocking behaviour are real on both screening lanes. The payment lane
+runs a deterministic simulated screener (`PAYMENT_SCREENING_PROVIDER`,
+whose only accepted value is `simulated`); the customer lane has no
+simulated fallback — `SCREENING_PROVIDER=http` with `SCREENING_API_BASE`
+required at boot is the only adapter, and boot fails without it. The
+list breadth and match quality are the vendor's to prove.**
 
 ---
 
@@ -308,9 +315,9 @@ milestones align as follows:
 
 | Wave | Items | Lane |
 |---|---|---|
-| **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + scheduled verification) · G8 validation attestations | Owned builds — small commits |
+| **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + scheduled verification) · G8 validation attestations · G10 liveness gate · G11 duplicate-identity refusal | Owned builds — small commits |
 | **Vendor track** | G2 live screening adapter (port + seam already in place) · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
-| **Open (owned, unscheduled)** | **G10** liveness/face verification · **G11** duplicate-identity detection · **G12** document authenticity · **G13** fraud engine · **G14** geography + expected-activity risk inputs · **G15** AIF and other NFIU report types — the wider-perimeter set in §3.7 | Needs a wave; §3.7 names the evidence check that closes each |
+| **Open (owned, unscheduled)** | **G12** document authenticity · **G13** fraud engine · **G14** geography + expected-activity risk inputs · **G15** AIF and other NFIU report types — the wider-perimeter set in §3.7 | Needs a wave; §3.7 names the evidence check that closes each |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule
 activates), perimeter change (licence status), vendor signed (G2/G9

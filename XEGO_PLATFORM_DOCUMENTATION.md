@@ -1090,7 +1090,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 
 ### Workflow: Thrift group
 
-- **Trigger:** User completes individual profile (email OTP, then one chat message with legal name, DOB, gender, address, occupation — KYC `approved_simulated`), chooses **Create thrift**.
+- **Trigger:** User completes individual profile (email OTP, then one chat message with legal name, DOB, gender, address, occupation — Tier-1 declaration recorded as `customer_declaration` evidence), chooses **Create thrift**.
 - **Actors:** Creator, members, admin.
 - **Process:** 1) name, fixed contribution, weekly/monthly, 2–12 members; 2) share the group name - thrift groups are addressed by name, Xego issues no invite-code string (`JOIN <group name>`); 3) `START <group name>` (or `ACTIVATE <group name>`) + payout rotation order; 4) members `CONTRIBUTE <group name>` and pay via card/bank; 5) admin completes simulated payout; 6) next cycle until every member paid.
 - **Data:** thrift_groups, thrift_members, cycles, contributions, payouts; ledger 6100_thrift_pool.
@@ -1195,8 +1195,8 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | Disputes | Implemented | `store_refunds.go:334-382` |
 | Three-way reconciliation | Implemented | `store_reconcile.go`; `app/reconcile.go` |
 | KYC ladder L0–L3 (CBN tiers) | Implemented | migration 026; migration 073; README:183-203 |
-| Sanctions/PEP screening | Implemented (provider simulated) | README:188 |
-| NIN/BVN verification | Implemented (provider simulated) | README:190 |
+| Sanctions/PEP screening | Implemented (HTTP vendor, `SCREENING_API_BASE` required at boot; payment-time screener simulated) | README:198 |
+| NIN/BVN verification | Implemented (live ninbvnportal adapter) | README:200 |
 | ML/FT risk scoring | Implemented | `kyc.ScoreRisk`; migration 027 |
 | Transaction monitoring | Implemented | `kyc/monitor.go`; migration 028 |
 | STR/CTR/PEP reports | Implemented (file exports) | `app/reports.go` |
@@ -1278,7 +1278,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - **SMS is an MVP** — replies ride the webhook response; no outbound SMS sender (README:268).
 - **No AI/conversational intelligence** beyond rule-based flows.
 - **No live payout/refund rails** — simulated rails must be replaced for live money.
-- **Identity and screening are simulated** — live vendor plug-in required.
+- **Payment screening and liveness are simulated** — the customer screening lane posts to a live HTTP vendor (`SCREENING_API_BASE` required at boot) and NIN/BVN runs the live ninbvnportal adapter, but the payment-time screener and the liveness verifier are deterministic simulators until their vendors land (see `AML_VENDOR_DECISION_RECORD.md`).
 - **KYC demo path is fully documented** — CBN Tier 1 at onboarding, Tier 2 (photo ID + BVN + NIN), Tier 3 (address proof + simulated EDD). Standing virtual accounts are reserved from Tier 1 (migration 072).
 
 ### Engineering gaps (resolved)
@@ -1352,7 +1352,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 ### Partially Implemented
 
 - SMS channel (data commands only; reply-in-webhook MVP; no outbound sender)
-- Identity verification and sanctions/PEP screening (simulated providers; live vendor plug-in required)
+- Sanctions/PEP screening (customer lane live-configured over HTTP; payment-time adapter simulated) and liveness verification (simulated; live adapter pending)
 - Email delivery (SMTP optional; chat demo mode)
 - VTPass data fulfilment (sandbox only)
 - Ledger balance calculation (call sites established; SQL not line-verified)

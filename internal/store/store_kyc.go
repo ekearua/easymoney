@@ -24,7 +24,6 @@ type IndividualProfile struct {
 	Gender      string
 	Address     string
 	Occupation  string
-	KYCStatus   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -128,19 +127,18 @@ type TransactionAlert struct {
 func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, legalName string, dob time.Time, address, occupation, gender string) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,gender,kyc_status)
-		VALUES($1,$2,$3,$4,$5,$6,'approved_simulated')
+		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,gender)
+		VALUES($1,$2,$3,$4,$5,$6)
 		ON CONFLICT(user_id) DO UPDATE
 		SET legal_name=EXCLUDED.legal_name,
 			date_of_birth=EXCLUDED.date_of_birth,
 			address=EXCLUDED.address,
 			occupation=EXCLUDED.occupation,
 			gender=EXCLUDED.gender,
-			kyc_status='approved_simulated',
 			updated_at=now()
-		RETURNING user_id,legal_name,date_of_birth,address,occupation,gender,kyc_status,created_at,updated_at`,
+		RETURNING user_id,legal_name,date_of_birth,address,occupation,gender,created_at,updated_at`,
 		userID, strings.TrimSpace(legalName), dob, strings.TrimSpace(address), strings.TrimSpace(occupation), strings.TrimSpace(gender),
-	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.Gender, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Address, &profile.Occupation, &profile.Gender, &profile.CreatedAt, &profile.UpdatedAt)
 	if err != nil {
 		return IndividualProfile{}, err
 	}
@@ -150,8 +148,8 @@ func (s *Store) UpsertIndividualProfile(ctx context.Context, userID uuid.UUID, l
 	if _, err := s.RecordCustomerVerification(ctx, CustomerVerification{
 		UserID:           userID,
 		VerificationType: kyc.EvTier1BasicDetails,
-		Provider:         "simulated",
-		Result:           map[string]any{"status": "approved_simulated"},
+		Provider:         "customer_declaration",
+		Result:           map[string]any{"status": "recorded"},
 	}); err != nil {
 		return IndividualProfile{}, err
 	}
@@ -172,9 +170,9 @@ func (s *Store) HealIndividualAccountLevel(ctx context.Context, userID uuid.UUID
 func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id,legal_name,date_of_birth,gender,address,occupation,kyc_status,created_at,updated_at
+		SELECT user_id,legal_name,date_of_birth,gender,address,occupation,created_at,updated_at
 		FROM individual_profiles
-		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.KYCStatus, &profile.CreatedAt, &profile.UpdatedAt)
+		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.CreatedAt, &profile.UpdatedAt)
 	return profile, err
 }
 
@@ -502,7 +500,19 @@ func (s *Store) KYCProfilesDueForRescreen(ctx context.Context, cutoff time.Time,
 	return profiles, rows.Err()
 }
 
+// verificationInserter is the QueryRow façade shared by the pool and a
+// transaction, so the insert can run in either context.
+type verificationInserter interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // RecordCustomerVerification persists a verification outcome.
+//
+// G11 (spec §3.7): a BVN or NIN is an identity key. When one is supplied, the
+// identity is claimed inside the same transaction that writes the evidence
+// row, so a second profile presenting the same number is refused with
+// ErrIdentityInUse and no evidence left behind; the collision opens an
+// identity review case. A same-user re-verification is a no-op on the claim.
 func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerification) (CustomerVerification, error) {
 	if v.Status == "" {
 		v.Status = "completed"
@@ -514,7 +524,40 @@ func (s *Store) RecordCustomerVerification(ctx context.Context, v CustomerVerifi
 	if result == nil {
 		result = []byte("{}")
 	}
-	err := s.pool.QueryRow(ctx, `
+	key := ""
+	if IdentityKeySupported(v.VerificationType) {
+		key = IdentityKey(v.VerificationType, identityNumberFromResult(v.Result))
+	}
+	if key == "" {
+		return insertCustomerVerification(ctx, s.pool, v, result)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return CustomerVerification{}, fmt.Errorf("begin verification: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	owner, err := s.claimIdentityKey(ctx, tx, v.UserID, v.VerificationType, key)
+	if err != nil {
+		return CustomerVerification{}, err
+	}
+	if !owner {
+		if _, _, caseErr := s.EnsureIdentityConflictCase(ctx, v.UserID, v.VerificationType); caseErr != nil {
+			return CustomerVerification{}, fmt.Errorf("%w (review case: %v)", ErrIdentityInUse, caseErr)
+		}
+		return CustomerVerification{}, ErrIdentityInUse
+	}
+	saved, err := insertCustomerVerification(ctx, tx, v, result)
+	if err != nil {
+		return CustomerVerification{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return CustomerVerification{}, fmt.Errorf("commit verification: %w", err)
+	}
+	return saved, nil
+}
+
+func insertCustomerVerification(ctx context.Context, db verificationInserter, v CustomerVerification, result []byte) (CustomerVerification, error) {
+	err := db.QueryRow(ctx, `
 		INSERT INTO customer_verifications(user_id,verification_type,status,provider,provider_reference,result,verified_at,expires_at)
 		VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8)
 		RETURNING id, verified_at`,
