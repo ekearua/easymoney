@@ -1,1 +1,9 @@
 *.sh text eol=lf
+
+# Compliance documentation is checked in with LF line endings so the AML
+# spec, the vendor decision record and the vendor evidence pack stay
+# diff-stable across platforms; a Windows checkout would otherwise rewrite
+# whole files and bury real edits in whitespace noise.
+CBN_AML_COMPLIANCE_SPEC.md text eol=lf
+AML_VENDOR_DECISION_RECORD.md text eol=lf
+AML_VENDOR_EVIDENCE_PACK.md text eol=lf

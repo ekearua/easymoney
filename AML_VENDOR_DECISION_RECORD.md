@@ -240,6 +240,13 @@ The vendor slots in behind interfaces that already exist, so no caller changes:
 6. **Decisions stay ours** — `AdvanceKYCTier` continues to refuse on a strong match; the
    tuning loop (`TUNING_FP_PERCENT`, `TUNING_MIN_LABELLED`) extends to screening thresholds.
 
+**The signature checklist** is `AML_VENDOR_EVIDENCE_PACK.md`: it restates §7 as a
+pass/fail gate, lists the contract items (the DPA carrying NDPA cross-border
+terms per spec §6.1, list-version provenance, the bulk re-screen export clause),
+and enumerates the code-side work that flips spec gaps **G2** and **G9** to
+closed. A gap flips only when its artifact exists, not when the contract is
+signed.
+
 ---
 
 ## 9. Consequences, risks, open questions

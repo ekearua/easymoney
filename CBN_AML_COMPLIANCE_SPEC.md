@@ -92,6 +92,8 @@ compliance file is complete:
 | SCUML registration | Operator | Outside this repo |
 | licences/registration with CBN (EMI/OFI status) | Operator | Commercial track; §8 gate |
 
+Obligations that fall outside this cut are collected in §3.7 (the G10–G15 set), so §3 can map controls to the declared perimeter without claiming more than it covers.
+
 ---
 
 ## 3. Obligation → control mapping (the core of this spec)
@@ -175,6 +177,21 @@ whole; the only code-side hook is the **programme evidence check** in §7.
 
 ---
 
+## 3.7 Wider-perimeter obligations (the G10–G15 set)
+
+§2 draws the perimeter this spec's §3 mapping is written to. A review of the supplied *Xego KYC & AML Compliance Services Framework* names six further obligations that are real for a compliance programme but sit outside that perimeter's control map. They are registered here as G10–G15 so the gap list is complete without pretending §3 already covers them.
+
+| Obligation (source) | Why §3 does not cover it | Gap | Evidence check that closes it |
+|---|---|---|---|
+| **Liveness / biometric face verification** (framework §2; CBN identity guidance) | The Tier-3 EDD step records a **self-attestation** ("I confirm I'm completing this verification myself in real time") and stamps `liveness: passed`; there is no provider call, so the control is a declaration, not a verification | **G10** | A `LivenessVerifier` port with a deterministic simulated default, wired into the individual EDD step so `EvEDDCompleted` is granted only on a provider pass, recorded with provider + reference like every other verification |
+| **Duplicate-identity detection** (multiple-identity risk; Reg. 2022) | Nothing enforces one person → one customer: no BVN/NIN uniqueness or overlap check exists, and the Trust Fabric links *phones, devices and bank accounts*, which is a different edge | **G11** | Identity-key uniqueness/overlap query; a second profile on the same BVN/NIN is refused and opens a review case |
+| **ID/document authenticity** (CDD Reg 2023) | Documents are uploaded, OCR'd for NIN/BVN, and per-document **human**-reviewed; no tamper/authenticity provider and no face-to-document comparison | **G12** | An authenticity verdict per document from a provider port, surfaced beside the human decision in the reviewer panel and required before that document's evidence key counts |
+| **Fraud monitoring as a distinct engine** (framework §10; Baseline Std adjacency) | The monitor is AML-shaped — velocity, structuring, round amounts, counterparty risk. No account-takeover, authentication-anomaly or payment-fraud rules exist | **G13** | A fraud rule set with its own alert type and queue; device/network and authentication signals feed fraud, PEP/sanctions/adverse-media feed AML, and the two remain separable |
+| **Geography and expected-activity risk inputs** (risk-based approach, Reg. 2022) | The risk engine has no country/jurisdiction field and no expected-volume or expected-geography capture, so two of the inputs a risk-based approach names cannot move a band | **G14** | Country-of-residence/operation and an expected-volume band captured on the profile, a geography weight in the score, and the values visible on the customer record |
+| **AIF and other NFIU report types** (NFIU reporting instructions) | §3.4 generates STR, CTR and PEP only; no AIF or other NFIU form exists | **G15** | An AIF encoder beside the goAML writers, a bundle row, and a filing-clock class validated like STR/CTR |
+
+---
+
 ## 4. Configuration surface (the compliance knobs, inventoried)
 
 So a reviewer can audit the control parameters without reading code:
@@ -213,18 +230,27 @@ action list.
 | **G4** | ~~**goAML XML filing format**~~ — **closed.** `STRgoAML`/`CTRgoAML`/`PEPgoAML` emit the goAML XML envelope (`goaml/4.0-nfiu-ng`) beside the CSV/JSON writers, with `ValidateGoAML` checking element counts and required fields before download; `/admin/reports` serves the XML beside the existing formats | NFIU files via goAML; CSV rows do not file | `reports_goaml.go`; `reports_goaml_test.go`; `/admin/reports` links |
 | **G5** | ~~**Filing-clock tracking**~~ — **closed.** `report_filing_clocks` (migration 082) holds one idempotent clock per report reference: STR due 24h from the alert, CTR due the 7th of the following month (`FilingDeadline`); bundle generation syncs and resolution completes them; `/admin/reports` shows due clocks with overdue counts | NFIU timelines; missed clocks are reportable failures | `store_reports_clocks.go`; `internal/app/reports.go` sync; clocks panel in `admin_reports.html`; `store_reports_clocks_integration_test.go` |
 | **G6** | ~~**AML 5-year retention floor**~~ — **closed.** `AML_RECORD_RETENTION` (default and minimum 5y, `0` = dev escape) clamps every AML-scope purge class — payments, invoices, thrift, audit, and merchant registrations (previously hard-deleted unarchived after the 90-day operational period); account records of never-transacted users are clamped to the same floor; the archive writer is re-run-safe (`appendArchiveGuarded`); config rejects sub-5y values and a `RETENTION_PERIOD` above the floor | MLPPA/Reg. 2022 | `store_retention.go` (`amlCutoff`, `archiveAndPurgeMerchantRegistrations`); `config.go` validation; `store_amlretention_integration_test.go` |
-| **G7** | ~~**Audit tamper-evidence**~~ — **closed.** `audit_logs` carries a hash chain (`prev_hash` + row hash, migration 023) written on every `RecordAudit`; `VerifyAuditChain` recomputes and checks linkage, and `/admin` renders chain status. The same pattern covers the retention archive (025) and the ledger (030). Residual nuance, tracked as a hardening item rather than a gap: verification runs on admin page load — a scheduled job that alerts on a broken chain is the remaining sliver | Baseline Std "tamper-proof audit" | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
+| **G7** | ~~**Audit tamper-evidence**~~ — **closed.** `audit_logs` carries a hash chain (`prev_hash` + row hash, migration 023) written on every `RecordAudit`; `VerifyAuditChain` recomputes and checks linkage, and `/admin` renders chain status. The same pattern covers the retention archive (025) and the ledger (030). Residual nuance, **closed** with the G8 wave: verification no longer waits for a page load — `VerifyAuditChainScheduled` re-verifies every `AUDIT_CHAIN_VERIFY_INTERVAL` (default 1h), records each run in `audit_chain_checks` (migration 084), and raises one alert in `audit_chain_alerts` on a clean→broken transition for reviewer disposition (acknowledged bug vs confirmed tampering) | Baseline Std "tamper-proof audit" | `store_admin.go` (`RecordAudit`, `VerifyAuditChain`); migrations 023/025/030 |
 | **G8** | ~~**Annual independent validation evidence**~~ — **closed.** `compliance_attestations` (migration 083) holds one row per validation cycle with scope, summary, findings, remediation, evidence URL, status (scheduled → in_progress → submitted) and completion date; the current cycle is ensured at startup; `/admin/compliance` renders the checklist with overdue highlighting and per-cycle record forms, every recording audited. The operator duty to *commission* the validation remains a people obligation (§3.6) — the code now stores and surfaces the evidence | Baseline Std; operator duty | `store_compliance.go`; `admin_compliance.go` + template; `store_compliance_integration_test.go` |
-| **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase — tracked in the vendor record §7, not re-specified here |
+| **G9** | **Adverse-media + domestic-list screening** | Baseline Std names both; vendor lane | Closes with the vendor purchase: the pre-signature trial and the signature-day checklist live in `AML_VENDOR_EVIDENCE_PACK.md` (vendor record §7—§8) |
+| **G10** | **Liveness / face verification** — the Tier-3 EDD step is a self-attestation stamped `liveness: passed`; no provider call exists, so the control is a declaration rather than a verification | CBN identity guidance; framework §2 | See §3.7 — a `LivenessVerifier` port (simulated default) that `EvEDDCompleted` depends on |
+| **G11** | **Duplicate-identity detection** — nothing enforces one person → one customer across BVN/NIN | Multiple-identity risk; Reg. 2022 | See §3.7 — identity-key uniqueness/overlap check; a second profile is refused and opens a case |
+| **G12** | **ID/document authenticity** — documents are OCR'd and human-reviewed, but never authenticity-checked | CDD Reg 2023 | See §3.7 — provider authenticity verdict per document, beside the human decision |
+| **G13** | **Fraud engine, distinct from the AML monitor** — no account-takeover, authentication-anomaly or payment-fraud rules | Baseline Std adjacency; framework §10 | See §3.7 — fraud rules with their own alert type and queue |
+| **G14** | **Geography + expected-activity risk inputs** — no jurisdiction field, no expected-volume capture, no score weight for either | Risk-based approach; Reg. 2022 | See §3.7 — jurisdiction field + expected-volume band, with score weights |
+| **G15** | **AIF and other NFIU report types** — only STR, CTR and PEP are generated | NFIU reporting instructions | See §3.7 — encoder, bundle row, filing-clock class |
 
 **Scheduling note:** G9 resolves in the vendor-record lane (§8 of the
 vendor record); G2's seam ships against the simulated vendor and its live
 adapter drops in behind the same port when the screening contract is signed.
-Every owned build is closed: G1–G8. The G7 residual
-(scheduled chain-verification alerting) shipped with the G8 wave —
+Every gap this spec's §2 cut produces is closed: G1–G8. The G7
+residual (scheduled chain-verification alerting) shipped with the G8 wave —
 `audit_chain_checks`/`audit_chain_alerts` (migration 084) plus the
-`AUDIT_CHAIN_VERIFY_INTERVAL` worker. Nothing in the register blocks
-another item; all are additive.
+`AUDIT_CHAIN_VERIFY_INTERVAL` worker. G9 is the vendor lane.
+**Open owned builds: G10** liveness · **G11** duplicate identity · **G12** document
+authenticity · **G13** fraud engine · **G14** geography/expected activity ·
+**G15** AIF — the wider-perimeter set in §3.7,
+unscheduled. Nothing in the register blocks another item; all are additive.
 
 ---
 
@@ -282,9 +308,9 @@ milestones align as follows:
 
 | Wave | Items | Lane |
 |---|---|---|
-| **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + verification) | Owned builds — small commits |
+| **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + scheduled verification) · G8 validation attestations | Owned builds — small commits |
 | **Vendor track** | G2 live screening adapter (port + seam already in place) · G9 adverse media/domestic lists | Vendor record §7 trial → §8 integration |
-| **Open** | — every owned build (G1, G3–G8) and the G7 chain-alarm residual have shipped; the register's open items resolve in the vendor-record lane | Owned builds complete |
+| **Open (owned, unscheduled)** | **G10** liveness/face verification · **G11** duplicate-identity detection · **G12** document authenticity · **G13** fraud engine · **G14** geography + expected-activity risk inputs · **G15** AIF and other NFIU report types — the wider-perimeter set in §3.7 | Needs a wave; §3.7 names the evidence check that closes each |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule
 activates), perimeter change (licence status), vendor signed (G2/G9
@@ -307,6 +333,9 @@ rule).
   platform's non-cash lane anchors its own boundary in
   `REPORT_CTR_THRESHOLD_KOBO` rather than the cash thresholds).
 - NDPA 2023 and GAID; SCUML (EFCC) registration regime.
+- Wider-perimeter obligations (G10–G15): the *Xego KYC & AML Compliance
+  Services Framework* requirements document supplied for review (October 2026).
+  Where it and this spec disagree, this spec governs.
 - Vendor capability claims: `AML_VENDOR_DECISION_RECORD.md` §10 caveats
   apply unchanged here.
 
