@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,11 @@ import (
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
+
+// ErrStepUpRequired is returned by RequestPayout when the owning merchant's
+// risk band triggers step-up re-auth and no fresh grant is present. Callers
+// surface it to the merchant, who completes a second factor and retries.
+var ErrStepUpRequired = errors.New("step-up authentication required")
 
 // SettlementService orchestrates the settlement lifecycle for merchants and
 // the dispatch worker.
@@ -34,6 +40,11 @@ type SettlementService struct {
 	payoutDailyCount   int
 
 	riskHighSingleLimitKobo int64
+
+	// Step-up re-auth (G13): when enabled, a merchant-initiated payout whose
+	// owner's risk band equals stepUpBand requires a fresh grant.
+	stepUpEnabled bool
+	stepUpBand    string
 
 	// G2: payment-time counterparty screening. Nil disables the gate (only
 	// acceptable in tests); production wiring always supplies one.
@@ -74,6 +85,16 @@ func WithPayoutLimits(minKobo, maxKobo, dailyCapKobo int64, dailyCount int) Sett
 func WithRiskStepUp(singleLimitKobo int64) SettlementOption {
 	return func(s *SettlementService) {
 		s.riskHighSingleLimitKobo = singleLimitKobo
+	}
+}
+
+// WithStepUpReauth enables the G13 step-up gate: a payout request whose owner's
+// risk band equals band is refused with ErrStepUpRequired unless a fresh
+// step-up grant is present. An empty band defaults to "high".
+func WithStepUpReauth(enabled bool, band string) SettlementOption {
+	return func(s *SettlementService) {
+		s.stepUpEnabled = enabled
+		s.stepUpBand = strings.TrimSpace(band)
 	}
 }
 
@@ -131,6 +152,37 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 			return store.Payout{}, err
 		}
 	}
+	// M3 decision layer: the business ladder carries no risk band of its own,
+	// so the step-up reads the primary owner's individual band — the same
+	// attribution the transaction monitor uses for payouts. A high-risk owner
+	// caps the payout single ceiling and (G13) requires a fresh second factor.
+	riskBand := ""
+	if s.riskHighSingleLimitKobo > 0 || s.stepUpEnabled {
+		if ownerID, err := s.store.MerchantOwnerID(ctx, batch.MerchantID); err == nil && ownerID != uuid.Nil {
+			if profile, err := s.store.KYCProfileByUser(ctx, ownerID); err == nil {
+				riskBand = profile.RiskBand
+			}
+		}
+	}
+	// G13 step-up: a merchant payout in the trigger band is refused before any
+	// payout row is created unless a fresh grant authorises it. Worker
+	// dispatches bypass this path, so a queued payout never stalls here.
+	if s.stepUpEnabled {
+		band := s.stepUpBand
+		if band == "" {
+			band = "high"
+		}
+		if riskBand == band {
+			granted, err := s.store.HasStepUpGrant(ctx, store.StepUpScopeMerchant, batch.MerchantID,
+				store.StepUpActionMerchantPayout, time.Now().UTC())
+			if err != nil {
+				return store.Payout{}, err
+			}
+			if !granted {
+				return store.Payout{}, ErrStepUpRequired
+			}
+		}
+	}
 	payout, err := s.store.CreatePayout(ctx, batch.ID, destination.ID)
 	if err != nil {
 		return store.Payout{}, err
@@ -161,18 +213,6 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 	kybProfile, err := s.store.EnsureKYBProfile(ctx, batch.MerchantID)
 	if err != nil {
 		return store.Payout{}, err
-	}
-	// M3 decision layer: the business ladder carries no risk band of its own,
-	// so the step-up reads the primary owner's individual band — the same
-	// attribution the transaction monitor uses for payouts. A high-risk owner
-	// caps the payout single ceiling until their review clears.
-	riskBand := ""
-	if s.riskHighSingleLimitKobo > 0 {
-		if ownerID, err := s.store.MerchantOwnerID(ctx, batch.MerchantID); err == nil && ownerID != uuid.Nil {
-			if profile, err := s.store.KYCProfileByUser(ctx, ownerID); err == nil {
-				riskBand = profile.RiskBand
-			}
-		}
 	}
 	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
 		AccountType:             store.AccountBusiness,

@@ -34,6 +34,12 @@ type kybDocumentView struct {
 	Note         string
 	ReviewedAt   string
 	Verification string // "<provider> · <status>: <message>" or ""
+
+	// Authenticity is the G12 provider verdict on the document itself
+	// ("<provider> · <status>[ · face matched]: <message>") or "". Unlike
+	// Verification it is a precondition: the reviewer's "verified" counts as
+	// evidence only when this says genuine.
+	Authenticity string
 }
 
 // kybAdminRow is the per-merchant view for the KYB console.

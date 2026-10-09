@@ -182,6 +182,17 @@ type Config struct {
 	LocationTimeout           time.Duration
 	LocationMaxDistanceM      float64
 
+	// Document authenticity (G12): tamper detection and face-to-document
+	// comparison over a submitted KYB/KYC reading. Like the registry and
+	// location verifiers this defaults to its deterministic simulator, so the
+	// platform boots without a document-analysis vendor; set
+	// DOC_AUTH_PROVIDER=http to use a live endpoint. A reviewer-verified
+	// document counts as evidence only when this check returns "genuine".
+	DocAuthenticityProvider string
+	DocAuthenticityAPIBase  string
+	DocAuthenticityAPIKey   string
+	DocAuthenticityTimeout  time.Duration
+
 	// Bulk payments (location-aware disbursements).
 	BulkLocationTTL       time.Duration
 	BulkRadiusM           int
@@ -229,6 +240,26 @@ type Config struct {
 	MonitorRoundAmountStep    int64
 	MonitorRoundAmountMin     int64
 	MonitorHighRiskCategories []string
+
+	// Fraud engine (G13) knobs. A zero limit disables its rule; the window is
+	// the lookback shared by the threshold rules. NewDestinationWindow is how
+	// recently a payout destination account must have been created to count as
+	// new, and NewDestinationMinKobo is the smallest such payout that flags.
+	FraudWindow                time.Duration
+	FraudFailedAttemptLimit    int
+	FraudPaymentVelocityLimit  int
+	FraudDisputeVelocityLimit  int
+	FraudRefundVelocityLimit   int
+	FraudPayoutVelocityLimit   int
+	FraudNewDestinationWindow  time.Duration
+	FraudNewDestinationMinKobo int64
+
+	// Step-up re-auth (G13): when enabled, a merchant-initiated payout whose
+	// owning merchant's risk band is StepUpBand requires a fresh MFA grant
+	// within StepUpTTL. Worker dispatches are never gated.
+	StepUpEnabled bool
+	StepUpTTL     time.Duration
+	StepUpBand    string
 
 	// ReportCTRThresholdKobo is the amount above which a succeeded payment is
 	// included in the currency transaction report (C15). Defaults to the
@@ -472,6 +503,10 @@ func Load() (Config, error) {
 		LocationAPIKey:                  os.Getenv("LOCATION_API_KEY"),
 		LocationTimeout:                 envDuration("LOCATION_TIMEOUT", 30*time.Second),
 		LocationMaxDistanceM:            float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
+		DocAuthenticityProvider:         strings.ToLower(env("DOC_AUTH_PROVIDER", "simulated")),
+		DocAuthenticityAPIBase:          strings.TrimRight(os.Getenv("DOC_AUTH_API_BASE"), "/"),
+		DocAuthenticityAPIKey:           os.Getenv("DOC_AUTH_API_KEY"),
+		DocAuthenticityTimeout:          envDuration("DOC_AUTH_TIMEOUT", 30*time.Second),
 
 		BulkLocationTTL:       envDuration("BULK_LOCATION_TTL", 5*time.Minute),
 		BulkRadiusM:           int(EnvInt64("BULK_RADIUS_M", 50)),
@@ -506,21 +541,32 @@ func Load() (Config, error) {
 		// G6 (AML spec §5): hard-deleting AML-scope records younger than
 		// five years violates the MLPPA record-keeping floor, so the
 		// retention clamp refuses any configured period below it.
-		AMLRecordRetention:       envDuration("AML_RECORD_RETENTION", 5*365*24*time.Hour),
-		AuditChainVerifyInterval: envDuration("AUDIT_CHAIN_VERIFY_INTERVAL", time.Hour),
-		BackupBaseStaleAfter:     envDuration("BACKUP_BASE_STALE_AFTER", 26*time.Hour),
-		WALShipStaleAfter:        envDuration("WAL_SHIP_STALE_AFTER", 45*time.Minute),
-		RestoreDrillStaleAfter:   envDuration("RESTORE_DRILL_STALE_AFTER", 8*24*time.Hour),
-		KYCRescreenPeriod:        envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
-		MonitorVelocityWindow:    envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
-		MonitorVelocityLimit:     int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
-		MonitorStructuringWindow: envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
-		MonitorStructuringCount:  int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
-		MonitorStructuringFloor:  EnvInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
-		MonitorStructuringCeil:   EnvInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
-		MonitorRoundAmountStep:   EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
-		MonitorRoundAmountMin:    EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
-		ReportCTRThresholdKobo:   EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
+		AMLRecordRetention:         envDuration("AML_RECORD_RETENTION", 5*365*24*time.Hour),
+		AuditChainVerifyInterval:   envDuration("AUDIT_CHAIN_VERIFY_INTERVAL", time.Hour),
+		BackupBaseStaleAfter:       envDuration("BACKUP_BASE_STALE_AFTER", 26*time.Hour),
+		WALShipStaleAfter:          envDuration("WAL_SHIP_STALE_AFTER", 45*time.Minute),
+		RestoreDrillStaleAfter:     envDuration("RESTORE_DRILL_STALE_AFTER", 8*24*time.Hour),
+		KYCRescreenPeriod:          envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
+		MonitorVelocityWindow:      envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
+		MonitorVelocityLimit:       int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
+		MonitorStructuringWindow:   envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
+		MonitorStructuringCount:    int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
+		MonitorStructuringFloor:    EnvInt64("MONITOR_STRUCTURING_FLOOR_KOBO", 4_000_000),
+		MonitorStructuringCeil:     EnvInt64("MONITOR_STRUCTURING_CEIL_KOBO", 10_000_000),
+		MonitorRoundAmountStep:     EnvInt64("MONITOR_ROUND_AMOUNT_STEP_KOBO", 1_000_000),
+		MonitorRoundAmountMin:      EnvInt64("MONITOR_ROUND_AMOUNT_MIN_KOBO", 1_000_000),
+		ReportCTRThresholdKobo:     EnvInt64("REPORT_CTR_THRESHOLD_KOBO", 1_000_000_000),
+		FraudWindow:                envDuration("FRAUD_WINDOW", 24*time.Hour),
+		FraudFailedAttemptLimit:    int(EnvInt64("FRAUD_FAILED_ATTEMPT_LIMIT", 5)),
+		FraudPaymentVelocityLimit:  int(EnvInt64("FRAUD_PAYMENT_VELOCITY_LIMIT", 10)),
+		FraudDisputeVelocityLimit:  int(EnvInt64("FRAUD_DISPUTE_VELOCITY_LIMIT", 3)),
+		FraudRefundVelocityLimit:   int(EnvInt64("FRAUD_REFUND_VELOCITY_LIMIT", 5)),
+		FraudPayoutVelocityLimit:   int(EnvInt64("FRAUD_PAYOUT_VELOCITY_LIMIT", 5)),
+		FraudNewDestinationWindow:  envDuration("FRAUD_NEW_DESTINATION_WINDOW", 24*time.Hour),
+		FraudNewDestinationMinKobo: EnvInt64("FRAUD_NEW_DESTINATION_MIN_KOBO", 100_000),
+		StepUpEnabled:              envBool("STEP_UP_ENABLED", false),
+		StepUpTTL:                  envDuration("STEP_UP_TTL", 10*time.Minute),
+		StepUpBand:                 env("STEP_UP_BAND", "high"),
 		// M3 Trust Fabric step-up: a high-risk-band profile has its
 		// single-transaction allowance capped at this ceiling until the
 		// review clears. Zero disables the step-up.
@@ -665,6 +711,11 @@ func Load() (Config, error) {
 	case "", "simulated", "http":
 	default:
 		return Config{}, fmt.Errorf("LOCATION_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.LocationProvider)
+	}
+	switch cfg.DocAuthenticityProvider {
+	case "", "simulated", "http":
+	default:
+		return Config{}, fmt.Errorf("DOC_AUTH_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.DocAuthenticityProvider)
 	}
 	switch cfg.SMSProvider {
 	case "", "webhook", "http":
@@ -873,6 +924,9 @@ func validateProductionRails(cfg Config) error {
 	}
 	if cfg.LocationProvider == "http" && cfg.LocationAPIBase == "" {
 		return errors.New("LOCATION_API_BASE is required when LOCATION_PROVIDER=http")
+	}
+	if cfg.DocAuthenticityProvider == "http" && cfg.DocAuthenticityAPIBase == "" {
+		return errors.New("DOC_AUTH_API_BASE is required when DOC_AUTH_PROVIDER=http")
 	}
 	if strings.EqualFold(cfg.PayoutProvider, "interswitch") || strings.EqualFold(cfg.RefundProvider, "interswitch") {
 		if cfg.InterswitchTransferBaseURL == "" {

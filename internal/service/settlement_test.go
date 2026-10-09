@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -58,6 +59,13 @@ func TestSettlementServiceDispatch(t *testing.T) {
 	}
 	for _, key := range store.DeriveKYBEvidence(corporateDocs) {
 		if _, err := repository.ReviewKYBDocument(ctx, merchant.ID, key, store.KYBDocumentVerified, "compliance@xego.test", "seeded for test"); err != nil {
+			t.Fatal(err)
+		}
+		// G12: the corporate hard gate counts a verified document only when the
+		// authenticity provider judged it genuine.
+		if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, key, store.KYBDocumentAuthenticity{
+			Status: ports.AuthenticityGenuine, Provider: "simulated",
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}

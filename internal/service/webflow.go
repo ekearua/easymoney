@@ -325,6 +325,11 @@ func (s *ConversationService) VerifyIndividualID(ctx context.Context, user store
 			ProviderRef: result.ProviderRef,
 			Result:      map[string]any{"id_type": idType, "id_number": idNumber, "match_name": result.MatchName, "match_dob": result.MatchDOB},
 		}); err != nil {
+			// G11: a BVN/NIN already verified on another profile is refused
+			// (no evidence recorded) and the collision opens a review case.
+			if errors.Is(err, store.ErrIdentityInUse) {
+				return "", errors.New("This " + strings.ToUpper(idType) + " is already linked to another Faya profile. Our compliance team will review it; contact support if you believe this is a mistake.")
+			}
 			return "", err
 		}
 		return fmt.Sprintf("Your %s is verified.", strings.ToUpper(idType)), nil

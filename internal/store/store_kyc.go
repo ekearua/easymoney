@@ -751,8 +751,9 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 	return profile, nil
 }
 
-// ListTransactionAlerts returns transaction-monitoring alerts newest first,
-// optionally filtered to a status.
+// ListTransactionAlerts returns AML transaction-monitoring alerts newest
+// first, optionally filtered to a status. The AML lane is the default, so the
+// fraud lane (G13) never bleeds into the AML queue.
 func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit int) ([]TransactionAlert, error) {
 	return s.ListTransactionAlertsFiltered(ctx, status, "", limit)
 }
@@ -760,28 +761,35 @@ func (s *Store) ListTransactionAlerts(ctx context.Context, status string, limit 
 // ListTransactionAlertsFiltered additionally filters to one monitored rail
 // (payment, topup, standing_credit, refund, payout) by matching the alert's
 // recorded rail tags, so an investigator can triage by the money rail that
-// fired. An empty rail keeps every alert.
+// fired. An empty rail keeps every alert. It lists the AML lane only.
 func (s *Store) ListTransactionAlertsFiltered(ctx context.Context, status, rail string, limit int) ([]TransactionAlert, error) {
+	return s.listTransactionAlerts(ctx, "aml", status, rail, limit)
+}
+
+// ListFraudAlerts lists the fraud lane (G13) newest first, with the same
+// status and rail filters as the AML queue but a separate rule family.
+func (s *Store) ListFraudAlerts(ctx context.Context, status, rail string, limit int) ([]TransactionAlert, error) {
+	return s.listTransactionAlerts(ctx, "fraud", status, rail, limit)
+}
+
+// listTransactionAlerts is the shared lane-scoped query behind the AML and
+// fraud queues.
+func (s *Store) listTransactionAlerts(ctx context.Context, lane, status, rail string, limit int) ([]TransactionAlert, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
 	query := `
 		SELECT id, user_id, payment_id, rule, severity, COALESCE(details::text,'{}'),
 		       status, COALESCE(reviewer_email,''), reviewed_at, created_at
-		FROM transaction_alerts`
-	args := []any{}
+		FROM transaction_alerts WHERE lane=$1`
+	args := []any{lane}
 	if status != "" {
-		query += ` WHERE status=$1`
 		args = append(args, status)
+		query += ` AND status=$` + strconv.Itoa(len(args))
 	}
 	if rail != "" {
 		args = append(args, rail)
-		if status == "" {
-			query += ` WHERE`
-		} else {
-			query += ` AND`
-		}
-		query += ` details->'rails' ? $` + strconv.Itoa(len(args))
+		query += ` AND details->'rails' ? $` + strconv.Itoa(len(args))
 	}
 	query += ` ORDER BY created_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
 	args = append(args, limit)

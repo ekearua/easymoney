@@ -7,14 +7,16 @@ import (
 	"github.com/google/uuid"
 
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 )
 
 // seedVerifiedCorporateDocuments records a complete corporate document set and
 // has a reviewer verify each key in it, returning the five evidence keys.
 //
 // The B0 -> B1 hard gate accepts a key only when the document behind it carries
-// a reviewer disposition, so any test that climbs past B0 has to seed both
-// halves: the documents and the reviews.
+// a reviewer disposition AND a genuine authenticity verdict (spec G12), so any
+// test that climbs past B0 has to seed all three: the documents, the reviews,
+// and the authenticity verdicts.
 func seedVerifiedCorporateDocuments(t *testing.T, ctx context.Context, repository *Store, merchantID uuid.UUID) []string {
 	t.Helper()
 	docs := KYBDocuments{
@@ -37,6 +39,14 @@ func seedVerifiedCorporateDocuments(t *testing.T, ctx context.Context, repositor
 	for _, key := range evidence {
 		if _, err := repository.ReviewKYBDocument(ctx, merchantID, key, KYBDocumentVerified, "compliance@xego.test", "seeded for test"); err != nil {
 			t.Fatalf("verify kyb document %s: %v", key, err)
+		}
+		if err := repository.SaveKYBDocumentAuthenticity(ctx, merchantID, key, KYBDocumentAuthenticity{
+			Status:      ports.AuthenticityGenuine,
+			Provider:    "simulated",
+			ProviderRef: "seed-" + key,
+			Confidence:  0.97,
+		}); err != nil {
+			t.Fatalf("seed kyb document authenticity %s: %v", key, err)
 		}
 	}
 	for _, key := range BusinessEvidenceRequiredFor(kyc.TierB1) {

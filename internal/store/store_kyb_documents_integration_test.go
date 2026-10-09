@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 )
 
 // TestKYBDocumentDerivationReviewAndGate walks the whole corporate-evidence
@@ -41,12 +42,27 @@ func TestKYBDocumentDerivationReviewAndGate(t *testing.T) {
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil); err == nil {
 		t.Fatal("B0->B1 with unverified documents must fail")
 	}
-	// Verify one key: it becomes evidence and the other stays a claim.
+	// A reviewer disposition alone is not evidence under G12: the document must
+	// also be judged genuine by the authenticity provider.
 	after, err := repository.ReviewKYBDocument(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentVerified, "rev@xego.test", "matches the register")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := VerifiedKYBEvidence(after); len(got) != 1 || got[0] != kyc.EvCACVerified {
+	if got := VerifiedKYBEvidence(after); len(got) != 0 {
+		t.Fatalf("a review without an authenticity verdict must not be evidence, got %v", got)
+	}
+	// Record the authenticity verdict: now the key counts and the other stays a
+	// claim.
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityGenuine, Provider: "simulated", ProviderRef: "SIM-DOCAUTH-CAC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterAuth, err := repository.KYBDocumentsByMerchant(ctx, merchant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := VerifiedKYBEvidence(afterAuth); len(got) != 1 || got[0] != kyc.EvCACVerified {
 		t.Fatalf("verified = %v, want just %s", got, kyc.EvCACVerified)
 	}
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil); err == nil {
@@ -65,6 +81,9 @@ func TestKYBDocumentDerivationReviewAndGate(t *testing.T) {
 	}
 	if len(reloaded.Reviews) != 0 {
 		t.Fatalf("replacing a document must clear its review, got %+v", reloaded.Reviews)
+	}
+	if len(reloaded.Authenticity) != 0 {
+		t.Fatalf("replacing a document must clear its authenticity verdict, got %+v", reloaded.Authenticity)
 	}
 	if got := VerifiedKYBEvidence(reloaded); len(got) != 0 {
 		t.Fatalf("verified after replacement = %v, want nothing", got)
@@ -99,6 +118,11 @@ func TestKYBIdenticalResubmissionKeepsReviews(t *testing.T) {
 	if _, err := repository.ReviewKYBDocument(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentVerified, "rev@xego.test", "ok"); err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityGenuine, Provider: "simulated",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := repository.UpsertKYBDocuments(ctx, merchant.ID, docs); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +131,7 @@ func TestKYBIdenticalResubmissionKeepsReviews(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := VerifiedKYBEvidence(reloaded); len(got) != 1 || got[0] != kyc.EvCACVerified {
-		t.Fatalf("an identical resubmission dropped the review: %v", got)
+		t.Fatalf("an identical resubmission dropped the review or the authenticity verdict: %v", got)
 	}
 }
 
@@ -127,6 +151,11 @@ func TestKYBLocationRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := repository.ReviewKYBDocument(ctx, merchant.ID, kyc.EvLocationVerified, KYBDocumentVerified, "rev@xego.test", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvLocationVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityGenuine, Provider: "simulated",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := repository.RecordKYBLocation(ctx, merchant.ID, 6.4531, 3.3958, 25, "matched", "simulated"); err != nil {
@@ -158,5 +187,55 @@ func TestKYBLocationRoundTrip(t *testing.T) {
 	}
 	if v, ok := docs.Verifications[kyc.EvLocationVerified]; !ok || v.Status != "matched" {
 		t.Fatalf("verification proposal = %+v", docs.Verifications)
+	}
+}
+
+// TestKYBNonGenuineDocumentBlocksGate pins the load-bearing half of G12: a
+// reviewer-verified document the authenticity provider judged tampered (or
+// could not judge) stays out of the evidence set and keeps the B0 -> B1 gate
+// shut, while re-running the check to genuine opens it.
+func TestKYBNonGenuineDocumentBlocksGate(t *testing.T) {
+	repository, ctx := openAllowanceTestRepository(t)
+	merchant, err := repository.MerchantBySlug(ctx, "lagos-lunchbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedVerifiedCorporateDocuments(t, ctx, repository, merchant.ID)
+	corporate := BusinessEvidenceRequiredFor(kyc.TierB1)
+
+	// Tamper with one document's verdict: the whole set now falls short.
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityTampered, Provider: "simulated", Message: "seal mismatch",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	docs, err := repository.KYBDocumentsByMerchant(ctx, merchant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := VerifiedKYBEvidence(docs); len(got) != 4 {
+		t.Fatalf("a tampered document must drop out of the evidence set, got %v", got)
+	}
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil); err == nil {
+		t.Fatal("B0->B1 must be refused while a document is tampered")
+	}
+	// An inconclusive verdict blocks the same way: a human has to re-run it.
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityInconclusive, Provider: "simulated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil); err == nil {
+		t.Fatal("B0->B1 must be refused while a document is inconclusive")
+	}
+	// Re-running the check to genuine opens the gate.
+	if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, kyc.EvCACVerified, KYBDocumentAuthenticity{
+		Status: ports.AuthenticityGenuine, Provider: "simulated",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1, corporate, nil)
+	if err != nil || profile.Tier != kyc.TierB1 {
+		t.Fatalf("B0->B1 with every document genuine should pass: tier=%s err=%v", profile.Tier, err)
 	}
 }

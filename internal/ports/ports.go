@@ -263,6 +263,16 @@ const (
 	LivenessFailed = "failed"
 	// LivenessReview means the provider could not decide and a human must.
 	LivenessReview = "review"
+
+	// AuthenticityGenuine means the provider judged the document genuine: the
+	// only verdict under which a reviewer-verified key counts as evidence.
+	AuthenticityGenuine = "genuine"
+	// AuthenticityTampered means the provider found evidence the document was
+	// altered (a mismatched seal, a re-cut photo, edited text).
+	AuthenticityTampered = "tampered"
+	// AuthenticityInconclusive means the provider could not judge (no reading,
+	// an illegible scan) and a human must decide on the raw document.
+	AuthenticityInconclusive = "inconclusive"
 )
 
 // CorporateRegistryRequest contains the business identity a corporate
@@ -379,6 +389,49 @@ func LivenessProviderName(v LivenessVerifier) string {
 		return named.ProviderName()
 	}
 	return "liveness"
+}
+
+// DocumentAuthenticityRequest contains the facts a document-authenticity check
+// evaluates: which evidence key the document backs, the extracted reading the
+// uploader kept (never the raw file), and the name the document is expected to
+// support, when the flow knows it. FaceDocumentRef is present only when a
+// selfie was captured for a face-to-document comparison.
+type DocumentAuthenticityRequest struct {
+	EvidenceKey     string
+	Document        string
+	LegalName       string
+	FaceDocumentRef string
+}
+
+// DocumentAuthenticityResult is the provider-neutral outcome of an
+// authenticity check. FaceMatched reports a face-to-document comparison when
+// the provider performs one (false when it does not).
+type DocumentAuthenticityResult struct {
+	Status      string
+	Confidence  float64
+	FaceMatched bool
+	ProviderRef string
+	Message     string
+}
+
+// DocumentAuthenticityVerifier isolates ID/document authenticity verification
+// (tamper detection and face-to-document comparison) from a specific vendor
+// (Smile ID, Youverify, Dojah). Spec G12: a reviewer-verified document counts
+// as evidence only when a provider judged it genuine.
+type DocumentAuthenticityVerifier interface {
+	VerifyDocumentAuthenticity(context.Context, DocumentAuthenticityRequest) (DocumentAuthenticityResult, error)
+}
+
+// DocumentAuthenticityProviderName reports an authenticity adapter's own name
+// when it exposes one, so a verdict row carries a meaningful provider label.
+func DocumentAuthenticityProviderName(v DocumentAuthenticityVerifier) string {
+	if v == nil {
+		return "none"
+	}
+	if named, ok := v.(interface{ ProviderName() string }); ok {
+		return named.ProviderName()
+	}
+	return "document-authenticity"
 }
 
 // PayoutRequest contains the neutral payout instruction sent to a bank rail.

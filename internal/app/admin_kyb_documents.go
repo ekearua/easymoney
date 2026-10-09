@@ -42,6 +42,15 @@ func kybDocumentViews(d store.KYBDocuments) []kybDocumentView {
 		if v, ok := d.Verifications[key]; ok {
 			view.Verification = fmt.Sprintf("%s · %s: %s", v.Provider, v.Status, v.Message)
 		}
+		if a, ok := d.Authenticity[key]; ok {
+			view.Authenticity = fmt.Sprintf("%s · %s", a.Provider, a.Status)
+			if a.FaceMatched {
+				view.Authenticity += " · face matched"
+			}
+			if strings.TrimSpace(a.Message) != "" {
+				view.Authenticity += ": " + a.Message
+			}
+		}
 		out = append(out, view)
 	}
 	return out
@@ -197,6 +206,74 @@ func (a *App) adminKYBCheckLocation(w http.ResponseWriter, r *http.Request) {
 	a.audit(r, "admin.kyb.documents.location_checked", "merchant", merchantID.String(), map[string]any{"status": proposal.Status})
 	a.logger.InfoContext(r.Context(), "kyb location check run", "merchant_id", merchantID, "status", proposal.Status)
 	http.Redirect(w, r, "/admin/kyb?saved=location-checked", http.StatusSeeOther)
+}
+
+// adminKYBCheckAuthenticity runs the document-authenticity provider over every
+// submitted corporate document and stores one verdict per evidence key. It
+// never marks anything verified, but unlike the registry and location checks it
+// is load-bearing: the B0 -> B1 hard gate counts a reviewer-verified key only
+// when its authenticity verdict is genuine, so a tampered or inconclusive
+// document blocks the key until it is re-run.
+func (a *App) adminKYBCheckAuthenticity(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	merchant, err := a.store.MerchantByID(r.Context(), merchantID)
+	if err != nil {
+		http.Redirect(w, r, "/admin/kyb?error="+url.QueryEscape("could not load that merchant"), http.StatusSeeOther)
+		return
+	}
+	docs, err := a.store.KYBDocumentsByMerchant(r.Context(), merchantID)
+	if err != nil {
+		http.Redirect(w, r, "/admin/kyb?error="+url.QueryEscape("that merchant has submitted no documents"), http.StatusSeeOther)
+		return
+	}
+	provider := a.docAuthenticityProviderName()
+	checked, genuine := 0, 0
+	for _, key := range store.BusinessEvidenceRequiredFor(kyc.TierB1) {
+		document := strings.TrimSpace(docs.DocumentForEvidence(key))
+		if document == "" {
+			continue
+		}
+		verdict := store.KYBDocumentAuthenticity{Provider: provider}
+		result, runErr := a.docAuthenticityVerifier.VerifyDocumentAuthenticity(r.Context(), ports.DocumentAuthenticityRequest{
+			EvidenceKey: key,
+			Document:    document,
+			LegalName:   merchant.Name,
+		})
+		if runErr != nil {
+			a.logger.WarnContext(r.Context(), "document authenticity check failed", "merchant_id", merchantID, "evidence", key, "error", runErr)
+			verdict.Status = "error"
+			verdict.Message = "the document-analysis provider could not be reached: " + runErr.Error()
+		} else {
+			verdict.Status = result.Status
+			verdict.ProviderRef = result.ProviderRef
+			verdict.Confidence = result.Confidence
+			verdict.FaceMatched = result.FaceMatched
+			verdict.Message = result.Message
+		}
+		if saveErr := a.store.SaveKYBDocumentAuthenticity(r.Context(), merchantID, key, verdict); saveErr != nil {
+			a.logger.WarnContext(r.Context(), "save document authenticity failed", "merchant_id", merchantID, "evidence", key, "error", saveErr)
+			continue
+		}
+		checked++
+		if runErr == nil && result.Status == ports.AuthenticityGenuine {
+			genuine++
+		}
+	}
+	if checked == 0 {
+		http.Redirect(w, r, "/admin/kyb?error="+url.QueryEscape("no corporate documents are on file to examine"), http.StatusSeeOther)
+		return
+	}
+	a.audit(r, "admin.kyb.documents.authenticity_checked", "merchant", merchantID.String(), map[string]any{"checked": checked, "genuine": genuine})
+	a.logger.InfoContext(r.Context(), "kyb document authenticity checked", "merchant_id", merchantID, "checked", checked, "genuine", genuine)
+	http.Redirect(w, r, "/admin/kyb?saved=authenticity-checked", http.StatusSeeOther)
 }
 
 // recordCorporateCheck runs one registry lookup and stores the proposal,

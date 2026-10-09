@@ -97,6 +97,13 @@ func TestPayoutScreeningGate(t *testing.T) {
 		if _, err := repository.ReviewKYBDocument(ctx, merchant.ID, key, store.KYBDocumentVerified, "compliance@xego.test", "seeded for test"); err != nil {
 			t.Fatal(err)
 		}
+		// G12: the corporate hard gate counts a verified document only when the
+		// authenticity provider judged it genuine.
+		if err := repository.SaveKYBDocumentAuthenticity(ctx, merchant.ID, key, store.KYBDocumentAuthenticity{
+			Status: ports.AuthenticityGenuine, Provider: "simulated",
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := repository.AdvanceKYBTier(ctx, merchant.ID, kyc.TierB1,
 		[]string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}, nil); err != nil {

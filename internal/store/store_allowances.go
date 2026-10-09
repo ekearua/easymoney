@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 )
 
 // Account types used for allowance enforcement.
@@ -451,6 +452,20 @@ type KYBDocumentVerification struct {
 	CheckedAt   time.Time `json:"checked_at"`
 }
 
+// KYBDocumentAuthenticity is a provider verdict on whether one submitted
+// document is genuine (spec G12). Unlike the advisory verifications map it is
+// load-bearing: the corporate hard gate counts a reviewer-verified key only
+// when its authenticity verdict is "genuine".
+type KYBDocumentAuthenticity struct {
+	Status      string    `json:"status"`
+	Provider    string    `json:"provider"`
+	ProviderRef string    `json:"provider_ref,omitempty"`
+	Confidence  float64   `json:"confidence,omitempty"`
+	FaceMatched bool      `json:"face_matched,omitempty"`
+	Message     string    `json:"message,omitempty"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
 // KYBDocuments is a merchant's self-service corporate evidence: what they typed
 // or uploaded, where they were when they submitted, the reviewer dispositions,
 // and the third-party verification proposals. The *_document fields hold
@@ -481,6 +496,7 @@ type KYBDocuments struct {
 
 	Reviews       map[string]KYBDocumentReview
 	Verifications map[string]KYBDocumentVerification
+	Authenticity  map[string]KYBDocumentAuthenticity
 
 	RecordedAt time.Time
 	UpdatedAt  time.Time
@@ -519,14 +535,18 @@ func DeriveKYBEvidence(d KYBDocuments) []string {
 	return out
 }
 
-// VerifiedKYBEvidence returns the evidence keys that are BOTH backed by a
-// submitted document AND confirmed by a reviewer. This is what the corporate
-// hard gate accepts at B0 -> B1; a self-asserted key cannot appear here.
+// VerifiedKYBEvidence returns the evidence keys that are backed by a submitted
+// document, confirmed by a reviewer, AND judged genuine by the authenticity
+// provider. This is what the corporate hard gate accepts at B0 -> B1: a
+// self-asserted key cannot appear here, and neither can a reviewer-verified
+// document the provider refused or could not judge (spec G12).
 func VerifiedKYBEvidence(d KYBDocuments) []string {
 	submitted := DeriveKYBEvidence(d)
 	out := make([]string, 0, len(submitted))
 	for _, key := range submitted {
-		if review, ok := d.Reviews[key]; ok && review.Status == KYBDocumentVerified {
+		review, reviewed := d.Reviews[key]
+		auth, judged := d.Authenticity[key]
+		if reviewed && review.Status == KYBDocumentVerified && judged && auth.Status == ports.AuthenticityGenuine {
 			out = append(out, key)
 		}
 	}
@@ -544,10 +564,12 @@ func VerifiedKYBEvidence(d KYBDocuments) []string {
 func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, documents KYBDocuments) error {
 	documents.MerchantID = merchantID
 	reviews, verifications := documents.Reviews, documents.Verifications
+	authenticity := documents.Authenticity
 	if existing, err := s.KYBDocumentsByMerchant(ctx, merchantID); err == nil {
 		reviews, verifications = existing.Reviews, existing.Verifications
+		authenticity = existing.Authenticity
 		if documentsChanged(existing, documents) {
-			reviews, verifications = nil, nil
+			reviews, verifications, authenticity = nil, nil, nil
 		}
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("load existing kyb documents: %w", err)
@@ -560,11 +582,15 @@ func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, do
 	if err != nil {
 		return fmt.Errorf("encode kyb document verifications: %w", err)
 	}
+	authenticityJSON, err := json.Marshal(orEmptyAuthenticity(authenticity))
+	if err != nil {
+		return fmt.Errorf("encode kyb document authenticity: %w", err)
+	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO business_kyb_documents(merchant_id, cac_reg_number, tin,
 			beneficial_owners, business_address, scuml_number, dnfbp,
-			cac_document, tin_document, address_document, reviews, verifications)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb)
+			cac_document, tin_document, address_document, reviews, verifications, authenticity)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,$13::jsonb)
 		ON CONFLICT (merchant_id) DO UPDATE
 		SET cac_reg_number=EXCLUDED.cac_reg_number,
 		    tin=EXCLUDED.tin,
@@ -577,11 +603,12 @@ func (s *Store) UpsertKYBDocuments(ctx context.Context, merchantID uuid.UUID, do
 		    address_document=EXCLUDED.address_document,
 		    reviews=EXCLUDED.reviews,
 		    verifications=EXCLUDED.verifications,
+		    authenticity=EXCLUDED.authenticity,
 		    updated_at=now()`,
 		merchantID, documents.CACRegNumber, documents.TIN, documents.BeneficialOwners,
 		documents.BusinessAddress, documents.SCUMLNumber, documents.DNFBP,
 		documents.CACDocument, documents.TINDocument, documents.AddressDocument,
-		string(reviewsJSON), string(verificationsJSON))
+		string(reviewsJSON), string(verificationsJSON), string(authenticityJSON))
 	return err
 }
 
@@ -662,6 +689,33 @@ func (s *Store) ReviewKYBDocument(ctx context.Context, merchantID uuid.UUID, key
 // SaveKYBVerification stores one third-party verification proposal for a
 // document. Advisory only: it informs a reviewer's disposition and never
 // advances a tier by itself.
+// SaveKYBDocumentAuthenticity stores one provider authenticity verdict for a
+// document. Unlike SaveKYBVerification this is a precondition, not advice: the
+// corporate hard gate counts the key only when the stored status is genuine,
+// so a tampered or inconclusive verdict blocks the key until it is re-run.
+func (s *Store) SaveKYBDocumentAuthenticity(ctx context.Context, merchantID uuid.UUID, key string, v KYBDocumentAuthenticity) error {
+	d, err := s.KYBDocumentsByMerchant(ctx, merchantID)
+	if err != nil {
+		return fmt.Errorf("load kyb documents for authenticity: %w", err)
+	}
+	authenticity := d.Authenticity
+	if authenticity == nil {
+		authenticity = map[string]KYBDocumentAuthenticity{}
+	}
+	if v.CheckedAt.IsZero() {
+		v.CheckedAt = time.Now().UTC()
+	}
+	authenticity[key] = v
+	payload, err := json.Marshal(authenticity)
+	if err != nil {
+		return fmt.Errorf("encode document authenticity: %w", err)
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE business_kyb_documents SET authenticity=$2::jsonb, updated_at=now()
+		WHERE merchant_id=$1`, merchantID, string(payload))
+	return err
+}
+
 func (s *Store) SaveKYBVerification(ctx context.Context, merchantID uuid.UUID, key string, v KYBDocumentVerification) error {
 	d, err := s.KYBDocumentsByMerchant(ctx, merchantID)
 	if err != nil {
@@ -689,7 +743,7 @@ func (s *Store) SaveKYBVerification(ctx context.Context, merchantID uuid.UUID, k
 // documents. A missing record returns pgx.ErrNoRows.
 func (s *Store) KYBDocumentsByMerchant(ctx context.Context, merchantID uuid.UUID) (KYBDocuments, error) {
 	var d KYBDocuments
-	var reviews, verifications []byte
+	var reviews, verifications, authenticity []byte
 	err := s.pool.QueryRow(ctx, `
 		SELECT merchant_id, cac_reg_number, tin, beneficial_owners,
 		       business_address, scuml_number, dnfbp,
@@ -697,6 +751,7 @@ func (s *Store) KYBDocumentsByMerchant(ctx context.Context, merchantID uuid.UUID
 		       location_lat, location_lng, location_accuracy_m,
 		       location_captured_at, location_status, location_provider,
 		       COALESCE(reviews::text,'{}'), COALESCE(verifications::text,'{}'),
+		       COALESCE(authenticity::text,'{}'),
 		       recorded_at, updated_at
 		FROM business_kyb_documents WHERE merchant_id=$1`, merchantID).Scan(
 		&d.MerchantID, &d.CACRegNumber, &d.TIN, &d.BeneficialOwners,
@@ -704,12 +759,13 @@ func (s *Store) KYBDocumentsByMerchant(ctx context.Context, merchantID uuid.UUID
 		&d.CACDocument, &d.TINDocument, &d.AddressDocument,
 		&d.LocationLat, &d.LocationLng, &d.LocationAccuracyM,
 		&d.LocationCapturedAt, &d.LocationStatus, &d.LocationProvider,
-		&reviews, &verifications, &d.RecordedAt, &d.UpdatedAt)
+		&reviews, &verifications, &authenticity, &d.RecordedAt, &d.UpdatedAt)
 	if err != nil {
 		return KYBDocuments{}, err
 	}
 	_ = json.Unmarshal(reviews, &d.Reviews)
 	_ = json.Unmarshal(verifications, &d.Verifications)
+	_ = json.Unmarshal(authenticity, &d.Authenticity)
 	return d, nil
 }
 
@@ -736,6 +792,13 @@ func orEmptyReviews(m map[string]KYBDocumentReview) map[string]KYBDocumentReview
 func orEmptyVerifications(m map[string]KYBDocumentVerification) map[string]KYBDocumentVerification {
 	if m == nil {
 		return map[string]KYBDocumentVerification{}
+	}
+	return m
+}
+
+func orEmptyAuthenticity(m map[string]KYBDocumentAuthenticity) map[string]KYBDocumentAuthenticity {
+	if m == nil {
+		return map[string]KYBDocumentAuthenticity{}
 	}
 	return m
 }

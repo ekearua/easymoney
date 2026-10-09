@@ -36,6 +36,7 @@ import (
 	"whatsapp-payment-demo/internal/ports"
 	aiprovider "whatsapp-payment-demo/internal/providers/ai"
 	cacprovider "whatsapp-payment-demo/internal/providers/cac"
+	docauthprovider "whatsapp-payment-demo/internal/providers/docauth"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
 	firsprovider "whatsapp-payment-demo/internal/providers/firs"
 	geoprovider "whatsapp-payment-demo/internal/providers/geo"
@@ -95,17 +96,24 @@ type App struct {
 	corporateRegistry ports.CorporateRegistryVerifier
 	taxIDVerifier     ports.TaxIDVerifier
 	locationVerifier  ports.LocationVerifier
-	smsSender         ports.SMSSender
-	eventBus          ports.EventBus
-	publisher         *service.EventPublisher
-	merchantWebhooks  *service.MerchantWebhookDeliverer
-	settlements       *service.SettlementService
-	refunds           *service.RefundService
-	disputes          *service.DisputeService
-	onboardReminders  *service.OnboardingReminderService
-	bulkPayments      *service.BulkPaymentsService
-	bulkSlots         chan struct{}
-	workerWg          sync.WaitGroup
+
+	// G12: document authenticity (tamper detection and face-to-document
+	// comparison) for the KYB document review panel. Defaults to the
+	// deterministic simulator; a reviewer-verified key counts as evidence
+	// only when this verifier's verdict is genuine.
+	docAuthenticityVerifier ports.DocumentAuthenticityVerifier
+
+	smsSender        ports.SMSSender
+	eventBus         ports.EventBus
+	publisher        *service.EventPublisher
+	merchantWebhooks *service.MerchantWebhookDeliverer
+	settlements      *service.SettlementService
+	refunds          *service.RefundService
+	disputes         *service.DisputeService
+	onboardReminders *service.OnboardingReminderService
+	bulkPayments     *service.BulkPaymentsService
+	bulkSlots        chan struct{}
+	workerWg         sync.WaitGroup
 	// workerPools holds the bounded worker-pool slots and per-handler gates
 	// that let every tick handler run concurrently without overlapping itself
 	// (internal/app/worker_pool.go).
@@ -280,6 +288,20 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported LOCATION_PROVIDER %q", cfg.LocationProvider)
 	}
+	var docAuthenticityVerifier ports.DocumentAuthenticityVerifier
+	switch strings.ToLower(cfg.DocAuthenticityProvider) {
+	case "", "simulated":
+		docAuthenticityVerifier = docauthprovider.NewSimulated()
+	case "http":
+		if cfg.DocAuthenticityAPIBase == "" {
+			repository.Close()
+			return nil, errors.New("DOC_AUTH_API_BASE is required when DOC_AUTH_PROVIDER=http")
+		}
+		docAuthenticityVerifier = docauthprovider.NewHTTP(cfg.DocAuthenticityAPIBase, cfg.DocAuthenticityAPIKey, cfg.DocAuthenticityTimeout)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported DOC_AUTH_PROVIDER %q", cfg.DocAuthenticityProvider)
+	}
 	// G10 biometric liveness for the Tier-3 EDD step. Only the deterministic
 	// simulator exists; the live adapter is part of the identity purchase.
 	var livenessVerifier ports.LivenessVerifier
@@ -453,11 +475,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
 		livenessVerifier:  livenessVerifier,
 		corporateRegistry: corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
-		paymentScreener: paymentScreener,
-		smsSender:       smsSender,
-		eventBus:        eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
+		docAuthenticityVerifier: docAuthenticityVerifier,
+		paymentScreener:         paymentScreener,
+		smsSender:               smsSender,
+		eventBus:                eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithPaymentScreener(paymentScreener)),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener)),
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
 		onboardReminders: service.NewOnboardingReminderService(cfg, repository, logger),
@@ -754,6 +777,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/reconciliation/run", a.adminReconciliationRun)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/chat-guard", a.adminChatGuard)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc", a.adminKYC)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/fraud", a.adminFraud)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc/{userID}", a.adminKYCProfile)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/network", a.adminNetwork)
@@ -773,6 +797,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/review", a.adminKYBDocumentReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/registry", a.adminKYBCheckRegistry)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/location", a.adminKYBCheckLocation)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/documents/authenticity", a.adminKYBCheckAuthenticity)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/tier-limits/{id}", a.adminTierLimitUpdate)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/monitoring/alerts/{id}/resolve", a.adminResolveTransactionAlert)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/admins", a.adminAdmins)
@@ -814,6 +839,9 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/scan", a.merchantScanPost)
 		m.Get("/merchant/invoices", a.merchantInvoices)
 		m.Get("/merchant/payments", a.merchantPayments)
+		m.Get("/merchant/payouts", a.merchantPayouts)
+		m.Post("/merchant/payouts/{batchNo}/request", a.merchantRequestPayout)
+		m.Post("/merchant/payouts/step-up", a.merchantStepUpVerify)
 		m.Get("/merchant/settings", a.merchantSettings)
 		m.Post("/merchant/settings", a.merchantUpdateSettings)
 		m.Post("/merchant/api-keys", a.merchantCreateAPIKey)

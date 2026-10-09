@@ -170,6 +170,16 @@ func (a *App) taxIDProviderName() string {
 	return "unknown"
 }
 
+// docAuthenticityProviderName reports the configured document-authenticity
+// verifier's identifier for audit records.
+func (a *App) docAuthenticityProviderName() string {
+	type named interface{ ProviderName() string }
+	if n, ok := a.docAuthenticityVerifier.(named); ok {
+		return n.ProviderName()
+	}
+	return "unknown"
+}
+
 // webFlowLocation records the position the customer's browser reported, with
 // the visitor's permission, for a location-verification step, compares it with
 // the address the flow declared, and stores the outcome. It never advances a
