@@ -1,7 +1,9 @@
 # AML screening vendor decision record
 
 **Status:** Proposed — pending a paid trial (see §7). Not yet an approved purchase.
+**Settled stack and domestic-list sourcing:** see **§11** (2026-10-09). **§6 is superseded by §11.**
 **Date:** 2026-09-29
+**Last updated:** 2026-10-09 (§11).
 **Vendor facts last verified against published material:** 2026-10-08 (§4.2).
 **Decision owner:** Compliance + Platform (joint — this touches both the regulatory
 programme and the payment path).
@@ -190,7 +192,10 @@ Scored against §3. "Unknown" is an honest answer and is what the trial exists t
 
 ---
 
-## 6. Recommendation
+## 6. Recommendation (superseded by §11)
+
+> **Superseded 2026-10-09 by §11.** Retained as the reasoning path from the §5
+> comparison; the binding decision is §11.
 
 **Primary: ComplyAdvantage, contingent on its Payment Screening passing the §7 trial.**
 **Pre-qualified alternative: Napier AI**, to be adopted if the payment-screening trial
@@ -238,8 +243,10 @@ more means stopping and re-opening the field (Hawk:AI, FinScan).
    orderings, transliterations, single-token names, common surnames — must not produce
    unacceptable false positives at our threshold. Test the *false-positive* rate, because that
    is where both cost and operational burden live, not the true-positive rate.
-5. **Domestic list coverage.** If it cannot carry the Nigerian domestic lists we ask about in
-   §9, it fails R6 — and that alone is fatal for a CBN-scoped decision.
+5. **Domestic list coverage.** R6 is now served by the **owned** NSC feed (§11.2), not by the
+   vendor, so vendor domestic coverage is **no longer fatal** to vendor selection. It remains a
+   tiebreaker: a vendor that carries the Nigeria Sanctions List natively removes one moving
+   part, and is preferred if it does so at no extra cost.
 6. **Commercial floor.** If the entry contract cannot start at our volume without a
    bank-scale annual commitment, it fails R10, and Napier's commercial profile should then be
    compared on the same basis before either is signed.
@@ -287,16 +294,20 @@ signed.
 - **ComplyAdvantage's payment product is new.** This is the single largest risk in the
   recommendation and the reason it is contingent, not settled. The trial in §7 exists
   specifically to falsify it.
-- **Domestic list coverage is unverified for both finalists.** The specific question to put to
-  each vendor: the **Nigeria Sanctions Committee (NSC) list** under the Terrorism
-  (Prevention and Prohibition) Act 2022, and any CBN/NFIU domestic designations, alongside
-  OFAC/UN/EU/UK. Confirm coverage in writing before signing — this is R6 and it is fatal.
-- **NSC fallback feeds if the vendor lacks the list.** The list itself is obtainable as
-  *data*: the Nigeria Sanctions Committee runs an API connection programme
-  (`nigsac.gov.ng/ApiRequest`), and the NSC list is republished daily (138 entities) as
-  `ng_nigsac_sanctions` by OpenSanctions. Either can feed our owned `internal_watchlist`
-  (G3) — a data import into an owned control, which is the open question below's "data
-  decision, not a second engine" path, not a second screening engine.
+- **Domestic list sourcing is settled (2026-10-09) — owned, not bought.** R6 is served by our
+  owned `internal_watchlist` (G3), fed in this order:
+  1. **Primary — NIGSAC.** Register at `nigsac.gov.ng/subscribe` (listing/delisting notices)
+     and request API access at `nigsac.gov.ng/ApiRequest` (Regulator = CBN; approval is
+     required, not self-serve). Note: entities already filing through NFIU goAML are
+     auto-subscribed to updates.
+  2. **Redundancy — OpenSanctions.** The NSC list is republished daily as
+     `ng_nigsac_sanctions` (~138 entities); ingest it daily so screening never depends on a
+     single feed or on approval timing.
+  3. **Manual — hit verification.** On a match, confirm against the official
+     `nigsac.gov.ng/IndSancList` / Unified Search record (name, DOB, address, designation
+     reason) before freezing and reporting.
+  Converges to one primary once NIGSAC access is granted; OpenSanctions becomes a cross-check.
+  A data import into an owned control — not a second screening engine.
 - **Vendor lock-in on the data.** Neither vendor sells its lists as a downloadable dataset;
   switching later means re-screening the whole book. The port keeps the code cost low; the
   data cost is not removable, so the contract should permit a bulk re-screen export.
@@ -307,8 +318,6 @@ signed.
   pricing decides the steady-state bill once payment screening is live. Ask for both curves.
 - **Open:** whether an OFI of our scale should carry the ~49-list-type breadth, or a tighter
   configured subset, and therefore what we are actually paying per month for.
-- **Open:** whether the NSC list is better served by a local provider alongside the global
-  vendor — a *data* decision, not a second screening engine, and it would not violate §6.
 
 ## 10. Sources and caveats
 
@@ -324,3 +333,60 @@ signed.
   (support and docs pages) and public pricing on 2026-10-08. They are **vendor
   claims**, dated, not live measurements or an executed contract; §7 is what
   turns them into evidence.
+
+---
+
+## 11. Settled decision (2026-10-09)
+
+This section is authoritative and **supersedes §6**.
+
+### 11.1 Vendor stack
+
+| Lane | Choice | Endpoint / seam |
+|---|---|---|
+| Identity NIN/BVN/CAC | **Keep `ninbvnportal`** (live) | existing identity port |
+| Liveness / face (G10) | **Dojah** | `POST /api/v1/ml/liveness` |
+| Document authenticity (G12) | **Dojah** | `POST /api/v1/document/analysis` |
+| AML screening — customer (G9) | **Dojah** | `POST /api/v1/aml/v2/screening` |
+| AML screening — payment | **Dojah** | same endpoint, synchronous |
+| Domestic lists (NSC) | **Owned** — see §11.2 | `internal_watchlist` (G3) |
+
+- **Dojah is the primary screening/biometric vendor**, not ComplyAdvantage. Dojah's public
+  documentation does **not** confirm Nigeria Sanctions List / CBN Domestic Watchlist coverage
+  (it names OFAC/UN/EU/UK, PEP, adverse media and warning lists; EFCC/NFIU in marketing).
+  Treat native NSC coverage as **unconfirmed** — it is not required, because R6 is owned
+  (§11.2).
+- **ComplyAdvantage Mesh is a triggered fallback, not a co-primary.** Escalate the screening
+  lane to Mesh only if Dojah fails the §7 trial on adverse-media/match quality, or if
+  vendor-managed inline payment-screening latency is later needed at volume. Do **not** run
+  both from day one.
+- Dojah auth is two headers on every call: `Authorization: <secret_key>` (raw, no `Bearer`)
+  and `AppId: <app_id>`. Sandbox `https://sandbox.dojah.io`; production
+  `https://api.dojah.io`.
+- Config: add `dojah` as an accepted value for `SCREENING_PROVIDER` and
+  `PAYMENT_SCREENING_PROVIDER`; add `LIVENESS_PROVIDER=dojah`, `DOCUMENT_PROVIDER=dojah`,
+  `DOJAH_APP_ID`, `DOJAH_SECRET_KEY`, `DOJAH_BASE_URL`, `DOJAH_MATCH_THRESHOLD` (default
+  `0.85`). No `simulated` fallback in production.
+
+### 11.2 Domestic-list sourcing (NSC) — settled
+
+R6 is satisfied by the **owned** `internal_watchlist`, not by a vendor:
+
+1. **NIGSAC — primary.** `nigsac.gov.ng/subscribe` (updates; goAML filers are
+   auto-subscribed) and `nigsac.gov.ng/ApiRequest` (API, Regulator = CBN; approved, not
+   self-serve).
+2. **OpenSanctions — redundancy.** `ng_nigsac_sanctions` daily feed into `internal_watchlist`.
+3. **Manual — hit verification.** Confirm against `nigsac.gov.ng/IndSancList` before freezing
+   and reporting.
+
+Convergence: NIGSAC becomes primary once approved; OpenSanctions demotes to a cross-check;
+the public page is the reference of record for hit handling.
+
+### 11.3 Conditions and gates
+
+- The **§7 trial criteria remain binding**, re-pointed at Dojah; the fail-closed degradation
+  policy (§7.2) still applies to the payment path.
+- Enforcement duty is unchanged: screen at onboarding **and at least daily**; on a confirmed
+  match, freeze without delay, report to the NSC secretariat within 24 hours, and file an STR
+  to NFIU via goAML.
+- Vendor domestic coverage is a **tiebreaker, not a gate** (§7.5), because R6 is owned.
