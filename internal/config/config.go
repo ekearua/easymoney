@@ -158,6 +158,11 @@ type Config struct {
 	// screening adapter lands (AML_VENDOR_DECISION_RECORD.md).
 	PaymentScreeningProvider string
 
+	// G10 liveness / face verification for the Tier-3 EDD step. The live
+	// biometric vendor is part of the identity purchase, so this defaults to
+	// the deterministic simulator; there is no HTTP adapter yet.
+	LivenessProvider string
+
 	// Corporate-registry (CAC), tax-authority (FIRS) and location
 	// verification. Unlike identity and screening these default to their
 	// deterministic simulators, because their live vendors are optional: the
@@ -552,6 +557,7 @@ func Load() (Config, error) {
 
 		SettlementFeeBps:         int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
 		PaymentScreeningProvider: strings.ToLower(env("PAYMENT_SCREENING_PROVIDER", "simulated")),
+		LivenessProvider:         strings.ToLower(env("LIVENESS_PROVIDER", "simulated")),
 
 		PayoutMinKobo:         EnvInt64("PAYOUT_MIN_KOBO", 100_00),
 		PayoutMaxKobo:         EnvInt64("PAYOUT_MAX_KOBO", 10_000_00),
@@ -615,6 +621,11 @@ func Load() (Config, error) {
 	case "", "simulated":
 	default:
 		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" (the live screening-vendor adapter is pending, see AML_VENDOR_DECISION_RECORD.md), got %q", cfg.PaymentScreeningProvider)
+	}
+	switch cfg.LivenessProvider {
+	case "", "simulated":
+	default:
+		return Config{}, fmt.Errorf("LIVENESS_PROVIDER must be \"simulated\" (the live biometrics adapter is part of the identity purchase, see EXTERNAL_SERVICE_COST_MODEL.md), got %q", cfg.LivenessProvider)
 	}
 	if cfg.OnboardingReminderMax < 1 || cfg.OnboardingReminderMax > 10 {
 		return Config{}, fmt.Errorf("ONBOARDING_REMINDER_MAX must be between 1 and 10, got %d", cfg.OnboardingReminderMax)

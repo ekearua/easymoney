@@ -49,6 +49,11 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
+	// G10 biometric liveness for the Tier-3 EDD step. Nil until wired, in
+	// which case the EDD step cannot grant EvEDDCompleted (a missing verifier
+	// must never pass).
+	liveness ports.LivenessVerifier
+
 	identityProviderName  string
 	screeningProviderName string
 
@@ -81,6 +86,12 @@ func NewConversationService(cfg config.Config, repository *store.Store, payments
 		pName = identityProviderName[0]
 	}
 	return &ConversationService{cfg: cfg, store: repository, payments: payments, data: data, messengers: messengers, email: email, identity: identity, screener: screener, identityProviderName: pName, screeningProviderName: pName, acceptedNumbers: accepted}
+}
+
+// SetLivenessVerifier wires the G10 biometric liveness provider used by the
+// Tier-3 EDD step. Without it the EDD step refuses to grant EvEDDCompleted.
+func (s *ConversationService) SetLivenessVerifier(v ports.LivenessVerifier) {
+	s.liveness = v
 }
 
 // SetScreeningProviderName overrides the provider label recorded with

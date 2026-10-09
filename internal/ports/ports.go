@@ -254,6 +254,15 @@ const (
 	// VerifyNoLocation means no position was captured, so nothing could be
 	// compared.
 	VerifyNoLocation = "no_location"
+
+	// LivenessPassed means the provider confirmed a live capture: the only
+	// outcome that grants EvEDDCompleted.
+	LivenessPassed = "passed"
+	// LivenessFailed means the provider rejected the capture (no capture, a
+	// spoof, or a face mismatch).
+	LivenessFailed = "failed"
+	// LivenessReview means the provider could not decide and a human must.
+	LivenessReview = "review"
 )
 
 // CorporateRegistryRequest contains the business identity a corporate
@@ -329,6 +338,47 @@ type LocationResult struct {
 // distance comparison against the reported position) from a specific vendor.
 type LocationVerifier interface {
 	VerifyLocation(context.Context, LocationRequest) (LocationResult, error)
+}
+
+// LivenessRequest contains the facts a biometric liveness check evaluates: the
+// customer completing the Tier-3 EDD step and the capture the flow collected
+// for them. CaptureRef is opaque to the platform - the chat turn passes the
+// confirmation, the browser flow passes the selfie reference - so the vendor
+// decides what a real capture is.
+type LivenessRequest struct {
+	UserID      string
+	LegalName   string
+	PhoneNumber string
+	CaptureRef  string
+}
+
+// LivenessResult is the provider-neutral outcome of a liveness check.
+type LivenessResult struct {
+	Status      string
+	ProviderRef string
+	Confidence  float64
+	Message     string
+}
+
+// LivenessVerifier isolates biometric liveness / face verification (the
+// Tier-3 EDD step) from a specific vendor (Smile ID, Youverify, Dojah, ...).
+// Spec G10: EvEDDCompleted is granted only on a provider pass, never on the
+// customer's own attestation.
+type LivenessVerifier interface {
+	VerifyLiveness(context.Context, LivenessRequest) (LivenessResult, error)
+}
+
+// LivenessProviderName reports a liveness adapter's own name when it exposes
+// one, so a verification row carries a meaningful provider label instead of a
+// hardcoded string.
+func LivenessProviderName(v LivenessVerifier) string {
+	if v == nil {
+		return "none"
+	}
+	if named, ok := v.(interface{ ProviderName() string }); ok {
+		return named.ProviderName()
+	}
+	return "liveness"
 }
 
 // PayoutRequest contains the neutral payout instruction sent to a bank rail.

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
+	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -28,6 +30,20 @@ func wfInvoiceItemsFromPayload(payload map[string]string) ([]wfInvoiceItemDraft,
 		}
 	}
 	return items, nil
+}
+
+// verifyLiveness runs the G10 biometric provider over the browser flow's EDD
+// capture. A missing verifier is a hard failure: an unconfigured platform must
+// never grant EvEDDCompleted.
+func (a *App) verifyLiveness(ctx context.Context, user store.User, sourceOfFunds string) (ports.LivenessResult, error) {
+	if a.livenessVerifier == nil {
+		return ports.LivenessResult{Status: ports.LivenessFailed, Message: "liveness verification is not configured"}, nil
+	}
+	return a.livenessVerifier.VerifyLiveness(ctx, ports.LivenessRequest{
+		UserID:      user.ID.String(),
+		PhoneNumber: user.WhatsAppNumber,
+		CaptureRef:  "browser-edd:" + user.ID.String() + ":" + sourceOfFunds,
+	})
 }
 
 func wfInvoiceItemsToPayload(items []wfInvoiceItemDraft) (string, error) {
@@ -811,7 +827,7 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 		return page, nil
 	case "tier3":
 		page.Title = "CBN Tier 3 — enhanced due diligence"
-		page.Intro = "To reach CBN Tier 3 (uncapped) you need a structural proof of address and an enhanced due-diligence check (liveness + source of funds). For this demo the check is self-service."
+		page.Intro = "To reach CBN Tier 3 (uncapped) you need a structural proof of address and an enhanced due-diligence check (a real-time liveness verification plus source of funds)."
 		page.Fields = []webFlowField{
 			{Name: "address_proof", Label: "Utility bill reference", Type: "text", Required: true,
 				Hint: "A recent utility bill reference (like a prepaid meter or account number)."},
@@ -822,8 +838,8 @@ func (a *App) wfIndividualUpgradeStep(r *http.Request, flow store.WebFlow, user 
 				{Value: "GIFTS", Label: "Gifts"},
 				{Value: "OTHER", Label: "Other"},
 			}},
-			{Name: "liveness", Label: "I confirm I'm completing this verification myself in real time", Type: "radio", Required: true, Options: []webFlowOption{
-				{Value: "yes", Label: "Yes, I confirm"},
+			{Name: "liveness", Label: "Start the real-time liveness check", Type: "radio", Required: true, Options: []webFlowOption{
+				{Value: "yes", Label: "Yes, run the check"},
 			}},
 		}
 		page.Actions = []webFlowAction{{Name: "submit_tier3", Label: "Complete due diligence"}, {Name: "skip", Label: "Skip for now"}}
@@ -1059,7 +1075,7 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 			errs = append(errs, "Select your primary source of funds.")
 		}
 		if liveness != "yes" {
-			errs = append(errs, "Confirm that you're completing this verification yourself in real time.")
+			errs = append(errs, "Start the real-time liveness check to continue.")
 		}
 		if msg := wfFormError(errs); msg != "" {
 			return a.wfPageWithError(flow, page, msg), nil
@@ -1067,6 +1083,15 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		user, err := a.store.UserByID(r.Context(), user.ID)
 		if err != nil {
 			return a.wfPageWithError(flow, page, "Could not load your account."), nil
+		}
+		// G10: the liveness check must pass before any Tier-3 evidence is
+		// recorded, so the tier is never granted on the customer's own word.
+		livenessResult, err := a.verifyLiveness(r.Context(), user, sourceOfFunds)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "We could not complete the real-time liveness check. Please try again."), nil
+		}
+		if livenessResult.Status != ports.LivenessPassed {
+			return a.wfPageWithError(flow, page, "The real-time liveness check did not pass. Try again, or skip to stay at CBN Tier 2."), nil
 		}
 		if _, err := a.store.RecordCustomerVerification(r.Context(), store.CustomerVerification{
 			UserID: user.ID, VerificationType: kyc.EvAddressProof,
@@ -1077,8 +1102,13 @@ func (a *App) wfIndividualUpgradeSubmit(w http.ResponseWriter, r *http.Request, 
 		}
 		if _, err := a.store.RecordCustomerVerification(r.Context(), store.CustomerVerification{
 			UserID: user.ID, VerificationType: kyc.EvEDDCompleted,
-			Status: "completed", Provider: "simulated",
-			Result: map[string]any{"liveness": "passed", "source_of_funds": sourceOfFunds},
+			Status: "completed", Provider: ports.LivenessProviderName(a.livenessVerifier),
+			ProviderRef: livenessResult.ProviderRef,
+			Result: map[string]any{
+				"liveness":        livenessResult.Status,
+				"confidence":      livenessResult.Confidence,
+				"source_of_funds": sourceOfFunds,
+			},
 		}); err != nil {
 			return a.wfPageWithError(flow, page, "Could not record the due-diligence check."), nil
 		}

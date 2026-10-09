@@ -42,6 +42,7 @@ import (
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	interswitchprovider "whatsapp-payment-demo/internal/providers/interswitch"
+	livenessprovider "whatsapp-payment-demo/internal/providers/liveness"
 	paymentscreening "whatsapp-payment-demo/internal/providers/paymentscreening"
 	screeningprovider "whatsapp-payment-demo/internal/providers/screening"
 	smsprovider "whatsapp-payment-demo/internal/providers/sms"
@@ -78,6 +79,10 @@ type App struct {
 	totpKey               []byte
 	sanctionsScreener     ports.SanctionsScreener
 	screeningProviderName string
+
+	// G10: biometric liveness for the Tier-3 EDD step. Defaults to the
+	// deterministic simulator, which never passes a missing capture.
+	livenessVerifier ports.LivenessVerifier
 
 	// G2: payment-time counterparty screening for money-out rails (merchant
 	// payout, wallet withdrawal). Defaults to the deterministic simulator so
@@ -275,6 +280,16 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported LOCATION_PROVIDER %q", cfg.LocationProvider)
 	}
+	// G10 biometric liveness for the Tier-3 EDD step. Only the deterministic
+	// simulator exists; the live adapter is part of the identity purchase.
+	var livenessVerifier ports.LivenessVerifier
+	switch strings.ToLower(cfg.LivenessProvider) {
+	case "", "simulated":
+		livenessVerifier = livenessprovider.NewSimulated()
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported LIVENESS_PROVIDER %q", cfg.LivenessProvider)
+	}
 	// Outbound SMS sender. "webhook" (the default) has no async sender: replies
 	// are returned synchronously from /webhooks/sms, and outbox delivery for
 	// the sms channel stays a no-op. "http" sends through a generic REST
@@ -405,6 +420,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	}
 	convo := service.NewConversationService(cfg, repository, paymentService, dataService, messengers, emailSender, identityVerifier, sanctionsScreener, identityProviderName)
 	convo.SetMediaProviders(imageReader, speechToText, chatAI)
+	convo.SetLivenessVerifier(livenessVerifier)
 	convo.SetScreeningProviderName(screeningProviderName)
 	convo.SetAIRateLimiter(rateLimiter, cfg.AIMaxRPM)
 	// Settlement payouts and refunds ride the Interswitch NIP single transfer /
@@ -435,6 +451,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
+		livenessVerifier:  livenessVerifier,
 		corporateRegistry: corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
 		paymentScreener: paymentScreener,
 		smsSender:       smsSender,

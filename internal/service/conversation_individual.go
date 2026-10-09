@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/mail"
 	"strings"
@@ -401,6 +402,12 @@ func (s *ConversationService) verifyIndividualID(ctx context.Context, user store
 			ProviderRef:      result.ProviderRef,
 			Result:           map[string]any{"id_type": idType, "id_number": number, "match_name": result.MatchName, "match_dob": result.MatchDOB},
 		}); err != nil {
+			// G11: the identity is already verified on another profile. The
+			// evidence was refused and a review case opened; re-ask on this
+			// step rather than failing the session.
+			if errors.Is(err, store.ErrIdentityInUse) {
+				return "This " + strings.ToUpper(idType) + " is already linked to another Faya profile. Our compliance team will review it.\n\nSend a different number as " + strings.ToUpper(idType) + " <number>, or contact support if you believe this is a mistake.", nil
+			}
 			return "", err
 		}
 		return "", nil
@@ -461,24 +468,69 @@ func eddDetailsPrompt() string {
 	return "Send a recent utility bill reference (like a prepaid meter or account number), or SELF-DECLARED, together with your primary source of funds, in one message.\n\nExample:\nUtility ref: 12345678901\nSource of funds: SALARY"
 }
 
-// eddLivenessPrompt is the real-time self-attestation, kept deliberately as
-// its own single-purpose turn.
+// eddLivenessPrompt starts the real-time liveness check, kept deliberately as
+// its own single-purpose turn. G10: the customer's confirmation starts the
+// check; it is not the grant.
 func eddLivenessPrompt() string {
-	return "To finish the enhanced due-diligence check, confirm you are completing this verification yourself in real time.\n\nType YES to confirm."
+	return "To finish the enhanced due-diligence check we run a real-time liveness verification.\n\nType YES to start it."
+}
+
+// verifyLiveness runs the G10 provider over the EDD capture. A missing
+// verifier is a hard failure: an unconfigured platform must never grant EDD.
+func (s *ConversationService) verifyLiveness(ctx context.Context, user store.User, session store.Session) (ports.LivenessResult, error) {
+	if s.liveness == nil {
+		return ports.LivenessResult{Status: ports.LivenessFailed, Message: "liveness verification is not configured"}, nil
+	}
+	// The chat turn's capture is the customer's real-time confirmation; a
+	// media-backed selfie (when the flow collects one) takes precedence.
+	capture := strings.TrimSpace(session.Data["liveness_capture"])
+	if capture == "" {
+		capture = "chat-confirm:" + user.ID.String()
+	}
+	return s.liveness.VerifyLiveness(ctx, ports.LivenessRequest{
+		UserID:      user.ID.String(),
+		LegalName:   session.Data["legal_name"],
+		PhoneNumber: user.WhatsAppNumber,
+		CaptureRef:  capture,
+	})
+}
+
+// livenessIncompleteMessage is the friendly re-ask when the provider did not
+// pass the check.
+func livenessIncompleteMessage(result ports.LivenessResult) string {
+	msg := "We could not complete the real-time identity check."
+	if detail := strings.TrimSpace(result.Message); detail != "" {
+		msg = "We could not complete the real-time identity check: " + detail + "."
+	}
+	return msg + "\n\nYour profile stays at CBN Tier 2. Type YES to try again, or send MENU to come back later."
 }
 
 func (s *ConversationService) handleIndividualLiveness(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "yes", "1", "confirm", "confirm yes":
 	default:
-		return s.sendText(ctx, channel, recipient, "Type YES to confirm you are completing this verification yourself in real time.")
+		return s.sendText(ctx, channel, recipient, "Type YES to start the real-time liveness verification.")
+	}
+	// G10: EvEDDCompleted depends on a provider pass, never on the customer's
+	// own attestation.
+	result, err := s.verifyLiveness(ctx, user, session)
+	if err != nil {
+		return err
+	}
+	if result.Status != ports.LivenessPassed {
+		return s.sendText(ctx, channel, recipient, livenessIncompleteMessage(result))
 	}
 	if _, err := s.store.RecordCustomerVerification(ctx, store.CustomerVerification{
 		UserID:           user.ID,
 		VerificationType: kyc.EvEDDCompleted,
 		Status:           "completed",
-		Provider:         "simulated",
-		Result:           map[string]any{"liveness": "passed", "source_of_funds": session.Data["source_of_funds"]},
+		Provider:         ports.LivenessProviderName(s.liveness),
+		ProviderRef:      result.ProviderRef,
+		Result: map[string]any{
+			"liveness":        result.Status,
+			"confidence":      result.Confidence,
+			"source_of_funds": session.Data["source_of_funds"],
+		},
 	}); err != nil {
 		return err
 	}

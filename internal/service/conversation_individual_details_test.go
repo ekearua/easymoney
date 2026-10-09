@@ -38,6 +38,25 @@ func (stubIdentity) VerifyIdentity(_ context.Context, req ports.IdentityVerifica
 	return ports.IdentityVerificationResult{Status: "verified", ProviderRef: "stub-ref", MatchName: true, MatchDOB: true}, nil
 }
 
+// stubLiveness passes the G10 check and labels itself like a vendor, so the
+// Tier-3 evidence row proves the provider (not the customer) granted EDD.
+type stubLiveness struct{}
+
+func (stubLiveness) ProviderName() string { return "stub-liveness" }
+
+func (stubLiveness) VerifyLiveness(context.Context, ports.LivenessRequest) (ports.LivenessResult, error) {
+	return ports.LivenessResult{Status: ports.LivenessPassed, ProviderRef: "live-ref-1", Confidence: 0.99}, nil
+}
+
+// stubLivenessFail rejects every capture, modelling a spoof or mismatch.
+type stubLivenessFail struct{}
+
+func (stubLivenessFail) ProviderName() string { return "stub-liveness-fail" }
+
+func (stubLivenessFail) VerifyLiveness(context.Context, ports.LivenessRequest) (ports.LivenessResult, error) {
+	return ports.LivenessResult{Status: ports.LivenessFailed, Message: "capture did not pass"}, nil
+}
+
 func TestIndividualUpgradeAggregated(t *testing.T) {
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
@@ -59,6 +78,7 @@ func TestIndividualUpgradeAggregated(t *testing.T) {
 	svc := NewConversationService(config.Config{WebFlowsEnabled: false, AppName: "Xego", SessionTTL: 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, EmailDemoCodeInChat: true, EmailConfirmationEnabled: true}, repository, nil, nil, map[string]ports.Messenger{
 		ChannelTelegram: msg,
 	}, nil, stubIdentity{}, stubScreener{})
+	svc.SetLivenessVerifier(stubLiveness{})
 
 	number := "+2348099001160"
 	send := func(text string) {
@@ -161,14 +181,17 @@ func TestIndividualUpgradeAggregated(t *testing.T) {
 	var verifs []struct {
 		VerificationType string `json:"verification_type"`
 		Status           string `json:"status"`
+		Provider         string `json:"provider"`
 	}
 	if err := json.Unmarshal(export.Verifications, &verifs); err != nil {
 		t.Fatal(err)
 	}
 	have := map[string]bool{}
+	providers := map[string]string{}
 	for _, v := range verifs {
 		if v.Status == "completed" {
 			have[v.VerificationType] = true
+			providers[v.VerificationType] = v.Provider
 		}
 	}
 	for _, want := range []string{kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified} {
@@ -193,5 +216,153 @@ func TestIndividualUpgradeAggregated(t *testing.T) {
 	}
 	if profile.Tier != kyc.TierL3 {
 		t.Fatalf("tier after EDD = %s, want L3", profile.Tier)
+	}
+	// G10: the EDD evidence names the liveness provider, proving the pass
+	// came from the verifier rather than the customer's confirmation.
+	export, err = repository.ExportUserData(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(export.Verifications, &verifs); err != nil {
+		t.Fatal(err)
+	}
+	eddProvider := ""
+	for _, v := range verifs {
+		if v.VerificationType == kyc.EvEDDCompleted {
+			eddProvider = v.Provider
+		}
+	}
+	if eddProvider != "stub-liveness" {
+		t.Fatalf("edd_completed provider = %q, want the liveness provider", eddProvider)
+	}
+}
+
+// G10 (spec §3.7): EvEDDCompleted is granted only on a provider pass. With a
+// failing verifier the customer stays at Tier 2, no EDD evidence is recorded,
+// and the re-ask is friendly; swapping in a passing verifier completes the
+// upgrade. The FSM is seeded directly at the liveness step so the test pins
+// the gate rather than the walk up to it (which the aggregated test covers).
+func TestIndividualLivenessGate(t *testing.T) { //nolint:parallel // shared scratch database
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	databaseURL := serviceTestDBURL(t, base)
+	repository, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { repository.Close() })
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	truncateServiceData(t, ctx, databaseURL)
+
+	number := "+2348099001171"
+	msg := &carryoverMessenger{}
+	svc := NewConversationService(config.Config{WebFlowsEnabled: false, AppName: "Xego", SessionTTL: 24 * time.Hour, EmailVerificationTTL: 10 * time.Minute, EmailDemoCodeInChat: true}, repository, nil, nil, map[string]ports.Messenger{
+		ChannelTelegram: msg,
+	}, nil, stubIdentity{}, stubScreener{})
+	send := func(text string) {
+		t.Helper()
+		if err := svc.Handle(ctx, store.InboundMessage{Channel: ChannelTelegram, Sender: number, Recipient: number, Text: text}); err != nil {
+			t.Fatalf("Handle(%q) failed: %v", text, err)
+		}
+	}
+	lastSent := func() string {
+		t.Helper()
+		sent := msg.allSentText()
+		if len(sent) == 0 {
+			t.Fatal("no messages sent")
+		}
+		return sent[len(sent)-1]
+	}
+
+	// Onboarding first: the FSM gates every other state behind it, so the
+	// user has to be onboarded before the liveness state can be reached.
+	send("hi")
+	send("Ada Obi")
+	send("ada.liveness@example.com")
+	send(chatEmailCodeFromMessages(t, msg.allSentText()))
+	send("DOB: 1992-05-24\nGender: Female\n14 Admiralty Way, Lekki, Lagos")
+	send("confirm")
+	user, err := repository.GetOrCreateTelegramUser(ctx, number, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !user.OnboardingComplete {
+		t.Fatalf("onboarding prologue did not complete; last message = %q", lastSent())
+	}
+
+	// Seed the ladder at Tier 2 with the address proof on file, then drop the
+	// FSM straight into the liveness step so the test pins the gate rather
+	// than the walk up to it.
+	if _, err := repository.RecordScreeningResult(ctx, store.ScreeningResult{
+		UserID: user.ID, Provider: "simulated", Decision: kyc.ScreenClear, LegalName: "Ada Obi",
+	}, 90*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AdvanceKYCTierTo(ctx, user.ID, kyc.TierL2, []string{
+		kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails, kyc.EvGovPhotoID, kyc.EvBVNVerified, kyc.EvNINVerified,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.RecordCustomerVerification(ctx, store.CustomerVerification{
+		UserID: user.ID, VerificationType: kyc.EvAddressProof, Status: "completed",
+		Provider: "simulated", Result: map[string]any{"reference": "12345678901"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveSession(ctx, store.Session{
+		UserID: user.ID, State: "individual_liveness",
+		Data:      map[string]string{"address_proof": "12345678901", "source_of_funds": "SALARY"},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A failing provider keeps the customer at Tier 2 and records nothing.
+	svc.SetLivenessVerifier(stubLivenessFail{})
+	send("YES")
+	if !strings.Contains(lastSent(), "could not complete the real-time identity check") {
+		t.Fatalf("failed liveness re-ask = %q, want the friendly failure", lastSent())
+	}
+	profile, err := repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Tier != kyc.TierL2 {
+		t.Fatalf("tier after failed liveness = %s, want L2", profile.Tier)
+	}
+	export, err := repository.ExportUserData(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gateVerifs []struct {
+		VerificationType string `json:"verification_type"`
+		Status           string `json:"status"`
+	}
+	if err := json.Unmarshal(export.Verifications, &gateVerifs); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range gateVerifs {
+		if v.VerificationType == kyc.EvEDDCompleted && v.Status == "completed" {
+			t.Fatal("a failed liveness must record no EDD evidence")
+		}
+	}
+
+	// A passing provider completes the upgrade.
+	svc.SetLivenessVerifier(stubLiveness{})
+	send("YES")
+	if !strings.Contains(lastSent(), "CBN Tier 3") {
+		t.Fatalf("passing liveness = %q, want the Tier 3 completion", lastSent())
+	}
+	profile, err = repository.KYCProfileByUser(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Tier != kyc.TierL3 {
+		t.Fatalf("tier after passing liveness = %s, want L3", profile.Tier)
 	}
 }
