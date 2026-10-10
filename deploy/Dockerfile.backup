@@ -1,9 +1,10 @@
 FROM postgres:17-alpine
 
-RUN apk add --no-cache rclone && \
+RUN apk add --no-cache rclone bash && \
     mkdir -p /opt/xego-backup
 
 COPY deploy/backup.sh /opt/xego-backup/backup.sh
-RUN chmod +x /opt/xego-backup/backup.sh
+COPY deploy/schedule.sh /opt/xego-backup/schedule.sh
+RUN chmod +x /opt/xego-backup/backup.sh /opt/xego-backup/schedule.sh
 
 ENTRYPOINT ["/opt/xego-backup/backup.sh"]

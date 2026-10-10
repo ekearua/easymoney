@@ -14,7 +14,9 @@
 		health_status 200
 		fail_duration 30s
 		max_fails 2
-		dial_timeout 3s
+		transport http {
+			dial_timeout 3s
+		}
 	}
 
 	header {

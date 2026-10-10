@@ -36,7 +36,7 @@ deploy/backup.sh --rclone sync---> <bucket>/<prefix>/{base,wal}
    ```conf
    wal_level = replica
    archive_mode = on
-   archive_command = '/opt/whatsapp-payment/pg-archive-wal.sh %p %f'
+   archive_command = '/opt/whatsapp-payment/deploy/pg-archive-wal.sh %p %f'
    ```
 
    Restart PostgreSQL and confirm `pg_stat_archiver` shows successful

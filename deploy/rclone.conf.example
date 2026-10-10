@@ -1,0 +1,19 @@
+# Template for deploy/rclone.conf (git-ignored).
+#
+# deploy/backup.sh ships base + WAL archives offsite through rclone. Copy
+# this file, fill in your object-storage credentials, and keep it at
+# deploy/rclone.conf (the compose default) or point RCLONE_CONFIG elsewhere:
+#
+#   cp deploy/rclone.conf.example deploy/rclone.conf
+#
+# The section name must match RCLONE_REMOTE (default: xegobackup).
+# OCI Object Storage example below; AWS S3 / MinIO / Backblaze work the same
+# way (change `provider` and `endpoint`).
+
+[xegobackup]
+type = s3
+provider = Other
+access_key_id = REPLACE_ME
+secret_access_key = REPLACE_ME
+endpoint = https://<namespace>.compat.objectstorage.<region>.oraclecloud.com
+region = <region>

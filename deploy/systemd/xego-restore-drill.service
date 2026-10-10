@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=postgres
 EnvironmentFile=/etc/whatsapp-payment.env
 # Full point-in-time recovery drill against the newest base backup: unpacks,
 # replays archived WAL via rclone, verifies the payments relation, then

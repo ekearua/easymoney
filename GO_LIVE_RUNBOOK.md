@@ -24,26 +24,49 @@ README → *Production limitations* before live-money use.
 
 ---
 
-## 2. Production guard reconciliation (`ALLOW_SIMULATED_RAILS_IN_PROD`)
+## 2. Production guard (hard boot gate — there is no override)
 
-`ALLOW_SIMULATED_RAILS_IN_PROD` is the only escape hatch that runs simulated
-rails inside `APP_ENV=production`. It must **not** be present (or must be
-`false`) in a live deployment.
+There is no environment variable that relaxes production validation. Two
+layers run inside `internal/config.Load` before the app starts serving, and
+a failing check aborts startup with the offending key in the log:
 
-- Default when unset/`false`: `internal/config/config.go` → `validateProductionRails`
-  rejects simulated `PAYOUT_PROVIDER`, `REFUND_PROVIDER`, `DATA_PROVIDER`,
-  `IDENTITY_PROVIDER`, `SCREENING_PROVIDER`, and `BANK_TRANSFER_MODE=simulate`,
-  and requires `INTERSWITCH_CHECKOUT_MODE=LIVE` plus (for interswitch payout/
-  refund) `INTERSWITCH_TRANSFER_BASE_URL` and `INTERSWITCH_SOURCE_ACCOUNT`.
-- Scope: it covers only the secondary rails. `PAYMENT_PROVIDER=simulated` and
-  `AI_PROVIDER=simulated` are **never** overridable in production.
-- The `ALLOW_SIMULATED_RAILS_IN_PROD=true` line in `.env.example` documents the
-  staging/demo template; a live `.env` must remove it.
+1. **Provider allowlists (every environment).** Simulated money/identity
+   rails no longer exist in the loader: `PAYOUT_PROVIDER`,
+   `REFUND_PROVIDER` and `BANK_TRANSFER_MODE` must be `interswitch`;
+   `AI_PROVIDER` must be `openai`; `DATA_PROVIDER` must be `vtpass` or
+   `interswitch`; `IDENTITY_PROVIDER` must be `ninbvnportal`;
+   `SCREENING_PROVIDER` must be `http`. An unknown or `simulated` value
+   fails `Load()` in development too. (`PAYMENT_SCREENING_PROVIDER` and
+   `LIVENESS_PROVIDER` are the inverse — `simulated` only, until their
+   live adapters ship.)
+2. **`APP_ENV=production` requirements** (`config.go` production block plus
+   `validateProductionRails`): required secrets (`DATABASE_URL`,
+   `ADMIN_PASSWORD_HASH`, `DATA_ENCRYPTION_KEY`, the `WHATSAPP_*` set,
+   `TOTP_ENCRYPTION_KEY` because TOTP defaults on), full interswitch
+   checkout credentials with `INTERSWITCH_CHECKOUT_MODE=LIVE`, live
+   transfer vars (`INTERSWITCH_TRANSFER_BASE_URL`,
+   `INTERSWITCH_SOURCE_ACCOUNT` — payout/refund default to interswitch),
+   `VTPASS_*` keys (data defaults to vtpass), `AI_MAX_REQUESTS_PER_MINUTE
+   > 0` when AI is enabled, `SMS_WEBHOOK_SECRET` when SMS is enabled,
+   per-channel secrets for any enabled Telegram/Instagram/TikTok channel,
+   a public HTTPS `BASE_URL`, API bases for any `*_PROVIDER=http` adapter,
+   and a ban on the demo shortcuts (`EMAIL_DEMO_CODE_IN_CHAT`,
+   `LINK_DEMO_CODE_IN_CHAT`).
+
+`ALLOW_SIMULATED_RAILS_IN_PROD` is **not a variable** — the loader never
+read it, `.env.example` must not mention it (`TestExampleEnvTemplateLoads`
+fails if it reappears), and an old `.env` carrying it is ignored rather
+than honored. Finding it anywhere means stale config from a retired
+template; delete the line instead of trusting it.
+
 - Verification (must be clean before go-live):
 
   ```bash
-  grep -n ALLOW_SIMULATED_RAILS_IN_PROD .env   # expect: no output
+  grep -n ALLOW_SIMULATED_RAILS_IN_PROD .env .env.example  # expect: no output
   APP_ENV=production go test ./internal/config/ -run Production -count=1
+  # definitive check: boot with the live .env — a missing/invalid key exits
+  # before serving, naming the offender (migrate runs first in compose):
+  #   docker compose up -d && docker compose logs migrate app
   ```
 
 ---
@@ -95,7 +118,7 @@ rails inside `APP_ENV=production`. It must **not** be present (or must be
 
 ### 3.6 AI & SMS
 - [ ] `AI_ENABLED=true`, `AI_PROVIDER=openai`, `AI_MAX_REQUESTS_PER_MINUTE > 0`,
-      `OPENAI_API_KEY`.
+      `AI_API_KEY`.
 - [ ] `SMS_ENABLED=true`, `SMS_PROVIDER=http|webhook`, `SMS_API_BASE`,
       `SMS_WEBHOOK_SECRET`.
 - [ ] `BASE_URL` is a public HTTPS URL.
@@ -105,6 +128,50 @@ rails inside `APP_ENV=production`. It must **not** be present (or must be
 These four are the gap between "backups configured" and "recoverable". Each
 has a file that implements it and a dashboard row that proves it keeps
 working; all three must be green on `/admin/metrics` before go-live.
+
+Backups run either as compose services (Docker topology) or as systemd
+timers (native VPS). The compose stack ships a long-running
+`backup-scheduler` service that drives the WAL ship, daily base backup and
+weekly drill with no host cron — that is the recommended path. The systemd
+units below are the native-VPS equivalent and run as the `postgres` user.
+
+**Host install (systemd path).** The units call
+`/opt/whatsapp-payment/deploy/*.sh`, so install the tree and the environment
+file before copying any unit:
+
+```bash
+sudo mkdir -p /opt/whatsapp-payment
+sudo cp -r deploy /opt/whatsapp-payment/
+sudo chmod +x /opt/whatsapp-payment/deploy/*.sh
+sudo install -m 600 /dev/null /etc/whatsapp-payment.env   # then populate
+```
+
+Populate `/etc/whatsapp-payment.env` (root-owned, 0600) with the host-side
+values — deliberately not part of `.env.example`:
+
+```sh
+PGHOST=localhost
+PGPORT=5432
+PGUSER=whatsapp_payment
+PGPASSWORD=...
+PGDATABASE=whatsapp_payment
+BACKUP_BUCKET=my-bucket
+BACKUP_PREFIX=whatsapp-payment
+BACKUP_DIR=/var/lib/xego-backup
+RCLONE_REMOTE=xegobackup
+RCLONE_CONFIG=/etc/xego-backup/rclone.conf
+BACKUP_RETENTION_DAYS=30
+BACKUP_RPO=1h
+BACKUP_RTO=15m
+```
+
+Object-storage credentials live in `rclone.conf`. Copy the template before
+starting anything that mounts it — a missing bind source makes Docker create
+a *directory* and the scheduler fails at `up`:
+
+```bash
+cp deploy/rclone.conf.example deploy/rclone.conf   # then fill in
+```
 
 - [ ] **WAL-shipping split.** The daily base backup alone cannot honor
       `BACKUP_RPO=1h` — WAL only leaves the box when `deploy/backup.sh` runs.
@@ -153,6 +220,20 @@ working; all three must be green on `/admin/metrics` before go-live.
       is ejected instead of receiving traffic. Verify: stop the app on the
       active host and confirm the other answers within the health interval.
 
+      On server 2, set `PRIMARY_DB_HOST` in `.env` to server 1's
+      private-network IP before starting the edge stack. Server 1 publishes
+      PostgreSQL on 5432 (`PRIMARY_DB_PORT` overrides it in `compose.yaml`)
+      so the edge app can reach it cross-host; PostgreSQL terminates TLS
+      with its self-signed certificate, so the edge connects with
+      `sslmode=require` (encrypted, unverified). **Firewall rule
+      (mandatory): allow 5432/tcp from server 2's IP only**, and nothing
+      else. Do not expose it to the open internet, and prefer a private
+      network (VPC peering / WireGuard) when the provider offers one. The
+      edge replica connects directly to PostgreSQL rather than through the
+      primary's PgBouncer — fine for one replica (30 pool connections
+      against the default `max_connections=100`), but revisit if the edge
+      grows.
+
 - [ ] **Async streaming standby** for PostgreSQL (see §4.1): initialise on
       the second server, confirm `status` reports streaming, and rehearse
       the promote procedure once in staging.
@@ -168,7 +249,7 @@ one-shot → `app` (`server` on `:8080`) → Caddy (TLS). Native VPS alternative
 ```bash
 docker compose up -d --build            # migrate runs first, app waits on it
 docker compose ps                       # app healthy from /demo health
-curl -fsS https://$PUBLIC_HOST/health
+curl -fsS https://$PUBLIC_HOST/health/ready
 ```
 
 Migrations are embedded (`internal/store/migrations/*.sql`) and applied in
@@ -237,12 +318,17 @@ both directions have been observed:
    check) and re-test; with DNS failover, confirm the record flips within
    its TTL.
 3. **Database loss is visible, not silent.** Stop PostgreSQL on the
-   primary and confirm both of these: the app answered directly
-   (`curl -fsS localhost:8080/health/ready`) reports
-   `503 {"ready":false,"status":{"database":"<error>"}}`, and the edge
-   through Caddy no longer serves 200 (the probe marked the upstream down,
-   so requests get Caddy's own 503 rather than a stale 200). The edge must
-   not pretend to be healthy while writes fail.
+   primary and confirm both of these: the app knows it is unready —
+   `docker compose exec app /demo health` exits non-zero with the
+   database ping error (the same probe the container healthcheck runs;
+   the app image is distroless and publishes no port to the host, so the
+   check runs inside the compose network. On the native VPS topology the
+   app binds the host, and `curl -sS localhost:8080/health/ready` prints
+   `503 {"ready":false,"status":{"database":"<error>"}}` — note: no `-f`,
+   which would swallow the 503 body this step exists to observe) — and
+   the edge through Caddy no longer serves 200 (the probe marked the
+   upstream down, so requests get Caddy's own 503 rather than a stale
+   200). The edge must not pretend to be healthy while writes fail.
 4. **Restore and re-verify** (app back up → 200 on both edges) before
    closing the check.
 

@@ -25,9 +25,15 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Primary's PgBouncer over the private network; sslmode=require because
-      # this crosses hosts (the same-host compose path uses sslmode=disable).
-      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@${PRIMARY_DB_HOST}:6432/whatsapp_payment?sslmode=require
+      # Server 1's PostgreSQL over the private network (PRIMARY_DB_HOST);
+      # server 1 publishes 5432 (PRIMARY_DB_PORT) and its firewall must
+      # allow 5432/tcp from this host only. sslmode=require because this
+      # crosses hosts (the same-host compose path uses sslmode=disable);
+      # PostgreSQL already serves TLS with its self-signed certificate, so
+      # this is encryption-only — no certificate verification, hence no CA
+      # or sslrootcert files are needed here. This replica connects
+      # directly (not through the primary's PgBouncer).
+      DATABASE_URL: postgres://whatsapp_payment:${POSTGRES_PASSWORD}@${PRIMARY_DB_HOST}:${PRIMARY_DB_PORT:-5432}/whatsapp_payment?sslmode=require
       HTTP_ADDR: :8080
       DB_POOL_MAX: "30"
       DB_POOL_MIN: "5"

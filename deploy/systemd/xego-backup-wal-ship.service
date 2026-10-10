@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=postgres
 EnvironmentFile=/etc/whatsapp-payment.env
 # WAL-only mode: syncs BACKUP_DIR/wal to object storage and records the
 # 'wal' heartbeat the admin backup panel ages (WAL_SHIP_STALE_AFTER).

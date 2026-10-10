@@ -14,6 +14,15 @@ services:
       - ./deploy/db-ssl-entrypoint.sh:/usr/local/bin/xego-db-entrypoint.sh:ro
       - ./deploy/pg-archive-wal.sh:/usr/local/bin/xego-archive-wal.sh:ro
       - xego_backup:/var/lib/xego-backup
+    ports:
+      # Cross-host access for compose.edge.yaml (server 2 connects to this
+      # PostgreSQL via PRIMARY_DB_HOST). PostgreSQL already terminates TLS
+      # with the self-signed certificate deploy/db-ssl-entrypoint.sh
+      # generates, so the edge uses sslmode=require (encryption-only; no
+      # client cert files needed). Mandatory firewall rule: restrict
+      # 5432/tcp to the peer app server's IP only. Override the published
+      # port with PRIMARY_DB_PORT if 5432 is taken.
+      - "${PRIMARY_DB_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U whatsapp_payment -d whatsapp_payment"]
       interval: 5s
@@ -63,7 +72,42 @@ services:
     environment:
       PGHOST: db
       PGPORT: "5432"
-      PGUSER: postgres
+      PGUSER: whatsapp_payment
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      BACKUP_BUCKET: ${BACKUP_BUCKET:-}
+      BACKUP_PREFIX: ${BACKUP_PREFIX:-whatsapp-payment}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_RPO: ${BACKUP_RPO:-1h}
+      BACKUP_RTO: ${BACKUP_RTO:-15m}
+      BACKUP_DIR: /var/lib/xego-backup
+      RCLONE_REMOTE: ${RCLONE_REMOTE:-xegobackup}
+    volumes:
+      - xego_backup:/var/lib/xego-backup
+      - ${RCLONE_CONFIG:-./deploy/rclone.conf}:/etc/xego-backup/rclone.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [private]
+
+  # Long-running scheduler so backup_runs actually fills without host cron /
+  # systemd: drives the WAL ship, daily base backup and weekly PITR drill on
+  # an epoch-aligned tick (see deploy/schedule.sh). The one-shot `backup`
+  # service above stays available for manual `docker compose run --rm backup`.
+  backup-scheduler:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.backup
+    restart: unless-stopped
+    entrypoint: ["/opt/xego-backup/schedule.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: whatsapp_payment
       PGPASSWORD: ${POSTGRES_PASSWORD}
       BACKUP_BUCKET: ${BACKUP_BUCKET:-}
       BACKUP_PREFIX: ${BACKUP_PREFIX:-whatsapp-payment}

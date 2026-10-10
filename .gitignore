@@ -29,3 +29,6 @@ tunnel-help.txt
 # Playwright / Node
 test/payment-flows/node_modules/
 test/payment-flows/test-results/
+
+# Backup pipeline object-storage credentials (see deploy/rclone.conf.example)
+deploy/rclone.conf

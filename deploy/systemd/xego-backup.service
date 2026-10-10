@@ -6,6 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+User=postgres
 EnvironmentFile=/etc/whatsapp-payment.env
 # pg_basebackup + ship base and WAL to object storage, prune expired bases,
 # then record the 'base' and 'wal' heartbeats the admin backup panel ages
