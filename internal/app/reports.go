@@ -1,6 +1,6 @@
 // C15: regulator report generation. GenerateReports writes NFIU/CBN-format
-// STR, CTR, and PEP files from audited store data. The admin surface renders
-// the same rows and exposes CSV downloads to compliance admins.
+// STR, CTR, PEP, and AIF files from audited store data. The admin surface
+// renders the same rows and exposes CSV downloads to compliance admins.
 package app
 
 import (
@@ -25,6 +25,7 @@ type ReportBundle struct {
 	STR         []reports.STRRow
 	CTR         []reports.CTRRow
 	PEP         []reports.PEPRow
+	AIF         []reports.AIFRow
 }
 
 // windowStart returns the reporting window start for the given lookback.
@@ -35,7 +36,7 @@ func windowStart(lookback time.Duration) time.Time {
 	return time.Now().UTC().Add(-lookback)
 }
 
-// GenerateReports assembles the STR, CTR, and PEP report rows. Every
+// GenerateReports assembles the STR, CTR, PEP, and AIF report rows. Every
 // generation re-affirms the filing clocks (spec G5): report rows are
 // recomputed from audited data, so the sync keyed on each row's stable
 // reference is idempotent, and clocks whose underlying alert has reached a
@@ -55,22 +56,27 @@ func (a *App) GenerateReports(ctx context.Context, lookback time.Duration) (Repo
 	if err != nil {
 		return ReportBundle{}, err
 	}
-	bundle := ReportBundle{GeneratedAt: now, STR: str, CTR: ctr, PEP: pep}
+	aif, err := a.store.AIFReport(ctx, 500)
+	if err != nil {
+		return ReportBundle{}, err
+	}
+	bundle := ReportBundle{GeneratedAt: now, STR: str, CTR: ctr, PEP: pep, AIF: aif}
 	if err := a.syncFilingClocks(ctx, bundle); err != nil {
 		// Clock tracking must never break report generation; the admin page
 		// surfaces the sync problem via the clocks panel instead.
 		a.logger.WarnContext(ctx, "filing clock sync failed", "error", err)
 	}
-	a.logger.InfoContext(ctx, "reports generated", "str", len(str), "ctr", len(ctr), "pep", len(pep), "window", since.Format(time.RFC3339))
+	a.logger.InfoContext(ctx, "reports generated", "str", len(str), "ctr", len(ctr), "pep", len(pep), "aif", len(aif), "window", since.Format(time.RFC3339))
 	return bundle, nil
 }
 
 // syncFilingClocks mirrors one report bundle into report_filing_clocks: an
 // STR clock per alert-backed transaction (24h deadline), a CTR clock per
 // large payment (7th of the following month), a PEP clock per determined
-// customer (monthly registry cadence). STR clocks whose alert status is
-// terminal (resolved / false_positive) stamp complete — the case behind the
-// report closed.
+// customer (monthly registry cadence), and an AIF clock per account of record
+// (same monthly cadence). STR clocks whose alert status is terminal
+// (resolved / false_positive) stamp complete — the case behind the report
+// closed.
 func (a *App) syncFilingClocks(ctx context.Context, b ReportBundle) error {
 	strRefs := make([]string, 0, len(b.STR))
 	strDates := make([]time.Time, 0, len(b.STR))
@@ -129,6 +135,22 @@ func (a *App) syncFilingClocks(ctx context.Context, b ReportBundle) error {
 			return err
 		}
 	}
+	aifRefs := make([]string, 0, len(b.AIF))
+	aifDates := make([]time.Time, 0, len(b.AIF))
+	seen = map[string]bool{}
+	for _, r := range b.AIF {
+		ref := store.FilingClockRef("AIF", r.Reference)
+		if !seen[ref] {
+			seen[ref] = true
+			aifRefs = append(aifRefs, ref)
+			aifDates = append(aifDates, r.ReportDate)
+		}
+	}
+	if len(aifRefs) > 0 {
+		if err := a.store.SyncReportFilingClocks(ctx, "AIF", aifRefs, aifDates, b.GeneratedAt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -176,8 +198,8 @@ func (a *App) filingClockViews(ctx context.Context, now time.Time) ([]filingCloc
 	return views, overdue
 }
 
-// ExportReportsCSV writes the three reports as CSV files into dir (created if
-// needed) and returns the written filenames.
+// ExportReportsCSV writes the regulator reports as CSV files into dir (created
+// if needed) and returns the written filenames.
 func (a *App) ExportReportsCSV(ctx context.Context, dir string, lookback time.Duration) ([]string, error) {
 	bundle, err := a.GenerateReports(ctx, lookback)
 	if err != nil {
@@ -194,6 +216,7 @@ func (a *App) ExportReportsCSV(ctx context.Context, dir string, lookback time.Du
 		{"STR-" + stamp + ".csv", func(b *bytes.Buffer) error { return reports.STRCSV(b, bundle.STR, bundle.GeneratedAt) }},
 		{"CTR-" + stamp + ".csv", func(b *bytes.Buffer) error { return reports.CTRCSV(b, bundle.CTR, bundle.GeneratedAt) }},
 		{"PEP-" + stamp + ".csv", func(b *bytes.Buffer) error { return reports.PEPCSV(b, bundle.PEP, bundle.GeneratedAt) }},
+		{"AIF-" + stamp + ".csv", func(b *bytes.Buffer) error { return reports.AIFCSV(b, bundle.AIF, bundle.GeneratedAt) }},
 	}
 	var written []string
 	for _, f := range files {
@@ -211,7 +234,7 @@ func (a *App) ExportReportsCSV(ctx context.Context, dir string, lookback time.Du
 	return written, nil
 }
 
-// adminReports renders the three regulator reports for compliance staff with
+// adminReports renders the regulator reports for compliance staff with
 // download links for each format.
 func (a *App) adminReports(w http.ResponseWriter, r *http.Request) {
 	bundle, err := a.GenerateReports(r.Context(), 24*30*time.Hour)
@@ -220,16 +243,19 @@ func (a *App) adminReports(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "reports unavailable", http.StatusInternalServerError)
 		return
 	}
-	var strBuf, ctrBuf, pepBuf bytes.Buffer
+	var strBuf, ctrBuf, pepBuf, aifBuf bytes.Buffer
 	_ = reports.STRCSV(&strBuf, bundle.STR, bundle.GeneratedAt)
 	_ = reports.CTRCSV(&ctrBuf, bundle.CTR, bundle.GeneratedAt)
 	_ = reports.PEPCSV(&pepBuf, bundle.PEP, bundle.GeneratedAt)
+	_ = reports.AIFCSV(&aifBuf, bundle.AIF, bundle.GeneratedAt)
 	clocks, overdue := a.filingClockViews(r.Context(), time.Now().UTC())
 	a.renderAdmin(w, "admin_reports.html", r, "Regulator reports", map[string]any{
 		"Bundle":       bundle,
+		"AIF":          bundle.AIF,
 		"STRCSV":       strBuf.String(),
 		"CTRCSV":       ctrBuf.String(),
 		"PEPCSV":       pepBuf.String(),
+		"AIFCSV":       aifBuf.String(),
 		"Since":        windowStart(24 * 30 * time.Hour),
 		"Threshold":    a.cfg.ReportCTRThresholdKobo,
 		"FilingClocks": clocks,
@@ -272,6 +298,12 @@ func (a *App) adminReportDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="PEP-%s.csv"`, stamp))
+	case "aif":
+		if err := reports.AIFCSV(&buf, bundle.AIF, bundle.GeneratedAt); err != nil {
+			http.Error(w, "encode failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="AIF-%s.csv"`, stamp))
 	case "str-goaml":
 		body, err := reports.STRgoAML(bundle.STR, bundle.GeneratedAt)
 		if err == nil {
@@ -310,6 +342,20 @@ func (a *App) adminReportDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="PEP-%s.goaml.xml"`, stamp))
+		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(body)
+		return
+	case "aif-goaml":
+		body, err := reports.AIFgoAML(bundle.AIF, bundle.GeneratedAt)
+		if err == nil {
+			err = reports.ValidateGoAML(body)
+		}
+		if err != nil {
+			http.Error(w, "goAML encoding failed validation", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="AIF-%s.goaml.xml"`, stamp))
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, _ = w.Write(body)

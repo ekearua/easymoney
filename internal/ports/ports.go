@@ -235,6 +235,55 @@ type PaymentScreener interface {
 	ScreenPayment(context.Context, PaymentScreenRequest) (PaymentScreenDecision, error)
 }
 
+// AdverseMediaRequest carries the identity a domestic adverse-media screen
+// evaluates. Domestic lists (NSC/NIGSAC) are already owned through the
+// internal watchlist; this port is the vendor lane for adverse-media coverage.
+type AdverseMediaRequest struct {
+	LegalName   string
+	PhoneNumber string
+}
+
+// AdverseMediaHit is one adverse-media record a provider matched.
+type AdverseMediaHit struct {
+	Source      string `json:"source"`
+	Title       string `json:"title"`
+	PublishedAt string `json:"published_at"`
+	ProviderRef string `json:"reference"`
+	ListVersion string `json:"list_version"`
+}
+
+// AdverseMediaDecision is the provider-neutral outcome of an adverse-media
+// screen. Decision uses the same vocabulary as onboarding screening
+// (kyc.Screen*): clear, possible, strong, blocked.
+type AdverseMediaDecision struct {
+	Decision    string
+	MatchedHits []AdverseMediaHit
+	ProviderRef string
+	ListVersion string
+	Message     string
+}
+
+// AdverseMediaScreener isolates adverse-media screening (the G9 domestic-list
+// + adverse-media lane) from a specific vendor. Confirmed hits (blocked) stop
+// onboarding/rescreen, ambiguous ones (possible/strong) hold for review, and
+// clear passes.
+type AdverseMediaScreener interface {
+	ScreenAdverseMedia(context.Context, AdverseMediaRequest) (AdverseMediaDecision, error)
+}
+
+// AdverseMediaProviderName reports an adverse-media adapter's own name when it
+// exposes one, so a screening row carries a meaningful provider label instead
+// of a hardcoded string.
+func AdverseMediaProviderName(v AdverseMediaScreener) string {
+	if v == nil {
+		return ""
+	}
+	if named, ok := v.(interface{ ProviderName() string }); ok {
+		return named.ProviderName()
+	}
+	return "adverse-media"
+}
+
 // Verification statuses shared by the corporate registry, tax authority and
 // location adapters. They are the vocabulary the reviewer's disposition is
 // informed by; none of them advances a tier.

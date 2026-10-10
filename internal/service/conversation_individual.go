@@ -217,13 +217,23 @@ func (s *ConversationService) screenIndividual(ctx context.Context, user store.U
 	if err != nil {
 		return "", err
 	}
+	// G9: fold the adverse-media lane into the sanctions/PEP decision so the
+	// onboarding gate sees the stricter verdict.
+	decision := result.Decision
+	if s.adverseMediaScreener != nil {
+		adverse, err := s.screenAdverseMedia(ctx, user, name)
+		if err != nil {
+			return "", err
+		}
+		decision = FoldAdverseMedia(decision, adverse)
+	}
 	// The recorded decision is authoritative: RecordScreeningResult rewrites
 	// it to blocked when the identity is on the platform's internal
 	// watchlist (G3).
 	recorded, err := s.store.RecordScreeningResult(ctx, store.ScreeningResult{
 		UserID:       user.ID,
 		Provider:     s.screeningProviderName,
-		Decision:     result.Decision,
+		Decision:     decision,
 		MatchedNames: result.MatchedNames,
 		LegalName:    name,
 		PhoneNumber:  user.WhatsAppNumber,

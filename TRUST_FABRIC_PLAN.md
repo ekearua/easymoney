@@ -72,7 +72,13 @@ layer joins on.
   inside `ReserveAllowance` until a review clears. Alert outcomes are
   first-class data (false_positive/confirmed/undetermined) feeding the
   tuning loop (`TUNING_FP_PERCENT`, `TUNING_MIN_LABELLED`).
-- **Still unwired:** step-up authentication as a band action (spec G13).
+- **Now wired:** step-up authentication as a band action (spec G13 closed). A
+  merchant payout owned by a high-band profile is refused with
+  `ErrStepUpRequired` until a fresh authenticator code mints a short-lived
+  `step_up_grants` row at `/merchant/payouts/step-up` (`STEP_UP_ENABLED`,
+  `STEP_UP_TTL`, `STEP_UP_BAND`). The fraud rule engine (`internal/fraud`) runs
+  a 15-minute sweep over payments and payouts and files `lane='fraud'` alerts
+  to `/admin/fraud`, kept separate from the AML monitor and its risk score.
   Screening hold/interdiction at payment time ships against the simulated
   vendor (spec G2 closed); the live vendor adapter is a vendor-lane item.
 
@@ -190,11 +196,12 @@ from existing tables, and the trust timeline ships on the KYC profile
   the screening-vendor decision (`AML_VENDOR_DECISION_RECORD.md`) lands.
 - **ML scoring.** Blocked on M4 outcome volume; deterministic
   `ScoreRisk` weights stay until labels exist.
-- **Screening vendor lane** — the spec G2 live adapter and adverse
-  media/domestic lists (G9) — plus the open owned builds **G12–G15**
-  (document authenticity, fraud engine + step-up authentication,
-  geography/expected-activity inputs, AIF report type): tracked in
+- **Screening vendor lane** — the spec G2 live adapter and the G9
+  adverse-media live adapter drop in behind their shipped ports when the
+  respective contracts are signed: tracked in
   `CBN_AML_COMPLIANCE_SPEC.md` §5, not duplicated here. Closed: G1–G8
   (including the G7 chain-alarm residual — scheduled verification with
-  alerting), G10 liveness, G11 duplicate-identity, and the G2 seam itself,
-  which ships against the simulated vendor.
+  alerting), G10 liveness, G11 duplicate-identity, G12 document-authenticity
+  gate, G13 fraud engine + step-up re-auth, G14 geography/expected-activity
+  inputs, G15 AIF report type, and the G2 and G9 seams, both of which ship
+  against the simulated vendor.

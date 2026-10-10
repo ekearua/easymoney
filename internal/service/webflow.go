@@ -255,6 +255,15 @@ func (s *ConversationService) ApplyIndividualProfile(ctx context.Context, user s
 	if err != nil {
 		return "", err
 	}
+	// G9: fold the adverse-media lane into the sanctions/PEP decision so the
+	// onboarding gate sees the stricter verdict.
+	if s.adverseMediaScreener != nil {
+		adverse, err := s.screenAdverseMedia(ctx, user, strings.TrimSpace(legalName))
+		if err != nil {
+			return "", err
+		}
+		result.Decision = FoldAdverseMedia(result.Decision, adverse)
+	}
 	// The recorded decision is authoritative: RecordScreeningResult rewrites
 	// it to blocked when the identity is on the platform's internal
 	// watchlist (G3), so the case below fires for vendor and internal

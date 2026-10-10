@@ -3,11 +3,12 @@ package store
 // Spec G5 (CBN_AML_COMPLIANCE_SPEC.md §3.4): filing-clock tracking. NFIU
 // instructions set real deadlines — an STR within 24 hours of the
 // determination of suspicion, a CTR by the 7th of the following month — and
-// a missed clock is itself a reportable failure. Report rows are regenerated
-// on demand, so the clock lives in report_filing_clocks keyed by the row's
-// stable identity (report type + reference): SyncReportFilingClocks is
-// idempotent, DueReportFilingClocks answers "what is late", and completion is
-// stamped when the row's underlying alert/case reaches a terminal status.
+// the PEP/AIF registry extracts follow that monthly cadence; a missed clock is
+// itself a reportable failure. Report rows are regenerated on demand, so the
+// clock lives in report_filing_clocks keyed by the row's stable identity
+// (report type + reference): SyncReportFilingClocks is idempotent,
+// DueReportFilingClocks answers "what is late", and completion is stamped when
+// the row's underlying alert/case reaches a terminal status.
 
 import (
 	"context"
@@ -22,22 +23,32 @@ import (
 //   - CTR: by the 7th day of the month following the transaction.
 //   - PEP: no statutory clock; the registry extract is due on the same
 //     monthly cadence as a CTR so the surface stays uniform.
+//   - AIF: no statutory clock; the accounts-of-record register is filed on
+//     request or on the same monthly registry cadence as a CTR/PEP.
 func FilingDeadline(reportType string, eventDate time.Time, now time.Time) time.Time {
 	eventUTC := eventDate.UTC()
-	switch reportType {
-	case "STR":
-		return eventUTC.Add(24 * time.Hour)
-	default: // CTR and PEP: 7th of the following month, end of day
+	// monthly is the 7th of the following month, end of day: the registry
+	// cadence shared by CTR, PEP, and AIF.
+	monthly := func() time.Time {
 		firstOfNext := time.Date(eventUTC.Year(), eventUTC.Month(), 1, 0, 0, 0, 0, time.UTC).
 			AddDate(0, 1, 0)
 		return firstOfNext.AddDate(0, 0, 6).Add(23*time.Hour + 59*time.Minute + 59*time.Second)
+	}
+	switch reportType {
+	case "STR":
+		return eventUTC.Add(24 * time.Hour)
+	case "AIF":
+		return monthly()
+	default: // CTR and PEP: 7th of the following month, end of day
+		return monthly()
 	}
 }
 
 // FilingClockRef returns the stable reference a generated row's clock is
 // keyed on. STR rows key on the alert-backed transaction id (stable across
 // regenerations); CTR rows key on the payment id; PEP rows key on the
-// customer id (one clock per customer determination).
+// customer id (one clock per customer determination); AIF rows key on the
+// account-of-record reference ("acct:"+account id).
 func FilingClockRef(reportType string, stableID string) string {
 	return reportType + ":" + stableID
 }

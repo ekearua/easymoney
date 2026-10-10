@@ -1,7 +1,8 @@
 // Package reports generates regulator-format ML/FT reports (C15): suspicious
-// transaction reports (STR), currency transaction reports (CTR), and
-// politically exposed persons (PEP) lists, extracted from audited payment and
-// screening data. Rows carry the fields a Nigerian regulator (NFIU/CBN) needs:
+// transaction reports (STR), currency transaction reports (CTR), politically
+// exposed persons (PEP) lists, and account information files (AIF — the NFIU
+// accounts-of-record register), extracted from audited payment and screening
+// data. Rows carry the fields a Nigerian regulator (NFIU/CBN) needs:
 // customer identity, transaction reference, amount, date, counterparty, and
 // the reason the activity was flagged.
 //
@@ -26,6 +27,10 @@ const (
 	TypeSTR = "STR"
 	TypeCTR = "CTR"
 	TypePEP = "PEP"
+	// TypeAIF is the Account Information File (NFIU goAML): it reports the
+	// platform's accounts-of-record register, filed on request or on the
+	// monthly registry cadence.
+	TypeAIF = "AIF"
 )
 
 // Reporter identifies the filing institution.
@@ -74,6 +79,19 @@ type PEPRow struct {
 	ScreenedAt    time.Time `json:"screened_at"`
 	KYCTier       string    `json:"kyc_tier"`
 	RiskBand      string    `json:"risk_band"`
+}
+
+// AIFRow is one Account Information File entry: an account of record the
+// platform holds on behalf of a merchant (NFIU goAML accounts register).
+type AIFRow struct {
+	ReportDate    time.Time `json:"report_date"`
+	CustomerID    uuid.UUID `json:"customer_id"` // the merchant id
+	AccountHolder string    `json:"account_holder"`
+	AccountNumber string    `json:"account_number"`
+	BankCode      string    `json:"bank_code"`
+	Currency      string    `json:"currency"`
+	ReasonCode    string    `json:"reason_code"` // short NFIU-style reason/inquiry code
+	Reference     string    `json:"reference"`   // stable account reference, e.g. "acct:"+account id
 }
 
 // naira renders a kobo amount as NGN with comma grouping.
@@ -221,7 +239,38 @@ func PEPCSV(w io.Writer, rows []PEPRow, generatedAt time.Time) error {
 	return cw.Error()
 }
 
-// STRJSON, CTRJSON and PEPJSON encode the rows as JSON documents.
+// AIFCSV encodes the account information file (accounts of record) as CSV.
+func AIFCSV(w io.Writer, rows []AIFRow, generatedAt time.Time) error {
+	if err := writeHeader(w, TypeAIF, generatedAt); err != nil {
+		return err
+	}
+	cw := csv.NewWriter(w)
+	cw.UseCRLF = true
+	if err := cw.Write([]string{
+		"Report date", "Account holder", "Account id", "Account number",
+		"Bank code", "Currency", "Reason code", "Reference",
+	}); err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if err := cw.Write([]string{
+			r.ReportDate.UTC().Format(time.RFC3339),
+			r.AccountHolder,
+			r.CustomerID.String(),
+			r.AccountNumber,
+			r.BankCode,
+			currencyOr(r.Currency, "NGN"),
+			r.ReasonCode,
+			r.Reference,
+		}); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// STRJSON, CTRJSON, PEPJSON and AIFJSON encode the rows as JSON documents.
 func STRJSON(rows []STRRow) ([]byte, error) {
 	return json.MarshalIndent(rows, "", "  ")
 }
@@ -231,6 +280,10 @@ func CTRJSON(rows []CTRRow) ([]byte, error) {
 }
 
 func PEPJSON(rows []PEPRow) ([]byte, error) {
+	return json.MarshalIndent(rows, "", "  ")
+}
+
+func AIFJSON(rows []AIFRow) ([]byte, error) {
 	return json.MarshalIndent(rows, "", "  ")
 }
 

@@ -1,6 +1,6 @@
 // C15: regulator report extraction. These methods read audited payment and
 // screening data into the report row types defined in internal/reports, so the
-// compliance tooling and admin surface can emit STR / CTR / PEP filings.
+// compliance tooling and admin surface can emit STR / CTR / PEP / AIF filings.
 package store
 
 import (
@@ -141,6 +141,42 @@ func (s *Store) PEPReport(ctx context.Context, limit int) ([]reports.PEPRow, err
 		}
 		r.ReportDate = time.Now().UTC()
 		r.ScreenedAt = r.ScreenedAt.UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// AIFReport extracts the Account Information File rows: the platform's active
+// merchant settlement accounts of record (holder, account number, bank),
+// newest first, for the NFIU accounts register. The stable reference is
+// "acct:"+account id so regeneration keys the same filing clock.
+func (s *Store) AIFReport(ctx context.Context, limit int) ([]reports.AIFRow, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT msa.id, msa.merchant_id, COALESCE(msa.account_name,''), msa.account_number, msa.bank_code,
+		       'NGN', 'informational', 'acct:'||msa.id::text
+		FROM merchant_settlement_accounts msa
+		JOIN merchants m ON m.id = msa.merchant_id
+		WHERE msa.status='active'
+		ORDER BY msa.created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("AIF report query: %w", err)
+	}
+	defer rows.Close()
+	var out []reports.AIFRow
+	for rows.Next() {
+		var (
+			r         reports.AIFRow
+			accountID uuid.UUID
+		)
+		if err := rows.Scan(&accountID, &r.CustomerID, &r.AccountHolder, &r.AccountNumber,
+			&r.BankCode, &r.Currency, &r.ReasonCode, &r.Reference); err != nil {
+			return nil, fmt.Errorf("AIF report scan: %w", err)
+		}
+		r.ReportDate = time.Now().UTC()
 		out = append(out, r)
 	}
 	return out, rows.Err()

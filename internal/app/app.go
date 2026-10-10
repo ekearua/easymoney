@@ -34,6 +34,7 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/logging"
 	"whatsapp-payment-demo/internal/ports"
+	adversemedia "whatsapp-payment-demo/internal/providers/adversemedia"
 	aiprovider "whatsapp-payment-demo/internal/providers/ai"
 	cacprovider "whatsapp-payment-demo/internal/providers/cac"
 	docauthprovider "whatsapp-payment-demo/internal/providers/docauth"
@@ -80,6 +81,11 @@ type App struct {
 	totpKey               []byte
 	sanctionsScreener     ports.SanctionsScreener
 	screeningProviderName string
+
+	// G9: adverse-media screening (the domestic-list/adverse-media lane).
+	// Domestic lists are owned via the internal watchlist; this is the
+	// vendor lane, defaulting to the deterministic simulator.
+	adverseMediaScreener ports.AdverseMediaScreener
 
 	// G10: biometric liveness for the Tier-3 EDD step. Defaults to the
 	// deterministic simulator, which never passes a missing capture.
@@ -143,6 +149,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// Risk observations decay so a customer's score follows the suspicions
 	// still standing rather than every alert ever raised against them.
 	repository.RiskDecayHalfLife = cfg.RiskDecayHalfLife
+	// The geography score weight (G14) the risk engine adds for a FATF
+	// high-risk country of residence; zero falls back to the kyc default.
+	repository.RiskGeographyWeight = cfg.RiskGeographyWeight
 	// The AML record-keeping floor (G6): retention may archive financial
 	// history but never hard-delete AML-scope records younger than the
 	// MLPPA five-year boundary the config validates.
@@ -461,6 +470,24 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		repository.Close()
 		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" exists until the screening vendor adapter lands)", cfg.PaymentScreeningProvider)
 	}
+	// G9: adverse-media screening. The deterministic simulator is the default;
+	// the live Dojah adapter (ADVERSE_MEDIA_PROVIDER=http) is the vendor
+	// purchase named in AML_VENDOR_DECISION_RECORD.md §11.
+	var adverseMediaScreener ports.AdverseMediaScreener
+	switch strings.ToLower(cfg.AdverseMediaProvider) {
+	case "", "simulated":
+		adverseMediaScreener = adversemedia.NewSimulated()
+	case "http":
+		if cfg.AdverseMediaAPIBase == "" || cfg.AdverseMediaAppID == "" || cfg.AdverseMediaSecretKey == "" {
+			repository.Close()
+			return nil, errors.New("ADVERSE_MEDIA_API_BASE, ADVERSE_MEDIA_APP_ID and ADVERSE_MEDIA_SECRET_KEY are required when ADVERSE_MEDIA_PROVIDER=http")
+		}
+		adverseMediaScreener = adversemedia.NewHTTP(cfg.AdverseMediaAPIBase, cfg.AdverseMediaAppID, cfg.AdverseMediaSecretKey, cfg.AdverseMediaTimeout, cfg.AdverseMediaMatchThreshold)
+	default:
+		repository.Close()
+		return nil, fmt.Errorf("unsupported ADVERSE_MEDIA_PROVIDER %q", cfg.AdverseMediaProvider)
+	}
+	convo.Apply(service.WithAdverseMediaScreener(adverseMediaScreener))
 	bulkConcurrency := cfg.BulkWorkerConcurrency
 	if bulkConcurrency <= 0 {
 		bulkConcurrency = 4
@@ -473,8 +500,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		conversation: convo,
 		templates:    templates, limiter: newLoginLimiter(), totpKey: totpKey,
 		rateLimiter: rateLimiter, rateClose: rateClose, sanctionsScreener: sanctionsScreener, screeningProviderName: screeningProviderName,
-		livenessVerifier:  livenessVerifier,
-		corporateRegistry: corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
+		livenessVerifier:     livenessVerifier,
+		adverseMediaScreener: adverseMediaScreener,
+		corporateRegistry:    corporateRegistry, taxIDVerifier: taxIDVerifier, locationVerifier: locationVerifier,
 		docAuthenticityVerifier: docAuthenticityVerifier,
 		paymentScreener:         paymentScreener,
 		smsSender:               smsSender,
@@ -786,6 +814,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist/{id}/remove", a.adminInternalWatchlistRemove)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/payment-screenings", a.adminPaymentScreenings)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/payment-screenings/{id}/dispose", a.adminPaymentScreeningDispose)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/adverse-media", a.adminAdverseMedia)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/compliance", a.adminCompliance)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/compliance/{id}/record", a.adminComplianceRecord)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/network/cases/{id}/resolve", a.adminResolveNetworkCase)

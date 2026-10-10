@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/vtpass"
+	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -230,11 +232,20 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			a.logger.WarnContext(ctx, "rescreen provider error", "user_id", profile.UserID.String(), "error", err)
 			continue
 		}
+		// G9: fold the adverse-media lane into the rescreen decision so the
+		// interdiction gate below sees the stricter verdict. The adverse-media
+		// row (and its review case) is recorded by the helper.
+		foldedDecision := decision.Decision
+		if adverse, amErr := a.screenAdverseMediaRescreen(ctx, profile.UserID, individual.LegalName); amErr != nil {
+			a.logger.WarnContext(ctx, "rescreen adverse-media error", "user_id", profile.UserID.String(), "error", amErr)
+		} else {
+			foldedDecision = service.FoldAdverseMedia(foldedDecision, adverse)
+		}
 		// The recorded decision is authoritative: RecordScreeningResult
 		// rewrites it to blocked when the identity is on the platform's
 		// internal watchlist (G3).
 		recorded, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
-			UserID: profile.UserID, Provider: a.screeningProviderName, Decision: decision.Decision,
+			UserID: profile.UserID, Provider: a.screeningProviderName, Decision: foldedDecision,
 			MatchedNames: decision.MatchedNames, LegalName: individual.LegalName,
 		}, a.cfg.KYCRescreenPeriod)
 		if err != nil {
@@ -288,6 +299,42 @@ func (a *App) RescreenDue(ctx context.Context) error {
 	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked,
 		"business_due", len(businessDue), "business_screened", businessScreened, "business_blocked", businessBlocked)
 	return nil
+}
+
+// screenAdverseMediaRescreen runs the G9 adverse-media lane for one identity
+// during a rescreen and records a non-clear row (which opens an adverse_media
+// review case). It returns the adverse-media decision; a nil screener yields an
+// empty decision so the fold is a no-op.
+func (a *App) screenAdverseMediaRescreen(ctx context.Context, userID uuid.UUID, legalName string) (string, error) {
+	if a.adverseMediaScreener == nil {
+		return "", nil
+	}
+	am, err := a.adverseMediaScreener.ScreenAdverseMedia(ctx, ports.AdverseMediaRequest{LegalName: legalName})
+	if err != nil {
+		return "", err
+	}
+	if am.Decision == kyc.ScreenClear {
+		return am.Decision, nil
+	}
+	hits := make([]store.AdverseMediaHit, 0, len(am.MatchedHits))
+	names := make([]string, 0, len(am.MatchedHits))
+	for _, h := range am.MatchedHits {
+		hits = append(hits, store.AdverseMediaHit{
+			Source: h.Source, Title: h.Title, PublishedAt: h.PublishedAt,
+			ProviderRef: h.ProviderRef, ListVersion: h.ListVersion,
+		})
+		if strings.TrimSpace(h.Title) != "" {
+			names = append(names, h.Title)
+		}
+	}
+	if _, err := a.store.RecordAdverseMediaScreening(ctx, store.AdverseMediaScreening{
+		UserID: userID, Provider: ports.AdverseMediaProviderName(a.adverseMediaScreener),
+		Decision: am.Decision, MatchedHits: hits, MatchedNames: names,
+		LegalName: legalName, ListVersion: am.ListVersion, ProviderRef: am.ProviderRef, Message: am.Message,
+	}); err != nil {
+		return "", err
+	}
+	return am.Decision, nil
 }
 
 // RecomputeAllRisk refreshes the ML/FT risk band for every KYC profile. Used

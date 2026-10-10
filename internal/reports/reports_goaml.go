@@ -1,10 +1,10 @@
 // Spec G4 (CBN_AML_COMPLIANCE_SPEC.md §3.4): the goAML filing format. The
-// NFIU files STRs/CTRs through the goAML portal, which ingests an XML schema
-// derived from the UNODC goAML data model, not CSV. The encoders here emit a
-// faithful element-mapped document beside the existing CSV/JSON writers and
-// structurally validate it before it can be downloaded (§7 rehearsal rule:
-// the bundle a compliance officer hands over must be a filing, not a
-// spreadsheet).
+// NFIU files STRs/CTRs (and the AIF accounts-of-record register) through the
+// goAML portal, which ingests an XML schema derived from the UNODC goAML data
+// model, not CSV. The encoders here emit a faithful element-mapped document
+// beside the existing CSV/JSON writers and structurally validate it before it
+// can be downloaded (§7 rehearsal rule: the bundle a compliance officer hands
+// over must be a filing, not a spreadsheet).
 //
 // Honest scope note: element names and the report/envelope structure follow
 // the published goAML schema; the exact XSD is versioned per NFIU portal
@@ -38,7 +38,8 @@ type goAMLHeader struct {
 }
 
 // goAMLDoc is one filing document: header + typed body. Only the STR and CTR
-// bodies carry transaction reports; the PEP list files as a registry extract.
+// bodies carry transaction reports; the PEP list files as a registry extract
+// and the AIF (account information file) as the accounts-of-record register.
 type goAMLDoc struct {
 	XMLName xml.Name    `xml:"goaml_report"`
 	Header  goAMLHeader `xml:"report_header"`
@@ -118,6 +119,26 @@ type goAMLPEPBody struct {
 	XMLName    xml.Name        `xml:"report_body"`
 	ReportCode string          `xml:"report_code"` // PEP
 	Entries    []goAMLPEPEntry `xml:"pep_entry"`
+}
+
+// goAMLAIFEntry is one accounts-of-record entry of an AIF filing.
+type goAMLAIFEntry struct {
+	XMLName           xml.Name `xml:"aif_entry"`
+	SubjectFullName   string   `xml:"subject_full_name"`
+	SubjectAccountRef string   `xml:"subject_account_ref"`
+	BankCode          string   `xml:"bank_code"`
+	CurrencyCode      string   `xml:"currency_code"`
+	ReasonCode        string   `xml:"reason_code"`
+	Reference         string   `xml:"reference"`
+}
+
+// goAMLAIFBody carries the AIF accounts-of-record body. The entries field is
+// deliberately named AIFs (not Entries) with its own aif_entry element name,
+// so the validator can count AIF records distinctly from PEP ones.
+type goAMLAIFBody struct {
+	XMLName    xml.Name        `xml:"report_body"`
+	ReportCode string          `xml:"report_code"` // AIF
+	AIFs       []goAMLAIFEntry `xml:"aif_entry"`
 }
 
 // STRgoAML encodes STR rows as a goAML filing document.
@@ -207,6 +228,32 @@ func PEPgoAML(rows []PEPRow, generatedAt time.Time) ([]byte, error) {
 	return encodeGoAML(doc)
 }
 
+// AIFgoAML encodes the accounts-of-record register as a goAML filing document.
+func AIFgoAML(rows []AIFRow, generatedAt time.Time) ([]byte, error) {
+	entries := make([]goAMLAIFEntry, 0, len(rows))
+	for _, r := range rows {
+		entries = append(entries, goAMLAIFEntry{
+			SubjectFullName:   xesc(r.AccountHolder),
+			SubjectAccountRef: xesc(r.AccountNumber),
+			BankCode:          r.BankCode,
+			CurrencyCode:      currencyOr(r.Currency, "NGN"),
+			ReasonCode:        r.ReasonCode,
+			Reference:         xesc(r.Reference),
+		})
+	}
+	doc := goAMLDoc{
+		Header: goAMLHeader{
+			SchemaVersion: GoAMLSchemaVersion,
+			Reporter:      Reporter,
+			GeneratedAt:   tXML(generatedAt),
+			ReportType:    TypeAIF,
+			RecordCount:   len(entries),
+		},
+		Body: goAMLAIFBody{ReportCode: TypeAIF, AIFs: entries},
+	}
+	return encodeGoAML(doc)
+}
+
 func encodeGoAML(doc goAMLDoc) ([]byte, error) {
 	out, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -218,8 +265,11 @@ func encodeGoAML(doc goAMLDoc) ([]byte, error) {
 // ValidateGoAML performs the structural validation of a generated filing:
 // the document must parse, carry a single goaml_report root, a complete
 // header, exactly one report body whose code matches the header, and the
-// declared record count. This is the pre-download gate; binding to the NFIU
-// portal's versioned XSD re-runs the same check with the real schema.
+// declared record count. STR/CTR body records are transaction elements, PEP
+// records are pep_entry elements, and AIF records are aif_entry elements; one
+// document carries one body, so the count is the sum of the element slices.
+// This is the pre-download gate; binding to the NFIU portal's versioned XSD
+// re-runs the same check with the real schema.
 func ValidateGoAML(doc []byte) error {
 	var probe struct {
 		XMLName xml.Name `xml:"goaml_report"`
@@ -237,6 +287,7 @@ func ValidateGoAML(doc []byte) error {
 			// attempting to decode element content into a scalar.
 			Transactions []struct{} `xml:"transaction"`
 			Entries      []struct{} `xml:"pep_entry"`
+			AIFs         []struct{} `xml:"aif_entry"`
 		} `xml:"report_body"`
 	}
 	if err := xml.Unmarshal(doc, &probe); err != nil {
@@ -255,7 +306,7 @@ func ValidateGoAML(doc []byte) error {
 	if probe.Body.ReportCode != h.ReportType {
 		return fmt.Errorf("goAML validation: report body code %q does not match header type %q", probe.Body.ReportCode, h.ReportType)
 	}
-	records := len(probe.Body.Transactions) + len(probe.Body.Entries)
+	records := len(probe.Body.Transactions) + len(probe.Body.Entries) + len(probe.Body.AIFs)
 	if records != h.RecordCount {
 		return fmt.Errorf("goAML validation: header declares %d records, body carries %d", h.RecordCount, records)
 	}

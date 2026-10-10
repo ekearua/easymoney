@@ -51,6 +51,12 @@ type KYBProfile struct {
 	AdvancementRequestedAt *time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
+	// CountryISO is the business's country of operation (G14) as a 2-letter
+	// ISO 3166-1 alpha-2 code, or "" when not declared.
+	CountryISO string
+	// ExpectedVolumeBand is the business's declared expected monthly activity
+	// volume (G14): low|medium|high|very_high, or "" when not declared.
+	ExpectedVolumeBand string
 }
 
 // KYBAdvancementRequest is the self-service record a merchant holds of which
@@ -350,13 +356,14 @@ func (s *Store) KYBProfileByMerchant(ctx context.Context, merchantID uuid.UUID) 
 		       COALESCE(last_screening_decision,''), last_screen_at, rescreen_due,
 		       review_status, reviewed_by, reviewed_at,
 		       COALESCE(advancement_request::text,''), advancement_requested_at,
-		       created_at, updated_at
+		       created_at, updated_at,
+		       COALESCE(country_iso,''), COALESCE(expected_volume_band,'')
 		FROM business_kyb_profiles WHERE merchant_id=$1`, merchantID).Scan(
 		&p.MerchantID, &p.Tier, &p.TierUpdatedAt, &evidence,
 		&p.LastScreeningDecision, &p.LastScreenAt, &p.RescreenDue,
 		&p.ReviewStatus, &p.ReviewedBy, &p.ReviewedAt,
 		&advancement, &p.AdvancementRequestedAt,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand)
 	if err != nil {
 		return KYBProfile{}, err
 	}
@@ -373,6 +380,26 @@ func (s *Store) KYBProfileByMerchant(ctx context.Context, merchantID uuid.UUID) 
 	return p, nil
 }
 
+// SetBusinessGeography records the merchant's G14 geography and
+// expected-activity inputs on its KYB profile. A profile row may not exist
+// yet, so one is ensured first (mirroring RequestKYBAdvancement) before the
+// update, which is a no-op when the merchant has no profile of its own.
+func (s *Store) SetBusinessGeography(ctx context.Context, merchantID uuid.UUID, countryISO, expectedVolumeBand string) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_profiles(merchant_id) VALUES($1)
+		ON CONFLICT (merchant_id) DO NOTHING`, merchantID); err != nil {
+		return fmt.Errorf("ensure kyb profile for geography: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE business_kyb_profiles
+		SET country_iso=$2, expected_volume_band=$3, updated_at=now()
+		WHERE merchant_id=$1`,
+		merchantID, strings.TrimSpace(countryISO), strings.TrimSpace(expectedVolumeBand)); err != nil {
+		return fmt.Errorf("save kyb geography: %w", err)
+	}
+	return nil
+}
+
 // ListKYBProfiles returns all merchant KYB positions for the admin page,
 // newest changes first.
 func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, error) {
@@ -384,7 +411,8 @@ func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, e
 		       COALESCE(last_screening_decision,''), last_screen_at, rescreen_due,
 		       review_status, reviewed_by, reviewed_at,
 		       COALESCE(advancement_request::text,''), advancement_requested_at,
-		       created_at, updated_at
+		       created_at, updated_at,
+		       COALESCE(country_iso,''), COALESCE(expected_volume_band,'')
 		FROM business_kyb_profiles ORDER BY updated_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -399,7 +427,7 @@ func (s *Store) ListKYBProfiles(ctx context.Context, limit int) ([]KYBProfile, e
 			&p.LastScreeningDecision, &p.LastScreenAt, &p.RescreenDue,
 			&p.ReviewStatus, &p.ReviewedBy, &p.ReviewedAt,
 			&advancement, &p.AdvancementRequestedAt,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)

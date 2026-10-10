@@ -31,18 +31,20 @@ type MyDetailsMerchant struct {
 // "My details" block (Telegram and other non-web channels) and the browser
 // page (WhatsApp/Instagram), so both use the same data and copy.
 type MyDetailsSummary struct {
-	Name          string
-	Phone         string
-	Email         string
-	Tier          string
-	AccountLevel  string
-	WalletStatus  string
-	WalletBalance string
-	WalletNote    string
-	PayingLines   []MyDetailsLine
-	Merchants     []MyDetailsMerchant
-	Payments      []MyDetailsLine
-	Note          string
+	Name               string
+	Phone              string
+	Email              string
+	Tier               string
+	AccountLevel       string
+	WalletStatus       string
+	WalletBalance      string
+	WalletNote         string
+	PayingLines        []MyDetailsLine
+	Merchants          []MyDetailsMerchant
+	Payments           []MyDetailsLine
+	Note               string
+	CountryOfResidence string
+	ExpectedVolumeBand string
 }
 
 // MyDetailsSummaryOf loads the account details shown by "My details". Each
@@ -62,6 +64,13 @@ func (s *ConversationService) MyDetailsSummaryOf(ctx context.Context, user store
 	}
 	if profile, err := s.store.EnsureKYCProfile(ctx, user.ID); err == nil {
 		summary.Tier = profile.Tier
+	}
+	// G14: the declared geography and expected-activity inputs live on the
+	// individual profile beside the ladder position; a user without one (or
+	// without a declaration) simply gets no line.
+	if profile, err := s.store.IndividualProfileByUser(ctx, user.ID); err == nil {
+		summary.CountryOfResidence = profile.CountryISO
+		summary.ExpectedVolumeBand = profile.ExpectedVolumeBand
 	}
 	wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID)
 	switch {
@@ -219,6 +228,12 @@ func (s *ConversationService) sendMyDetailsChat(ctx context.Context, channel, re
 		"• Email: "+orDash(summary.Email),
 		"• Account level: "+orDash(summary.AccountLevel),
 		"• Verification tier: "+orDash(summary.Tier))
+	if summary.CountryOfResidence != "" {
+		lines = append(lines, "• Country of residence: "+summary.CountryOfResidence)
+	}
+	if summary.ExpectedVolumeBand != "" {
+		lines = append(lines, "• Expected volume band: "+summary.ExpectedVolumeBand)
+	}
 	lines = append(lines, "\nWallet")
 	if summary.WalletStatus == "" || summary.WalletStatus == "none" {
 		lines = append(lines, "• Status: not opened yet")

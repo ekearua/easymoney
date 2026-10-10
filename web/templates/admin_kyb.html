@@ -40,7 +40,7 @@
   <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Tier</th><th>Review</th><th>Screening</th><th>Evidence</th><th>Upgrade request</th><th>Updated</th><th>Advance</th><th>Review action</th></tr></thead><tbody>
   {{range .Profiles}}<tr>
     <td>{{if .MerchantName}}{{.MerchantName}}{{else}}<span class="mono">{{.MerchantID}}</span>{{end}}</td>
-    <td><strong>{{.Tier}}</strong></td>
+    <td><strong>{{.Tier}}</strong>{{if or .CountryISO .ExpectedVolumeBand}}<br><small class="muted">{{if .CountryISO}}{{.CountryISO}}{{else}}—{{end}} · {{if .ExpectedVolumeBand}}{{.ExpectedVolumeBand}}{{else}}—{{end}}</small>{{end}}</td>
     <td><span class="status {{if eq .ReviewStatus "approved"}}ok{{else if eq .ReviewStatus "rejected"}}failed{{else}}pending{{end}}">{{.ReviewStatus}}</span></td>
     <td>{{.Screening}}</td>
     <td class="mono">{{printf "%v" .Evidence}}</td>

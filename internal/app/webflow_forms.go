@@ -565,6 +565,11 @@ func (a *App) wfOnboardStep(r *http.Request, flow store.WebFlow, user store.User
 				{Value: "male", Label: "Male"}, {Value: "female", Label: "Female"},
 			}},
 			{Name: "address", Label: "Residential address", Type: "textarea", Required: true},
+			{Name: "country_of_residence", Label: "Country of residence (2-letter code, e.g. NG)", Type: "text"},
+			{Name: "expected_volume_band", Label: "Expected monthly volume", Type: "select", Options: []webFlowOption{
+				{Value: kyc.VolumeBandLow, Label: "Low"}, {Value: kyc.VolumeBandMedium, Label: "Medium"},
+				{Value: kyc.VolumeBandHigh, Label: "High"}, {Value: kyc.VolumeBandVeryHigh, Label: "Very high"},
+			}},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}}
 		return page, nil
@@ -577,6 +582,12 @@ func (a *App) wfOnboardStep(r *http.Request, flow store.WebFlow, user store.User
 			{Term: "Gender", Desc: flow.Payload["gender"]},
 			{Term: "Address", Desc: flow.Payload["address"]},
 			{Term: "Account", Desc: user.WhatsAppNumber},
+		}
+		if flow.Payload["country_of_residence"] != "" {
+			page.Review = append(page.Review, webFlowLine{Term: "Country of residence", Desc: flow.Payload["country_of_residence"]})
+		}
+		if flow.Payload["expected_volume_band"] != "" {
+			page.Review = append(page.Review, webFlowLine{Term: "Expected volume band", Desc: flow.Payload["expected_volume_band"]})
 		}
 		page.Intro = "Faya uses your WhatsApp number as your account identity. Confirm to finish setup at CBN Tier 1."
 		page.Actions = []webFlowAction{{Name: "confirm", Label: "Confirm my account"}}
@@ -639,6 +650,8 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		dob := strings.TrimSpace(r.FormValue("dob"))
 		gender := strings.ToLower(strings.TrimSpace(r.FormValue("gender")))
 		address := strings.TrimSpace(r.FormValue("address"))
+		country := strings.ToUpper(strings.TrimSpace(r.FormValue("country_of_residence")))
+		volumeBand := strings.ToLower(strings.TrimSpace(r.FormValue("expected_volume_band")))
 		var errs []string
 		parsed, err := time.Parse("2006-01-02", dob)
 		if err != nil {
@@ -652,6 +665,12 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if len([]rune(address)) < 10 || len([]rune(address)) > 240 {
 			errs = append(errs, "Send an address between 10 and 240 characters.")
 		}
+		if country != "" && !validCountryISO(country) {
+			errs = append(errs, "Enter your country of residence as a 2-letter code, for example NG.")
+		}
+		if volumeBand != "" && !validVolumeBand(volumeBand) {
+			errs = append(errs, "Choose an expected monthly volume band from the list.")
+		}
 		if msg := wfFormError(errs); msg != "" {
 			return a.wfPageWithError(flow, page, msg), nil
 		}
@@ -659,6 +678,8 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		payload["dob"] = dob
 		payload["gender"] = gender
 		payload["address"] = address
+		payload["country_of_residence"] = country
+		payload["expected_volume_band"] = volumeBand
 		a.wfAdvance(w, r, flow, "confirm", payload)
 		return nil, nil
 	case "confirm":
@@ -671,6 +692,13 @@ func (a *App) wfOnboardSubmit(w http.ResponseWriter, r *http.Request, flow store
 		if dob, err := time.Parse("2006-01-02", flow.Payload["dob"]); err == nil {
 			if _, err := a.store.UpsertIndividualProfile(r.Context(), user.ID, flow.Payload["name"], dob, flow.Payload["address"], "", flow.Payload["gender"]); err != nil {
 				return a.wfPageWithError(flow, page, "Could not save your tier 1 details. Please try again."), nil
+			}
+		}
+		// G14: the geography and expected-activity inputs are optional, so
+		// they are only written when the customer supplied one.
+		if flow.Payload["country_of_residence"] != "" || flow.Payload["expected_volume_band"] != "" {
+			if _, err := a.store.SetIndividualGeography(r.Context(), user.ID, flow.Payload["country_of_residence"], flow.Payload["expected_volume_band"]); err != nil {
+				return a.wfPageWithError(flow, page, "Could not save your country and expected volume. Please try again."), nil
 			}
 		}
 		// Completing onboarding reaches the base KYC tier (L1: channel + CBN
@@ -702,6 +730,31 @@ func validWebEmail(input string) (string, bool) {
 		return "", false
 	}
 	return strings.ToLower(trimmed), true
+}
+
+// validCountryISO reports whether input is exactly two ASCII letters, the
+// 2-letter ISO 3166-1 alpha-2 shape the G14 country fields store. Callers
+// upper-case before validating.
+func validCountryISO(input string) bool {
+	if len(input) != 2 {
+		return false
+	}
+	for _, r := range input {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
+// validVolumeBand reports whether input is one of the expected-activity
+// volume bands the G14 form offers.
+func validVolumeBand(input string) bool {
+	switch input {
+	case kyc.VolumeBandLow, kyc.VolumeBandMedium, kyc.VolumeBandHigh, kyc.VolumeBandVeryHigh:
+		return true
+	}
+	return false
 }
 
 // =========================================================================
@@ -1303,6 +1356,11 @@ func (a *App) wfKYBRequestStep(r *http.Request, flow store.WebFlow, user store.U
 			{Name: "tin", Label: "Business TIN", Type: "text", Required: true, Value: flow.Payload["tin"]},
 			{Name: "tin_document", Label: "TIN certificate", Type: "upload", Value: flow.Payload["tin_document"],
 				MediaPrompt: "Read this Tax Identification Number certificate. Reply with the TIN and the taxpayer name, on one line."},
+			{Name: "country_of_operation", Label: "Country of operation (2-letter code, e.g. NG)", Type: "text", Value: flow.Payload["country_of_operation"]},
+			{Name: "expected_volume_band", Label: "Expected monthly volume", Type: "select", Value: flow.Payload["expected_volume_band"], Options: []webFlowOption{
+				{Value: kyc.VolumeBandLow, Label: "Low"}, {Value: kyc.VolumeBandMedium, Label: "Medium"},
+				{Value: kyc.VolumeBandHigh, Label: "High"}, {Value: kyc.VolumeBandVeryHigh, Label: "Very high"},
+			}},
 		}
 		page.Actions = []webFlowAction{{Name: "next", Label: "Continue"}, {Name: "back", Label: "Back"}}
 		return page, nil
@@ -1392,6 +1450,8 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 	case "corporate":
 		cacReg := strings.TrimSpace(r.FormValue("cac_reg_number"))
 		tin := strings.ReplaceAll(strings.TrimSpace(r.FormValue("tin")), " ", "")
+		country := strings.ToUpper(strings.TrimSpace(r.FormValue("country_of_operation")))
+		volumeBand := strings.ToLower(strings.TrimSpace(r.FormValue("expected_volume_band")))
 		cacDoc := strings.TrimSpace(flow.Payload["cac_document"])
 		tinDoc := strings.TrimSpace(flow.Payload["tin_document"])
 		// An uploaded certificate can supply a number the customer could not
@@ -1410,12 +1470,20 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		if len([]rune(tin)) < 8 || len([]rune(tin)) > 20 {
 			errs = append(errs, "Send your business TIN, or upload the certificate so we can read it.")
 		}
+		if country != "" && !validCountryISO(country) {
+			errs = append(errs, "Enter the country of operation as a 2-letter code, for example NG.")
+		}
+		if volumeBand != "" && !validVolumeBand(volumeBand) {
+			errs = append(errs, "Choose an expected monthly volume band from the list.")
+		}
 		if msg := wfFormError(errs); msg != "" {
 			return a.wfPageWithError(flow, page, msg), nil
 		}
 		payload := clonePayload(flow.Payload)
 		payload["cac_reg_number"] = cacReg
 		payload["tin"] = tin
+		payload["country_of_operation"] = country
+		payload["expected_volume_band"] = volumeBand
 		a.wfAdvance(w, r, flow, "owners", payload)
 		return nil, nil
 	case "owners":
@@ -1482,6 +1550,13 @@ func (a *App) wfKYBRequestSubmit(w http.ResponseWriter, r *http.Request, flow st
 		docs := a.wfKYBDocumentsFromPayload(flow.Payload)
 		if err := a.store.UpsertKYBDocuments(r.Context(), merchant.ID, docs); err != nil {
 			return a.wfPageWithError(flow, page, "The upgrade documents could not be saved."), nil
+		}
+		// G14: the country of operation and expected-volume band are optional
+		// inputs, persisted only when the merchant supplied one.
+		if flow.Payload["country_of_operation"] != "" || flow.Payload["expected_volume_band"] != "" {
+			if err := a.store.SetBusinessGeography(r.Context(), merchant.ID, flow.Payload["country_of_operation"], flow.Payload["expected_volume_band"]); err != nil {
+				return a.wfPageWithError(flow, page, "The country and expected volume could not be saved."), nil
+			}
 		}
 		// The request carries exactly the evidence the submitted documents
 		// justify - never the tier's whole requirement list, which would let an

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -130,6 +131,42 @@ const (
 	RiskBandHighThreshold   = 70.0
 )
 
+// Expected-activity volume bands (G14) a customer or merchant declares about
+// the monthly volume they expect to move. The vocabulary is the one the
+// onboarding form offers; an empty string means nothing was declared.
+const (
+	VolumeBandLow      = "low"
+	VolumeBandMedium   = "medium"
+	VolumeBandHigh     = "high"
+	VolumeBandVeryHigh = "very_high"
+)
+
+// Geography and expected-activity score weights (G14). Both adjustments in
+// ScoreRisk only raise the score; GeographyWeight is the tunable one (the
+// store's RiskGeographyWeight field, wired from RISK_GEOGRAPHY_WEIGHT) while
+// RiskVolumeWeight is fixed because the expected-volume band is a declared
+// expectation, not a jurisdiction an operator weighs.
+const (
+	RiskGeographyWeight = 15.0
+	RiskVolumeWeight    = 10.0
+)
+
+// JurisdictionHighRisk reports whether iso is one of the FATF "high-risk and
+// other monitored jurisdictions" the platform treats as a geography risk
+// input (G14): the jurisdictions on the FATF high-risk list together with the
+// ones under increased monitoring — AF (Afghanistan), CU (Cuba), IR (Iran),
+// KP (DPRK), LY (Libya), MM (Myanmar), SD (Sudan), SY (Syria), VE (Venezuela)
+// and YE (Yemen). The comparison is case-insensitive and expects the 2-letter
+// ISO 3166-1 alpha-2 code the profile stores; anything else, including an
+// empty string, is not high risk.
+func JurisdictionHighRisk(iso string) bool {
+	switch strings.ToUpper(strings.TrimSpace(iso)) {
+	case "AF", "CU", "IR", "KP", "LY", "MM", "SD", "SY", "VE", "YE":
+		return true
+	}
+	return false
+}
+
 // RiskEventInput is one scored ML/FT observation contributing to the customer
 // risk score. A negative Score is a correction: it cancels the contribution of
 // an observation that later turned out not to be suspicious (a false-positive
@@ -148,7 +185,8 @@ type RiskEventInput struct {
 // The zero value scores every event at full weight, which is what a caller
 // that has not adopted time decay gets. Decay is deliberately opt-in: turning
 // it on changes every existing band, so it is an operator's decision, not a
-// side effect of upgrading.
+// side effect of upgrading. The geography fields are additive and optional:
+// an empty CountryOfResidence or ExpectedVolumeBand contributes nothing.
 type RiskScoring struct {
 	// Now is the reference instant decay is measured from. It travels with
 	// HalfLife: decay needs a clock the caller chose, so a zero Now disables
@@ -157,6 +195,18 @@ type RiskScoring struct {
 	// HalfLife is how long an observation's contribution takes to fall by
 	// half. Zero or negative disables decay.
 	HalfLife time.Duration
+	// CountryOfResidence is the customer's declared 2-letter country code
+	// (G14). When it names a FATF high-risk / monitored jurisdiction the
+	// geography weight is added to the score; empty adds nothing.
+	CountryOfResidence string
+	// ExpectedVolumeBand is the declared expected monthly volume band (G14),
+	// one of the VolumeBand* values. "high" and "very_high" add
+	// RiskVolumeWeight to the score; anything else adds nothing.
+	ExpectedVolumeBand string
+	// GeographyWeight overrides RiskGeographyWeight for the geography
+	// adjustment. A value <= 0 falls back to RiskGeographyWeight, so the
+	// zero value keeps the documented default.
+	GeographyWeight float64
 }
 
 // RiskContribution returns how much of an observation's score still stands at
@@ -197,13 +247,17 @@ func BandForScore(score float64) string {
 }
 
 // ScoreRisk aggregates observed ML/FT risk events with profile context (tier,
-// last sanctions/PEP decision) into a 0-100 score and low/medium/high band.
+// last sanctions/PEP decision, declared country of residence and expected
+// volume band) into a 0-100 score and low/medium/high band.
 //
 // Each event contributes its decayed weight, clamped to +/-100 so no single
 // observation can dominate either way. Negative contributions subtract (a
 // corrected false positive), so the aggregate follows the suspicions that are
 // still standing rather than everything ever flagged. Screening and tier
-// adjustments are additive and the total is clamped to [0,100].
+// adjustments are additive, the geography (G14: a FATF high-risk / monitored
+// country of residence) and expected-activity (G14: a high or very_high
+// declared volume band) adjustments only ever raise the score, and the total
+// is clamped to [0,100].
 func ScoreRisk(events []RiskEventInput, tier, screening string, opts RiskScoring) RiskResult {
 	var score float64
 	var factors []string
@@ -238,6 +292,21 @@ func ScoreRisk(events []RiskEventInput, tier, screening string, opts RiskScoring
 			score -= 20
 			factors = append(factors, "enhanced due diligence completed")
 		}
+	}
+	// G14: geography and expected-activity inputs. Both adjustments only
+	// raise the score, and only fire on a non-empty trigger, so an undeclared
+	// country or band leaves the score exactly where it was.
+	if opts.CountryOfResidence != "" && JurisdictionHighRisk(opts.CountryOfResidence) {
+		weight := opts.GeographyWeight
+		if weight <= 0 {
+			weight = RiskGeographyWeight
+		}
+		score += weight
+		factors = append(factors, "country of residence on the FATF high-risk and monitored jurisdictions list")
+	}
+	if opts.ExpectedVolumeBand == VolumeBandHigh || opts.ExpectedVolumeBand == VolumeBandVeryHigh {
+		score += RiskVolumeWeight
+		factors = append(factors, "expected activity volume band calls for enhanced attention")
 	}
 	if score < 0 {
 		score = 0

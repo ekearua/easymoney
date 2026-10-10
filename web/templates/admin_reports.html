@@ -27,12 +27,18 @@
       <td>Customers whose latest screening decision is possible / strong / blocked, with matched names.</td>
       <td><a href="/admin/reports/pep/download">CSV</a> · <a href="/admin/reports/pep-goaml/download">goAML XML</a></td>
     </tr>
+    <tr>
+      <td><strong>AIF</strong> — account information file</td>
+      <td>{{len .Bundle.AIF}}</td>
+      <td>Active merchant settlement accounts of record (holder, account number, bank) filed with NFIU.</td>
+      <td><a href="/admin/reports/aif/download">CSV</a> · <a href="/admin/reports/aif-goaml/download">goAML XML</a></td>
+    </tr>
   </tbody></table></div>
 </section>
 
 <section class="panel">
   <h2>Filing clocks</h2>
-  <p>NFIU deadlines per generated report row: an STR within 24 hours of the determination of suspicion, a CTR and the PEP registry by the 7th of the following month. A missed clock is itself a reportable failure.{{if .OverdueCount}} <strong class="warn">{{.OverdueCount}} overdue.</strong>{{end}}</p>
+  <p>NFIU deadlines per generated report row: an STR within 24 hours of the determination of suspicion, a CTR, the PEP registry, and the AIF accounts register by the 7th of the following month. A missed clock is itself a reportable failure.{{if .OverdueCount}} <strong class="warn">{{.OverdueCount}} overdue.</strong>{{end}}</p>
   <div class="table-wrap"><table><thead><tr><th>Report</th><th>Reference</th><th>Event</th><th>Due</th><th>Status</th></tr></thead><tbody>
   {{range .FilingClocks}}<tr>
     <td>{{.Clock.ReportType}}</td>
@@ -92,10 +98,26 @@
 </section>
 
 <section class="panel">
+  <h2>AIF — account information file</h2>
+  <div class="table-wrap"><table><thead><tr><th>Report date</th><th>Account holder</th><th>Account number</th><th>Bank</th><th>Currency</th><th>Reference</th></tr></thead><tbody>
+  {{range .Bundle.AIF}}<tr>
+    <td class="nowrap">{{.ReportDate.Format "02 Jan 2006 15:04:05"}}</td>
+    <td>{{.AccountHolder}}</td>
+    <td class="mono">{{.AccountNumber}}</td>
+    <td class="mono">{{.BankCode}}</td>
+    <td>{{.Currency}}</td>
+    <td class="mono">{{.Reference}}</td>
+  </tr>
+  {{else}}<tr><td colspan="6">No active accounts of record.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
   <h2>Raw CSV preview</h2>
   <details><summary>STR.csv</summary><pre class="mono">{{.STRCSV}}</pre></details>
   <details><summary>CTR.csv</summary><pre class="mono">{{.CTRCSV}}</pre></details>
   <details><summary>PEP.csv</summary><pre class="mono">{{.PEPCSV}}</pre></details>
+  <details><summary>AIF.csv</summary><pre class="mono">{{.AIFCSV}}</pre></details>
 </section>
 </main></body></html>
 {{end}}

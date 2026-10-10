@@ -112,7 +112,7 @@
   <div class="table-wrap"><table><thead><tr><th>User</th><th>Tier</th><th>Risk</th><th>Devices</th><th>Screening</th><th>Evidence</th><th>Updated</th></tr></thead><tbody>
   {{range .Profiles}}<tr>
     <td><a class="mono" href="/admin/kyc/{{.UserID}}">{{printf "%.8s…" .UserID}}</a></td>
-    <td><strong>{{.Tier}}</strong></td>
+    <td><strong>{{.Tier}}</strong>{{if or .CountryISO .ExpectedVolumeBand}}<br><small class="muted">{{if .CountryISO}}{{.CountryISO}}{{else}}—{{end}} · {{if .ExpectedVolumeBand}}{{.ExpectedVolumeBand}}{{else}}—{{end}}</small>{{end}}</td>
     <td><span class="status {{if or (eq .RiskBand "medium") (eq .RiskBand "high")}}warn{{else}}ok{{end}}">{{.RiskBand}}</span> {{.RiskScore | printf "%.0f"}}</td>
     <td>{{with index .Devices .UserID}}<span title="{{.LastLabel}} · last seen {{.LastSeenAt.Format "02 Jan 2006 15:04"}}">{{.DeviceCount}}</span>{{else}}—{{end}}</td>
     <td>{{if .LastScreeningDecision}}{{.LastScreeningDecision}}{{else}}—{{end}}</td>

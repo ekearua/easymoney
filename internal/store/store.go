@@ -38,6 +38,12 @@ type Store struct {
 	// RISK_DECAY_HALF_LIFE.
 	RiskDecayHalfLife time.Duration
 
+	// RiskGeographyWeight (G14, spec §3.7) is the score weight added when a
+	// profile's country of residence is on the FATF high-risk and monitored
+	// jurisdictions list. The app wires this from RISK_GEOGRAPHY_WEIGHT; zero
+	// makes kyc fall back to its default weight (kyc.RiskGeographyWeight).
+	RiskGeographyWeight float64
+
 	// AMLRecordRetention (G6, spec §5) is the MLPPA 2022 five-year
 	// record-keeping floor. PurgeBefore clamps its AML-scope classes
 	// (payments, invoices, thrift, audit, merchant registrations) to

@@ -26,6 +26,12 @@ func (a *App) wfMyDetailsStep(r *http.Request, flow store.WebFlow, user store.Us
 		webFlowLine{Term: "Verification tier", Desc: summary.Tier},
 		webFlowLine{Term: "Wallet status", Desc: walletStatusDesc(summary.WalletStatus)},
 	)
+	if summary.CountryOfResidence != "" {
+		review = append(review, webFlowLine{Term: "Country of residence", Desc: summary.CountryOfResidence})
+	}
+	if summary.ExpectedVolumeBand != "" {
+		review = append(review, webFlowLine{Term: "Expected volume band", Desc: summary.ExpectedVolumeBand})
+	}
 	if summary.WalletBalance != "" {
 		review = append(review, webFlowLine{Term: "Wallet balance", Desc: summary.WalletBalance})
 	}

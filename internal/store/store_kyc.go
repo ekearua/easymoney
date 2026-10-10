@@ -24,8 +24,14 @@ type IndividualProfile struct {
 	Gender      string
 	Address     string
 	Occupation  string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// CountryISO is the customer's country of residence (G14) as a 2-letter
+	// ISO 3166-1 alpha-2 code, or "" when not declared.
+	CountryISO string
+	// ExpectedVolumeBand is the declared expected monthly activity volume
+	// (G14): low|medium|high|very_high, or "" when not declared.
+	ExpectedVolumeBand string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // KYCProfile is a user's position on the L0-L3 identity ladder (C9/C10).
@@ -43,6 +49,11 @@ type KYCProfile struct {
 	RiskUpdatedAt         *time.Time
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
+	// CountryISO and ExpectedVolumeBand are the G14 geography and
+	// expected-activity inputs, read from the individual profile beside the
+	// ladder position (empty when the customer has not declared them).
+	CountryISO         string
+	ExpectedVolumeBand string
 }
 
 // CustomerVerification is one identity or channel verification performed.
@@ -170,10 +181,37 @@ func (s *Store) HealIndividualAccountLevel(ctx context.Context, userID uuid.UUID
 func (s *Store) IndividualProfileByUser(ctx context.Context, userID uuid.UUID) (IndividualProfile, error) {
 	var profile IndividualProfile
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id,legal_name,date_of_birth,gender,address,occupation,created_at,updated_at
+		SELECT user_id,legal_name,date_of_birth,gender,address,occupation,country_iso,expected_volume_band,created_at,updated_at
 		FROM individual_profiles
-		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.CreatedAt, &profile.UpdatedAt)
+		WHERE user_id=$1`, userID).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.CountryISO, &profile.ExpectedVolumeBand, &profile.CreatedAt, &profile.UpdatedAt)
 	return profile, err
+}
+
+// SetIndividualGeography records the customer's G14 geography and
+// expected-activity inputs. A user may not have an individual profile yet
+// (the row is opened at onboarding), so a missing row is inserted first with
+// an empty legal_name rather than failing: the geography capture must never
+// depend on onboarding having run to completion first. The placeholder
+// carries the earliest date the profile table accepts and empty address and
+// occupation, because those columns are NOT NULL with no default; a later
+// onboarding upsert overwrites them. This mirrors the upsert style of
+// UpsertIndividualProfile.
+func (s *Store) SetIndividualGeography(ctx context.Context, userID uuid.UUID, countryISO, expectedVolumeBand string) (IndividualProfile, error) {
+	var profile IndividualProfile
+	err := s.pool.QueryRow(ctx, `
+		INSERT INTO individual_profiles(user_id,legal_name,date_of_birth,address,occupation,country_iso,expected_volume_band)
+		VALUES($1,'','1900-01-01','','',$2,$3)
+		ON CONFLICT(user_id) DO UPDATE
+		SET country_iso=EXCLUDED.country_iso,
+			expected_volume_band=EXCLUDED.expected_volume_band,
+			updated_at=now()
+		RETURNING user_id,legal_name,date_of_birth,gender,address,occupation,country_iso,expected_volume_band,created_at,updated_at`,
+		userID, strings.TrimSpace(countryISO), strings.TrimSpace(expectedVolumeBand),
+	).Scan(&profile.UserID, &profile.LegalName, &profile.DateOfBirth, &profile.Gender, &profile.Address, &profile.Occupation, &profile.CountryISO, &profile.ExpectedVolumeBand, &profile.CreatedAt, &profile.UpdatedAt)
+	if err != nil {
+		return IndividualProfile{}, err
+	}
+	return profile, nil
 }
 
 // EnsureKYCProfile creates an L0 profile row for the user if none exists and
@@ -199,16 +237,19 @@ func (s *Store) KYCProfileByUser(ctx context.Context, userID uuid.UUID) (KYCProf
 	var evidence []byte
 	var reviewedAt *time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		SELECT kyc_profiles.user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
 		       review_status, COALESCE(reviewer_email,''), reviewed_at,
 		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
-		       created_at, updated_at
-		FROM kyc_profiles WHERE user_id=$1`, userID).Scan(
+		       kyc_profiles.created_at, kyc_profiles.updated_at,
+		       COALESCE(ip.country_iso,''), COALESCE(ip.expected_volume_band,'')
+		FROM kyc_profiles
+		LEFT JOIN individual_profiles ip ON ip.user_id = kyc_profiles.user_id
+		WHERE kyc_profiles.user_id=$1`, userID).Scan(
 		&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 		&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
 		&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
-		&p.CreatedAt, &p.UpdatedAt)
+		&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand)
 	if err != nil {
 		return KYCProfile{}, err
 	}
@@ -226,12 +267,15 @@ func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, e
 		limit = 100
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		SELECT kyc_profiles.user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
 		       review_status, COALESCE(reviewer_email,''), reviewed_at,
 		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
-		       created_at, updated_at
-		FROM kyc_profiles ORDER BY updated_at DESC LIMIT $1`, limit)
+		       kyc_profiles.created_at, kyc_profiles.updated_at,
+		       COALESCE(ip.country_iso,''), COALESCE(ip.expected_volume_band,'')
+		FROM kyc_profiles
+		LEFT JOIN individual_profiles ip ON ip.user_id = kyc_profiles.user_id
+		ORDER BY kyc_profiles.updated_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +288,7 @@ func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, e
 		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
 			&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)
@@ -260,12 +304,15 @@ func (s *Store) ListKYCProfiles(ctx context.Context, limit int) ([]KYCProfile, e
 // KYCProfileByTier lists users currently at a given tier.
 func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
+		SELECT kyc_profiles.user_id, tier, tier_updated_at, COALESCE(evidence::text,'[]'),
 		       COALESCE(last_screening_decision,''),
 		       review_status, COALESCE(reviewer_email,''), reviewed_at,
 		       COALESCE(risk_score,0), COALESCE(risk_band,'low'), risk_updated_at,
-		       created_at, updated_at
-		FROM kyc_profiles WHERE tier=$1 ORDER BY tier_updated_at DESC`, tier)
+		       kyc_profiles.created_at, kyc_profiles.updated_at,
+		       COALESCE(ip.country_iso,''), COALESCE(ip.expected_volume_band,'')
+		FROM kyc_profiles
+		LEFT JOIN individual_profiles ip ON ip.user_id = kyc_profiles.user_id
+		WHERE kyc_profiles.tier=$1 ORDER BY kyc_profiles.tier_updated_at DESC`, tier)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +325,7 @@ func (s *Store) KYCProfileByTier(ctx context.Context, tier string) ([]KYCProfile
 		if err := rows.Scan(&p.UserID, &p.Tier, &p.TierUpdatedAt, &evidence,
 			&p.LastScreeningDecision, &p.ReviewStatus, &p.ReviewerEmail,
 			&reviewedAt, &p.RiskScore, &p.RiskBand, &p.RiskUpdatedAt,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(evidence, &p.Evidence)
@@ -709,8 +756,11 @@ func (s *Store) RecomputeRiskScore(ctx context.Context, userID uuid.UUID) (KYCPr
 		return KYCProfile{}, err
 	}
 	result := kyc.ScoreRisk(events, profile.Tier, profile.LastScreeningDecision, kyc.RiskScoring{
-		Now:      time.Now().UTC(),
-		HalfLife: s.RiskDecayHalfLife,
+		Now:                time.Now().UTC(),
+		HalfLife:           s.RiskDecayHalfLife,
+		CountryOfResidence: profile.CountryISO,
+		ExpectedVolumeBand: profile.ExpectedVolumeBand,
+		GeographyWeight:    s.RiskGeographyWeight,
 	})
 	now := time.Now().UTC()
 	tx, err := s.pool.Begin(ctx)

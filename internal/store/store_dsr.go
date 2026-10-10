@@ -260,7 +260,7 @@ func (s *Store) ExportUserData(ctx context.Context, userID uuid.UUID) (DataSubje
 		dest *json.RawMessage
 		sql  string
 	}{
-		{&out.KYCProfile, jsonAggSQL(`SELECT user_id AS id, user_id, tier, tier_updated_at, evidence, last_screening_decision, review_status, risk_band, risk_updated_at, created_at, updated_at FROM kyc_profiles WHERE user_id=%s`)},
+		{&out.KYCProfile, jsonAggSQL(`SELECT kp.user_id AS id, kp.user_id, kp.tier, kp.tier_updated_at, kp.evidence, kp.last_screening_decision, kp.review_status, kp.risk_band, kp.risk_updated_at, kp.created_at, kp.updated_at, COALESCE(ip.country_iso,'') AS country_iso, COALESCE(ip.expected_volume_band,'') AS expected_volume_band FROM kyc_profiles kp LEFT JOIN individual_profiles ip ON ip.user_id = kp.user_id WHERE kp.user_id=%s`)},
 		{&out.Verifications, jsonAggSQL(`SELECT id, user_id, verification_type, status, provider, provider_reference, result, verified_at, expires_at FROM customer_verifications WHERE user_id=%s`)},
 		{&out.Screening, jsonAggSQL(`SELECT id, user_id, provider, decision, matched_names, screened_at, rescreen_due FROM screening_results WHERE user_id=%s`)},
 		{&out.RiskEvents, jsonAggSQL(`SELECT id, user_id, event_type, score, details, occurred_at FROM risk_events WHERE user_id=%s`)},

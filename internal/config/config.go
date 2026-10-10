@@ -158,6 +158,18 @@ type Config struct {
 	// screening adapter lands (AML_VENDOR_DECISION_RECORD.md).
 	PaymentScreeningProvider string
 
+	// G9 adverse-media + domestic-list screening. Domestic lists (NSC/NIGSAC)
+	// are owned via the internal watchlist; this is the adverse-media vendor
+	// lane, defaulting to the deterministic simulator until the Dojah adapter
+	// (ADVERSE_MEDIA_PROVIDER=http) is configured. Validation is added by the
+	// provider wiring step; an unknown provider hits the app.go switch default.
+	AdverseMediaProvider       string
+	AdverseMediaAPIBase        string
+	AdverseMediaAppID          string
+	AdverseMediaSecretKey      string
+	AdverseMediaTimeout        time.Duration
+	AdverseMediaMatchThreshold float64
+
 	// G10 liveness / face verification for the Tier-3 EDD step. The live
 	// biometric vendor is part of the identity purchase, so this defaults to
 	// the deterministic simulator; there is no HTTP adapter yet.
@@ -287,6 +299,11 @@ type Config struct {
 	// matches the 90-day KYC rescreen period, so a suspicion fades on the same
 	// clock the profile is re-checked on.
 	RiskDecayHalfLife time.Duration
+
+	// RiskGeographyWeight (G14, spec §3.7) is the score weight added when the
+	// customer's declared country of residence is a FATF high-risk / monitored
+	// jurisdiction. Zero keeps the shipped default (kyc.RiskGeographyWeight).
+	RiskGeographyWeight float64
 
 	// AMLRecordRetention (G6, spec §5) is the MLPPA 2022 record-keeping
 	// floor: five years. The retention purge clamps every AML-scope class
@@ -574,6 +591,7 @@ func Load() (Config, error) {
 		TuningFPPercent:                             envFloat("TUNING_FP_PERCENT", 60),
 		TuningMinLabelled:                           EnvInt64("TUNING_MIN_LABELLED", 10),
 		RiskDecayHalfLife:                           envDuration("RISK_DECAY_HALF_LIFE", 90*24*time.Hour),
+		RiskGeographyWeight:                         envFloat("RISK_GEOGRAPHY_WEIGHT", 15),
 		SessionTTL:                                  envDuration("CONVERSATION_TTL", 30*time.Minute),
 		ReceiptTTL:                                  envDuration("RECEIPT_TTL", 90*24*time.Hour),
 		OnboardingReminderInterval:                  envDuration("ONBOARDING_REMINDER_INTERVAL", 6*time.Hour),
@@ -601,9 +619,15 @@ func Load() (Config, error) {
 		RateLimitScanPerMinute:                      int(EnvInt64("RATE_LIMIT_SCAN_PER_MINUTE", 30)),
 		RateLimitAPIKeysPerMinute:                   int(EnvInt64("RATE_LIMIT_API_KEYS_PER_MINUTE", 300)),
 
-		SettlementFeeBps:         int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
-		PaymentScreeningProvider: strings.ToLower(env("PAYMENT_SCREENING_PROVIDER", "simulated")),
-		LivenessProvider:         strings.ToLower(env("LIVENESS_PROVIDER", "simulated")),
+		SettlementFeeBps:           int(EnvInt64("SETTLEMENT_FEE_BPS", 250)),
+		PaymentScreeningProvider:   strings.ToLower(env("PAYMENT_SCREENING_PROVIDER", "simulated")),
+		LivenessProvider:           strings.ToLower(env("LIVENESS_PROVIDER", "simulated")),
+		AdverseMediaProvider:       strings.ToLower(env("ADVERSE_MEDIA_PROVIDER", "simulated")),
+		AdverseMediaAPIBase:        strings.TrimRight(os.Getenv("ADVERSE_MEDIA_API_BASE"), "/"),
+		AdverseMediaAppID:          strings.TrimSpace(os.Getenv("ADVERSE_MEDIA_APP_ID")),
+		AdverseMediaSecretKey:      strings.TrimSpace(os.Getenv("ADVERSE_MEDIA_SECRET_KEY")),
+		AdverseMediaTimeout:        envDuration("ADVERSE_MEDIA_TIMEOUT", 30*time.Second),
+		AdverseMediaMatchThreshold: envFloat("ADVERSE_MEDIA_MATCH_THRESHOLD", 0.85),
 
 		PayoutMinKobo:         EnvInt64("PAYOUT_MIN_KOBO", 100_00),
 		PayoutMaxKobo:         EnvInt64("PAYOUT_MAX_KOBO", 10_000_00),
@@ -776,6 +800,9 @@ func Load() (Config, error) {
 	}
 	if cfg.RiskDecayHalfLife < 0 {
 		return Config{}, fmt.Errorf("RISK_DECAY_HALF_LIFE must not be negative (0 disables decay)")
+	}
+	if cfg.RiskGeographyWeight < 0 {
+		return Config{}, fmt.Errorf("RISK_GEOGRAPHY_WEIGHT must not be negative (0 keeps the shipped default)")
 	}
 	if cfg.AMLRecordRetention < 0 {
 		return Config{}, fmt.Errorf("AML_RECORD_RETENTION must not be negative (0 disables the AML floor)")

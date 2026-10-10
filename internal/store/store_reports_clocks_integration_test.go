@@ -128,3 +128,65 @@ func TestReportFilingClocks(t *testing.T) { //nolint:parallel // shared scratch 
 		t.Fatalf("completed CTR clock must carry a filed_at (err=%v)", err)
 	}
 }
+
+// G15: the AIF accounts-of-record filing follows the monthly registry cadence
+// (7th of the following month, end of day) and its clocks sync, surface as
+// overdue, and complete by reference exactly like the CTR/PEP clocks.
+func TestAIFFilingClock(t *testing.T) { //nolint:parallel // shared scratch database
+	// Pure deadline check: the AIF cadence matches CTR/PEP. This runs even
+	// when no scratch database is configured.
+	eventDate := time.Date(2026, 9, 20, 15, 30, 0, 0, time.UTC)
+	wantDue := time.Date(2026, 10, 7, 23, 59, 59, 0, time.UTC)
+	if got := FilingDeadline("AIF", eventDate, time.Now()); !got.Equal(wantDue) {
+		t.Fatalf("AIF deadline: want %s, got %s", wantDue, got)
+	}
+
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `TRUNCATE report_filing_clocks`); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	ref := FilingClockRef("AIF", "acct:"+uuid.New().String())
+	if err := repository.SyncReportFilingClocks(ctx, "AIF", []string{ref}, []time.Time{eventDate}, now); err != nil {
+		t.Fatal(err)
+	}
+	clock, err := repository.ReportFilingClocks(ctx, "AIF", 10)
+	if err != nil || len(clock) != 1 {
+		t.Fatalf("expected 1 AIF clock, got %d (err=%v)", len(clock), err)
+	}
+	if !clock[0].DueAt.Equal(wantDue) {
+		t.Fatalf("AIF clock deadline: want %s, got %s", wantDue, clock[0].DueAt)
+	}
+
+	// The AIF clock (due 7 Oct) is already past now (8 Oct) and unfiled.
+	due, err := repository.DueReportFilingClocks(ctx, now, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 || due[0].Reference != ref {
+		t.Fatalf("expected exactly the overdue AIF clock, got %d clocks", len(due))
+	}
+
+	// Terminal-disposition completion stamps the AIF clock by reference.
+	n, err := repository.CompleteReportFilingClocks(ctx, "AIF", []string{ref}, now)
+	if err != nil || n != 1 {
+		t.Fatalf("AIF completion: want 1 clock stamped, got %d (err=%v)", n, err)
+	}
+	final, err := repository.ReportFilingClocks(ctx, "AIF", 10)
+	if err != nil || len(final) != 1 || final[0].FiledAt == nil {
+		t.Fatalf("completed AIF clock must carry a filed_at (err=%v)", err)
+	}
+}

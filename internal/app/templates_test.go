@@ -175,10 +175,11 @@ func TestTemplatesParse(t *testing.T) {
 		"AdminRole": "admin",
 		"Since":     time.Now(),
 		"Threshold": int64(1_000_000_000),
-		"Bundle":    map[string]any{"STR": []map[string]any{}, "CTR": []map[string]any{}, "PEP": []map[string]any{}},
+		"Bundle":    map[string]any{"STR": []map[string]any{}, "CTR": []map[string]any{}, "PEP": []map[string]any{}, "AIF": []map[string]any{}},
 		"STRCSV":    "str",
 		"CTRCSV":    "ctr",
 		"PEPCSV":    "pep",
+		"AIFCSV":    "aif",
 	}
 	if err := tmpl.ExecuteTemplate(&buf, "admin_reports.html", exec); err != nil {
 		t.Fatalf("execute admin_reports.html: %v", err)

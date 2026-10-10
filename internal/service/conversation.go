@@ -49,6 +49,10 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
+	// G9 adverse-media screening (the domestic-list/adverse-media lane).
+	// Nil until wired, in which case the check is skipped.
+	adverseMediaScreener ports.AdverseMediaScreener
+
 	// G10 biometric liveness for the Tier-3 EDD step. Nil until wired, in
 	// which case the EDD step cannot grant EvEDDCompleted (a missing verifier
 	// must never pass).
@@ -56,6 +60,10 @@ type ConversationService struct {
 
 	identityProviderName  string
 	screeningProviderName string
+
+	// adverseMediaProviderName is the provider label recorded on adverse-media
+	// screening rows, resolved from the adapter at construction time.
+	adverseMediaProviderName string
 
 	// AI/media providers (nil when AI_ENABLED=false).
 	imageReader  ports.ImageReader
@@ -100,6 +108,27 @@ func (s *ConversationService) SetLivenessVerifier(v ports.LivenessVerifier) {
 func (s *ConversationService) SetScreeningProviderName(name string) {
 	if strings.TrimSpace(name) != "" {
 		s.screeningProviderName = name
+	}
+}
+
+// ConversationOption configures optional ConversationService dependencies after
+// construction. It is applied through Apply.
+type ConversationOption func(*ConversationService)
+
+// WithAdverseMediaScreener installs the G9 adverse-media screener. The
+// adapter's provider name is resolved once, so every persisted screening row
+// carries a meaningful label. A nil screener leaves the check off.
+func WithAdverseMediaScreener(screener ports.AdverseMediaScreener) ConversationOption {
+	return func(s *ConversationService) {
+		s.adverseMediaScreener = screener
+		s.adverseMediaProviderName = ports.AdverseMediaProviderName(screener)
+	}
+}
+
+// Apply applies configuration options to the service.
+func (s *ConversationService) Apply(opts ...ConversationOption) {
+	for _, o := range opts {
+		o(s)
 	}
 }
 

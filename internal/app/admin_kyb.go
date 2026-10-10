@@ -65,6 +65,10 @@ type kybAdminRow struct {
 	VerifiedCount  int
 	LocationStatus string
 	LocationText   string
+
+	// G14 geography and expected-activity inputs captured on the profile.
+	CountryISO         string
+	ExpectedVolumeBand string
 }
 
 // adminKYB renders the business identity ladder together with the editable
@@ -106,6 +110,8 @@ func (a *App) adminKYB(w http.ResponseWriter, r *http.Request) {
 			NextTier:     next,
 			Options:      businessEvidenceOptions(next),
 		}
+		row.CountryISO = p.CountryISO
+		row.ExpectedVolumeBand = p.ExpectedVolumeBand
 		docs, derr := a.store.KYBDocumentsByMerchant(r.Context(), p.MerchantID)
 		if derr != nil {
 			docs = store.KYBDocuments{}

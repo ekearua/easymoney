@@ -14,14 +14,17 @@ package app
 //
 //  1. the register's rows are exactly G1..G15, numbered contiguously and once
 //     each (a deleted or renumbered row fails);
-//  2. the closed set is exactly G1-G8 plus G10-G11 (strikethrough rows) and the
-//     open set is exactly G9 and G12-G15 (so flipping a gap to closed requires
-//     editing this table too, which is the point - the claim cannot change
-//     silently);
+//  2. the closed set is exactly G1-G15 (strikethrough rows) and the open set is
+//     empty — every gap in the register has closed, so flipping a gap to closed
+//     (or back) requires editing this table too, which is the point — the claim
+//     cannot change silently;
 //  3. no closed row carries stale open-work language;
-//  4. the §5 scheduling note names every open gap;
+//  4. the §5 scheduling note reflects the owned-open set: when owned open work
+//     exists it names every open gap, and when none does it says so (the guard
+//     refuses a note that both claims and hides open owned builds);
 //  5. the §8 roadmap splits open work the way the register does: G9 in the
-//     vendor track, G12-G15 in the owned-unscheduled row.
+//     vendor-track row while open, G14-G15 in the owned-unscheduled row, and
+//     neither row named as current work once closed.
 //
 // When a gap genuinely closes, update the tables here and the doc together.
 
@@ -38,12 +41,13 @@ import (
 const amlSpecPath = "CBN_AML_COMPLIANCE_SPEC.md"
 
 // amlSpecClosed and amlSpecOpen are the canonical status of every register row.
-var amlSpecClosed = []int{1, 2, 3, 4, 5, 6, 7, 8, 10, 11}
-var amlSpecOpen = []int{9, 12, 13, 14, 15}
+var amlSpecClosed = []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
+var amlSpecOpen = []int{}
 
 // amlSpecOwnedOpen is the subset of open gaps that is ours to build (G9 is the
-// vendor lane, so it appears in the vendor-track row instead).
-var amlSpecOwnedOpen = []int{12, 13, 14, 15}
+// vendor lane, so it appears in the vendor-track row instead). Every register
+// gap has closed, so the owned-open set is empty.
+var amlSpecOwnedOpen = []int{}
 
 // amlSpecStaleOpenPhrases are sentences that mean "work remains" and therefore
 // must never appear in a closed register row. "the remaining sliver" is the
@@ -192,11 +196,20 @@ func TestAMLGapRegisterSummaryMatchesRoadmap(t *testing.T) {
 	if note == "" {
 		t.Fatal("could not find the scheduling note under the register")
 	}
-	if strings.Contains(note, "Every owned build is closed") {
-		t.Error("the scheduling note still claims every owned build is closed while owned gaps are open")
-	}
-	if !strings.Contains(note, "Open owned builds") {
-		t.Error("the scheduling note no longer states which owned builds are open")
+	if len(amlSpecOwnedOpen) > 0 {
+		if strings.Contains(note, "Every owned build is closed") {
+			t.Error("the scheduling note claims every owned build is closed while owned gaps are open")
+		}
+		if !strings.Contains(note, "Open owned builds") {
+			t.Error("the scheduling note no longer states which owned builds are open")
+		}
+	} else {
+		if strings.Contains(note, "Open owned builds") {
+			t.Error("no owned build is open, but the scheduling note still lists open owned builds")
+		}
+		if !strings.Contains(note, "Every owned build is closed") {
+			t.Error("every owned build is closed, but the scheduling note does not say so")
+		}
 	}
 	for _, id := range amlSpecOwnedOpen {
 		if !strings.Contains(note, "G"+strconv.Itoa(id)) {
@@ -208,16 +221,35 @@ func TestAMLGapRegisterSummaryMatchesRoadmap(t *testing.T) {
 	if roadmap == "" {
 		t.Fatal("could not find the roadmap's open-owned row")
 	}
-	for _, id := range amlSpecOwnedOpen {
-		if !strings.Contains(roadmap, "G"+strconv.Itoa(id)) {
-			t.Errorf("the roadmap's open-owned row omits G%d", id)
+	if len(amlSpecOwnedOpen) > 0 {
+		for _, id := range amlSpecOwnedOpen {
+			if !strings.Contains(roadmap, "G"+strconv.Itoa(id)) {
+				t.Errorf("the roadmap's open-owned row omits G%d", id)
+			}
 		}
+	} else if !strings.Contains(roadmap, "none") {
+		t.Error("no owned build is open, but the roadmap's open-owned row still lists work")
 	}
 
 	vendor := section(spec, "| **Vendor track**", "\n\n")
-	if vendor == "" || !strings.Contains(vendor, "G9") {
-		t.Error("the roadmap's vendor-track row no longer names G9, the open vendor-lane gap")
+	if vendor == "" {
+		t.Fatal("could not find the roadmap's vendor-track row")
 	}
+	if containsInt(amlSpecOpen, 9) && !strings.Contains(vendor, "G9") {
+		t.Error("the roadmap's vendor-track row must name G9 while it is the open vendor-lane gap")
+	}
+	if !containsInt(amlSpecOpen, 9) && strings.Contains(vendor, "G9") {
+		t.Error("G9 is closed; the vendor-track row must not present it as current open work")
+	}
+}
+
+func containsInt(ids []int, want int) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 // section returns the text between start and the next end marker (or the end of

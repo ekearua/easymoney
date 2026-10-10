@@ -1,0 +1,26 @@
+{{define "admin_adverse_media.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Adverse media</h1>
+<p>Adverse-media and domestic-list screening (spec G9). Domestic lists (NSC/NIGSAC) are owned through the internal watchlist; this lane records vendor adverse-media results.</p></div></header>
+
+<section class="panel">
+  <h2>Recent screenings</h2>
+  <p>This queue is read-only. A non-clear determination opens an <strong>adverse_media</strong> case on the KYC review queue, where the reviewer dispositions it.</p>
+  <div class="table-wrap"><table><thead><tr><th>Screened</th><th>Legal name</th><th>Provider</th><th>Decision</th><th>Hits</th><th>List version</th><th>Detail</th></tr></thead><tbody>
+  {{range .Screenings}}<tr>
+    <td class="nowrap">{{date .ScreenedAt}}</td>
+    <td>{{.LegalName}}</td>
+    <td>{{.Provider}}{{if .ProviderRef}} <span class="mono">{{.ProviderRef}}</span>{{end}}</td>
+    <td>{{if or (eq .Decision "possible") (eq .Decision "strong")}}<span class="status warn">{{.Decision}}</span>{{else if eq .Decision "blocked"}}<span class="status failed">{{.Decision}}</span>{{else}}<span class="status succeeded">{{.Decision}}</span>{{end}}</td>
+    <td>{{if .MatchedNames}}{{join .MatchedNames ", "}}{{else}}—{{end}}</td>
+    <td class="mono">{{if .ListVersion}}{{.ListVersion}}{{else}}—{{end}}</td>
+    <td class="muted">{{.Message}}</td>
+  </tr>{{else}}<tr><td colspan="7">No adverse-media screenings recorded yet — the lane fills during onboarding and rescreen.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

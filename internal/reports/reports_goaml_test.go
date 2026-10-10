@@ -150,3 +150,66 @@ func TestValidateGoAMLRejectsBrokenDocuments(t *testing.T) { //nolint:parallel
 		t.Errorf("control document must validate: %v", err)
 	}
 }
+
+// G15: the AIF accounts-of-record filing. The doc validates, carries the AIF
+// report code, counts one aif_entry per row, and rejects a tampered count.
+func TestAIFGoAMLEncodesAndValidates(t *testing.T) { //nolint:parallel
+	at := goAMLFixtureTime()
+	rows := []AIFRow{
+		{
+			ReportDate:    at,
+			CustomerID:    uuid.New(),
+			AccountHolder: "Lagos Lunchbox Ltd",
+			AccountNumber: "0123456789",
+			BankCode:      "058",
+			Currency:      "NGN",
+			ReasonCode:    "informational",
+			Reference:     "acct:" + uuid.New().String(),
+		},
+		{
+			ReportDate:    at,
+			CustomerID:    uuid.New(),
+			AccountHolder: "Kora Books Ltd",
+			AccountNumber: "9876543210",
+			BankCode:      "011",
+			Currency:      "NGN",
+			ReasonCode:    "informational",
+			Reference:     "acct:" + uuid.New().String(),
+		},
+	}
+	body, err := AIFgoAML(rows, at)
+	if err != nil {
+		t.Fatalf("AIFgoAML: %v", err)
+	}
+	if err := ValidateGoAML(body); err != nil {
+		t.Fatalf("ValidateGoAML: %v\n%s", err, body)
+	}
+	out := string(body)
+	for _, want := range []string{
+		"<report_type>AIF</report_type>", "<report_code>AIF</report_code>",
+		"<record_count>2</record_count>", "<goaml_report>",
+		"Lagos Lunchbox Ltd", "0123456789", "Kora Books Ltd", "informational",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("AIF goAML missing %q in:\n%s", want, out)
+		}
+	}
+	// One aif_entry element per row: the AIF body must count distinctly from
+	// the PEP body's pep_entry elements.
+	if got := strings.Count(out, "<aif_entry>"); got != len(rows) {
+		t.Errorf("aif_entry count = %d, want %d", got, len(rows))
+	}
+	// Count mismatch: header declares more records than the body carries.
+	tampered := bytes.Replace(body, []byte("<record_count>2</record_count>"), []byte("<record_count>9</record_count>"), 1)
+	if err := ValidateGoAML(tampered); err == nil {
+		t.Error("AIF record-count mismatch must fail validation")
+	}
+	// Zero rows still validate: an empty filing is a legitimate document.
+	empty, err := AIFgoAML(nil, at)
+	if err != nil {
+		t.Fatalf("AIFgoAML empty: %v", err)
+	}
+	if err := ValidateGoAML(empty); err != nil {
+		t.Fatalf("empty AIF filing must validate: %v", err)
+	}
+}

@@ -95,3 +95,35 @@ func TestNegativeAmountFormatting(t *testing.T) {
 		t.Errorf("naira(-1234567) = %q, want %q", got, want)
 	}
 }
+
+// G15: the AIF accounts-of-record CSV carries the header preamble, the fixed
+// column row, and one row per account of record.
+func TestAIFCSV(t *testing.T) {
+	at := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	accountID := uuid.New()
+	rows := []AIFRow{{
+		ReportDate:    at,
+		CustomerID:    accountID,
+		AccountHolder: "Lagos Lunchbox Ltd",
+		AccountNumber: "0123456789",
+		BankCode:      "058",
+		Currency:      "NGN",
+		ReasonCode:    "informational",
+		Reference:     "acct:" + accountID.String(),
+	}}
+	var buf bytes.Buffer
+	if err := AIFCSV(&buf, rows, at); err != nil {
+		t.Fatalf("AIFCSV: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Reporter", "AIF", "Account holder", "Account number", "Bank code",
+		"Currency", "Reason code", "Reference",
+		"Lagos Lunchbox Ltd", "0123456789", "058", "informational",
+		"acct:" + accountID.String(),
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("AIFCSV missing %q in:\n%s", want, out)
+		}
+	}
+}
