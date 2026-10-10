@@ -153,6 +153,19 @@ type Config struct {
 	ScreeningTimeout    time.Duration
 	KYCRescreenPeriod   time.Duration
 
+	// Dojah is the primary screening/biometric vendor named in
+	// AML_VENDOR_DECISION_RECORD.md §11. These credentials are shared by the
+	// four lanes that accept the value "dojah" — onboarding sanctions/PEP
+	// screening (SCREENING_PROVIDER), payment screening
+	// (PAYMENT_SCREENING_PROVIDER), liveness (LIVENESS_PROVIDER) and document
+	// authenticity (DOC_AUTH_PROVIDER) — and are only required when one of
+	// them selects it. DOJAH_BASE_URL defaults to production
+	// (https://api.dojah.io); the sandbox is https://sandbox.dojah.io.
+	DojahAppID          string
+	DojahSecretKey      string
+	DojahBaseURL        string
+	DojahMatchThreshold float64
+
 	// G2 payment-time counterparty screening for money-out rails. Defaults
 	// to the deterministic simulator until the screening vendor's payment-
 	// screening adapter lands (AML_VENDOR_DECISION_RECORD.md).
@@ -524,6 +537,10 @@ func Load() (Config, error) {
 		DocAuthenticityAPIBase:          strings.TrimRight(os.Getenv("DOC_AUTH_API_BASE"), "/"),
 		DocAuthenticityAPIKey:           os.Getenv("DOC_AUTH_API_KEY"),
 		DocAuthenticityTimeout:          envDuration("DOC_AUTH_TIMEOUT", 30*time.Second),
+		DojahAppID:                      strings.TrimSpace(os.Getenv("DOJAH_APP_ID")),
+		DojahSecretKey:                  strings.TrimSpace(os.Getenv("DOJAH_SECRET_KEY")),
+		DojahBaseURL:                    strings.TrimRight(env("DOJAH_BASE_URL", "https://api.dojah.io"), "/"),
+		DojahMatchThreshold:             envFloat("DOJAH_MATCH_THRESHOLD", 0.85),
 
 		BulkLocationTTL:       envDuration("BULK_LOCATION_TTL", 5*time.Minute),
 		BulkRadiusM:           int(EnvInt64("BULK_RADIUS_M", 50)),
@@ -683,19 +700,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("INTERSWITCH_CHECKOUT_MODE must be \"TEST\" or \"LIVE\", got %q", cfg.InterswitchCheckoutMode)
 	}
 	switch cfg.ScreeningProvider {
-	case "", "http":
+	case "", "http", "dojah":
 	default:
-		return Config{}, fmt.Errorf("SCREENING_PROVIDER must be \"http\", got %q", cfg.ScreeningProvider)
+		return Config{}, fmt.Errorf("SCREENING_PROVIDER must be \"http\" or \"dojah\", got %q", cfg.ScreeningProvider)
 	}
 	switch cfg.PaymentScreeningProvider {
-	case "", "simulated":
+	case "", "simulated", "dojah":
 	default:
-		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" (the live screening-vendor adapter is pending, see AML_VENDOR_DECISION_RECORD.md), got %q", cfg.PaymentScreeningProvider)
+		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" or \"dojah\" (the live screening-vendor adapter lands with the AML_VENDOR_DECISION_RECORD.md §11 Dojah contract), got %q", cfg.PaymentScreeningProvider)
 	}
 	switch cfg.LivenessProvider {
-	case "", "simulated":
+	case "", "simulated", "dojah":
 	default:
-		return Config{}, fmt.Errorf("LIVENESS_PROVIDER must be \"simulated\" (the live biometrics adapter is part of the identity purchase, see EXTERNAL_SERVICE_COST_MODEL.md), got %q", cfg.LivenessProvider)
+		return Config{}, fmt.Errorf("LIVENESS_PROVIDER must be \"simulated\" or \"dojah\", got %q", cfg.LivenessProvider)
 	}
 	if cfg.OnboardingReminderMax < 1 || cfg.OnboardingReminderMax > 10 {
 		return Config{}, fmt.Errorf("ONBOARDING_REMINDER_MAX must be between 1 and 10, got %d", cfg.OnboardingReminderMax)
@@ -737,9 +754,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("LOCATION_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.LocationProvider)
 	}
 	switch cfg.DocAuthenticityProvider {
-	case "", "simulated", "http":
+	case "", "simulated", "http", "dojah":
 	default:
-		return Config{}, fmt.Errorf("DOC_AUTH_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.DocAuthenticityProvider)
+		return Config{}, fmt.Errorf("DOC_AUTH_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.DocAuthenticityProvider)
 	}
 	switch cfg.SMSProvider {
 	case "", "webhook", "http":
@@ -955,6 +972,20 @@ func validateProductionRails(cfg Config) error {
 	if cfg.DocAuthenticityProvider == "http" && cfg.DocAuthenticityAPIBase == "" {
 		return errors.New("DOC_AUTH_API_BASE is required when DOC_AUTH_PROVIDER=http")
 	}
+	if cfg.UsesDojah() {
+		if cfg.DojahAppID == "" {
+			return errors.New("DOJAH_APP_ID is required when a *_PROVIDER is set to \"dojah\"")
+		}
+		if cfg.DojahSecretKey == "" {
+			return errors.New("DOJAH_SECRET_KEY is required when a *_PROVIDER is set to \"dojah\"")
+		}
+		if cfg.DojahBaseURL == "" {
+			return errors.New("DOJAH_BASE_URL must not be empty (defaults to https://api.dojah.io)")
+		}
+	}
+	if cfg.DojahMatchThreshold < 0 || cfg.DojahMatchThreshold > 1 {
+		return fmt.Errorf("DOJAH_MATCH_THRESHOLD must be between 0 and 1, got %g", cfg.DojahMatchThreshold)
+	}
 	if strings.EqualFold(cfg.PayoutProvider, "interswitch") || strings.EqualFold(cfg.RefundProvider, "interswitch") {
 		if cfg.InterswitchTransferBaseURL == "" {
 			return errors.New("INTERSWITCH_TRANSFER_BASE_URL is required when payout or refund uses interswitch in production")
@@ -964,6 +995,22 @@ func validateProductionRails(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+// UsesDojah reports whether any provider lane selects the Dojah adapter, so the
+// shared DOJAH_* credentials are required.
+func (c Config) UsesDojah() bool {
+	for _, provider := range []string{
+		c.ScreeningProvider,
+		c.PaymentScreeningProvider,
+		c.LivenessProvider,
+		c.DocAuthenticityProvider,
+	} {
+		if provider == "dojah" {
+			return true
+		}
+	}
+	return false
 }
 
 func env(name, fallback string) string {

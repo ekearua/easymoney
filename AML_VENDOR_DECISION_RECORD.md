@@ -363,10 +363,13 @@ This section is authoritative and **supersedes §6**.
 - Dojah auth is two headers on every call: `Authorization: <secret_key>` (raw, no `Bearer`)
   and `AppId: <app_id>`. Sandbox `https://sandbox.dojah.io`; production
   `https://api.dojah.io`.
-- Config: add `dojah` as an accepted value for `SCREENING_PROVIDER` and
-  `PAYMENT_SCREENING_PROVIDER`; add `LIVENESS_PROVIDER=dojah`, `DOCUMENT_PROVIDER=dojah`,
-  `DOJAH_APP_ID`, `DOJAH_SECRET_KEY`, `DOJAH_BASE_URL`, `DOJAH_MATCH_THRESHOLD` (default
-  `0.85`). No `simulated` fallback in production.
+- Config: `dojah` is accepted for `SCREENING_PROVIDER`, `PAYMENT_SCREENING_PROVIDER`,
+  `LIVENESS_PROVIDER` and `DOC_AUTH_PROVIDER` (the code knob is `DOC_AUTH_PROVIDER`, not
+  `DOCUMENT_PROVIDER`); the shared `DOJAH_APP_ID`, `DOJAH_SECRET_KEY`, `DOJAH_BASE_URL`
+  (default `https://api.dojah.io`) and `DOJAH_MATCH_THRESHOLD` (default `0.85`) knobs are
+  wired, with credentials enforced in production when any lane selects Dojah. The Dojah
+  adapters speak the normalized request/response envelopes documented on their ports; the
+  §7 trial validates the live payload shapes. No `simulated` fallback in production.
 
 ### 11.2 Domestic-list sourcing (NSC) — settled
 

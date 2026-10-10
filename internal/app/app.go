@@ -247,6 +247,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		p := screeningprovider.NewHTTP(cfg.ScreeningAPIBase, cfg.ScreeningAPIKey, cfg.ScreeningTimeout)
 		sanctionsScreener = p
 		screeningProviderName = p.ProviderName()
+	case "dojah":
+		p := screeningprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold)
+		sanctionsScreener = p
+		screeningProviderName = p.ProviderName()
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported SCREENING_PROVIDER %q", cfg.ScreeningProvider)
@@ -307,16 +311,22 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			return nil, errors.New("DOC_AUTH_API_BASE is required when DOC_AUTH_PROVIDER=http")
 		}
 		docAuthenticityVerifier = docauthprovider.NewHTTP(cfg.DocAuthenticityAPIBase, cfg.DocAuthenticityAPIKey, cfg.DocAuthenticityTimeout)
+	case "dojah":
+		docAuthenticityVerifier = docauthprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.DocAuthenticityTimeout)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported DOC_AUTH_PROVIDER %q", cfg.DocAuthenticityProvider)
 	}
-	// G10 biometric liveness for the Tier-3 EDD step. Only the deterministic
-	// simulator exists; the live adapter is part of the identity purchase.
+	// G10 biometric liveness for the Tier-3 EDD step. "simulated" is the
+	// deterministic stand-in; "dojah" hits the live endpoint. Liveness is
+	// provider-fail-open for the gate's own outage semantics: a provider
+	// error surfaces to the caller rather than silently granting EDD.
 	var livenessVerifier ports.LivenessVerifier
 	switch strings.ToLower(cfg.LivenessProvider) {
 	case "", "simulated":
 		livenessVerifier = livenessprovider.NewSimulated()
+	case "dojah":
+		livenessVerifier = livenessprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.DocAuthenticityTimeout)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported LIVENESS_PROVIDER %q", cfg.LivenessProvider)
@@ -466,9 +476,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	switch strings.ToLower(cfg.PaymentScreeningProvider) {
 	case "", "simulated":
 		paymentScreener = paymentscreening.NewSimulated()
+	case "dojah":
+		paymentScreener = paymentscreening.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" exists until the screening vendor adapter lands)", cfg.PaymentScreeningProvider)
+		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" or \"dojah\" exist)", cfg.PaymentScreeningProvider)
 	}
 	// G9: adverse-media screening. The deterministic simulator is the default;
 	// the live Dojah adapter (ADVERSE_MEDIA_PROVIDER=http) is the vendor

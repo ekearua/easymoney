@@ -536,3 +536,178 @@ func TestAMLRecordRetentionValidation(t *testing.T) {
 		t.Fatalf("explicit zero should disable the floor, got %v", err)
 	}
 }
+
+// TestDojahConfigDefaults pins DOJAH_BASE_URL and DOJAH_MATCH_THRESHOLD
+// defaults and the trailing-slash trim, and confirms the values load.
+func TestDojahConfigDefaults(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("DOJAH_BASE_URL", "https://api.dojah.io/")
+	t.Setenv("DOJAH_MATCH_THRESHOLD", "0.95")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DojahBaseURL != "https://api.dojah.io" {
+		t.Fatalf("DOJAH_BASE_URL = %q, want trailing slash trimmed", cfg.DojahBaseURL)
+	}
+	if cfg.DojahMatchThreshold != 0.95 {
+		t.Fatalf("DOJAH_MATCH_THRESHOLD = %v, want 0.95", cfg.DojahMatchThreshold)
+	}
+
+	t.Setenv("DOJAH_BASE_URL", "")
+	t.Setenv("DOJAH_MATCH_THRESHOLD", "")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DojahBaseURL != "https://api.dojah.io" || cfg.DojahMatchThreshold != 0.85 {
+		t.Fatalf("defaults not applied: base=%q threshold=%v", cfg.DojahBaseURL, cfg.DojahMatchThreshold)
+	}
+}
+
+// TestDojahProviderValuesAccepted confirms every screening-style switch
+// accepts the vendored value "dojah".
+func TestDojahProviderValuesAccepted(t *testing.T) {
+	cases := []struct{ key, value string }{
+		{"SCREENING_PROVIDER", "dojah"},
+		{"PAYMENT_SCREENING_PROVIDER", "dojah"},
+		{"LIVENESS_PROVIDER", "dojah"},
+		{"DOC_AUTH_PROVIDER", "dojah"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			t.Setenv("APP_ENV", "development")
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(); err != nil {
+				t.Fatalf("Load with %s=dojah: %v", tc.key, err)
+			}
+		})
+	}
+}
+
+// TestDojahProviderBogusRejected confirms a near-miss value still fails the
+// switch validation.
+func TestDojahProviderBogusRejected(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("SCREENING_PROVIDER", "dojahx")
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "SCREENING_PROVIDER") {
+		t.Fatalf("expected bogus SCREENING_PROVIDER rejection, got %v", err)
+	}
+}
+
+// TestProductionRequiresDojahCredentials pins the credential requirement in
+// production: selecting "dojah" on any lane requires DOJAH_APP_ID and
+// DOJAH_SECRET_KEY.
+func TestProductionRequiresDojahCredentials(t *testing.T) {
+	setProductionBaseEnv(t)
+	t.Setenv("SCREENING_PROVIDER", "dojah")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "DOJAH_APP_ID") {
+		t.Fatalf("expected DOJAH_APP_ID requirement, got %v", err)
+	}
+
+	t.Setenv("DOJAH_APP_ID", "app-id-1")
+	_, err = Load()
+	if err == nil || !strings.Contains(err.Error(), "DOJAH_SECRET_KEY") {
+		t.Fatalf("expected DOJAH_SECRET_KEY requirement, got %v", err)
+	}
+
+	t.Setenv("DOJAH_SECRET_KEY", "secret-key")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("fully-credentialed dojah config should load in production, got %v", err)
+	}
+	if cfg.ScreeningProvider != "dojah" {
+		t.Fatalf("ScreeningProvider = %q, want dojah", cfg.ScreeningProvider)
+	}
+}
+
+// TestValidateProductionDojahRails pins the shared-credential model on every
+// lane that accepts "dojah": whichever lane selects it drives the same
+// DOJAH_APP_ID / DOJAH_SECRET_KEY / DOJAH_BASE_URL requirement.
+func TestValidateProductionDojahRails(t *testing.T) {
+	live := Config{
+		PaymentProvider:            "interswitch",
+		InterswitchCheckoutMode:    "LIVE",
+		InterswitchTransferBaseURL: "https://live.transfer.example.com",
+		InterswitchSourceAccount:   "1234567890",
+		DataProvider:               "vtpass",
+		IdentityProvider:           "ninbvnportal",
+		NINBVNPortalKey:            "nin-key",
+		ScreeningProvider:          "dojah",
+		DojahAppID:                 "app-id-1",
+		DojahSecretKey:             "secret-key",
+		DojahBaseURL:               "https://api.dojah.io",
+		DojahMatchThreshold:        0.85,
+	}
+	if err := validateProductionRails(live); err != nil {
+		t.Fatalf("fully live dojah config rejected: %v", err)
+	}
+
+	lanes := []struct {
+		name  string
+		apply func(*Config)
+	}{
+		{"screening", func(c *Config) {
+			c.ScreeningProvider = "dojah"
+			c.PaymentScreeningProvider = ""
+			c.LivenessProvider = ""
+			c.DocAuthenticityProvider = ""
+		}},
+		{"payment", func(c *Config) {
+			c.ScreeningProvider = ""
+			c.PaymentScreeningProvider = "dojah"
+			c.LivenessProvider = ""
+			c.DocAuthenticityProvider = ""
+		}},
+		{"liveness", func(c *Config) {
+			c.ScreeningProvider = ""
+			c.PaymentScreeningProvider = ""
+			c.LivenessProvider = "dojah"
+			c.DocAuthenticityProvider = ""
+		}},
+		{"docauth", func(c *Config) {
+			c.ScreeningProvider = ""
+			c.PaymentScreeningProvider = ""
+			c.LivenessProvider = ""
+			c.DocAuthenticityProvider = "dojah"
+		}},
+	}
+	for _, lane := range lanes {
+		t.Run(lane.name+"_credential_gate", func(t *testing.T) {
+			cfg := live
+			lane.apply(&cfg)
+			cfg.DojahAppID = ""
+			if err := validateProductionRails(cfg); err == nil || !strings.Contains(err.Error(), "DOJAH_APP_ID") {
+				t.Fatalf("expected DOJAH_APP_ID requirement, got %v", err)
+			}
+			cfg.DojahAppID = "app-id-1"
+			if err := validateProductionRails(cfg); err != nil {
+				t.Fatalf("credentialed dojah %s lane should pass, got %v", lane.name, err)
+			}
+		})
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{"missing_secret_key", func(c *Config) { c.DojahSecretKey = "" }, "DOJAH_SECRET_KEY"},
+		{"empty_base_url", func(c *Config) { c.DojahBaseURL = "" }, "DOJAH_BASE_URL"},
+		{"threshold_above_one", func(c *Config) { c.DojahMatchThreshold = 1.5 }, "DOJAH_MATCH_THRESHOLD"},
+		{"threshold_below_zero", func(c *Config) { c.DojahMatchThreshold = -0.1 }, "DOJAH_MATCH_THRESHOLD"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := live
+			tc.mutate(&cfg)
+			err := validateProductionRails(cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
