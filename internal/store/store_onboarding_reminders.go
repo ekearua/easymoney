@@ -151,7 +151,7 @@ func (s *Store) CountOnboardingReminderOutcomeStats(ctx context.Context) (sent, 
 func (s *Store) StalledOnboardingUsersByStage(ctx context.Context) (map[string]int, error) {
 	const query = `
 WITH stalled AS (
-    SELECT u.id
+    SELECT u.id, cs.state AS stage_state
     FROM conversation_sessions cs
     JOIN users u ON u.id = cs.user_id
     WHERE u.onboarding_complete = false
@@ -159,7 +159,7 @@ WITH stalled AS (
       AND cs.expires_at > now()
       AND cs.updated_at < now() - make_interval(secs => $1::int)
 ), abandoned AS (
-    SELECT DISTINCT ON (cs.user_id) cs.user_id
+    SELECT DISTINCT ON (cs.user_id) cs.user_id AS id, cs.state AS stage_state
     FROM conversation_sessions cs
     JOIN users u ON u.id = cs.user_id
     WHERE u.onboarding_complete = false
@@ -171,7 +171,7 @@ WITH stalled AS (
           WHERE x.user_id = cs.user_id AND x.expires_at > now())
     ORDER BY cs.user_id, cs.updated_at DESC
 ), never AS (
-    SELECT u.id
+    SELECT u.id, ''::text AS stage_state
     FROM users u
     WHERE u.onboarding_complete = false
       AND NOT EXISTS (SELECT 1 FROM merchant_owners mo WHERE mo.user_id = u.id)
@@ -181,13 +181,13 @@ WITH stalled AS (
 )
 SELECT ` + stageCaseSQL + ` AS stage, COUNT(*)
 FROM (
-    SELECT id AS user_id, 'live' AS src FROM stalled
+    SELECT id, stage_state, 'live' AS src FROM stalled
     UNION ALL
-    SELECT id AS user_id, 'expired' AS src FROM abandoned
+    SELECT id, stage_state, 'expired' AS src FROM abandoned
     UNION ALL
-    SELECT id AS user_id, 'never' AS src FROM never
+    SELECT id, stage_state, 'never' AS src FROM never
 ) p
-JOIN users u ON u.id = p.user_id
+JOIN users u ON u.id = p.id
 GROUP BY stage`
 	rows, err := s.pool.Query(ctx, query,
 		int64(12*time.Hour/time.Second), int64(24*time.Hour/time.Second))
@@ -320,12 +320,14 @@ FROM (
             ELSE p.wa_number
         END AS recipient,
         COALESCE((SELECT COUNT(*) FROM onboarding_reminders r
+                  WHERE r.user_id = p.user_id AND r.stage = ` + stageCaseSQL + `), 0) + 1 AS next_attempt_no,
+        COALESCE((SELECT COUNT(*) FROM onboarding_reminders r
                   WHERE r.user_id = p.user_id AND r.stage = ` + stageCaseSQL + `
-                    AND r.outcome <> 'failed'), 0) + 1 AS next_attempt_no
+                    AND r.outcome <> 'failed'), 0) AS used_attempts
     FROM pool p
     JOIN users u ON u.id = p.user_id
 ) s
-WHERE s.next_attempt_no <= $3
+WHERE s.used_attempts < $3
   AND NOT EXISTS (
       SELECT 1 FROM onboarding_reminders r
       WHERE r.user_id = s.user_id AND r.stage = s.stage

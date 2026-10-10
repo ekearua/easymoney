@@ -222,12 +222,18 @@ func TestOnboardingReminderSweep(t *testing.T) {
 	if find(cands, userB.ID) == nil {
 		t.Fatal("user B must remain a candidate (cap is per stage)")
 	}
-	// A failed attempt does not count toward the cap.
+	// A failed attempt does not count toward the cap...
 	if err := repository.SetOnboardingReminderOutcome(ctx, r1.ID, "failed"); err != nil {
 		t.Fatal(err)
 	}
-	if find(sweep(1, 48*time.Hour), userA.ID) == nil {
+	// ...but it does occupy its attempt number, so the next candidate must
+	// number 2: numbering from non-failed rows only would collide with the
+	// failed row's slot on the unique index and lose silently forever.
+	cands = sweep(1, 48*time.Hour)
+	if cA2 := find(cands, userA.ID); cA2 == nil {
 		t.Fatal("failed attempt must not consume the cap")
+	} else if cA2.NextAttemptNo != 2 {
+		t.Fatalf("after one failed row the next attempt must number 2, got %d", cA2.NextAttemptNo)
 	}
 
 	// --- G: unanswered reminder suppresses until a newer inbound ---------
@@ -273,5 +279,90 @@ func TestOnboardingReminderSweep(t *testing.T) {
 	}
 	if err := repository.SetOnboardingReminderOutcome(ctx, dup.ID, "sent"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestOnboardingReminderStats runs the admin panel's read path end-to-end
+// against a real database: the per-stage classification projection, the
+// outcome buckets, and the completed-after-reminder proxy must all execute.
+// The projection once referenced p.stage_state without selecting it into its
+// derived table, which made every query error and /admin/onboarding-reminders
+// return 500 — no test ran this SQL, so CI stayed green.
+func TestOnboardingReminderStats(t *testing.T) { //nolint:parallel // shared scratch database
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := repository.OnboardingReminderStats(ctx)
+	if err != nil {
+		t.Fatalf("onboarding reminder stats must execute against a real database: %v", err)
+	}
+	// The template renders every stage bucket; the store must always supply
+	// all of them so a never-populated stage reads 0 rather than vanishing.
+	for _, stage := range []string{"name", "email", "details", "confirm", "kyb", "start"} {
+		if _, ok := before.StalledByStage[stage]; !ok {
+			t.Fatalf("stats missing stage bucket %q: %v", stage, before.StalledByStage)
+		}
+	}
+
+	// Fixture: one stalled live-session user in the email stage. Deltas
+	// against the baseline keep the assertions independent of whatever else
+	// the shared scratch database holds.
+	user, err := repository.GetOrCreateUser(ctx, fmt.Sprintf("+234817%06d", time.Now().UnixNano()%1_000_000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx,
+		`UPDATE users SET onboarding_complete = false WHERE id = $1`, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveSession(ctx, Session{
+		UserID: user.ID, State: "onboard_email", Data: map[string]string{},
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx,
+		`UPDATE conversation_sessions SET updated_at = now() - interval '13 hours' WHERE user_id = $1`,
+		user.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := repository.OnboardingReminderStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.StalledByStage["email"] != before.StalledByStage["email"]+1 {
+		t.Fatalf("stalled email bucket = %d, want %d (the new fixture)",
+			after.StalledByStage["email"], before.StalledByStage["email"]+1)
+	}
+
+	// Outcome buckets: a claimed-then-sent attempt must land in Sent24h.
+	r := OnboardingReminder{
+		UserID: user.ID, Stage: "email", AttemptNo: 1, StageState: "onboard_email",
+		Channel: "whatsapp", Recipient: user.WhatsAppNumber, Body: "nudge",
+	}
+	if err := repository.ClaimOnboardingReminder(ctx, &r); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := repository.SetOnboardingReminderOutcome(ctx, r.ID, "sent"); err != nil {
+		t.Fatal(err)
+	}
+	final, err := repository.OnboardingReminderStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Sent24h != after.Sent24h+1 {
+		t.Fatalf("Sent24h = %d, want %d (the fresh claim)", final.Sent24h, after.Sent24h+1)
 	}
 }

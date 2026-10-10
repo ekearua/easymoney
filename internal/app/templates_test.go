@@ -296,6 +296,28 @@ func TestTemplatesParse(t *testing.T) {
 	}
 
 	buf.Reset()
+	execReminders := map[string]any{
+		"AppName":   "Xego",
+		"Title":     "Onboarding reminders",
+		"CSRF":      "x",
+		"AdminRole": "admin",
+		"Stats": store.OnboardingReminderStats{
+			StalledByStage:         map[string]int{"name": 1, "email": 2, "details": 3, "confirm": 0, "kyb": 4, "start": 5},
+			Sent24h:                6,
+			Pending24h:             7,
+			Failed24h:              8,
+			CompletedAfterReminder: 9,
+		},
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_onboarding_reminders.html", execReminders); err != nil {
+		t.Fatalf("execute admin_onboarding_reminders.html: %v", err)
+	}
+	remindersRendered := buf.String()
+	if !strings.Contains(remindersRendered, "Deliverability guard") || !strings.Contains(remindersRendered, "kyb") {
+		t.Fatal("admin_onboarding_reminders.html must render the guard panel and the stage table")
+	}
+
+	buf.Reset()
 	execMedia := map[string]any{
 		"AppName":   "Xego",
 		"Title":     "Channel media",
