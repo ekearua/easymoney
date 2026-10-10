@@ -70,6 +70,7 @@ type dojahPaymentResponse struct {
 	Reference    string   `json:"reference"`
 	ProviderRef  string   `json:"provider_ref"`
 	ReportID     string   `json:"report_id"`
+	ListVersion  string   `json:"list_version"`
 	Message      string   `json:"message"`
 }
 
@@ -101,6 +102,7 @@ func (d *Dojah) ScreenPayment(ctx context.Context, req ports.PaymentScreenReques
 		Decision:     decision,
 		MatchedNames: resp.MatchedNames,
 		ProviderRef:  ref,
+		ListVersion:  strings.TrimSpace(resp.ListVersion),
 		Message:      message,
 	}, nil
 }

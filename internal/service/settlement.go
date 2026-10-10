@@ -234,7 +234,7 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 	if s.paymentScreener != nil {
 		var err error
 		payout, err = s.store.ScreenPayout(ctx, payout, batch.BatchNo, destination,
-			func(ctx context.Context) (string, string, string, string, []string, error) {
+			func(ctx context.Context) (string, string, string, string, string, []string, error) {
 				dec, err := s.paymentScreener.ScreenPayment(ctx, ports.PaymentScreenRequest{
 					CounterpartyName: destination.AccountName,
 					AccountNumber:    destination.AccountNumber,
@@ -244,9 +244,9 @@ func (s *SettlementService) RequestPayout(ctx context.Context, batchNo string, d
 					Rail:             store.RailMerchantPayout,
 				})
 				if err != nil {
-					return "", "", "", "", nil, err
+					return "", "", "", "", "", nil, err
 				}
-				return dec.Decision, s.screenerName, dec.ProviderRef, dec.Message, dec.MatchedNames, nil
+				return dec.Decision, s.screenerName, dec.ProviderRef, dec.ListVersion, dec.Message, dec.MatchedNames, nil
 			})
 		if err != nil {
 			if errors.Is(err, store.ErrMovementHeld) {

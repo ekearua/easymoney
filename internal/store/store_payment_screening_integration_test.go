@@ -62,11 +62,11 @@ func TestUserWithdrawalScreening(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	decisions := map[string]func(context.Context) (string, string, string, string, []string, error){}
+	decisions := map[string]func(context.Context) (string, string, string, string, string, []string, error){}
 
 	// 1) Clear: recorded, decision returned, withdrawal may proceed.
-	decisions[kyc.ScreenClear] = func(context.Context) (string, string, string, string, []string, error) {
-		return kyc.ScreenClear, "simulated", "sim-w-clear", "no match", nil, nil
+	decisions[kyc.ScreenClear] = func(context.Context) (string, string, string, string, string, []string, error) {
+		return kyc.ScreenClear, "simulated", "sim-w-clear", "sim-1", "no match", nil, nil
 	}
 	refClear := "wallet-withdraw:" + uuid.New().String()
 	if err := repository.ReserveAllowance(ctx, AllowanceReservation{
@@ -89,8 +89,8 @@ func TestUserWithdrawalScreening(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refHold, 2_000_000, "Similar Sanctioned",
-		func(context.Context) (string, string, string, string, []string, error) {
-			return kyc.ScreenStrong, "simulated", "sim-w-hold", "fuzzy hit", []string{"Similar Sanctioned"}, nil
+		func(context.Context) (string, string, string, string, string, []string, error) {
+			return kyc.ScreenStrong, "simulated", "sim-w-hold", "sim-1", "fuzzy hit", []string{"Similar Sanctioned"}, nil
 		})
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +116,8 @@ func TestUserWithdrawalScreening(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refBlock, 2_000_000, "Watchlisted Corp",
-		func(context.Context) (string, string, string, string, []string, error) {
-			return kyc.ScreenBlocked, "simulated", "sim-w-block", "list hit", []string{"Watchlisted Corp"}, nil
+		func(context.Context) (string, string, string, string, string, []string, error) {
+			return kyc.ScreenBlocked, "simulated", "sim-w-block", "sim-1", "list hit", []string{"Watchlisted Corp"}, nil
 		})
 	if err != nil {
 		t.Fatal(err)

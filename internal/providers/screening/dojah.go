@@ -94,6 +94,7 @@ func (d *Dojah) Screen(ctx context.Context, request ports.ScreeningRequest) (por
 		Decision:     decision,
 		MatchedNames: resp.MatchedNames,
 		ProviderRef:  ref,
+		ListVersion:  strings.TrimSpace(resp.ListVersion),
 		Message:      message,
 	}, nil
 }

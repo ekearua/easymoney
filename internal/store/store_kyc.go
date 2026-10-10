@@ -76,6 +76,7 @@ type ScreeningResult struct {
 	Provider     string
 	Decision     string
 	MatchedNames []string
+	ListVersion  string
 	ScreenedAt   time.Time
 	RescreenDue  *time.Time
 	// G3 internal-watchlist inputs and marker. Callers pass the identity
@@ -653,12 +654,13 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 	defer func() { _ = tx.Rollback(ctx) }()
 	err = tx.QueryRow(ctx, `
 		INSERT INTO screening_results(user_id,provider,decision,matched_names,screened_at,rescreen_due,
-		                             legal_name,date_of_birth,phone_number,bank_account_ref,internal_watchlist_id)
-		VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11)
+		                             legal_name,date_of_birth,phone_number,bank_account_ref,internal_watchlist_id,
+		                             list_version)
+		VALUES($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10,$11,$12)
 		RETURNING id, screened_at, rescreen_due`,
 		r.UserID, r.Provider, r.Decision, string(names), r.ScreenedAt, r.RescreenDue,
 		r.LegalName, r.DateOfBirth, r.PhoneNumber, r.BankAccountRef,
-		nullUUID(r.InternalWatchlistID)).Scan(&r.ID, &r.ScreenedAt, &r.RescreenDue)
+		nullUUID(r.InternalWatchlistID), r.ListVersion).Scan(&r.ID, &r.ScreenedAt, &r.RescreenDue)
 	if err != nil {
 		return ScreeningResult{}, fmt.Errorf("record screening: %w", err)
 	}
@@ -680,6 +682,7 @@ func (s *Store) RecordScreeningResult(ctx context.Context, r ScreeningResult, re
 			"provider":     r.Provider,
 			"decision":     r.Decision,
 			"matched":      r.MatchedNames,
+			"list_version": r.ListVersion,
 			"rescreen_due": r.RescreenDue,
 			"message":      r.Message,
 		},

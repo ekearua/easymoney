@@ -226,7 +226,7 @@ action list.
 | # | Gap | Why it matters | Evidence check that closes it |
 |---|---|---|---|
 | **G1** | ~~**PEP EDD + senior-management approval**~~ — **closed.** A PEP determination auto-opens one `pep_edd` review case (migration 081 extends the case-type check; unique partial index enforces one open case per user); the ordinary approve/reject path refuses `pep_edd` cases so only the SM disposition lands; `ReviewPEPEDDCase` stamps `sm_approved`/`sm_rejected` (audited, its own status) and an approval attaches the `edd_completed` evidence key; `AdvanceKYCTier` refuses every tier move while a `pep_edd` case is open | Reg. 2022 PEP obligations; CBN PEP guidance expects documented approval | `store_pep_edd.go`; `store_kyc.go` hook + gate + refuse-guard; SM buttons on `/admin/kyc`; `store_pep_edd_integration_test.go` |
-| **G2** | ~~**Payment-time counterparty screening + hold/interdiction**~~ — **closed against the simulated vendor.** `PaymentScreener` port with a deterministic simulated adapter (`PAYMENT_SCREENING_PROVIDER`, default `simulated`; the live vendor adapter is the G9 screening purchase); `ScreenPayout` gates the settlement `ReserveAllowance` → dispatch window — `blocked` fails the payout outright, `possible`/`strong` move it to the new `held` status (migration 086) and return `ErrMovementHeld`, an outage holds rather than clears; the money-out reservation is never touched by the gate, so a held or interdicted movement keeps counting against the ceiling. `ScreenUserWithdrawal` applies the same semantics to wallet withdrawals (refusal keeps the reservation; an outage releases it because withdrawals have no reviewer release path). `payment_screenings` (migration 085) records every decision keyed by rail + movement ref — payouts are destination-keyed so a re-created payout to a different account re-screens; replays reuse the recorded decision without a vendor call. Dispositions at `/admin/payment-screenings`: release re-queues the payout and marks the screening `manually_cleared`; reject reverses it, releases the reservation, and reopens the batch for re-settlement to a different destination | Baseline Std automated interdiction; NIP is irreversible | `ports.go` (`PaymentScreener`); `providers/paymentscreening` (+ test); `store_payment_screening.go`; `settlement.go` seam; `cli.go` withdrawal seam; `admin_payment_screening.go` + template; migrations 085/086; `settlement_screening_test.go`; `store_payment_screening_integration_test.go` |
+| **G2** | ~~**Payment-time counterparty screening + hold/interdiction**~~ — **closed.** `PaymentScreener` port with a deterministic simulated adapter (`PAYMENT_SCREENING_PROVIDER`, default `simulated`) and the Dojah adapter wired behind it (`PAYMENT_SCREENING_PROVIDER=dojah`, the same auth and normalized vocabulary as the other Dojah lanes — the §7 trial and contract evidence the live list, they do not gate the code); `ScreenPayout` gates the settlement `ReserveAllowance` → dispatch window — `blocked` fails the payout outright, `possible`/`strong` move it to the new `held` status (migration 086) and return `ErrMovementHeld`, an outage holds rather than clears; the money-out reservation is never touched by the gate, so a held or interdicted movement keeps counting against the ceiling. `ScreenUserWithdrawal` applies the same semantics to wallet withdrawals (refusal keeps the reservation; an outage releases it because withdrawals have no reviewer release path). `payment_screenings` (migration 085) records every decision keyed by rail + movement ref — payouts are destination-keyed so a re-created payout to a different account re-screens; replays reuse the recorded decision without a vendor call. Every decision records the vendor list version it was screened against (migration 098), the queue at `/admin/payment-screenings` shows it, and the KYC rescreen worker re-evaluates open holds when the list version moves (vendor record §8(5)). Dispositions at `/admin/payment-screenings`: release re-queues the payout and marks the screening `manually_cleared`; reject reverses it, releases the reservation, and reopens the batch for re-settlement to a different destination | Baseline Std automated interdiction; NIP is irreversible | `ports.go` (`PaymentScreener`); `providers/paymentscreening` (simulated + Dojah, + tests); `store_payment_screening.go` (incl. `HeldScreeningsOnStaleList`/`ReevaluateHeldPayout`); `settlement.go` seam; `cli.go` withdrawal seam + rescreen hook; `admin_payment_screening.go` + template; migrations 085/086/098; `settlement_screening_test.go`; `store_payment_screening_integration_test.go` |
 | **G3** | ~~**Internal watchlist**~~ — **closed.** `internal_watchlist` table (migration 080) with normalised-identity uniqueness; enforcement in `RecordScreeningResult` rewrites any screening of a listed identity to `blocked` with provider `internal_watchlist` and the listing id stamped on the result, so onboarding gates, the rescreen worker and reporting all see the interdiction; admin CRUD at `/admin/internal-watchlist` with audited add/remove | Baseline Std names it; vendor record §8.2 scoped the build | `store_internal_watchlist.go`; `store_kyc.go` enforcement; `admin_internal_watchlist.go` + template; `store_internal_watchlist_integration_test.go` |
 | **G4** | ~~**goAML XML filing format**~~ — **closed.** `STRgoAML`/`CTRgoAML`/`PEPgoAML` emit the goAML XML envelope (`goaml/4.0-nfiu-ng`) beside the CSV/JSON writers, with `ValidateGoAML` checking element counts and required fields before download; `/admin/reports` serves the XML beside the existing formats | NFIU files via goAML; CSV rows do not file | `reports_goaml.go`; `reports_goaml_test.go`; `/admin/reports` links |
 | **G5** | ~~**Filing-clock tracking**~~ — **closed.** `report_filing_clocks` (migration 082) holds one idempotent clock per report reference: STR due 24h from the alert, CTR due the 7th of the following month (`FilingDeadline`); bundle generation syncs and resolution completes them; `/admin/reports` shows due clocks with overdue counts | NFIU timelines; missed clocks are reportable failures | `store_reports_clocks.go`; `internal/app/reports.go` sync; clocks panel in `admin_reports.html`; `store_reports_clocks_integration_test.go` |
@@ -244,10 +244,12 @@ action list.
 **Scheduling note:** every gap this spec's §2 cut produced is closed:
 G1–G13 shipped across the earlier waves (the G7 residual shipped with the
 G8 wave — `audit_chain_checks`/`audit_chain_alerts`, migration 084), and
-this wave closes the last three: **G9** the adverse-media lane (seam + 
-simulated adapter, migration 097, the live Dojah adapter drops in behind
-the shipped port when the contract is signed — the same arrangement G2
-uses), **G14** geography + expected-activity risk inputs (migration 095,
+this wave closed the last three: **G9** the adverse-media lane (seam +
+simulated adapter, migration 097; Dojah now wires the other AML-adjacent
+ports — customer screening, payment screening, liveness and
+document-authenticity — while the adverse-media lane itself keeps the
+simulated default until the §7 trial proves list provenance), **G14**
+geography + expected-activity risk inputs (migration 095,
 `RISK_GEOGRAPHY_WEIGHT`) and **G15** the AIF report type (migration 096).
 **Every owned build is closed.**
 Nothing in the register blocks another item; all are additive.
@@ -277,15 +279,18 @@ vendor record, not a code path.
 TPPA/NSC designations create a **freeze** obligation: a designated entity
 must be blocked, funds reported. The platform's screening lane produces
 decisions on customers; the vendor record's R6 question (domestic list
-coverage, NSC list) is what makes freezing real. Until the vendor is
-signed, the platform's honest position — recorded here so no one mistakes
-it for an implementation claim — is: **the decision vocabulary and
-blocking behaviour are real on both screening lanes. The payment lane
-runs a deterministic simulated screener (`PAYMENT_SCREENING_PROVIDER`,
-whose only accepted value is `simulated`); the customer lane has no
-simulated fallback — `SCREENING_PROVIDER=http` with `SCREENING_API_BASE`
-required at boot is the only adapter, and boot fails without it. The
-list breadth and match quality are the vendor's to prove.**
+coverage, NSC list) is what makes freezing real. Until the vendor's list
+breadth is proven by the §7 trial and the purchase contract, the platform's
+honest position — recorded here so no one mistakes it for an implementation
+claim — is: **the decision vocabulary, list-version provenance and blocking
+behaviour are real on both screening lanes. The payment lane's default is a
+deterministic simulated screener (`PAYMENT_SCREENING_PROVIDER=simulated`);
+both payment and customer lanes also accept the Dojah adapter
+(`PAYMENT_SCREENING_PROVIDER=dojah`, `SCREENING_PROVIDER=dojah`, with the
+`DOJAH_*` keys required at boot; liveness and document-authenticity take the
+same adapter). The customer lane still has no simulated fallback —
+`SCREENING_PROVIDER=http` with `SCREENING_API_BASE` required at boot is its
+default adapter. The list breadth and match quality are the vendor's to prove.**
 
 ---
 
@@ -313,7 +318,7 @@ milestones align as follows:
 | Wave | Items | Lane |
 |---|---|---|
 | **Shipped** | G1 PEP EDD + SM approval · G2 payment screening + hold (simulated vendor) · G3 internal watchlist · G4 goAML XML · G5 filing clocks · G6 retention floor · G7 tamper-evidence (chain + scheduled verification) · G8 validation attestations · G10 liveness gate · G11 duplicate-identity refusal · G12 document-authenticity gate · G13 fraud engine + step-up re-auth · G14 geography + expected-activity risk inputs · G15 AIF report type · G9 adverse-media seam (simulated adapter, migration 097 — live Dojah adapter behind the port) | Owned builds — small commits |
-| **Vendor track** | none current — live payment-screening and adverse-media vendor adapters drop in behind their shipped ports when the respective contracts are signed; the purchase evidence (pre-signature trial + signature-day checklist) lives in `AML_VENDOR_EVIDENCE_PACK.md` (vendor record §7—§8) | Vendor record §7 trial → §8 integration |
+| **Vendor track** | none current — Dojah now wires the customer-screening, payment-screening, liveness and document-authenticity lanes (`_PROVIDER=dojah` config switches + adapters); the adverse-media lane keeps its simulated default until the screening purchase proves list provenance. The purchase evidence (pre-signature trial + signature-day checklist) lives in `AML_VENDOR_EVIDENCE_PACK.md` (vendor record §7—§8) | Vendor record §7 trial → §8 integration |
 | **Open (owned, unscheduled)** | none — the wider-perimeter set in §3.7 (G10–G13, then G14/G15) is fully shipped | — |
 
 **Re-open triggers for this spec:** cross-border rail (travel rule

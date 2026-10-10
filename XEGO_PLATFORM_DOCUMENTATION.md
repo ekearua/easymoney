@@ -1195,7 +1195,7 @@ Documented in Section 16.1 and 15.6 (HTML/htmx, cookie sessions).
 | Disputes | Implemented | `store_refunds.go:334-382` |
 | Three-way reconciliation | Implemented | `store_reconcile.go`; `app/reconcile.go` |
 | KYC ladder L0–L3 (CBN tiers) | Implemented | migration 026; migration 073; README:183-203 |
-| Sanctions/PEP screening | Implemented (HTTP vendor, `SCREENING_API_BASE` required at boot; payment-time screener simulated) | README:198 |
+| Sanctions/PEP screening | Implemented (HTTP or Dojah vendor — `SCREENING_PROVIDER=http` requires `SCREENING_API_BASE`; `SCREENING_PROVIDER=dojah` uses the `DOJAH_*` keys; payment-time screener simulated by default) | README:198 |
 | NIN/BVN verification | Implemented (live ninbvnportal adapter) | README:200 |
 | ML/FT risk scoring | Implemented | `kyc.ScoreRisk`; migration 027 |
 | Transaction monitoring | Implemented | `kyc/monitor.go`; migration 028 |
@@ -1278,7 +1278,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 - **SMS is an MVP** — replies ride the webhook response; no outbound SMS sender (README:268).
 - **No AI/conversational intelligence** beyond rule-based flows.
 - **No live payout/refund rails** — simulated rails must be replaced for live money.
-- **Payment screening and liveness are simulated** — the customer screening lane posts to a live HTTP vendor (`SCREENING_API_BASE` required at boot) and NIN/BVN runs the live ninbvnportal adapter, but the payment-time screener and the liveness verifier are deterministic simulators until their vendors land (see `AML_VENDOR_DECISION_RECORD.md`).
+- **Payment screening and liveness default to simulated** — the customer screening lane posts to a live HTTP vendor (`SCREENING_API_BASE` required at boot) or Dojah (`SCREENING_PROVIDER=dojah`) and NIN/BVN runs the live ninbvnportal adapter, but the payment-time screener (`PAYMENT_SCREENING_PROVIDER`) and the liveness verifier (`LIVENESS_PROVIDER`) default to deterministic simulators with Dojah wired behind their ports until the vendor trial proves list efficacy (see `AML_VENDOR_DECISION_RECORD.md`).
 - **KYC demo path is fully documented** — CBN Tier 1 at onboarding, Tier 2 (photo ID + BVN + NIN), Tier 3 (address proof + simulated EDD). Standing virtual accounts are reserved from Tier 1 (migration 072).
 
 ### Engineering gaps (resolved)
@@ -1352,7 +1352,7 @@ Evidence: `compose.yaml` (full). Networking: single private network; only Caddy 
 ### Partially Implemented
 
 - SMS channel (data commands only; reply-in-webhook MVP; no outbound sender)
-- Sanctions/PEP screening (customer lane live-configured over HTTP; payment-time adapter simulated) and liveness verification (simulated; live adapter pending)
+- Sanctions/PEP screening (customer lane over HTTP or Dojah; payment-time adapter simulated by default with Dojah wired behind `ports.PaymentScreener`) and liveness verification (simulated by default; Dojah wired behind the port)
 - Email delivery (SMTP optional; chat demo mode)
 - VTPass data fulfilment (sandbox only)
 - Ledger balance calculation (call sites established; SQL not line-verified)

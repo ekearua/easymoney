@@ -189,7 +189,11 @@ type ScreeningDecision struct {
 	Decision     string
 	MatchedNames []string
 	ProviderRef  string
-	Message      string
+	// ListVersion is the vendor list the decision was screened against, so a
+	// later disposition can show which list produced the match. Empty when
+	// the vendor does not version its lists.
+	ListVersion string
+	Message     string
 }
 
 // SanctionsScreener isolates name screening from a specific vendor (Smile ID,
@@ -224,7 +228,11 @@ type PaymentScreenDecision struct {
 	Decision     string
 	MatchedNames []string
 	ProviderRef  string
-	Message      string
+	// ListVersion is the vendor list the counterparty was screened against,
+	// recorded so the rescreen worker can re-evaluate open holds when the
+	// list moves (vendor record §8(5)).
+	ListVersion string
+	Message     string
 }
 
 // PaymentScreener isolates payment-time counterparty screening from a

@@ -19,7 +19,7 @@
     <td class="mono">{{.BankCode}} · {{.AccountNumber}}</td>
     <td class="nowrap">{{money .AmountKobo}}</td>
     <td><span class="status warn">{{.Decision}}</span></td>
-    <td class="muted">{{.Message}}{{if .MatchedNames}} — matched: {{join .MatchedNames ", "}}{{end}}</td>
+    <td class="muted">{{if .ListVersion}}list {{.ListVersion}} · {{end}}{{.Message}}{{if .MatchedNames}} — matched: {{join .MatchedNames ", "}}{{end}}</td>
     <td><form method="post" action="/admin/payment-screenings/{{.ID}}/dispose">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <input type="text" name="reason" placeholder="reason" required maxlength="300" style="width:170px">
@@ -41,7 +41,7 @@
     <td>{{.CounterpartyName}}</td>
     <td class="nowrap">{{money .AmountKobo}}</td>
     <td>{{if or (eq .Decision "possible") (eq .Decision "strong")}}<span class="status warn">{{.Decision}}</span>{{else if eq .Decision "blocked"}}<span class="status failed">{{.Decision}}</span>{{else if or (eq .Decision "clear") (eq .Decision "manually_cleared")}}<span class="status succeeded">{{.Decision}}</span>{{else}}<span class="status">{{.Decision}}</span>{{end}}</td>
-    <td>{{.Provider}}{{if .ProviderRef}} <span class="mono">{{.ProviderRef}}</span>{{end}}</td>
+    <td>{{.Provider}}{{if .ListVersion}} <span class="mono">list {{.ListVersion}}</span>{{end}}{{if .ProviderRef}} <span class="mono">{{.ProviderRef}}</span>{{end}}</td>
     <td class="muted">{{.Message}}</td>
   </tr>{{else}}<tr><td colspan="8">No screens recorded yet — the queue fills as payouts and withdrawals move.</td></tr>{{end}}
   </tbody></table></div>

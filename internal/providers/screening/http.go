@@ -91,6 +91,7 @@ type httpScreenResponse struct {
 	Reference    string   `json:"reference"`
 	ProviderRef  string   `json:"provider_ref"`
 	ReportID     string   `json:"report_id"`
+	ListVersion  string   `json:"list_version"`
 	Message      string   `json:"message"`
 }
 
@@ -135,6 +136,7 @@ func (h *HTTP) Screen(ctx context.Context, request ports.ScreeningRequest) (port
 		Decision:     decision,
 		MatchedNames: resp.MatchedNames,
 		ProviderRef:  ref,
+		ListVersion:  strings.TrimSpace(resp.ListVersion),
 		Message:      message,
 	}, nil
 }

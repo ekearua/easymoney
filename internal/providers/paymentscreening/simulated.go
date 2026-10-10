@@ -45,6 +45,7 @@ func (s *Simulated) ScreenPayment(_ context.Context, req ports.PaymentScreenRequ
 		return ports.PaymentScreenDecision{
 			Decision:     kyc.ScreenPossible,
 			MatchedNames: []string{},
+			ListVersion:  "sim-1",
 			Message:      "counterparty name missing; movement cannot be auto-cleared",
 		}, nil
 	}
@@ -55,6 +56,7 @@ func (s *Simulated) ScreenPayment(_ context.Context, req ports.PaymentScreenRequ
 			Decision:     kyc.ScreenBlocked,
 			MatchedNames: []string{name},
 			ProviderRef:  "sim-pscreen-blocked-" + req.SubjectID,
+			ListVersion:  "sim-1",
 			Message:      "counterparty matches the simulated consolidated blocklist",
 		}, nil
 	case strings.Contains(lower, "similar"):
@@ -62,12 +64,14 @@ func (s *Simulated) ScreenPayment(_ context.Context, req ports.PaymentScreenRequ
 			Decision:     kyc.ScreenStrong,
 			MatchedNames: []string{name},
 			ProviderRef:  "sim-pscreen-review-" + req.SubjectID,
+			ListVersion:  "sim-1",
 			Message:      "counterparty resembles a simulated watchlist entry; review required",
 		}, nil
 	default:
 		return ports.PaymentScreenDecision{
 			Decision:    kyc.ScreenClear,
 			ProviderRef: fmt.Sprintf("sim-pscreen-clear-%s-%d", req.SubjectID, req.AmountKobo),
+			ListVersion: "sim-1",
 			Message:     "no simulated list matches",
 		}, nil
 	}

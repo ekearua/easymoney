@@ -262,7 +262,7 @@ func (s *Store) ExportUserData(ctx context.Context, userID uuid.UUID) (DataSubje
 	}{
 		{&out.KYCProfile, jsonAggSQL(`SELECT kp.user_id AS id, kp.user_id, kp.tier, kp.tier_updated_at, kp.evidence, kp.last_screening_decision, kp.review_status, kp.risk_band, kp.risk_updated_at, kp.created_at, kp.updated_at, COALESCE(ip.country_iso,'') AS country_iso, COALESCE(ip.expected_volume_band,'') AS expected_volume_band FROM kyc_profiles kp LEFT JOIN individual_profiles ip ON ip.user_id = kp.user_id WHERE kp.user_id=%s`)},
 		{&out.Verifications, jsonAggSQL(`SELECT id, user_id, verification_type, status, provider, provider_reference, result, verified_at, expires_at FROM customer_verifications WHERE user_id=%s`)},
-		{&out.Screening, jsonAggSQL(`SELECT id, user_id, provider, decision, matched_names, screened_at, rescreen_due FROM screening_results WHERE user_id=%s`)},
+		{&out.Screening, jsonAggSQL(`SELECT id, user_id, provider, decision, matched_names, list_version, screened_at, rescreen_due FROM screening_results WHERE user_id=%s`)},
 		{&out.RiskEvents, jsonAggSQL(`SELECT id, user_id, event_type, score, details, occurred_at FROM risk_events WHERE user_id=%s`)},
 		{&out.Consents, jsonAggSQL(`SELECT id, user_id, purpose, status, source, version, granted_at, revoked_at FROM consent_records WHERE user_id=%s`)},
 		{&out.Payments, jsonAggSQL(`SELECT p.id, p.user_id, p.merchant_id, m.name AS merchant_name, p.amount_kobo, p.currency, p.status, p.provider, p.provider_reference, p.channel, p.paid_at, p.created_at FROM payments p JOIN merchants m ON m.id=p.merchant_id WHERE p.user_id=%s`)},

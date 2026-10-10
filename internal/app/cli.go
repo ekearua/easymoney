@@ -149,7 +149,7 @@ func (a *App) WalletWithdraw(ctx context.Context, phone string, amountKobo int64
 			return err
 		}
 		decision, err := a.store.ScreenUserWithdrawal(ctx, user.ID, reservationRef, amountKobo, wallet.AccountName,
-			func(ctx context.Context) (string, string, string, string, []string, error) {
+			func(ctx context.Context) (string, string, string, string, string, []string, error) {
 				dec, err := a.paymentScreener.ScreenPayment(ctx, ports.PaymentScreenRequest{
 					CounterpartyName: wallet.AccountName,
 					AmountKobo:       amountKobo,
@@ -157,9 +157,9 @@ func (a *App) WalletWithdraw(ctx context.Context, phone string, amountKobo int64
 					Rail:             store.RailWalletWithdrawal,
 				})
 				if err != nil {
-					return "", "", "", "", nil, err
+					return "", "", "", "", "", nil, err
 				}
-				return dec.Decision, a.screeningProviderName, dec.ProviderRef, dec.Message, dec.MatchedNames, nil
+				return dec.Decision, a.screeningProviderName, dec.ProviderRef, dec.ListVersion, dec.Message, dec.MatchedNames, nil
 			})
 		if err != nil {
 			// Provider outage: refuse and release — no reviewer release path
@@ -247,6 +247,7 @@ func (a *App) RescreenDue(ctx context.Context) error {
 		recorded, err := a.store.RecordScreeningResult(ctx, store.ScreeningResult{
 			UserID: profile.UserID, Provider: a.screeningProviderName, Decision: foldedDecision,
 			MatchedNames: decision.MatchedNames, LegalName: individual.LegalName,
+			ListVersion: decision.ListVersion,
 		}, a.cfg.KYCRescreenPeriod)
 		if err != nil {
 			a.logger.WarnContext(ctx, "rescreen record failed", "user_id", profile.UserID.String(), "error", err)
@@ -296,8 +297,20 @@ func (a *App) RescreenDue(ctx context.Context) error {
 			}
 		}
 	}
+	// §8(5): the rescreen worker also re-evaluates open-hold payout
+	// screenings recorded against an older list version, so a stale match
+	// does not keep money frozen once the vendor list moves.
+	reevalReleased, reevalInterdicted := 0, 0
+	if a.paymentScreener != nil {
+		var reevalErr error
+		_, reevalReleased, reevalInterdicted, reevalErr = a.reevaluateStaleHeldMovements(ctx)
+		if reevalErr != nil {
+			a.logger.WarnContext(ctx, "payment-screening list re-evaluation failed", "error", reevalErr)
+		}
+	}
 	a.logger.InfoContext(ctx, "KYC rescreen completed", "due", len(due), "screened", screened, "blocked", blocked,
-		"business_due", len(businessDue), "business_screened", businessScreened, "business_blocked", businessBlocked)
+		"business_due", len(businessDue), "business_screened", businessScreened, "business_blocked", businessBlocked,
+		"hold_reeval_released", reevalReleased, "hold_reeval_interdicted", reevalInterdicted)
 	return nil
 }
 
@@ -335,6 +348,75 @@ func (a *App) screenAdverseMediaRescreen(ctx context.Context, userID uuid.UUID, 
 		return "", err
 	}
 	return am.Decision, nil
+}
+
+// reevaluateStaleHeldMovements implements the payment lane of vendor record
+// §8(5): when the screening list version moves, open-hold payout screenings
+// recorded against the older version are re-screened so a stale match no
+// longer keeps money frozen. Returns how many movements were re-screened and,
+// of those, how many were released or interdicted; still-held movements are
+// informational and counted inside the loop's log line.
+func (a *App) reevaluateStaleHeldMovements(ctx context.Context) (screened, released, interdicted int, err error) {
+	if a.paymentScreener == nil {
+		return 0, 0, 0, nil
+	}
+	held, currentVersion, err := a.store.HeldScreeningsOnStaleList(ctx, 25)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	if len(held) == 0 {
+		return 0, 0, 0, nil
+	}
+	stillHeld := 0
+	for _, hs := range held {
+		payout, err := a.store.PayoutByID(ctx, hs.PayoutID)
+		if err != nil {
+			a.logger.WarnContext(ctx, "list re-evaluation: payout lookup failed", "screening_id", hs.Screening.ID, "error", err)
+			continue
+		}
+		batch, err := a.store.SettlementBatchByID(ctx, hs.BatchID)
+		if err != nil {
+			a.logger.WarnContext(ctx, "list re-evaluation: batch lookup failed", "screening_id", hs.Screening.ID, "error", err)
+			continue
+		}
+		dest, err := a.store.SettlementAccountByID(ctx, payout.DestinationID)
+		if err != nil {
+			a.logger.WarnContext(ctx, "list re-evaluation: destination lookup failed", "screening_id", hs.Screening.ID, "error", err)
+			continue
+		}
+		_, reevalErr := a.store.ReevaluateHeldPayout(ctx, payout, batch.BatchNo, dest,
+			func(ctx context.Context) (string, string, string, string, string, []string, error) {
+				dec, err := a.paymentScreener.ScreenPayment(ctx, ports.PaymentScreenRequest{
+					CounterpartyName: dest.AccountName,
+					AccountNumber:    dest.AccountNumber,
+					BankCode:         dest.BankCode,
+					AmountKobo:       payout.AmountKobo,
+					SubjectID:        payout.MerchantID.String(),
+					Rail:             store.RailMerchantPayout,
+				})
+				if err != nil {
+					return "", "", "", "", "", nil, err
+				}
+				return dec.Decision, a.screeningProviderName, dec.ProviderRef, dec.ListVersion, dec.Message, dec.MatchedNames, nil
+			})
+		screened++
+		switch {
+		case reevalErr == nil:
+			released++
+		case errors.Is(reevalErr, store.ErrMovementHeld):
+			stillHeld++
+			a.logger.InfoContext(ctx, "list re-evaluation: movement still held", "screening_id", hs.Screening.ID)
+		case errors.Is(reevalErr, store.ErrReevaluationInterdicted):
+			interdicted++
+			a.logger.WarnContext(ctx, "list re-evaluation: movement interdicted", "screening_id", hs.Screening.ID, "error", reevalErr)
+		default:
+			a.logger.WarnContext(ctx, "list re-evaluation: movement re-screen failed", "screening_id", hs.Screening.ID, "error", reevalErr)
+		}
+	}
+	a.logger.InfoContext(ctx, "payment-screening list re-evaluation completed",
+		"current_list_version", currentVersion, "re_screened", screened,
+		"released", released, "interdicted", interdicted, "still_held", stillHeld)
+	return screened, released, interdicted, nil
 }
 
 // RecomputeAllRisk refreshes the ML/FT risk band for every KYC profile. Used

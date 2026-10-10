@@ -235,6 +235,7 @@ func (s *ConversationService) screenIndividual(ctx context.Context, user store.U
 		Provider:     s.screeningProviderName,
 		Decision:     decision,
 		MatchedNames: result.MatchedNames,
+		ListVersion:  result.ListVersion,
 		LegalName:    name,
 		PhoneNumber:  user.WhatsAppNumber,
 	}, s.cfg.KYCRescreenPeriod)
