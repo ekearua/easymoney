@@ -5,17 +5,20 @@ import (
 	"time"
 )
 
-// OutboxDeliveryOutcomeRows returns the terminal outcome of every WhatsApp
-// outbox row whose sent_at landed inside the given trailing window. Only rows
+// OutboxDeliveryOutcomeRows returns the terminal status of every WhatsApp
+// outbox row whose outcome landed inside the given trailing window. Only rows
 // that reached a terminal state (delivered or failed) are included, so a
-// worker still retrying a message does not distort the guard's ratio.
+// worker still retrying a message does not distort the guard's ratio. Rows
+// that exhausted their retries without ever reaching the provider never got a
+// sent_at stamp, so they are windowed on created_at instead — otherwise the
+// guard would be blind to exactly the provider outage it exists for.
 func (s *Store) OutboxDeliveryOutcomeRows(ctx context.Context, window time.Duration) ([]string, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT o.outcome FROM message_outbox o
+		SELECT o.status FROM message_outbox o
 		WHERE o.channel = 'whatsapp'
 		  AND o.status IN ('delivered','failed')
-		  AND o.sent_at > now() - $1::interval
-		ORDER BY o.sent_at`, window)
+		  AND COALESCE(o.sent_at, o.created_at) > now() - $1::interval
+		ORDER BY COALESCE(o.sent_at, o.created_at)`, window)
 	if err != nil {
 		return nil, err
 	}
