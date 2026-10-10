@@ -310,6 +310,9 @@ func TestPasskeysUnconfiguredWithoutOrigin(t *testing.T) {
 	_ = ports.EmailSender(nil)
 }
 
+// parseTOTPTestTemplates is defined once in admin_backup_health_test.go (same
+// package). Do not redeclare it here.
+
 // --- helpers --------------------------------------------------------------
 
 func securityCSRF(t *testing.T, body string) string {
@@ -350,3 +353,6 @@ func parseLocation(t *testing.T, location string) *url.URL {
 	}
 	return parsed
 }
+
+// parseTOTPTestTemplates is defined once in admin_backup_health_test.go (same
+// package). Do not redeclare it here.

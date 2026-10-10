@@ -48,6 +48,12 @@ jobs:
       - name: Test
         run: go test ./... -count=1 -timeout 300s
 
+      # The release path is a shell script, so it is tested as one: a recording
+      # docker shim drives the real deploy/release.sh through the happy path,
+      # the readiness-gate rollback, the edge stack and each abort branch.
+      - name: Release script harness
+        run: bash deploy/release_test.sh
+
       - name: Gosec
         uses: securego/gosec@master
         with:

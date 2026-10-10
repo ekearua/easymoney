@@ -32,3 +32,6 @@ test/payment-flows/test-results/
 
 # Backup pipeline object-storage credentials (see deploy/rclone.conf.example)
 deploy/rclone.conf
+
+# deploy/release.sh last-good release marker (host-local state)
+deploy/.release-state

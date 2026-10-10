@@ -130,6 +130,11 @@ services:
     networks: [private]
 
   migrate:
+    # Release/CD (deploy/release.sh): the app and the migrate one-shot run
+    # the same published image. Unset APP_IMAGE keeps the local build
+    # (xego-app:local); a release pins it to the registry tag so
+    # `docker compose pull` fetches it and `up --no-build` runs it as-is.
+    image: ${APP_IMAGE:-xego-app:local}
     build: .
     command: ["migrate"]
     env_file: .env
@@ -150,6 +155,11 @@ services:
     restart: "no"
 
   app:
+    # Release/CD (deploy/release.sh): the app and the migrate one-shot run
+    # the same published image. Unset APP_IMAGE keeps the local build
+    # (xego-app:local); a release pins it to the registry tag so
+    # `docker compose pull` fetches it and `up --no-build` runs it as-is.
+    image: ${APP_IMAGE:-xego-app:local}
     build: .
     restart: unless-stopped
     env_file: .env

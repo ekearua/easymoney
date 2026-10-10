@@ -43,6 +43,17 @@
   </section>
   <p class="small-text">Heartbeats come from the backup scheduler (<code>base</code>/<code>wal</code>/<code>drill</code> rows in <code>backup_runs</code>); thresholds are <code>BACKUP_BASE_STALE_AFTER</code>, <code>WAL_SHIP_STALE_AFTER</code> and <code>RESTORE_DRILL_STALE_AFTER</code>. A red age means the PITR promise (<code>BACKUP_RPO</code>) no longer holds.</p>
 </section>{{end}}
+{{if .SyntheticPanel}}<section class="panel"><h2>Post-deploy synthetic checks</h2>
+  <p class="small-text">{{.SyntheticPanel.Title}}{{if .SyntheticPanel.RanAt}} · last run {{.SyntheticPanel.RanAt}} ({{.SyntheticPanel.Source}}){{end}}</p>
+  {{if .SyntheticPanel.Rows}}<section class="metrics">
+    {{range .SyntheticPanel.Rows}}<article><span>{{.Stage}}</span><strong{{if eq .State "failed"}} class="danger-text"{{end}}>{{.State}}</strong><em class="small-text">{{.Detail}} · {{.Elapsed}}</em></article>{{end}}
+  </section>{{end}}
+  <section class="metrics">
+    <article><span>Runs (7d)</span><strong>{{.SyntheticPanel.Runs}}</strong><em class="small-text">{{.SyntheticPanel.OKRuns}} passed, {{.SyntheticPanel.FailedRuns}} failed</em></article>
+    <article><span>Outbox backlog</span><strong{{if .SyntheticPanel.OutboxStale}} class="danger-text"{{end}}>{{.SyntheticPanel.Outbox}}</strong><em class="small-text">{{if .SyntheticPanel.OutboxStale}}over <code>SYNTHETIC_OUTBOX_MAX_AGE</code>{{else}}within ceiling{{end}}</em></article>
+  </section>
+  <p class="small-text">Stages are recorded per run in <code>synthetic_checks</code>; <code>deploy/release.sh</code> runs <code>demo synthetic</code> after the readiness gate and rolls the image back if it fails. Run it by hand with <code>docker compose run --rm app synthetic</code>.</p>
+</section>{{end}}
 <section class="panel"><h2>Security boundary</h2><p>The application does not request or store card numbers, CVVs, PINs, OTPs, balances, or reusable authorization data in WhatsApp.</p></section>
 <section class="panel"><h2>Two-factor authentication</h2>
   {{if .MFAEnforced}}<p>Two-step sign-in is <strong>required</strong> on this deployment, so every account passes a second step after its password.</p>{{end}}

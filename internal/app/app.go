@@ -379,6 +379,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
 		"sub":         func(a, b int64) int64 { return a - b },
 		"add":         func(a, b int64) int64 { return a + b },
+		"mul":         func(a, b int64) int64 { return a * b },
+		"divf":        func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
 		"inc":         func(i int) int { return i + 1 },
 		"collectionFeeKobo": func(p store.PaymentView) int64 {
 			var meta struct {
@@ -768,6 +770,7 @@ func (a *App) routes() http.Handler {
 		})
 		admin.Get("/admin/metrics", a.adminMetrics)
 		admin.Get("/admin/messaging", a.adminMessaging)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/onboarding-cost", a.adminScreeningCost)
 		admin.Get("/admin/media-report", a.adminMediaReport)
 		admin.Get("/admin/onboarding-reminders", a.adminOnboardingReminders)
 		admin.Get("/admin/users", a.adminUsers)

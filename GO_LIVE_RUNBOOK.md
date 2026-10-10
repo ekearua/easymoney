@@ -246,16 +246,22 @@ Docker topology (`compose.yaml`): Postgres 17 (SSL, WAL archiving) → `migrate`
 one-shot → `app` (`server` on `:8080`) → Caddy (TLS). Native VPS alternative:
 `bash deploy/rebuild-vps.sh` against `/etc/whatsapp-payment.env`.
 
+**First install / local build** — no registry involved, compose builds
+`xego-app:local`:
+
 ```bash
 docker compose up -d --build            # migrate runs first, app waits on it
 docker compose ps                       # app healthy from /demo health
 curl -fsS https://$PUBLIC_HOST/health/ready
 ```
 
+**Releases** run the published image instead of building on the host — see
+§4.3.
+
 Migrations are embedded (`internal/store/migrations/*.sql`) and applied in
-filename order automatically on boot and via `make migrate`. Back up the
-database before every upgrade (`make backup`-equivalent or read the backups
-section in README).
+filename order automatically on boot and via `make migrate`. `deploy/release.sh`
+takes a full base backup *before* it applies them: the schema is forward-only, so
+that backup is the only way back (§9).
 
 ### 4.1 Database standby: setup & manual promote
 
@@ -331,6 +337,121 @@ both directions have been observed:
    200). The edge must not pretend to be healthy while writes fail.
 4. **Restore and re-verify** (app back up → 200 on both edges) before
    closing the check.
+
+### 4.3 Releases: tag → image → rollout
+
+A release is a version tag. `.github/workflows/release.yml` runs on `v*`:
+
+1. **verify** — the release policy gate. Every rule is enforced in the workflow,
+   not merely documented, and a tag that fails any of them never produces an
+   image:
+   - the tag must point at a commit that is an ancestor of `main`, so releases
+     are cut from main and never from a branch tip;
+   - that commit must already have a green `ci.yml` run from its push to main
+     (the job waits for the run, then refuses on
+     `failure`/`cancelled`/`timed_out`/`startup_failure` rather than proceeding
+     while CI is red);
+   - `go vet` and the non-gated test suite pass on the tagged commit (the
+     Postgres-backed suite is `ci.yml`'s job, on every push);
+   - `deploy/release_test.sh` passes — the harness that drives the real release
+     script against a recording docker shim (§6).
+2. **build** — builds `Dockerfile`, pushes to GHCR as
+   `ghcr.io/ekearua/easymoney:<tag>`, alongside a `major.minor` alias, the long
+   commit SHA, an SBOM and a build-provenance attestation, then **signs the
+   image by digest with keyless cosign** — the signature is bound to this
+   workflow's OIDC identity, so no long-lived signing key exists to leak.
+3. **deploy** — *opt-in*. Runs `deploy/release.sh <tag>` on every host in
+   `DEPLOY_HOSTS` over the `production` Environment (add required reviewers to
+   turn the rollout into an approval). Disabled until `DEPLOY_ENABLED=true`, so
+   pushing a tag only publishes.
+
+**Verifying a published image.** The signature is keyless, so it is verified
+against the workflow identity that produced it rather than a public key. Use
+the digest, not the tag — a tag can be repointed, a digest cannot:
+
+```bash
+IMAGE=ghcr.io/ekearua/easymoney
+TAG=v1.4.0
+DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/ekearua/easymoney/.github/workflows/release.yml@refs/tags/v.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "$IMAGE@$DIGEST"
+```
+
+Run that before pinning `APP_IMAGE` by hand, and after any manual rollout.
+
+Repository configuration the deploy job expects:
+
+| Kind | Name | Purpose |
+| --- | --- | --- |
+| variable | `DEPLOY_ENABLED` | `true` to let a tag deploy; unset = publish only |
+| variable | `DEPLOY_HOSTS` | space-separated hosts, e.g. `10.0.0.11 10.0.0.12` |
+| variable | `DEPLOY_USER` | ssh user (default `deploy`) |
+| variable | `DEPLOY_PATH` | repo checkout on the host (default `/opt/whatsapp-payment`) |
+| secret | `DEPLOY_SSH_KEY` | private key authorized on those hosts |
+| secret | `DEPLOY_KNOWN_HOSTS` | pinned `known_hosts` entries for those hosts |
+
+**Manual rollout / rerun** — identical to what the workflow does:
+
+```bash
+cd /opt/whatsapp-payment
+git fetch --tags --force --prune origin
+git checkout --detach refs/tags/v1.4.0
+bash deploy/release.sh v1.4.0
+```
+
+The host's `.env` carries `APP_IMAGE` (the tag to run); compose `app` and
+`migrate` use `${APP_IMAGE}` when set and fall back to the local build when it
+is not. `APP_IMAGE_TOKEN` (a GHCR PAT with `read:packages`) is only needed while
+the package is private.
+
+What `deploy/release.sh` enforces, in order:
+
+1. pull the image — a failure here changes nothing on the host;
+2. full base backup **before** the `migrate` one-shot;
+3. `migrate`;
+4. recreate the `app` replicas from the new image and wait until every replica
+   reports healthy;
+5. recreate `caddy` so its `app:8080` upstream is re-resolved to the new replica
+   IPs (the `caddy_data` volume keeps the certificates);
+6. probe `/health/ready` through ingress — `PUBLIC_HEALTH_URL`, or derived from
+   `PUBLIC_HOST` as `https://$PUBLIC_HOST/health/ready`;
+7. run the post-deploy **synthetic checks** — `demo synthetic pipeline` in a
+   throwaway container from the same image, which asserts the deployed revision
+   can reach the database, is running against the schema it expects, resolves
+   today's newest payment by *reference and receipt token*, and is actually
+   draining the outbox (`SYNTHETIC_OUTBOX_MAX_AGE`, default 30m). Skipped with
+   `RELEASE_SKIP_SYNTHETIC=1`;
+8. **on any failure in 4–7, restore the previously running image automatically**
+   and exit non-zero, so the last good revision keeps serving.
+
+Run the checks by hand at any time:
+
+```bash
+docker compose run --rm --no-deps app synthetic pipeline   # exit code is the result
+```
+
+Every stage is recorded in `synthetic_checks` (one row per stage per run) and
+surfaced on `/admin/metrics` as the last run plus a 7-day pass rate. The stages
+are **read-only** over the payments domain by design: a check that fabricated a
+payment in a live ledger would write fake money into an audited store, which is
+an AML problem rather than a test. The write-side equivalent — a payment in the
+rail's own sandbox — is a separate capability, not something a post-deploy smoke
+test should do silently. To make a run gate a rollout by hand, re-run
+`deploy/release.sh <tag>`; it rolls the image back when the checks fail.
+
+The last-good release is recorded in `deploy/.release-state` (git-ignored), and
+`release.sh` reads the image actually running before it trusts any file.
+
+Edge host: the same script against the edge stack —
+
+```bash
+COMPOSE_FILES="-f compose.edge.yaml" bash deploy/release.sh v1.4.0
+```
+
+It detects services, so there it pulls and recreates `app` and `caddy` only;
+there is no `migrate` or `backup` service on the edge by design (§4.1, §4.2).
 
 ---
 
@@ -419,6 +540,23 @@ Bulk tests seed batches through `repository.CreateBulkBatch` (not the service)
 so they never depend on a funded wallet, and run against dedicated per-package
 databases so earlier runs or other suites cannot leak state into assertions.
 
+### Release path harness (no Docker required)
+
+`deploy/release_test.sh` tests the CD script itself. It puts a recording `docker`
+shim first on `PATH` and runs the real `deploy/release.sh` against a throwaway
+project root, so no daemon, registry or database is needed:
+
+```bash
+bash deploy/release_test.sh
+```
+
+The shim reports container health *per image*, which makes "the new image never
+becomes ready" a first-class case rather than a comment. Six cases are covered:
+the happy path (including the pull → base-backup → migrate → app → caddy
+ordering), the readiness-gate rollback, a migrate failure, a pull failure, a
+backup failure, and the edge stack (no `migrate`/`backup` services). It runs in
+`ci.yml` on every push and in the release workflow's `verify` job.
+
 ---
 
 ## 7. First live payment (smoke by hand)
@@ -444,9 +582,19 @@ databases so earlier runs or other suites cannot leak state into assertions.
 
 ## 9. Rollback
 
-- Config rollback: restore the previous `.env` and restart the app container
-  (`docker compose up -d`); migrations already applied are not rolled back.
-- Code rollback: re-deploy the previous image/tag; the new code's migration
-  files are only applied if not yet applied.
-- Data: point-in-time recovery from the PostgreSQL WAL/backups (see backups
-  section in README).
+- **Code — automatic.** `deploy/release.sh` restores the previous image itself
+  when the new revision never becomes ready (§4.3), so a bad release fails the
+  pipeline and leaves the last good revision serving. By hand:
+  `APP_IMAGE=<last-good-tag> docker compose up -d --no-build --no-deps app caddy`
+  — or re-run `bash deploy/release.sh <last-good-tag>`.
+- **Code — by tag.** Re-deploy the previous tag; `deploy/.release-state` records
+  the image that was serving before the current one, so the target is never
+  guessed.
+- **Schema — not reversed.** Migrations are forward-only. A code rollback does
+  **not** undo the new revision's migrations (each file is applied once). A
+  release whose migration was destructive is recovered with point-in-time
+  recovery from the WAL/base backups (§3.7, backups section in README) — which
+  is why `release.sh` takes a base backup before every migrate.
+- **Config.** Restore the previous `.env` and `docker compose up -d`; images are
+  unchanged, so only the app restarts.
+- **Data.** Point-in-time recovery from the PostgreSQL WAL/backups.

@@ -79,6 +79,18 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		data["BackupNeverRun"] = true
 	}
 	data["BackupPanel"] = backupPanel
+	// Post-deploy synthetic checks: the last rollout's stages plus the trailing
+	// pass rate, and the outbox backlog the checks assert on. A store failure
+	// degrades the panel, never the page.
+	syntheticSummary, err := a.store.SyntheticCheckSummary(r.Context(), 7*24*time.Hour)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "synthetic check stats failed", "error", err)
+	}
+	outboxBacklog, err := a.store.OutboxBacklog(r.Context())
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "outbox backlog stats failed", "error", err)
+	}
+	data["SyntheticPanel"] = buildSyntheticPanel(syntheticSummary, outboxBacklog, time.Now(), a.cfg.SyntheticOutboxMaxAge)
 	a.renderAdmin(w, "metrics.html", r, "Metrics", data)
 }
 

@@ -1,0 +1,41 @@
+{{define "admin_screening_cost.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Operations</p><h1>Onboarding &amp; screening cost</h1>
+<p>Screening activity in the last {{.Summary.WindowDays}} days (since {{.Summary.Since.Format "02 Jan 2006 15:04 UTC"}}). Customer screening results, adverse-media screens, and payment-time counterparty screenings are all rolled up here. The estimated cost is display-only and driven by the configurable per-check estimate.</p></div></header>
+
+<section class="metrics">
+  <article><span>Customer screenings</span><strong>{{.Summary.ScreeningsTotal}}</strong><em class="small-text">clear {{.Summary.ScreeningsClear}} · possible {{.Summary.ScreeningsPossible}} · strong {{.Summary.ScreeningsStrong}} · blocked {{.Summary.ScreeningsBlocked}}</em></article>
+  <article><span>Adverse media</span><strong>{{.Summary.ScreeningsAM}}</strong></article>
+  <article><span>Payment screenings</span><strong>{{.Summary.PaymentScreenings}}</strong></article>
+  <article><span>Screening results rows</span><strong>{{.Summary.ScreeningResults}}</strong></article>
+  {{if gt .Summary.ScreeningCostNGN 0}}
+  <article><span>Est. cost ({{money .Summary.ScreeningCostNGN}}/check)</span><strong>{{money (add .Summary.ScreeningsTotal .Summary.ScreeningCostNGN)}}</strong></article>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Onboarding friction</h2>
+  <p class="small-text">Block/strong rates correlate with review queue load. "Possible/strong" flags usually require compliance review; "blocked" stops onboarding/payouts.</p>
+  <section class="metrics">
+    <article><span>Clear rate</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf .Summary.ScreeningsClear .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
+    <article><span>Review rate (possible+strong)</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf (add .Summary.ScreeningsPossible .Summary.ScreeningsStrong) .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
+    <article><span>Block rate</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf .Summary.ScreeningsBlocked .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
+  </section>
+</section>
+
+<section class="panel">
+  <h2>What counts</h2>
+  <ul class="small-text">
+    <li><strong>Customer screenings</strong>: rows from <code>screening_results</code> in the window (onboarding/rescreen sanctions/PEP).</li>
+    <li><strong>Adverse media</strong>: <code>adverse_media_screenings</code> in the window (G9).</li>
+    <li><strong>Payment screenings</strong>: <code>payment_screenings</code> in the window (G2: payouts/wallet withdrawals).</li>
+    <li><strong>Screening results rows</strong>: raw <code>screening_results</code> count in the window for parity.</li>
+  </ul>
+  <p class="muted">Estimated cost uses a configurable per-check estimate (display-only). No vendor billing values are sourced from DB.</p>
+</section>
+</main></body></html>
+{{end}}

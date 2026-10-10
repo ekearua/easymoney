@@ -142,8 +142,8 @@ func TestAdminKYCAlertRailFilter(t *testing.T) {
 }
 
 // TestTemplatesParse ensures every embedded template, including the C15
-// regulator reports page and the C20 data-subject rights page, parses and
-// executes with the shared function map.
+// regulator reports page, the C20 data-subject rights page, and the screening
+// cost page, parses and executes with the shared function map.
 func TestTemplatesParse(t *testing.T) {
 	tmpl, err := template.New("").Funcs(template.FuncMap{
 		"money":             func(k int64) string { return "NGN" },
@@ -152,6 +152,8 @@ func TestTemplatesParse(t *testing.T) {
 		"percent":           func(float64) string { return "" },
 		"sub":               func(a, b int64) int64 { return a - b },
 		"add":               func(a, b int64) int64 { return a + b },
+		"mul":               func(a, b int64) int64 { return a * b },
+		"divf":              func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
 		"inc":               func(i int) int { return i + 1 },
 		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
@@ -161,7 +163,7 @@ func TestTemplatesParse(t *testing.T) {
 		t.Fatalf("parse templates: %v", err)
 	}
 
-	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html", "admin_chat_guard.html", "admin_internal_watchlist.html"} {
+	for _, name := range []string{"admin_reports.html", "admin_dsr.html", "admin_ledger.html", "admin_reconciliation.html", "admin_chat_guard.html", "admin_internal_watchlist.html", "admin_screening_cost.html"} {
 		if tmpl.Lookup(name) == nil {
 			t.Fatalf("%s not found in parsed templates", name)
 		}

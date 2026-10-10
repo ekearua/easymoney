@@ -1,0 +1,231 @@
+name: Release
+
+# Publishes the app image on a version tag, then — when deliberately enabled —
+# rolls it out to the app hosts by running `deploy/release.sh` there. The
+# deploy step calls the same script an operator runs by hand, so a pipeline
+# release and a manual release cannot drift.
+#
+# Flow:  verify ──▶ build, sign & push (GHCR) ──▶ deploy (opt-in, approved)
+#
+# Release policy enforced in `verify` (not documented-only):
+#   1. the tag must point at a commit that is an ancestor of `main`;
+#   2. that commit must already have a green `ci.yml` run from its push to main;
+#   3. the release script's own harness must pass.
+# A tag that fails any of these never produces an image, so an unreviewed or
+# untested commit cannot be published by tagging it.
+#
+# Repository configuration the deploy job expects:
+#   vars.DEPLOY_ENABLED   "true" to let a tag deploy; unset = build-and-push only
+#   vars.DEPLOY_HOSTS     space-separated hosts, e.g. "10.0.0.11 10.0.0.12"
+#   vars.DEPLOY_USER      ssh user                       (default: deploy)
+#   vars.DEPLOY_PATH      repo checkout on the host       (default: /opt/whatsapp-payment)
+#   secrets.DEPLOY_SSH_KEY      private key authorized on those hosts
+#   secrets.DEPLOY_KNOWN_HOSTS  pinned known_hosts entries for those hosts
+# Add a `production` Environment with required reviewers if a rollout should be
+# approved before it runs — the job already targets that environment.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Policy gate. Nothing is published until the tagged commit is known to be
+  # reviewed-and-tested: on main, with a green CI run behind it.
+  verify:
+    name: Verify tagged revision
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the ancestry check below needs main's commit graph.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Tag must point at a commit on main
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not an ancestor of main — releases are cut from main only"
+            exit 1
+          fi
+          echo "ok: ${GITHUB_SHA} is on main"
+
+      - name: Tag must have a green CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          # The run for this commit is the one produced when it landed on main;
+          # a tag push does not trigger ci.yml, so filtering on the push event
+          # picks exactly that run.
+          for attempt in $(seq 1 40); do
+            conclusion="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&per_page=20" \
+              --jq '[.workflow_runs[] | select(.event == "push")][0].conclusion // "pending"')"
+            case "${conclusion}" in
+              success)
+                echo "ok: CI succeeded for ${GITHUB_SHA}"
+                exit 0
+                ;;
+              failure|cancelled|timed_out|action_required|startup_failure|stale)
+                echo "::error::CI concluded '${conclusion}' for ${GITHUB_SHA} — refusing to publish"
+                exit 1
+                ;;
+            esac
+            echo "attempt ${attempt}/40: CI is '${conclusion}'; waiting 15s"
+            sleep 15
+          done
+          echo "::error::timed out waiting for a green CI run on ${GITHUB_SHA}"
+          exit 1
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (non-gated)
+        run: go test ./... -count=1 -timeout 300s
+
+      - name: Release script harness
+        run: bash deploy/release_test.sh
+
+  build:
+    name: Build, sign and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing: the signature is bound to this workflow's OIDC
+      # identity, so no long-lived signing key exists to leak.
+      id-token: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags pushed with the release: the version tag itself, its major.minor
+      # alias, and the long commit SHA (the immutable handle an incident
+      # review can point at when a version tag has been moved).
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Supply-chain evidence for a regulated payments platform: an SBOM and
+          # a signed build-provenance attestation ship alongside the image.
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Sign the digest, not a tag: a tag can be repointed, a digest cannot, so
+      # verification at deploy time stays meaningful.
+      - name: Sign the image (keyless)
+        run: |
+          set -Eeuo pipefail
+          cosign sign --yes \
+            "${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
+
+  # Opt-in rollout. Unset unless DEPLOY_ENABLED=true, so pushing a tag never
+  # silently deploys; the `production` environment adds an approval gate when
+  # configured. Rollback is automatic and lives in the script, not here.
+  deploy:
+    name: Deploy to production
+    needs: build
+    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [ -n "$DEPLOY_SSH_KEY" ] || { echo "::error::secret DEPLOY_SSH_KEY is empty"; exit 1; }
+          [ -n "$DEPLOY_KNOWN_HOSTS" ] || { echo "::error::secret DEPLOY_KNOWN_HOSTS is empty"; exit 1; }
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Roll out ${{ github.ref_name }}
+        env:
+          DEPLOY_HOSTS: ${{ vars.DEPLOY_HOSTS }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+
+          # The tag is interpolated into a remote shell command below, so it is
+          # restricted to a bare vX.Y.Z before it goes anywhere near ssh.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not of the form vX.Y.Z"; exit 1
+          fi
+          [ -n "$DEPLOY_HOSTS" ] || { echo "::error::variable DEPLOY_HOSTS is empty"; exit 1; }
+
+          user="${DEPLOY_USER:-deploy}"
+          path="${DEPLOY_PATH:-/opt/whatsapp-payment}"
+
+          for host in $DEPLOY_HOSTS; do
+            echo "::group::deploy $host"
+            # Check the tag out on the host so compose.yaml and deploy/release.sh
+            # match the image, then let release.sh pull it, take the pre-migrate
+            # backup, apply migrations, and health-gate — restoring the previous
+            # image if the new revision never becomes ready.
+            ssh -o BatchMode=yes -o IdentitiesOnly=yes "$user@$host" \
+              "cd '$path' && \
+               git fetch --tags --force --prune origin && \
+               git checkout --detach 'refs/tags/$TAG' && \
+               bash deploy/release.sh '$TAG'"
+            echo "::endgroup::"
+          done

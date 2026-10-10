@@ -257,6 +257,11 @@ type Config struct {
 	AIMaxRPM   int
 
 	MonitorVelocityWindow     time.Duration
+
+	// Release/CD (demo synthetic): the post-deploy check fails when the oldest
+	// non-terminal outbox row is older than this, i.e. the message pipeline
+	// stopped draining. Zero disables the backlog assertion.
+	SyntheticOutboxMaxAge time.Duration
 	MonitorVelocityLimit      int
 	MonitorStructuringWindow  time.Duration
 	MonitorStructuringCount   int
@@ -393,6 +398,11 @@ type Config struct {
 	MessageLogEnabled       bool
 	MessageCostServiceNGN   int64
 	MessageCostMarketingNGN int64
+
+	// ScreeningCostNGN is an optional display-only estimate per screening
+	// check (customer screening, adverse media, payment screening) shown on
+	// the admin "Onboarding & screening cost" tracking page.
+	ScreeningCostNGN int64
 
 	// AITokensPerNGN prices the AI extraction spend shown in the admin media
 	// report so token totals read as an estimated naira cost. It mirrors the
@@ -582,6 +592,7 @@ func Load() (Config, error) {
 		RestoreDrillStaleAfter:     envDuration("RESTORE_DRILL_STALE_AFTER", 8*24*time.Hour),
 		KYCRescreenPeriod:          envDuration("KYC_RESCREEN_PERIOD", 90*24*time.Hour),
 		MonitorVelocityWindow:      envDuration("MONITOR_VELOCITY_WINDOW", 24*time.Hour),
+		SyntheticOutboxMaxAge:      envDuration("SYNTHETIC_OUTBOX_MAX_AGE", 30*time.Minute),
 		MonitorVelocityLimit:       int(EnvInt64("MONITOR_VELOCITY_LIMIT", 10)),
 		MonitorStructuringWindow:   envDuration("MONITOR_STRUCTURING_WINDOW", 24*time.Hour),
 		MonitorStructuringCount:    int(EnvInt64("MONITOR_STRUCTURING_COUNT", 3)),
@@ -626,6 +637,7 @@ func Load() (Config, error) {
 		MessageLogEnabled:                           envBool("MESSAGE_LOG_ENABLED", true),
 		MessageCostServiceNGN:                       EnvInt64("MESSAGE_COST_SERVICE_NGN", 14),
 		MessageCostMarketingNGN:                     EnvInt64("MESSAGE_COST_MARKETING_NGN", 84),
+		ScreeningCostNGN:                            EnvInt64("SCREENING_COST_NGN", 0),
 		AITokensPerNGN:                              EnvInt64("AI_TOKENS_PER_NGN", 250),
 		RedisURL:                                    strings.TrimSpace(os.Getenv("REDIS_URL")),
 		EventBus:                                    strings.ToLower(env("EVENT_BUS", "memory")),

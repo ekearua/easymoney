@@ -214,21 +214,7 @@ func TestFormatAgeAndThreshold(t *testing.T) {
 // the parsed template set so drift in the template is caught here.
 func TestMetricsTemplateBackupPanel(t *testing.T) {
 	t.Parallel()
-	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"money":             func(k int64) string { return "NGN" },
-		"maskPII":           func(s string) string { return s },
-		"statusClass":       func(any) string { return "" },
-		"percent":           func(float64) string { return "" },
-		"sub":               func(a, b int64) int64 { return a - b },
-		"add":               func(a, b int64) int64 { return a + b },
-		"inc":               func(i int) int { return i + 1 },
-		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
-		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
-		"date":              func(any) string { return "" },
-	}).ParseFS(web.Assets, "templates/*.html")
-	if err != nil {
-		t.Fatalf("parse templates: %v", err)
-	}
+	tmpl := parseTOTPTestTemplates(t)
 	buf := new(strings.Builder)
 
 	data := map[string]any{
@@ -290,3 +276,29 @@ func TestMetricsTemplateBackupPanel(t *testing.T) {
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// parseTOTPTestTemplates is the shared test helper for TOTP/security tests: it
+// parses the full embedded template set (including the screening-cost, synthetic-
+// checks and media-report panels that were added later) with a minimal but
+// complete function map, so those tests still parse when the template set grows.
+func parseTOTPTestTemplates(t *testing.T) *template.Template {
+	t.Helper()
+	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"money":             func(k int64) string { return "NGN" },
+		"maskPII":           func(s string) string { return s },
+		"statusClass":       func(any) string { return "" },
+		"percent":           func(float64) string { return "" },
+		"sub":               func(a, b int64) int64 { return a - b },
+		"add":               func(a, b int64) int64 { return a + b },
+		"mul":               func(a, b int64) int64 { return a * b },
+		"divf":              func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
+		"inc":               func(i int) int { return i + 1 },
+		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
+		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
+		"date":              func(any) string { return "" },
+	}).ParseFS(web.Assets, "templates/*.html")
+	if err != nil {
+		t.Fatalf("parse templates: %v", err)
+	}
+	return tmpl
+}

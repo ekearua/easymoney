@@ -21,6 +21,9 @@
 
 services:
   app:
+    # Same published image as the primary stack (deploy/release.sh pins
+    # APP_IMAGE to the released tag, so the edge rolls with it).
+    image: ${APP_IMAGE:-xego-app:local}
     build: .
     restart: unless-stopped
     env_file: .env

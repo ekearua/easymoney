@@ -147,7 +147,16 @@ func run() error {
 		return application.SyncVTPassDataPlans(ctx)
 	case "health":
 		return application.Health(ctx)
+	case "synthetic":
+		// Post-deploy synthetic checks (release/CD): runs every read-only stage,
+		// records it, and exits non-zero when any stage failed so a rollout can
+		// gate on the result.
+		source := "cli"
+		if len(os.Args) > 2 {
+			source = os.Args[2]
+		}
+		return application.RunSynthetic(ctx, source)
 	default:
-		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, wallet-balance, wallet-withdraw, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, hash-password, random-totp-key, or random-data-key", command)
+		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, wallet-balance, wallet-withdraw, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, synthetic, hash-password, random-totp-key, or random-data-key", command)
 	}
 }

@@ -24,7 +24,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"whatsapp-payment-demo/internal/config"
-	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ratelimit"
 	"whatsapp-payment-demo/internal/store"
 	"whatsapp-payment-demo/internal/totp"
@@ -322,28 +321,6 @@ func clearMFAState(t *testing.T, ctx context.Context, repository *store.Store, s
 			t.Fatal(err)
 		}
 	}
-}
-
-func parseTOTPTestTemplates(t *testing.T) *template.Template {
-	t.Helper()
-	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"money":       domain.FormatNGN,
-		"maskPII":     func(s string) string { return s },
-		"statusClass": func(any) string { return "" },
-		"percent":     func(float64) string { return "" },
-		"sub":         func(a, b int64) int64 { return a - b },
-		"add":         func(a, b int64) int64 { return a + b },
-		"inc":         func(i int) int { return i + 1 },
-		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
-		"date":        func(any) string { return "" },
-		"collectionFeeKobo": func(store.PaymentView) int64 {
-			return 0
-		},
-	}).ParseFS(web.Assets, "templates/*.html")
-	if err != nil {
-		t.Fatalf("parse templates: %v", err)
-	}
-	return tmpl
 }
 
 type httpResult struct {
