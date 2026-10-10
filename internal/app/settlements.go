@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -109,6 +110,10 @@ func (a *App) apiRequestPayout(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeAPIError(w, http.StatusNotFound, "not_found", "no batch or destination account with that reference")
+			return
+		}
+		if errors.Is(err, service.ErrStepUpRequired) {
+			writeAPIError(w, http.StatusConflict, "step_up_required", "step-up authentication is required for this payout; complete it in the merchant portal")
 			return
 		}
 		writeAPIError(w, http.StatusUnprocessableEntity, "payout_failed", err.Error())

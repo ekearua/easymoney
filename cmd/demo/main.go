@@ -127,6 +127,8 @@ func run() error {
 		return application.RecomputeAllRisk(ctx)
 	case "monitor":
 		return application.MonitorTransactions(ctx)
+	case "fraud-monitor":
+		return application.MonitorFraud(ctx)
 	case "reports":
 		dir := "reports/exports"
 		if len(os.Args) > 2 {

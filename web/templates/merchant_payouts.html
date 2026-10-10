@@ -1,0 +1,45 @@
+{{define "merchant_payouts.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main><header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Payouts</h1></div></header>
+
+{{if .Notice}}<section class="panel"><p class="muted">{{.Notice}}</p></section>{{end}}
+
+{{if .ShowStepUp}}<section class="panel">
+  <h2>Confirm your identity</h2>
+  {{if .StepUpAvailable}}
+  <p class="muted">This payout is in the high-risk band. Enter a fresh code from your authenticator app to authorise it.</p>
+  <form method="post" action="/merchant/payouts/step-up" class="inline-block">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <input type="hidden" name="batch" value="{{.BatchNo}}">
+    <label>Authenticator code <input class="input-small" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></label>
+    <button class="btn" type="submit">Confirm</button>
+  </form>
+  {{else}}
+  <p class="muted">No authenticator app is enrolled. Add one under <a href="/merchant/security">Security</a> to approve high-risk payouts.</p>
+  {{end}}
+</section>{{end}}
+
+<section class="panel">
+  <h2>Settlement batches</h2>
+  <p class="muted">Payouts release a settled batch to your verified destination account. A batch owned by a high-risk profile needs a fresh authenticator code first (G13 step-up).</p>
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Net amount</th><th>Batch status</th><th>Payout</th><th>Payout ID</th><th></th></tr></thead><tbody>
+  {{range .Rows}}<tr>
+    <td class="mono">{{.BatchNo}}</td>
+    <td>{{money .NetKobo}}</td>
+    <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+    <td>{{if .PayoutStatus}}<span class="status {{statusClass .PayoutStatus}}">{{.PayoutStatus}}</span>{{if .PayoutError}} · {{.PayoutError}}{{end}}{{else}}—{{end}}</td>
+    <td class="mono">{{if .PayoutID}}{{.PayoutID}}{{else}}—{{end}}</td>
+    <td>{{if .CanRequest}}
+      <form method="post" action="/merchant/payouts/{{.BatchNo}}/request" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="btn btn-small" type="submit">Request payout</button>
+      </form>
+    {{else}}—{{end}}</td>
+  </tr>{{else}}<tr><td colspan="6">No settlement batches yet.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+</main></body></html>
+{{end}}

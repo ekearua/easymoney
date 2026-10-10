@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"whatsapp-payment-demo/internal/domain"
+	"whatsapp-payment-demo/internal/fraud"
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/providers/vtpass"
@@ -339,6 +340,32 @@ func (a *App) monitorConfig() kyc.MonitorConfig {
 		RoundAmountStep:    a.cfg.MonitorRoundAmountStep,
 		RoundAmountMin:     a.cfg.MonitorRoundAmountMin,
 		HighRiskCategories: a.cfg.MonitorHighRiskCategories,
+	}
+}
+
+// MonitorFraud runs the G13 fraud rules over the configured lookback window
+// and returns how many alerts were raised. It is the fraud-lane sibling of
+// MonitorTransactions: same window, separate engine and queue.
+func (a *App) MonitorFraud(ctx context.Context) error {
+	raised, err := a.store.RunFraudMonitor(ctx, time.Now().Add(-a.cfg.FraudWindow), a.fraudConfig())
+	if err != nil {
+		return err
+	}
+	a.logger.InfoContext(ctx, "fraud monitor completed", "alerts", raised, "window", a.cfg.FraudWindow.String())
+	return nil
+}
+
+// fraudConfig builds the fraud.FraudConfig from configuration.
+func (a *App) fraudConfig() fraud.FraudConfig {
+	return fraud.FraudConfig{
+		Window:                a.cfg.FraudWindow,
+		FailedAttemptLimit:    a.cfg.FraudFailedAttemptLimit,
+		PaymentLimit:          a.cfg.FraudPaymentVelocityLimit,
+		DisputeLimit:          a.cfg.FraudDisputeVelocityLimit,
+		RefundLimit:           a.cfg.FraudRefundVelocityLimit,
+		PayoutLimit:           a.cfg.FraudPayoutVelocityLimit,
+		NewDestinationMinKobo: a.cfg.FraudNewDestinationMinKobo,
+		NewDestinationWindow:  a.cfg.FraudNewDestinationWindow,
 	}
 }
 

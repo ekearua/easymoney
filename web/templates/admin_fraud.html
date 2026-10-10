@@ -1,0 +1,72 @@
+{{define "admin_fraud.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Fraud queue</h1></div></header>
+
+<section class="panel">
+  <p class="muted">Raised by the G13 fraud engine (<span class="mono">internal/fraud</span>) — failed-attempt bursts, payment/dispute/refund velocity, and payout destination churn. This lane is separate from the AML monitor: fraud alerts never move the ML/FT risk score, so each lane's false-positive rate stays independently measurable. Reviews reuse the shared KYC queue; the reference opens the underlying movement. <a href="/admin/kyc">AML queue →</a></p>
+  <p class="muted">Rail:
+    {{if .AlertRail}}<a href="/admin/fraud">all</a>{{else}}<strong>all</strong>{{end}}
+    {{range .AlertRails}} · {{if eq . $.AlertRail}}<strong>{{.}}</strong>{{else}}<a href="/admin/fraud?rail={{.}}">{{.}}</a>{{end}}{{end}}
+  </p>
+  <div class="table-wrap"><table><thead><tr><th>Rule</th><th>Rail</th><th>Severity</th><th>User</th><th>Reference</th><th>Status</th><th>Details</th><th>Raised</th><th>Action</th></tr></thead><tbody>
+  {{range .Alerts}}<tr>
+    <td class="mono">{{.Rule}}</td>
+    <td class="mono">{{with index .Details "rails"}}{{printf "%v" .}}{{else}}—{{end}}</td>
+    <td><span class="status {{if eq .Severity "high"}}failed{{else if eq .Severity "medium"}}warn{{else}}ok{{end}}">{{.Severity}}</span></td>
+    <td class="mono">{{.UserID}}</td>
+    <td class="mono">{{with index .Details "reference"}}{{printf "%v" .}}{{else}}—{{end}}</td>
+    <td><span class="status {{if eq .Status "open"}}pending{{else}}succeeded{{end}}">{{.Status}}</span>{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</td>
+    <td class="mono">{{printf "%v" .Details}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td>
+      {{if eq .Status "open"}}
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="next" value="/admin/fraud">
+        <input type="hidden" name="status" value="acknowledged">
+        <button class="btn btn-small" type="submit">Ack</button>
+      </form>
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="next" value="/admin/fraud">
+        <input type="hidden" name="status" value="escalated">
+        <button class="btn btn-small btn-danger" type="submit">Escalate</button>
+      </form>
+      {{else}}
+      <form method="post" action="/admin/monitoring/alerts/{{.ID}}/resolve" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="next" value="/admin/fraud">
+        <input type="hidden" name="status" value="resolved">
+        <select name="outcome" class="input-small">
+          <option value="false_positive">false positive</option>
+          <option value="confirmed">confirmed</option>
+        </select>
+        <button class="btn btn-small" type="submit">Resolve</button>
+      </form>
+      {{end}}
+    </td>
+  </tr>
+  {{else}}<tr><td colspan="9">No fraud alerts.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Fraud review cases</h2>
+  <p class="muted">Opened for medium/high fraud detections and actioned on the <a href="/admin/kyc">shared review queue</a>.</p>
+  <div class="table-wrap"><table><thead><tr><th>Case</th><th>User</th><th>Reason</th><th>Opened</th><th>Status</th></tr></thead><tbody>
+  {{range .Cases}}<tr>
+    <td>#{{.ID}}</td>
+    <td><a class="mono" href="/admin/kyc/{{.UserID}}">{{.UserID}}</a></td>
+    <td>{{.Reason}}</td>
+    <td class="nowrap">{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+    <td><span class="status {{if eq .Status "pending"}}pending{{else}}succeeded{{end}}">{{.Status}}</span>{{if .ReviewerEmail}} · {{.ReviewerEmail}}{{end}}</td>
+  </tr>
+  {{else}}<tr><td colspan="5">No fraud review cases.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+</main></body></html>
+{{end}}

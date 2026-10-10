@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -38,25 +39,49 @@ func serviceTestDBURL(t *testing.T, base string) string {
 		t.Fatal(err)
 	}
 	mainDB := cfg.ConnConfig.Database
+	if mainDB == "" {
+		mainDB = "postgres"
+	}
 	serviceDB := mainDB + "_service"
-	// Config.ConnString() returns the original string verbatim, so the database
-	// change would be dropped; build the DSN manually instead.
-	dsn := regexp.MustCompile(`(^|\s)database=\S+`).ReplaceAllString(strings.TrimSpace(base), "")
+	trimmed := strings.TrimSpace(base)
+	parsed, urlErr := url.Parse(trimmed)
+	if urlErr == nil && parsed.Scheme == "postgres" && parsed.Host != "" {
+		// URL form: connect as the base database to create the suffixed
+		// sibling, then return the suffixed URL with everything else intact.
+		admin := *parsed
+		admin.Path = "/" + mainDB
+		service := *parsed
+		service.Path = "/" + serviceDB
+		conn, err := pgx.Connect(ctx, admin.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close(ctx)
+		ensureServiceDatabase(ctx, t, conn, serviceDB)
+		return service.String()
+	}
+	// Keyword/value form: strip database=<db> and append the suffixed one.
+	dsn := regexp.MustCompile(`(^|\s)database=\S+`).ReplaceAllString(trimmed, "")
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
+	ensureServiceDatabase(ctx, t, conn, serviceDB)
+	return dsn + " database=" + serviceDB
+}
+
+func ensureServiceDatabase(ctx context.Context, t *testing.T, conn *pgx.Conn, db string) {
+	t.Helper()
 	var exists bool
-	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)`, serviceDB).Scan(&exists); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)`, db).Scan(&exists); err != nil {
 		t.Fatal(err)
 	}
 	if !exists {
-		if _, err := conn.Exec(ctx, `CREATE DATABASE "`+serviceDB+`"`); err != nil {
+		if _, err := conn.Exec(ctx, `CREATE DATABASE "`+db+`"`); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return dsn + " database=" + serviceDB
 }
 
 // TestEventPublisherDrainsOutboxToBus verifies the Phase 3 write path: a
@@ -183,7 +208,7 @@ func TestComplianceConsumerRaisesAlertEventDriven(t *testing.T) {
 		UserID:     user.ID.String(),
 		MerchantID: merchant.ID.String(),
 		Reference:  "ref",
-		Provider: "interswitch",
+		Provider:   "interswitch",
 		Currency:   "NGN",
 		AmountKobo: 200_000_000,
 		PaidAt:     time.Now(),
@@ -247,7 +272,7 @@ func truncateServiceData(t *testing.T, ctx context.Context, databaseURL string) 
 		         message_outbox,inbound_messages,webhook_deliveries,payment_events,payments,
 		         refunds,disputes,
 		         merchant_settlement_accounts,settlement_batches,settlement_lines,payouts,
-		         merchant_webhook_deliveries,conversation_sessions,users,merchants
+		         merchant_webhook_deliveries,conversation_sessions,users,merchants,step_up_grants
 		         RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}

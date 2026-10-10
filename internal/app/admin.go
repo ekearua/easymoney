@@ -334,7 +334,11 @@ func (a *App) adminResolveTransactionAlert(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	a.logger.InfoContext(r.Context(), "transaction alert resolved", "alert_id", alert.ID, "status", alert.Status)
-	http.Redirect(w, r, "/admin/kyc", http.StatusSeeOther)
+	next := strings.TrimSpace(r.FormValue("next"))
+	if next != "/admin/fraud" {
+		next = "/admin/kyc"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 // adminKYCReview approves or rejects a manual review case.

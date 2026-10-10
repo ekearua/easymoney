@@ -24,6 +24,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	rescreenTicker := time.NewTicker(24 * time.Hour)
 	auditChainTicker := time.NewTicker(a.cfg.AuditChainVerifyInterval)
 	monitorTicker := time.NewTicker(15 * time.Minute)
+	fraudTicker := time.NewTicker(15 * time.Minute)
 	settlementTicker := time.NewTicker(10 * time.Second)
 	onboardReminderTicker := time.NewTicker(a.cfg.OnboardingReminderInterval)
 	bulkTicker := time.NewTicker(2 * time.Second)
@@ -35,6 +36,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer rescreenTicker.Stop()
 	defer auditChainTicker.Stop()
 	defer monitorTicker.Stop()
+	defer fraudTicker.Stop()
 	defer settlementTicker.Stop()
 	defer onboardReminderTicker.Stop()
 	defer bulkTicker.Stop()
@@ -99,6 +101,12 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.dispatch(ctx, a.workerPools.misc, "monitor", func(ctx context.Context) {
 				if err := a.MonitorTransactions(ctx); err != nil {
 					a.logger.WarnContext(ctx, "scheduled transaction monitor failed", "error", err)
+				}
+			})
+		case <-fraudTicker.C:
+			a.dispatch(ctx, a.workerPools.misc, "fraud", func(ctx context.Context) {
+				if err := a.MonitorFraud(ctx); err != nil {
+					a.logger.WarnContext(ctx, "scheduled fraud monitor failed", "error", err)
 				}
 			})
 		case <-settlementTicker.C:
