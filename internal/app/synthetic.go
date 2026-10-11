@@ -147,7 +147,15 @@ func joinStages(stages []string) string {
 // own read does not interleave with the evidence write; if the database is
 // unreachable the `db` stage fails and the record write fails with it, which
 // the caller reports as an error rather than a silent no-op.
-func (a *App) RunSyntheticChecks(ctx context.Context, source string) (SyntheticReport, error) {
+//
+// When imageOnly is set, stages that assert an *environment* condition rather
+// than the deployed revision's own behaviour are recorded as skipped instead of
+// run. The outbox ceiling is the case that matters: it fires on a real data
+// backlog, not on the image, so a rollback that re-gates a known-good previous
+// image with the full check set would fail on a condition that image cannot
+// fix and report a misleading "rollback failed". `deploy/release.sh` passes
+// imageOnly for exactly the rollback re-gate.
+func (a *App) RunSyntheticChecks(ctx context.Context, source string, imageOnly bool) (SyntheticReport, error) {
 	if source == "" {
 		source = "cli"
 	}
@@ -173,7 +181,18 @@ func (a *App) RunSyntheticChecks(ctx context.Context, source string) (SyntheticR
 
 	report.Stages = append(report.Stages, a.runSyntheticStage(ctx, "payment_path", a.checkPaymentPath))
 
-	report.Stages = append(report.Stages, a.runSyntheticStage(ctx, "outbox", a.checkOutbox))
+	// `outbox` asserts an environment condition (the pipeline is draining), not
+	// the image's own behaviour, so in image-only mode it is recorded as skipped
+	// rather than run — see the RunSyntheticChecks doc comment.
+	if imageOnly {
+		report.Stages = append(report.Stages, SyntheticStage{
+			Name:    "outbox",
+			Skipped: true,
+			Detail:  "skipped in image-only mode: backlog is an environment condition, not the image's",
+		})
+	} else {
+		report.Stages = append(report.Stages, a.runSyntheticStage(ctx, "outbox", a.checkOutbox))
+	}
 
 	report.OK = true
 	for _, stage := range report.Stages {
@@ -204,9 +223,10 @@ func (a *App) RunSyntheticChecks(ctx context.Context, source string) (SyntheticR
 
 // RunSynthetic executes the checks for the CLI: it logs every stage and returns
 // an error when any stage failed, so `demo synthetic` exits non-zero and a
-// rollout (or a post-deploy job) can gate on the result.
-func (a *App) RunSynthetic(ctx context.Context, source string) error {
-	report, err := a.RunSyntheticChecks(ctx, source)
+// rollout (or a post-deploy job) can gate on the result. imageOnly selects the
+// rollback re-gate profile (see RunSyntheticChecks).
+func (a *App) RunSynthetic(ctx context.Context, source string, imageOnly bool) error {
+	report, err := a.RunSyntheticChecks(ctx, source, imageOnly)
 	if err != nil {
 		return err
 	}

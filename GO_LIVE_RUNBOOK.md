@@ -392,14 +392,48 @@ Repository configuration the deploy job expects:
 | secret | `DEPLOY_SSH_KEY` | private key authorized on those hosts |
 | secret | `DEPLOY_KNOWN_HOSTS` | pinned `known_hosts` entries for those hosts |
 
-**Manual rollout / rerun** — identical to what the workflow does:
+The deploy job passes `APP_IMAGE_REPO` (the registry repo this workflow pushed
+to) into `release.sh`, so a pipeline release and a manual release always resolve
+the same image even if the repository is renamed or forked. Every interpolated
+value (`DEPLOY_USER`, `DEPLOY_PATH`, each `DEPLOY_HOSTS` entry) is constrained
+to a narrow character set before it reaches a remote shell command.
+
+Host `.env` requirements (each host in `DEPLOY_HOSTS`):
+
+| Variable | Purpose |
+| --- | --- |
+| `APP_IMAGE` | registry tag to run, e.g. `ghcr.io/ekearua/easymoney:v1.4.0` |
+| `APP_IMAGE_TOKEN` | GHCR PAT with `read:packages`; **required while the package is private** (GHCR packages are private by default). `release.sh` logs a warning up front and aborts the pull with a hint when it is unset. |
+| `PUBLIC_HOST` | derived ingress probe `https://$PUBLIC_HOST/health/ready` |
+| `SYNTHETIC_OUTBOX_MAX_AGE` | synthetic check's delivery-drain ceiling (default `30m`) |
+
+`release.sh` run-time knobs (exported before the command; all optional):
+
+| Variable | Effect |
+| --- | --- |
+| `APP_IMAGE_REPO` | image repo (default `ghcr.io/ekearua/easymoney`; the deploy job passes the pushed repo). |
+| `RELEASE_SKIP_INGRESS_CHECK=1` | skip the through-Caddy `/health/ready` probe |
+| `RELEASE_SKIP_SYNTHETIC=1` | skip the post-deploy synthetic checks |
+| `RELEASE_SKIP_BACKUP=1` | skip the pre-migrate base backup (**not** for the primary) |
+| `RELEASE_VERIFY_SIGNATURE=1` | cosign-verify the image **by digest** before pulling it. Needs `cosign` and `docker buildx` on the host. Enforce this on hosts that pull an image they did not just build. |
+| `COSIGN_IDENTITY_REGEXP` / `COSIGN_OIDC_ISSUER` | override the pinned signing identity (default: this repo's `release.yml` on a `v*` tag / GitHub Actions OIDC issuer). |
+| `RELEASE_HEALTH_TIMEOUT` / `RELEASE_HEALTH_INTERVAL` | readiness-gate timeout (default `120`) / poll interval (default `3`), seconds |
+
+**Manual rollout / rerun** — identical to what the workflow does. Verification
+is part of the manual path because a host is deciding to trust an image it did
+not build: resolve the digest, verify the keyless signature, then release:
 
 ```bash
 cd /opt/whatsapp-payment
 git fetch --tags --force --prune origin
 git checkout --detach refs/tags/v1.4.0
-bash deploy/release.sh v1.4.0
+RELEASE_VERIFY_SIGNATURE=1 bash deploy/release.sh v1.4.0   # verifies by digest, then releases
 ```
+
+Without `RELEASE_VERIFY_SIGNATURE=1`, fall back to the explicit gate from
+§4.3's image verification and set `APP_IMAGE` to the verified digest yourself
+before re-running. The pipeline deploy job signs and builds in the same
+workflow, so its rollout can trust its own `build` step; a host release cannot.
 
 The host's `.env` carries `APP_IMAGE` (the tag to run); compose `app` and
 `migrate` use `${APP_IMAGE}` when set and fall back to the local build when it
@@ -408,23 +442,32 @@ the package is private.
 
 What `deploy/release.sh` enforces, in order:
 
-1. pull the image — a failure here changes nothing on the host;
-2. full base backup **before** the `migrate` one-shot;
-3. `migrate`;
-4. recreate the `app` replicas from the new image and wait until every replica
+1. resolve the image; with `RELEASE_VERIFY_SIGNATURE=1`, cosign-verify it **by
+   digest** first — an unsigned or moved tag is rejected before anything else;
+2. pull the image — a failure here changes nothing on the host;
+3. full base backup **before** the `migrate` one-shot;
+4. `migrate`;
+5. recreate the `app` replicas from the new image and wait until every replica
    reports healthy;
-5. recreate `caddy` so its `app:8080` upstream is re-resolved to the new replica
+6. recreate `caddy` so its `app:8080` upstream is re-resolved to the new replica
    IPs (the `caddy_data` volume keeps the certificates);
-6. probe `/health/ready` through ingress — `PUBLIC_HEALTH_URL`, or derived from
+7. probe `/health/ready` through ingress — `PUBLIC_HEALTH_URL`, or derived from
    `PUBLIC_HOST` as `https://$PUBLIC_HOST/health/ready`;
-7. run the post-deploy **synthetic checks** — `demo synthetic pipeline` in a
+8. run the post-deploy **synthetic checks** — `demo synthetic pipeline` in a
    throwaway container from the same image, which asserts the deployed revision
    can reach the database, is running against the schema it expects, resolves
    today's newest payment by *reference and receipt token*, and is actually
    draining the outbox (`SYNTHETIC_OUTBOX_MAX_AGE`, default 30m). Skipped with
    `RELEASE_SKIP_SYNTHETIC=1`;
-8. **on any failure in 4–7, restore the previously running image automatically**
-   and exit non-zero, so the last good revision keeps serving.
+9. **on any failure in 5–8, restore the previously running image automatically**
+   and exit non-zero, so the last good revision keeps serving. The restore's
+   own re-gate runs the synthetic checks **image-only** (`--image-only`), which
+   skips the outbox backlog assertion: that stage fires on an environment/data
+   condition the previous image cannot fix, and letting it fail a restore would
+   print a false "rollback failed" while the previous revision is actually up.
+   A same-tag rerun (already-serving tag) is safe: it succeeds when healthy and,
+   when unhealthy, skips rollback with a message instead of pretending to
+   restore a different image.
 
 Run the checks by hand at any time:
 
@@ -551,11 +594,13 @@ bash deploy/release_test.sh
 ```
 
 The shim reports container health *per image*, which makes "the new image never
-becomes ready" a first-class case rather than a comment. Six cases are covered:
+becomes ready" a first-class case rather than a comment. Nine cases are covered:
 the happy path (including the pull → base-backup → migrate → app → caddy
 ordering), the readiness-gate rollback, a migrate failure, a pull failure, a
-backup failure, and the edge stack (no `migrate`/`backup` services). It runs in
-`ci.yml` on every push and in the release workflow's `verify` job.
+backup failure, the synthetic-failure rollback, the rollback's image-only
+re-gate, two same-tag reruns (healthy → succeed, unhealthy → rollback skipped),
+and the edge stack (no `migrate`/`backup` services). It runs in `ci.yml` on
+every push and in the release workflow's `verify` job.
 
 ---
 

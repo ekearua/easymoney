@@ -203,8 +203,23 @@ jobs:
           DEPLOY_USER: ${{ vars.DEPLOY_USER }}
           DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
           TAG: ${{ github.ref_name }}
+          # Bind release.sh's image repo to the repo this workflow actually
+          # pushed to, so a rename/fork cannot drift from the build target.
+          # release.sh reads APP_IMAGE_REPO from its environment.
+          APP_IMAGE_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         run: |
           set -Eeuo pipefail
+
+          # Every value below is interpolated into a remote shell command, so
+          # each is restricted to the narrow character set it can legitimately
+          # contain before it goes anywhere near ssh. Values that fail are
+          # rejected loudly rather than injecting into a remote command line.
+          safe_ref() {
+            local name="$1" value="$2"
+            if [[ ! "$value" =~ ^[A-Za-z0-9._:/@-]+$ ]]; then
+              echo "::error::$name '$value' contains characters outside [A-Za-z0-9._:/@-]"; exit 1
+            fi
+          }
 
           # The tag is interpolated into a remote shell command below, so it is
           # restricted to a bare vX.Y.Z before it goes anywhere near ssh.
@@ -215,17 +230,31 @@ jobs:
 
           user="${DEPLOY_USER:-deploy}"
           path="${DEPLOY_PATH:-/opt/whatsapp-payment}"
+          safe_ref "DEPLOY_USER" "$user"
+          safe_ref "DEPLOY_PATH" "$path"
+          safe_ref "APP_IMAGE_REPO" "$APP_IMAGE_REPO"
 
           for host in $DEPLOY_HOSTS; do
+            safe_ref "DEPLOY_HOSTS entry" "$host"
+            if [[ ! "$host" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+              echo "::error::host '$host' is not a hostname/IP literal"; exit 1
+            fi
             echo "::group::deploy $host"
             # Check the tag out on the host so compose.yaml and deploy/release.sh
             # match the image, then let release.sh pull it, take the pre-migrate
             # backup, apply migrations, and health-gate — restoring the previous
-            # image if the new revision never becomes ready.
+            # image if the new revision never becomes ready. APP_IMAGE_REPO is
+            # exported ahead of the script so a manual release and a pipeline
+            # release resolve the same image.
             ssh -o BatchMode=yes -o IdentitiesOnly=yes "$user@$host" \
               "cd '$path' && \
                git fetch --tags --force --prune origin && \
                git checkout --detach 'refs/tags/$TAG' && \
-               bash deploy/release.sh '$TAG'"
+               APP_IMAGE_REPO='$APP_IMAGE_REPO' bash deploy/release.sh '$TAG'"
+            # Surface the host's last-good marker so a rollback ("release X
+            # failed; see the rollback result above") is traceable to which
+            # image is serving where after the dust settles.
+            ssh -o BatchMode=yes -o IdentitiesOnly=yes "$user@$host" \
+              "cat '$path/deploy/.release-state' 2>/dev/null || echo 'deploy/.release-state not present on $host'" || true
             echo "::endgroup::"
           done

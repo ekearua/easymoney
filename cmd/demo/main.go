@@ -151,11 +151,23 @@ func run() error {
 		// Post-deploy synthetic checks (release/CD): runs every read-only stage,
 		// records it, and exits non-zero when any stage failed so a rollout can
 		// gate on the result.
+		//
+		//   synthetic [source] [--image-only]
+		//
+		// The optional positional argument names the source (default "cli").
+		// --image-only skips the environment-level outbox assertion; release.sh
+		// uses it when re-gating the previous image during a rollback.
 		source := "cli"
-		if len(os.Args) > 2 {
-			source = os.Args[2]
+		imageOnly := false
+		for _, arg := range os.Args[2:] {
+			switch arg {
+			case "--image-only", "-image-only":
+				imageOnly = true
+			default:
+				source = arg
+			}
 		}
-		return application.RunSynthetic(ctx, source)
+		return application.RunSynthetic(ctx, source, imageOnly)
 	default:
 		return fmt.Errorf("unknown command %q; expected server, migrate, seed, reconcile, reconcile3, settle, refund, wallet-balance, wallet-withdraw, retain, rescreen, recompute-risk, monitor, reports, sync-vtpass-data-plans, health, synthetic, hash-password, random-totp-key, or random-data-key", command)
 	}

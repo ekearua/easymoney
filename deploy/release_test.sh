@@ -112,7 +112,7 @@ case "${sub}" in
       case "${arg}" in -*) continue ;; esac
       svc="${arg}"; break
     done
-    printf '  run=%s image=%s\n' "${svc}" "${APP_IMAGE:-}" >>"${LOG}"
+    printf '  run=%s image=%s args=%s\n' "${svc}" "${APP_IMAGE:-}" "$*" >>"${LOG}"
     case "${svc}" in
       migrate) [ "${SHIM_MIGRATE_FAIL:-0}" = "1" ] && exit 1 ;;
       backup) [ "${SHIM_BACKUP_FAIL:-0}" = "1" ] && exit 1 ;;
@@ -320,7 +320,55 @@ expect_out "SYNTHETIC CHECKS FAILED"
 expect_out "ROLLBACK: restoring ${PREV_IMAGE}"
 expect_out "ROLLBACK OK"
 expect_log "run=app image=${PREV_IMAGE}"
+# P1: the new image ran the FULL synthetic check set (no --image-only), but the
+# rollback re-gate on the previous image must run image-only so an
+# environment-level outbox backlog cannot fail a restore.
+expect_log "run=app image=${NEW_IMAGE} args=--rm --no-deps app synthetic pipeline"
+expect_log "run=app image=${PREV_IMAGE} args=--rm --no-deps app synthetic pipeline --image-only"
+expect_out "image-only"
 SHIM_SYNTHETIC_FAIL_IMAGE=""
+
+# ------------------------------------------------- case: rollback re-gate ---
+
+# Same guarantee on the never-ready path: the previous image's re-gate carries
+# --image-only even though the new image never made it to the synthetic stage.
+begin "rollback re-gates the previous image image-only (no outbox assertion)"
+SHIM_UNHEALTHY_IMAGE="${NEW_IMAGE}"
+SHIM_SYNTHETIC_FAIL_IMAGE=""
+run_release "${NEW_TAG}"
+expect_rc 1
+expect_log "run=app image=${PREV_IMAGE} args=--rm --no-deps app synthetic pipeline --image-only"
+expect_out "image-only"
+expect_out "ROLLBACK OK"
+SHIM_UNHEALTHY_IMAGE=""
+
+# -------------------------------------------- case: same-tag rerun, healthy --
+
+# Re-running the tag already serving is the most common operator action during
+# an incident: it must succeed and never attempt a rollback.
+begin "same-tag rerun: already-serving tag releases cleanly, exit 0"
+SHIM_CURRENT_IMAGE="${NEW_IMAGE}"
+SHIM_UNHEALTHY_IMAGE=""
+run_release "${NEW_TAG}"
+expect_rc 0
+expect_out "release ${NEW_TAG} complete"
+expect_no_log "ROLLBACK"
+SHIM_CURRENT_IMAGE="${PREV_IMAGE}"
+
+# ----------------------------------------- case: same-tag rerun, unhealthy ---
+
+# The unhealthy same-tag rerun trips the gate, but rollback has nothing to do
+# (previous == released), so it must say so out loud and not pretend the
+# restored image is something else.
+begin "same-tag rerun failing: rollback has nothing to restore, exit 1"
+SHIM_CURRENT_IMAGE="${NEW_IMAGE}"
+SHIM_UNHEALTHY_IMAGE="${NEW_IMAGE}"
+run_release "${NEW_TAG}"
+expect_rc 1
+expect_out "ROLLBACK SKIPPED: previous image equals the released image"
+expect_no_log "ROLLBACK: restoring"
+SHIM_UNHEALTHY_IMAGE=""
+SHIM_CURRENT_IMAGE="${PREV_IMAGE}"
 
 # ------------------------------------------------------- case: edge stack ---
 

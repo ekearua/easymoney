@@ -41,6 +41,11 @@
 #   RELEASE_SKIP_INGRESS_CHECK=1  skip the through-Caddy probe
 #   RELEASE_SKIP_SYNTHETIC=1      skip the post-deploy synthetic checks
 #   RELEASE_SKIP_BACKUP=1         skip the pre-migrate backup (NOT for prod)
+#   RELEASE_VERIFY_SIGNATURE=1    cosign-verify the image by digest BEFORE pull
+#                                 (needs cosign + docker buildx on the host)
+#   COSIGN_IDENTITY_REGEXP        cert identity to pin (default: this repo's
+#                                 release workflow on a v* tag)
+#   COSIGN_OIDC_ISSUER            OIDC issuer (default GitHub Actions)
 #   RELEASE_HEALTH_TIMEOUT        seconds to wait at each gate (default 120)
 #   RELEASE_HEALTH_INTERVAL       poll interval in seconds (default 3)
 #   RELEASE_STATE_FILE            last-good marker (default deploy/.release-state)
@@ -205,13 +210,24 @@ recreate_and_gate() {
 # container from the same image, so a revision that is healthy but broken is a
 # failed release rather than a silent one. `run --rm` never touches the serving
 # replicas.
+#
+# During a rollback (ROLLBACK_MODE=1) the checks run image-only: the outbox
+# backlog assertion is skipped because it reflects an environment/data condition
+# the previous image cannot fix, and letting it fail here would turn a
+# successful restore into a misleading "rollback failed".
 run_synthetic_checks() {
   if [ "${RELEASE_SKIP_SYNTHETIC:-0}" = "1" ]; then
     log "synthetic checks skipped (RELEASE_SKIP_SYNTHETIC=1)"
     return 0
   fi
-  log "post-deploy synthetic checks"
-  if compose run --rm --no-deps app synthetic pipeline; then
+  local args=(synthetic pipeline)
+  if [ "${ROLLBACK_MODE:-0}" = "1" ]; then
+    args+=(--image-only)
+    log "post-deploy synthetic checks (image-only: environment-level stages skipped)"
+  else
+    log "post-deploy synthetic checks"
+  fi
+  if compose run --rm --no-deps app "${args[@]}"; then
     log "synthetic checks passed"
     return 0
   fi
@@ -231,6 +247,10 @@ rollback() {
     return 1
   fi
   log "ROLLBACK: restoring ${PREV_IMAGE}"
+  # Re-gate the previous image image-only (see run_synthetic_checks): its health
+  # and schema/payment stages still count, but environment-level assertions must
+  # not turn a successful restore into a false rollback failure.
+  ROLLBACK_MODE=1
   if recreate_and_gate "${PREV_IMAGE}"; then
     log "ROLLBACK OK — ${PREV_IMAGE} is serving again"
     return 0
@@ -268,6 +288,31 @@ log "new image       ${NEW_IMAGE}"
 log "current image   ${PREV_IMAGE:-<none running>}"
 log "compose files   ${COMPOSE_FILES}"
 
+# ----------------------------------------------------------------- verify ---
+# Opt-in signature gate (RELEASE_VERIFY_SIGNATURE=1). Resolves the digest for
+# the tag and verifies the keyless cosign signature by that digest, so a moved
+# or unsigned tag cannot be rolled out even though the pipeline verifies the
+# images it itself publishes.
+verify_signature() {
+  [ "${RELEASE_VERIFY_SIGNATURE:-0}" = "1" ] || return 0
+  command -v cosign >/dev/null 2>&1 || die "RELEASE_VERIFY_SIGNATURE=1 but cosign is not on PATH"
+  if ! docker buildx version >/dev/null 2>&1; then
+    die "RELEASE_VERIFY_SIGNATURE=1 but docker buildx is not available to resolve the digest"
+  fi
+  local identity="${COSIGN_IDENTITY_REGEXP:-^https://github.com/ekearua/easymoney/.github/workflows/release.yml@refs/tags/v.*\$}"
+  local issuer="${COSIGN_OIDC_ISSUER:-https://token.actions.githubusercontent.com}"
+  local digest
+  digest="$(docker buildx imagetools inspect "${NEW_IMAGE}" --format '{{.Manifest.Digest}}' 2>/dev/null || true)"
+  [ -n "${digest}" ] || die "RELEASE_VERIFY_SIGNATURE=1 but no digest resolvable for ${NEW_IMAGE}"
+  log "verifying cosign signature: ${NEW_IMAGE}@${digest}"
+  cosign verify \
+    --certificate-identity-regexp "${identity}" \
+    --certificate-oidc-issuer "${issuer}" \
+    "${APP_IMAGE_REPO}@${digest}" >/dev/null 2>&1 \
+    || die "cosign verification FAILED for ${NEW_IMAGE}@${digest}; refusing to deploy"
+  log "signature ok"
+}
+
 # --------------------------------------------------------------------- pull --
 
 if [ -n "${APP_IMAGE_TOKEN:-}" ]; then
@@ -276,6 +321,11 @@ if [ -n "${APP_IMAGE_TOKEN:-}" ]; then
   printf '%s' "${APP_IMAGE_TOKEN}" \
     | docker login "${registry}" -u "${APP_IMAGE_USER:-${GITHUB_ACTOR:-token}}" --password-stdin \
     || die "registry login failed"
+elif case "${APP_IMAGE_REPO}" in ghcr.io/*) true ;; *) false ;; esac; then
+  # GHCR packages are private by default, and a host's docker auth may not have
+  # a token yet. Warn up front so a missing APP_IMAGE_TOKEN is found here rather
+  # than in the pull error below (which still aborts before anything changes).
+  log "WARN: ${APP_IMAGE_REPO} is a GHCR repo and APP_IMAGE_TOKEN is unset; pull will fail if the package is private and the host has no docker login"
 fi
 
 pull_targets=()
@@ -287,8 +337,13 @@ if has_service migrate; then pull_targets+=(migrate); fi
 # rather than rebuilding or running the previous revision.
 export APP_IMAGE="${NEW_IMAGE}"
 
+verify_signature
+
 log "pulling ${pull_targets[*]}"
 if ! compose pull "${pull_targets[@]}"; then
+  if [ -z "${APP_IMAGE_TOKEN:-}" ]; then
+    die "image pull failed for ${NEW_IMAGE}; nothing on the host changed (GHCR packages are private by default — set APP_IMAGE_TOKEN in the host .env if the package is private)"
+  fi
   die "image pull failed for ${NEW_IMAGE}; nothing on the host changed"
 fi
 
