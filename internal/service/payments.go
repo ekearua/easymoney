@@ -75,6 +75,39 @@ func (s *PaymentService) resolvePurseForPayee(ctx context.Context, userID, merch
 	return &purse
 }
 
+// EligiblePurseFor reports the restricted program purse that could fund a
+// payment of the exact requested amount from this payer to this merchant.
+// Used by callers that have the amount in hand (invoice and web-flow rails).
+func (s *PaymentService) EligiblePurseFor(ctx context.Context, userID, merchantID uuid.UUID, amountKobo int64) (store.ProgramPurse, bool) {
+	return s.EligiblePurse(ctx, userID, merchantID, amountKobo)
+}
+
+// CreatePurseOrWalletDraft drafts a wallet-provider payment funded from the
+// payer's restricted program purse when one covers this merchant and amount,
+// and from the ordinary wallet otherwise. Both rails are instant in-platform
+// transfers confirmed inline, which is why the web-flow invoice rail and the
+// checkout wallet tap share this seam: the caller keeps its provider clean
+// ("wallet") and the purse is chosen here, once, for every surface.
+//
+// Invoices intentionally pass the merchant's amount un-inflated: the invoice
+// rail never adds a collection fee, and programme money buys the goods the
+// programme intended, so a purse-funded invoice pays the merchant's amount
+// exactly.
+func (s *PaymentService) CreatePurseOrWalletDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, channel, recipient string) (store.PaymentView, error) {
+	purse, hasPurse := s.EligiblePurse(ctx, user.ID, merchant.ID, amountKobo)
+	if !hasPurse {
+		return s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, nil, nil)
+	}
+	view, err := s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, &purse, nil)
+	if err != nil {
+		// The purse was spent or closed between the eligibility check and the
+		// draft: fall back to the ordinary wallet rather than failing a
+		// customer who was told nothing about programmes.
+		return s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, nil, nil)
+	}
+	return view, nil
+}
+
 // EligiblePurse reports the restricted program purse that could fund a
 // payment from this payer to this merchant, if any. Surfaces use it to offer
 // or describe programme funding before the customer commits; the authoritative

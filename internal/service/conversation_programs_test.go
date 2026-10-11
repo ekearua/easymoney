@@ -75,12 +75,10 @@ func TestFormatProgramFunds(t *testing.T) {
 			wantSubs: []string{"balance is empty"},
 		},
 		{
-			name: "a purse with no approved merchants says so",
-			summaries: []PurseSummary{{
-				Purse: activePurse, Merchants: nil,
-			}},
+			name:       "a purse with no approved merchants says so",
+			summaries:  []PurseSummary{{Purse: activePurse, Merchants: nil}},
 			wantSubs:   []string{"no merchants are approved for this programme"},
-			rejectSubs: []string{"Spend at: \n"},
+			rejectSubs: []string{"Spend at: \\n"},
 		},
 		{
 			name: "a long allow-list is capped and the overflow is named",
@@ -157,5 +155,101 @@ func TestProgrammeFundsCommandAliasesRouteToTheListing(t *testing.T) {
 		if typ, _ := serviceSwitchIntent(alias); typ != "program_funds" {
 			t.Fatalf("serviceSwitchIntent(%q) = %q, want program_funds", alias, typ)
 		}
+	}
+}
+
+// TestProgramPurseDetailLines pins the purse lines the details surfaces render:
+// an active purse lists balance, expiry and the approved-merchant count; an
+// empty purse says the balance is spent rather than implying there is money; a
+// returned grant appears as history; and a customer with no purses gets no
+// lines at all so the section disappears rather than showing an empty list.
+func TestProgramPurseDetailLines(t *testing.T) {
+	t.Parallel()
+	expiry := time.Date(2027, time.June, 30, 12, 0, 0, 0, time.UTC)
+	closedAt := time.Date(2026, time.August, 1, 9, 0, 0, 0, time.UTC)
+
+	active := PurseSummary{
+		Purse: store.ProgramPurse{
+			ProgramCode: "agric-support", ProgramName: "Agriculture Support Scheme",
+			Status: store.PurseStatusActive, ExpiresAt: &expiry, BalanceKobo: 1_250_000,
+		},
+		Merchants: []store.ProgramMember{
+			{MerchantName: "Lagos Farm Inputs", Status: store.ProgramMemberApproved},
+			{MerchantName: "Green Agro Stores", Status: store.ProgramMemberApproved},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		summaries  []PurseSummary
+		wantSubs   []string
+		rejectSubs []string
+	}{
+		{
+			name:      "no purses yields no lines",
+			summaries: nil,
+			wantSubs:  nil,
+		},
+		{
+			name:      "an active purse shows balance, expiry and merchant count",
+			summaries: []PurseSummary{active},
+			wantSubs:  []string{"Agriculture Support Scheme", "balance ₦12,500", "expires 30 Jun 2027", "2 approved merchants"},
+		},
+		{
+			name: "a single approved merchant is not pluralised",
+			summaries: []PurseSummary{{
+				Purse:     store.ProgramPurse{ProgramName: "Relief Fund", Status: store.PurseStatusActive, ExpiresAt: nil, BalanceKobo: 50_000},
+				Merchants: []store.ProgramMember{{MerchantName: "One Shop", Status: store.ProgramMemberApproved}},
+			}},
+			wantSubs: []string{"1 approved merchant", "no expiry"},
+		},
+		{
+			name: "a spent purse says the balance is gone instead of implying money",
+			summaries: []PurseSummary{{
+				Purse:     store.ProgramPurse{ProgramName: "Relief Fund", Status: store.PurseStatusActive, ExpiresAt: &expiry, BalanceKobo: 0},
+				Merchants: nil,
+			}},
+			wantSubs:   []string{"balance spent"},
+			rejectSubs: []string{"balance ₦0"},
+		},
+		{
+			name: "a returned grant reads as history naming the returned amount",
+			summaries: []PurseSummary{{
+				Purse: store.ProgramPurse{
+					ProgramName: "Fertiliser Grant", Status: store.PurseStatusClosed,
+					ReturnedKobo: 200_000, ClosedAt: &closedAt,
+				},
+			}},
+			wantSubs:   []string{"Programme funds (returned)", "unspent ₦2,000 returned to the sponsor", "on 1 Aug 2026"},
+			rejectSubs: []string{},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := programPurseDetailLines(test.summaries)
+			if test.name == "no purses yields no lines" {
+				if len(got) != 0 {
+					t.Fatalf("no purses must yield no lines, got %d: %v", len(got), got)
+				}
+				return
+			}
+			joined := ""
+			for _, line := range got {
+				joined += line.Term + ": " + line.Desc + "\n"
+			}
+			for _, want := range test.wantSubs {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("lines missing %q:\n%s", want, joined)
+				}
+			}
+			for _, reject := range test.rejectSubs {
+				if strings.Contains(joined, reject) {
+					t.Fatalf("lines unexpectedly contain %q:\n%s", reject, joined)
+				}
+			}
+		})
 	}
 }

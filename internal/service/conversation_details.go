@@ -45,6 +45,11 @@ type MyDetailsSummary struct {
 	Note               string
 	CountryOfResidence string
 	ExpectedVolumeBand string
+	// Purses holds the beneficiary's restricted programme balances (balance,
+	// expiry and where the money may be spent) as pre-rendered lines. Empty
+	// for customers who hold no programme money, in which case neither surface
+	// shows a programme section at all.
+	Purses []MyDetailsLine
 }
 
 // MyDetailsSummaryOf loads the account details shown by "My details". Each
@@ -104,7 +109,75 @@ func (s *ConversationService) MyDetailsSummaryOf(ctx context.Context, user store
 		}
 	}
 	summary.Note = s.standingAccountNote(ctx, user.ID, summary.Tier)
+	// Restricted programme balances: one line per live purse with balance,
+	// expiry and the spendable merchant count, then one history line per
+	// returned grant. Degraded independently like every other section, and
+	// absent entirely when the customer holds no programme money.
+	if s.programPurses != nil {
+		if summaries, err := s.programPurses.PurseSummariesForUser(ctx, user.ID); err == nil {
+			summary.Purses = programPurseDetailLines(summaries)
+		}
+	}
 	return summary
+}
+
+// programPurseDetailLines renders the beneficiary's programme balances for the
+// details surfaces. Active purses first (balance, expiry, spendable merchants),
+// then returned grants summarised as history. A customer with no purses gets
+// no lines at all so the section disappears rather than showing an empty list.
+func programPurseDetailLines(summaries []PurseSummary) []MyDetailsLine {
+	var active, closed []PurseSummary
+	for _, summary := range summaries {
+		if summary.Purse.Status == store.PurseStatusActive {
+			active = append(active, summary)
+		} else {
+			closed = append(closed, summary)
+		}
+	}
+	lines := make([]MyDetailsLine, 0, len(active)+len(closed))
+	for _, summary := range active {
+		purse := summary.Purse
+		heading := purse.ProgramName
+		if strings.TrimSpace(heading) == "" {
+			heading = purse.ProgramCode
+		}
+		expiry := "no expiry"
+		if purse.ExpiresAt != nil {
+			expiry = purse.ExpiresAt.Format("2 Jan 2006")
+		}
+		merchantWord := "merchants"
+		if len(summary.Merchants) == 1 {
+			merchantWord = "merchant"
+		}
+		merchantCount := "no approved merchants"
+		if len(summary.Merchants) > 0 {
+			merchantCount = fmt.Sprintf("%d approved %s", len(summary.Merchants), merchantWord)
+		}
+		line := fmt.Sprintf("%s — balance %s, expires %s, spend at %s",
+			heading, domain.FormatNGN(purse.BalanceKobo), expiry, merchantCount)
+		if purse.BalanceKobo == 0 {
+			line = fmt.Sprintf("%s — balance spent, expires %s, spend at %s",
+				heading, expiry, merchantCount)
+		}
+		lines = append(lines, MyDetailsLine{Term: "Programme funds", Desc: line})
+	}
+	for _, summary := range closed {
+		purse := summary.Purse
+		heading := purse.ProgramName
+		if strings.TrimSpace(heading) == "" {
+			heading = purse.ProgramCode
+		}
+		closedOn := ""
+		if purse.ClosedAt != nil {
+			closedOn = " on " + purse.ClosedAt.Format("2 Jan 2006")
+		}
+		lines = append(lines, MyDetailsLine{
+			Term: "Programme funds (returned)",
+			Desc: fmt.Sprintf("%s — unspent %s returned to the sponsor%s",
+				heading, domain.FormatNGN(purse.ReturnedKobo), closedOn),
+		})
+	}
+	return lines
 }
 
 // standingAccountNote describes the payer-facing standing account shown at the
@@ -248,6 +321,13 @@ func (s *ConversationService) sendMyDetailsChat(ctx context.Context, channel, re
 	}
 	lines = append(lines, "\nPaying limits (money in)")
 	for _, row := range summary.PayingLines {
+		lines = append(lines, "• "+row.Term+": "+row.Desc)
+	}
+	// Restricted programme balances: shown between the limits and the merchant
+	// sections so restricted money is visible with the same prominence as the
+	// ordinary wallet. Lines are pre-rendered by the summary itself, so the
+	// chat block and the browser page cannot disagree.
+	for _, row := range summary.Purses {
 		lines = append(lines, "• "+row.Term+": "+row.Desc)
 	}
 	for _, merchant := range summary.Merchants {

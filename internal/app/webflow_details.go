@@ -43,6 +43,12 @@ func (a *App) wfMyDetailsStep(r *http.Request, flow store.WebFlow, user store.Us
 		limitParts = append(limitParts, row.Term+": "+row.Desc)
 	}
 	review = append(review, webFlowLine{Term: "Paying limits (money in)", Desc: strings.Join(limitParts, "\n")})
+	// Restricted programme balances: one read-only row per purse between the
+	// limits and the merchant sections, rendered from the same pre-rendered
+	// lines the chat block uses so the two surfaces cannot disagree.
+	for _, row := range summary.Purses {
+		review = append(review, webFlowLine{Term: row.Term, Desc: row.Desc})
+	}
 	for _, merchant := range summary.Merchants {
 		var parts []string
 		for _, row := range merchant.Lines {

@@ -828,7 +828,17 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			return a.wfPageWithError(flow, page, "That merchant is no longer available."), nil
 		}
 		amount := wfInt(flow.Payload["amount_kobo"])
-		payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+		// A wallet tap funds from a restricted programme purse when one covers this
+		// merchant and amount, and from the ordinary wallet otherwise — the same
+		// seam the chat merchant rail uses, so a beneficiary pays with restricted
+		// money on the browser flow exactly as they would in chat.
+		draftFn := func() (store.PaymentView, error) {
+			if method == service.ProviderWallet {
+				return a.payments.CreatePurseOrWalletDraft(r.Context(), user, merchant, amount, flow.Channel, user.WhatsAppNumber)
+			}
+			return a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+		}
+		payment, err := draftFn()
 		if err != nil {
 			return a.wfAllowancePageError(flow, page, err), nil
 		}
@@ -865,7 +875,11 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			done := a.wfPage(flow)
 			done.Done = true
 			done.DoneTitle = "Payment sent"
-			done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
+			if payment.PurseID != nil {
+				done.DoneBody = "Your programme-funds payment was completed. This money stayed inside the programme. Check WhatsApp for your receipt."
+			} else {
+				done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
+			}
 			// The customer paid on this page, so the receipt is one tap away —
 			// the same affordance the checkout page already gives a succeeded
 			// payment. Returning to WhatsApp stays available as a secondary link.
@@ -967,7 +981,17 @@ func (a *App) wfPayOnePageSubmit(w http.ResponseWriter, r *http.Request, flow st
 		return a.wfPageWithError(flow, page, err.Error()), nil
 	}
 	flow.Payload = payload
-	payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	// A wallet tap funds from a restricted programme purse when one covers
+	// this merchant and amount, and from the ordinary wallet otherwise. The
+	// purse re-check happens inside the confirm transaction, so a de-listed
+	// merchant can never be paid from programme money.
+	draftFn := func() (store.PaymentView, error) {
+		if method == service.ProviderWallet {
+			return a.payments.CreatePurseOrWalletDraft(r.Context(), user, merchant, amount, flow.Channel, user.WhatsAppNumber)
+		}
+		return a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	}
+	payment, err := draftFn()
 	if err != nil {
 		return a.wfAllowancePageError(flow, page, err), nil
 	}
@@ -978,7 +1002,11 @@ func (a *App) wfPayOnePageSubmit(w http.ResponseWriter, r *http.Request, flow st
 		done := a.wfPage(flow)
 		done.Done = true
 		done.DoneTitle = "Payment sent"
-		done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
+		if payment.PurseID != nil {
+			done.DoneBody = "Your programme-funds payment was completed. This money stayed inside the programme. Check WhatsApp for your receipt."
+		} else {
+			done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
+		}
 		done.DoneAction = webFlowAction{Kind: "link", Label: "View receipt", URL: a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken}
 		done.Actions = []webFlowAction{{Kind: "link", Label: "Back to WhatsApp", URL: a.whatsappDeepLink()}}
 		return &done, nil
@@ -1058,6 +1086,12 @@ func friendlyWebPaymentError(err error) string {
 		return "Your wallet balance is too low for this payment. Top up your wallet and try again, or choose another payment method."
 	case errors.Is(err, store.ErrWalletNotActive):
 		return "Wallet payments need an active wallet. Verify your account to reach CBN Tier 1 and activate your wallet, then try again, or choose another payment method."
+	case errors.Is(err, store.ErrPurseMerchantNotApproved):
+		return "This merchant is no longer approved to accept the programme funding that would have paid for this, so the payment was stopped and nothing was taken. Choose another payment method."
+	case errors.Is(err, store.ErrPurseExpired):
+		return "Those programme funds have expired and went back to the sponsor, so this purchase can't be paid from them. Nothing was taken — choose another payment method."
+	case errors.Is(err, store.ErrPurseNotActive):
+		return "Those programme funds are closed, so this purchase can't be paid from them. Nothing was taken — choose another payment method."
 	}
 	if msg, ok := service.AllowanceMessage(err); ok && msg != "" {
 		return msg

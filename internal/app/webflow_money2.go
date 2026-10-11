@@ -113,7 +113,17 @@ func (a *App) wfPayInvoiceCreatePayment(r *http.Request, flow store.WebFlow, use
 	if msg := a.wfInvoicePayRuleCheck(r, merchant, invoice, amount); msg != "" {
 		return store.PaymentView{}, &wfPayInvoiceRuleError{msg: msg}
 	}
-	payment, err := a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	// A wallet tap funds from a restricted programme purse when one covers this
+	// merchant and amount — the same seam the chat invoice rail uses — and
+	// from the ordinary wallet otherwise. Invoices are charged exactly, so a
+	// purse-funded invoice pays the merchant's amount with no fee on top.
+	draftFn := func(amount int64) (store.PaymentView, error) {
+		if method == service.ProviderWallet {
+			return a.payments.CreatePurseOrWalletDraft(r.Context(), user, merchant, amount, flow.Channel, user.WhatsAppNumber)
+		}
+		return a.payments.CreateCollectionDraft(r.Context(), user, merchant, amount, method, flow.Channel, user.WhatsAppNumber)
+	}
+	payment, err := draftFn(amount)
 	if err != nil {
 		return store.PaymentView{}, errors.New(friendlyWebAllowanceError(err))
 	}

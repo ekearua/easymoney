@@ -736,7 +736,12 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 				invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount)),
 			s.payments.HostedCheckoutURL(payment))
 	case "method_wallet", "wallet", "pay from wallet":
-		payment, err := s.createPaymentDraft(ctx, user, merchant, amount, ProviderWallet, channel, recipient)
+		// Restricted programme money is spent here exactly like the merchant
+		// rail: when a purse covers this merchant and amount the draft funds
+		// from it (fee-free, confirmed inline), otherwise the ordinary wallet
+		// is used. The authoritative allow-list re-check happens inside the
+		// money-movement transaction either way.
+		payment, err := s.payments.CreatePurseOrWalletDraft(ctx, user, merchant, amount, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -771,14 +776,33 @@ func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel
 
 // sendInvoiceWalletReview confirms an instant wallet-funded invoice payment
 // of the given partial/full amount (invoices add no collection surcharge).
+// When the draft will be funded from a restricted programme purse the review
+// names that balance instead of the wallet, so the customer sees exactly
+// which money is about to be drawn down before confirming.
 func (s *ConversationService) sendInvoiceWalletReview(ctx context.Context, channel, recipient string, user store.User, invoice store.InvoiceView, amount int64) error {
+	balanceLine := ""
+	purseName := ""
+	if purse, hasPurse := s.payments.EligiblePurse(ctx, user.ID, invoice.MerchantID, amount); hasPurse {
+		expiry := ""
+		if purse.ExpiresAt != nil {
+			expiry = fmt.Sprintf(", expires %s", purse.ExpiresAt.Format("2 Jan 2006"))
+		}
+		purseName = purse.ProgramName
+		balanceLine = fmt.Sprintf("\n\n%s available: %s%s. This payment will be made from that programme funding, not your wallet.",
+			purse.ProgramName, domain.FormatNGN(purse.BalanceKobo), expiry)
+	} else {
+		balanceLine = s.walletBalanceLine(ctx, user, amount)
+	}
+	source := "wallet"
+	if purseName != "" {
+		source = "programme funds"
+	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To: recipient,
-		Body: fmt.Sprintf("Pay invoice %s from your Xego wallet:\n\nMerchant: %s\nAmount: %s%s\n\nPay instantly from your Xego wallet?",
-			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount),
-			s.walletBalanceLine(ctx, user, amount)),
+		Body: fmt.Sprintf("Pay invoice %s from your %s:\n\nMerchant: %s\nAmount: %s%s\n\nPay instantly?",
+			invoice.Reference, source, invoice.MerchantName, domain.FormatNGN(amount), balanceLine),
 		Buttons: []ports.InteractiveButton{
-			{ID: "confirm_payment", Title: "Pay from wallet"},
+			{ID: "confirm_payment", Title: "Pay now"},
 			{ID: "cancel_payment", Title: "Cancel"},
 		},
 	})
