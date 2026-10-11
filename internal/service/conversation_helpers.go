@@ -100,6 +100,14 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 				return s.sendText(ctx, channel, recipient,
 					fmt.Sprintf("Your wallet balance is too low for this payment (%s).\n\nTop up your wallet, then tap Continue to try again - or type MENU to choose another payment method.", domain.FormatNGN(payment.AmountKobo)))
 			}
+			if errors.Is(err, store.ErrPurseMerchantNotApproved) {
+				return s.sendText(ctx, channel, recipient,
+					"This merchant is no longer approved to accept the programme funding that would have paid for this, so the payment was stopped and nothing was taken.\n\nType MENU to choose another way to pay.")
+			}
+			if errors.Is(err, store.ErrPurseExpired) || errors.Is(err, store.ErrPurseNotActive) {
+				return s.sendText(ctx, channel, recipient,
+					"Those programme funds have expired and went back to the sponsor, so this purchase can't be paid from them. Nothing was taken.\n\nType MENU to pay another way.")
+			}
 			if errors.Is(err, store.ErrWalletNotActive) {
 				return s.sendText(ctx, channel, recipient,
 					"Wallet payments need an active wallet. Confirm your account to reach level L1 and activate your wallet - or type MENU to choose another payment method.")
@@ -112,6 +120,11 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 			return err
 		}
 		_ = changed
+		if payment.PurseID != nil {
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("✅ Paid from your programme funds.\n\nMerchant: %s\nAmount: %s\n\nThis came from restricted programme funding, so it stayed inside the programme.\n\nReceipt: %s/receipts/%s",
+					payment.MerchantName, domain.FormatNGN(payment.AmountKobo), s.cfg.BaseURL, payment.ReceiptToken))
+		}
 		return s.sendText(ctx, channel, recipient,
 			fmt.Sprintf("✅ Paid from your Xego wallet.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s/receipts/%s",
 				payment.MerchantName, domain.FormatNGN(payment.AmountKobo), s.cfg.BaseURL, payment.ReceiptToken))
@@ -420,6 +433,8 @@ func serviceSwitchIntent(input string) (string, string) {
 		return "thrift_dashboard", ""
 	case "thrift contributions", "menu_thrift_services":
 		return "thrift_contributions", ""
+	case "programme funds", "program funds", "my programme funds", "menu_programs":
+		return "program_funds", ""
 	case "edit thrift", "menu_edit_thrift":
 		return "thrift_edit", ""
 	case "merchant services", "menu_merchant_services":

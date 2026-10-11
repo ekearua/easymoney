@@ -55,12 +55,66 @@ func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merch
 	return s.CreateCollectionDraft(ctx, user, merchant, baseKobo, ProviderInterswitch, ChannelWhatsApp, user.WhatsAppNumber)
 }
 
+// resolvePurseForPayee returns the restricted program purse that should fund a
+// payment from this payer to this merchant, or nil for an ordinary payment.
+//
+// A purse is selected only when the payee is on the program's allow-list, the
+// purse is live and unexpired, and it can cover the whole charge. No split
+// funding in v1: a purse that cannot cover the amount is left for a smaller
+// purchase rather than being half-drawn, and the payment proceeds on the
+// ordinary rail with the payer's own money. A payee that is not on any of the
+// payer's allow-lists is simply untouched by any of this.
+func (s *PaymentService) resolvePurseForPayee(ctx context.Context, userID, merchantID uuid.UUID, amountKobo int64) *store.ProgramPurse {
+	purse, ok, err := s.store.ApprovedPurseForPayee(ctx, userID, merchantID)
+	if err != nil || !ok {
+		return nil
+	}
+	if purse.BalanceKobo < amountKobo {
+		return nil
+	}
+	return &purse
+}
+
+// EligiblePurse reports the restricted program purse that could fund a
+// payment from this payer to this merchant, if any. Surfaces use it to offer
+// or describe programme funding before the customer commits; the authoritative
+// allow-list check still happens in the transaction that moves the money.
+func (s *PaymentService) EligiblePurse(ctx context.Context, userID, merchantID uuid.UUID, amountKobo int64) (store.ProgramPurse, bool) {
+	purse := s.resolvePurseForPayee(ctx, userID, merchantID, amountKobo)
+	if purse == nil {
+		return store.ProgramPurse{}, false
+	}
+	return *purse, true
+}
+
+// CreatePurseFundedDraft creates a payment funded from a restricted program
+// purse. It is the explicit, opt-in entry point for restricted spending: a
+// caller that knows the purchase is a program purchase (the payee is on the
+// beneficiary's allow-list) asks for it, and the payment is then confirmed
+// inline against the purse rather than through a hosted gateway page.
+//
+// ok is false when the payer holds no purse that can fund this merchant and
+// amount, so the caller falls back to the ordinary rail instead of being told
+// the payment failed. The authoritative allow-list check still happens later, in
+// the transaction that moves the money.
+func (s *PaymentService) CreatePurseFundedDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, channel, recipient string) (store.PaymentView, bool, error) {
+	purse := s.resolvePurseForPayee(ctx, user.ID, merchant.ID, amountKobo)
+	if purse == nil {
+		return store.PaymentView{}, false, nil
+	}
+	view, err := s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, purse, nil)
+	if err != nil {
+		return store.PaymentView{}, false, err
+	}
+	return view, true, nil
+}
+
 // CreateDraftForProvider creates a payment attempt for the selected rail
 // charging exactly the given amount. It is used by flows with their own
 // payment semantics (invoice contributions, thrift, data orders) that do not
 // add the collection surcharge.
 func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
-	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, nil)
+	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, nil, nil)
 }
 
 // CreateCollectionDraft creates a plain merchant collection where the Xego
@@ -69,13 +123,21 @@ func (s *PaymentService) CreateDraftForProvider(ctx context.Context, user store.
 // are carried in payment metadata so the split posting can credit the merchant	// the full base and book the fee to Faya.
 func (s *PaymentService) CreateCollectionDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, provider, channel, recipient string) (store.PaymentView, error) {
 	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider(provider), baseKobo).FeeKobo
-	return s.createDraftCore(ctx, user, merchant, baseKobo+fee, provider, channel, recipient, map[string]any{
+	total := baseKobo + fee
+	// Restricted program purses are deliberately NOT resolved here. A
+	// purse-funded payment is confirmed inline against the purse, not through a
+	// hosted gateway page, so silently switching the rail underneath a caller
+	// that expects a checkout link would break it (the caller would try to
+	// initialize a gateway for a provider that has none). Callers that know the
+	// purchase is a program purchase - because the payee is on the beneficiary's
+	// allow-list - use CreatePurseFundedDraft instead.
+	return s.createDraftCore(ctx, user, merchant, total, provider, channel, recipient, nil, map[string]any{
 		"base_amount_kobo":    baseKobo,
 		"collection_fee_kobo": fee,
 	})
 }
 
-func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string, meta map[string]any) (store.PaymentView, error) {
+func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string, purse *store.ProgramPurse, meta map[string]any) (store.PaymentView, error) {
 	if provider == ProviderAuto {
 		provider = s.router.PickProvider()
 	}
@@ -87,6 +149,17 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 	}
 	if strings.TrimSpace(recipient) == "" {
 		return store.PaymentView{}, errors.New("payment recipient is required")
+	}
+	var purseID *uuid.UUID
+	if purse != nil {
+		// P1: a restricted program purse funds this payment. Forcing the wallet
+		// rail is what routes the movement through the inline confirmation path
+		// in transitionPayment, where the allow-list is re-checked inside the
+		// transaction that moves the money. The money-in allowance below is
+		// skipped for the same reason it is skipped for any wallet payment: the
+		// funds are already inside the platform.
+		provider = ProviderWallet
+		purseID = &purse.ID
 	}
 	token, err := domain.NewReceiptToken()
 	if err != nil {
@@ -118,6 +191,7 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 		ReceiptToken:      token,
 		CheckoutToken:     checkoutToken,
 		Metadata:          metadata,
+		PurseID:           purseID,
 	}
 	// C9-tiers: money-in allowance. The payer's tier ceiling (single/daily/
 	// monthly) is validated and the movement reserved in the same step, keyed by
@@ -223,7 +297,7 @@ func (s *PaymentService) CreateWalletTopupDraft(ctx context.Context, user store.
 	if err != nil {
 		return store.PaymentView{}, err
 	}
-	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, map[string]any{
+	return s.createDraftCore(ctx, user, merchant, amountKobo, provider, channel, recipient, nil, map[string]any{
 		"wallet_topup": map[string]any{
 			"amount_kobo": amountKobo,
 		},
@@ -396,7 +470,6 @@ func (s *PaymentService) initializeDVACheckout(ctx context.Context, payment stor
 	}
 	return s.store.PaymentByID(ctx, payment.ID)
 }
-
 
 // VerifyAndApply is the sole path that can mark a payment successful.
 func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source string) (store.PaymentView, bool, error) {
@@ -584,7 +657,7 @@ func (s *PaymentService) createIndividualPayDraft(ctx context.Context, user stor
 	if err != nil {
 		return store.PaymentView{}, err
 	}
-	return s.createDraftCore(ctx, user, merchant, totalPay, provider, channel, recipient, meta)
+	return s.createDraftCore(ctx, user, merchant, totalPay, provider, channel, recipient, nil, meta)
 }
 
 // isIndividualPay reports whether the payment is an individual-pay sender

@@ -49,6 +49,11 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
+	// programPurses backs the beneficiary-facing "Programme funds" listing. Nil
+	// until wired, in which case the command answers honestly that programme
+	// funds are unavailable rather than becoming a dead end.
+	programPurses *ProgramPursesService
+
 	// G9 adverse-media screening (the domestic-list/adverse-media lane).
 	// Nil until wired, in which case the check is skipped.
 	adverseMediaScreener ports.AdverseMediaScreener
@@ -100,6 +105,13 @@ func NewConversationService(cfg config.Config, repository *store.Store, payments
 // Tier-3 EDD step. Without it the EDD step refuses to grant EvEDDCompleted.
 func (s *ConversationService) SetLivenessVerifier(v ports.LivenessVerifier) {
 	s.liveness = v
+}
+
+// SetProgramPursesService wires the restricted-programme-funds service behind
+// the chat "Programme funds" command. Optional: without it the command still
+// answers, and says so plainly.
+func (s *ConversationService) SetProgramPursesService(service *ProgramPursesService) {
+	s.programPurses = service
 }
 
 // SetScreeningProviderName overrides the provider label recorded with

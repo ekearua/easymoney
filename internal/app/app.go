@@ -118,6 +118,7 @@ type App struct {
 	disputes         *service.DisputeService
 	onboardReminders *service.OnboardingReminderService
 	bulkPayments     *service.BulkPaymentsService
+	programPurses    *service.ProgramPursesService
 	bulkSlots        chan struct{}
 	workerWg         sync.WaitGroup
 	// workerPools holds the bounded worker-pool slots and per-handler gates
@@ -380,8 +381,13 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		"sub":         func(a, b int64) int64 { return a - b },
 		"add":         func(a, b int64) int64 { return a + b },
 		"mul":         func(a, b int64) int64 { return a * b },
-		"divf":        func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
-		"inc":         func(i int) int { return i + 1 },
+		"divf": func(a, b float64, c float64) float64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b * c
+		},
+		"inc": func(i int) int { return i + 1 },
 		"collectionFeeKobo": func(p store.PaymentView) int64 {
 			var meta struct {
 				CollectionFeeKobo int64 `json:"collection_fee_kobo"`
@@ -506,6 +512,11 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	if bulkConcurrency <= 0 {
 		bulkConcurrency = 4
 	}
+	// P1: one restricted-programme-funds service, shared by the chat
+	// "Programme funds" listing and the expiry sweep, so the beneficiary sees
+	// exactly the purses the sweep will eventually close.
+	programPursesService := service.NewProgramPursesService(repository, logger)
+	convo.SetProgramPursesService(programPursesService)
 	app := &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
 		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
@@ -536,13 +547,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			BaseURL:        cfg.BaseURL,
 			LocationTTL:    cfg.BulkLocationTTL,
 		}),
-		bulkSlots:    make(chan struct{}, bulkConcurrency),
-		workerPools:  newWorkerPools(cfg),
-		imageReader:  imageReader,
-		speechToText: speechToText,
-		chatAI:       chatAI,
-		email:        emailSender,
-		webAuthn:     webAuthn,
+		programPurses: programPursesService,
+		bulkSlots:     make(chan struct{}, bulkConcurrency),
+		workerPools:   newWorkerPools(cfg),
+		imageReader:   imageReader,
+		speechToText:  speechToText,
+		chatAI:        chatAI,
+		email:         emailSender,
+		webAuthn:      webAuthn,
 	}
 	convo.SetMediaDownloader(app)
 	return app, nil
@@ -824,6 +836,13 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyc/{userID}", a.adminKYCProfile)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyc/cases/{id}/review", a.adminKYCReview)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/network", a.adminNetwork)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/programs", a.adminPrograms)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs", a.adminProgramCreate)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/status", a.adminProgramSetStatus)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/merchants", a.adminProgramAddMerchant)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/enroll", a.adminProgramEnroll)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/merchants/{merchantID}/block", a.adminProgramBlockMerchant)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/merchants/{merchantID}/remove", a.adminProgramRemoveMerchant)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/internal-watchlist", a.adminInternalWatchlist)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist", a.adminInternalWatchlistAdd)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/internal-watchlist/{id}/remove", a.adminInternalWatchlistRemove)

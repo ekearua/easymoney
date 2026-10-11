@@ -36,6 +36,12 @@ const (
 	// "3101_business_wallet:<merchant-id>"), so each wallet is its own balance.
 	LedgerAccountUserWallet     = "2301_user_wallet"
 	LedgerAccountBusinessWallet = "3101_business_wallet"
+	// P1: restricted-purpose program purses, coded
+	// "2302_program_purse:<purse-id>". A purse is its own account family on
+	// purpose: the withdrawal rail only ever touches 2301_user_wallet, so
+	// restricted money cannot be cashed out by construction rather than by a
+	// check that could be forgotten.
+	LedgerAccountProgramPurse = "2302_program_purse"
 )
 
 // validLedgerAccounts is the set of allowed account codes. Every posting must
@@ -61,6 +67,7 @@ var validLedgerAccounts = map[string]bool{
 var validLedgerAccountPrefixes = []string{
 	LedgerAccountUserWallet + ":",
 	LedgerAccountBusinessWallet + ":",
+	LedgerAccountProgramPurse + ":",
 }
 
 // isKnownLedgerAccount reports whether an account code is in the fixed chart

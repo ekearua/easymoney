@@ -144,6 +144,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 			return err
 		}
 		return s.sendText(ctx, channel, recipient, "Send the thrift group name to join. Example: JOIN Office Pool")
+	case "programme funds", "program funds", "my programme funds", "menu_programs":
+		return s.sendProgramFunds(ctx, channel, recipient, user)
 	case "thrift dashboard", "menu_thrift_dashboard":
 		return s.sendThriftDashboard(ctx, channel, recipient, user)
 	case "thrift contributions", "menu_thrift_services":
@@ -272,6 +274,7 @@ func mainMenuRows() []ports.InteractiveRow {
 		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
 		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
+		{ID: "menu_programs", Title: "Programme funds", Description: "Restricted balances and where to spend them"},
 		{ID: "menu_my_details", Title: "My details", Description: "Account, wallet, limits, recent payments"},
 		{ID: "menu_ai", Title: "Ask Xego", Description: "Chat with our AI assistant"},
 		{ID: "menu_help", Title: "Help", Description: "How Xego payments work"},
@@ -318,6 +321,8 @@ func menuRowCovers(id string) bool {
 	case "menu_merchant_services":
 		return true
 	case "menu_thrift_services":
+		return true
+	case "menu_programs":
 		return true
 	case "menu_my_details":
 		return true

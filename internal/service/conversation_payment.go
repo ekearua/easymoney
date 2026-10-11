@@ -472,7 +472,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		}
 		return s.finishAndSendCheckout(ctx, channel, recipient, session, payment)
 	case "method_wallet", "wallet", "pay from wallet":
-		payment, err := s.createCollectionPaymentDraft(ctx, user, merchant, amount, ProviderWallet, channel, recipient)
+		payment, err := s.walletOrPurseDraft(ctx, user, merchant, amount, channel, recipient)
 		if err != nil {
 			return err
 		}
@@ -616,12 +616,29 @@ func (s *ConversationService) sendWalletReview(ctx context.Context, channel, rec
 		balance, _ = s.store.WalletBalance(ctx, wallet.ID)
 	}
 	balanceLine := fmt.Sprintf("\nWallet balance: %s", domain.FormatNGN(balance))
+	purse, hasPurse := s.payments.EligiblePurse(ctx, user.ID, merchant.ID, amount)
+	if hasPurse {
+		// Programme money buys the merchant's amount exactly: no Faya collection
+		// fee is added on top of restricted funding, and the review shows the
+		// programme balance being drawn down instead of the wallet balance.
+		fee = 0
+		charge = amount
+		feeLine = ""
+	}
+	purseLine := ""
+	if hasPurse {
+		expiry := ""
+		if purse.ExpiresAt != nil {
+			expiry = fmt.Sprintf(", expires %s", purse.ExpiresAt.Format("2 Jan 2006"))
+		}
+		purseLine = fmt.Sprintf("\n\n%s available: %s%s. This purchase will be paid from that programme funding, not your wallet.", purse.ProgramName, domain.FormatNGN(purse.BalanceKobo), expiry)
+	}
 	if balance < charge {
 		balanceLine += "\nΓÜá∩╕Å Not enough in your wallet ΓÇö top up or choose another payment method."
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s%s\n\nPay instantly from your Faya wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine),
+		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s%s%s\n\nPay instantly from your Faya wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine, purseLine),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},

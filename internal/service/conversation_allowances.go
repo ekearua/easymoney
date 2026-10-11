@@ -95,6 +95,47 @@ func (s *ConversationService) createCollectionPaymentDraft(ctx context.Context, 
 	return payment, err
 }
 
+// createPurseFundedCollectionDraft drafts a merchant collection funded from a
+// restricted programme purse. The purse pays the merchant's amount exactly:
+// programme money buys the goods the programme intended, so no Faya collection
+// fee is added on top of it.
+//
+// The errPurseNotAvailable sentinel is returned when no purse can fund the
+// charge, so a caller that reached here on the strength of an eligibility check
+// can fall back to the ordinary rail rather than failing the payment.
+func (s *ConversationService) createPurseFundedCollectionDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, channel, recipient string) (store.PaymentView, error) {
+	payment, ok, err := s.payments.CreatePurseFundedDraft(ctx, user, merchant, baseKobo, channel, recipient)
+	if err != nil {
+		return store.PaymentView{}, friendlyAllowanceErr(err)
+	}
+	if !ok {
+		return store.PaymentView{}, errPurseNotAvailable
+	}
+	return payment, nil
+}
+
+// errPurseNotAvailable means no restricted purse covers this merchant and
+// amount, which is an ordinary outcome (the customer simply pays another way),
+// not an error to show anyone.
+var errPurseNotAvailable = errors.New("no programme purse funds this purchase")
+
+// walletOrPurseDraft funds a merchant collection from the payer's restricted
+// programme purse when one covers this merchant, and from the ordinary wallet
+// otherwise. Both are instant in-platform transfers, so the customer sees no
+// difference in the rail - only in which balance is drawn down, which the
+// review message states before anything is confirmed.
+func (s *ConversationService) walletOrPurseDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, channel, recipient string) (store.PaymentView, error) {
+	if _, ok := s.payments.EligiblePurse(ctx, user.ID, merchant.ID, baseKobo); !ok {
+		return s.createCollectionPaymentDraft(ctx, user, merchant, baseKobo, ProviderWallet, channel, recipient)
+	}
+	payment, err := s.createPurseFundedCollectionDraft(ctx, user, merchant, baseKobo, channel, recipient)
+	if errors.Is(err, errPurseNotAvailable) {
+		// The purse was spent or closed between the check and the draft.
+		return s.createCollectionPaymentDraft(ctx, user, merchant, baseKobo, ProviderWallet, channel, recipient)
+	}
+	return payment, err
+}
+
 // friendlyAllowanceErr rewrites allowance rejections into copy a WhatsApp user
 // can act on; every other error is returned unchanged.
 func friendlyAllowanceErr(err error) error {

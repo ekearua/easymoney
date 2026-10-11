@@ -28,6 +28,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	settlementTicker := time.NewTicker(10 * time.Second)
 	onboardReminderTicker := time.NewTicker(a.cfg.OnboardingReminderInterval)
 	bulkTicker := time.NewTicker(2 * time.Second)
+	purseExpiryTicker := time.NewTicker(6 * time.Hour)
 	defer outboxTicker.Stop()
 	defer eventTicker.Stop()
 	defer reconcileTicker.Stop()
@@ -40,6 +41,7 @@ func (a *App) runWorkers(ctx context.Context) {
 	defer settlementTicker.Stop()
 	defer onboardReminderTicker.Stop()
 	defer bulkTicker.Stop()
+	defer purseExpiryTicker.Stop()
 	a.startEventConsumers(ctx)
 	for {
 		select {
@@ -115,6 +117,20 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.dispatch(ctx, a.workerPools.misc, "onboard_reminders", func(ctx context.Context) {
 				if _, err := a.onboardReminders.RunSweep(ctx); err != nil {
 					a.logger.WarnContext(ctx, "onboarding reminder sweep failed", "error", err)
+				}
+			})
+		case <-purseExpiryTicker.C:
+			a.dispatch(ctx, a.workerPools.misc, "purse_expiry", func(ctx context.Context) {
+				if a.programPurses == nil {
+					return
+				}
+				closed, returned, err := a.programPurses.RunExpirySweep(ctx)
+				if err != nil {
+					a.logger.WarnContext(ctx, "program purse expiry sweep failed", "error", err)
+					return
+				}
+				if closed > 0 {
+					a.logger.InfoContext(ctx, "program purses expired", "closed", closed, "returned_kobo", returned)
 				}
 			})
 		case <-bulkTicker.C:
