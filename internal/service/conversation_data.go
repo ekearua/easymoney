@@ -75,7 +75,7 @@ func (s *ConversationService) handleDataPhone(ctx context.Context, channel, reci
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That data plan is no longer available. Please start again.")
 	}
-	return s.sendDataReview(ctx, channel, recipient, plan, phone)
+	return s.sendDataReview(ctx, channel, recipient, user, plan, phone)
 }
 
 func (s *ConversationService) handleDataOrderConfirmation(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -175,7 +175,7 @@ func (s *ConversationService) handleDataPaymentMethod(ctx context.Context, chann
 		}
 		return s.sendDataWalletReview(ctx, channel, recipient, user, order)
 	default:
-		return s.sendDataPaymentMethods(ctx, channel, recipient, order)
+		return s.sendDataPaymentMethods(ctx, channel, recipient, user, order)
 	}
 }
 
@@ -226,17 +226,20 @@ func (s *ConversationService) sendDataPlanPicker(ctx context.Context, channel, r
 	})
 }
 
-func (s *ConversationService) sendDataReview(ctx context.Context, channel, recipient string, plan store.DataPlan, phone string) error {
+func (s *ConversationService) sendDataReview(ctx context.Context, channel, recipient string, user store.User, plan store.DataPlan, phone string) error {
+	remembered := s.savedRailFor(ctx, user, uuid.Nil)
+	body := fmt.Sprintf("Review your Xego data order:\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\n\nChoose how you would like to pay.",
+		plan.NetworkName, plan.DisplayName, phone, domain.FormatNGN(plan.PriceKobo))
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Review your Xego data order:\n\nNetwork: %s\nPlan: %s\nPhone: %s\nAmount: %s\n\nChoose how you would like to pay.",
-			plan.NetworkName, plan.DisplayName, phone, domain.FormatNGN(plan.PriceKobo)),
-		Buttons: []ports.InteractiveButton{
+		To:   recipient,
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
-		},
+		}),
 	})
 }
 
@@ -245,19 +248,22 @@ func (s *ConversationService) sendDataReviewFromSession(ctx context.Context, cha
 	if err != nil {
 		return s.resetWithMessage(ctx, channel, recipient, user, session, "That data plan is no longer available. Please start again.")
 	}
-	return s.sendDataReview(ctx, channel, recipient, plan, session.Data["data_phone"])
+	return s.sendDataReview(ctx, channel, recipient, user, plan, session.Data["data_phone"])
 }
 
-func (s *ConversationService) sendDataPaymentMethods(ctx context.Context, channel, recipient string, order store.DataOrderView) error {
+func (s *ConversationService) sendDataPaymentMethods(ctx context.Context, channel, recipient string, user store.User, order store.DataOrderView) error {
+	remembered := s.savedRailFor(ctx, user, uuid.Nil)
+	body := fmt.Sprintf("How would you like to pay %s for %s %s to %s?\n\nRequest code: %s",
+		domain.FormatNGN(order.AmountKobo), order.NetworkName, order.PlanName, order.BeneficiaryPhone, order.RequestCode)
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("How would you like to pay %s for %s %s to %s?\n\nRequest code: %s",
-			domain.FormatNGN(order.AmountKobo), order.NetworkName, order.PlanName, order.BeneficiaryPhone, order.RequestCode),
-		Buttons: []ports.InteractiveButton{
+		To:   recipient,
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
-		},
+		}),
 	})
 }
 

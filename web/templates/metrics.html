@@ -43,6 +43,19 @@
   </section>
   <p class="small-text">Heartbeats come from the backup scheduler (<code>base</code>/<code>wal</code>/<code>drill</code> rows in <code>backup_runs</code>); thresholds are <code>BACKUP_BASE_STALE_AFTER</code>, <code>WAL_SHIP_STALE_AFTER</code> and <code>RESTORE_DRILL_STALE_AFTER</code>. A red age means the PITR promise (<code>BACKUP_RPO</code>) no longer holds.</p>
 </section>{{end}}
+{{if .ReentryPanel}}<section class="panel"><h2>Saved-method evidence ({{.ReentryPanel.Window}})</h2>
+  <section class="metrics">
+    <article><span>Payments</span><strong>{{.ReentryPanel.Payments}}</strong><em class="small-text">in the window</em></article>
+    <article><span>Card attempts</span><strong>{{.ReentryPanel.CardAttempts}}</strong><em class="small-text">{{.ReentryPanel.CardAbandoned}} did not complete ({{.ReentryPanel.AbandonRate}})</em></article>
+    <article><span>From returning payers</span><strong>{{.ReentryPanel.RepeatPayments}}</strong><em class="small-text">{{.ReentryPanel.RepeatShare}} of payments, by {{.ReentryPanel.RepeatPayers}} payer(s)</em></article>
+    <article><span>Messaged after a failed card attempt</span><strong>{{.ReentryPanel.FollowUps}}</strong><em class="small-text">within {{.ReentryPanel.FollowUpWindow}} — a proxy, not a support-ticket count</em></article>
+  </section>
+  {{if .ReentryPanel.Merchants}}<section class="metrics">
+    {{range .ReentryPanel.Merchants}}<article><span>{{.Name}}</span><strong>{{.RepeatPayments}}</strong><em class="small-text">{{.Payments}} payments, {{.CardAttempts}} card attempt(s), {{.AbandonRate}} not completed</em></article>{{end}}
+  </section>{{end}}
+  <p class="small-text">{{.ReentryPanel.Reading}}</p>
+  <p class="small-text">Derived from payments and KYC-free metadata only: no message content is read (inbound payloads are sealed at rest), so the follow-up figure is a proxy for support contact and undercounts a payer who gives up in silence. Figures and thresholds: <code>SAVED_CARD_METHODS_PLAN.md</code> Phase 0.5.</p>
+</section>{{end}}
 {{if .SyntheticPanel}}<section class="panel"><h2>Post-deploy synthetic checks</h2>
   <p class="small-text">{{.SyntheticPanel.Title}}{{if .SyntheticPanel.RanAt}} · last run {{.SyntheticPanel.RanAt}} ({{.SyntheticPanel.Source}}){{end}}</p>
   {{if .SyntheticPanel.Rows}}<section class="metrics">

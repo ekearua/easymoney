@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/store"
@@ -38,7 +40,7 @@ func (s *ConversationService) handleWalletTopupAmount(ctx context.Context, chann
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendWalletTopupMethods(ctx, channel, recipient, amount)
+	return s.sendWalletTopupMethods(ctx, channel, recipient, user, amount)
 }
 
 func (s *ConversationService) handleWalletTopupMethod(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -54,7 +56,7 @@ func (s *ConversationService) handleWalletTopupMethod(ctx context.Context, chann
 	case "method_bank_transfer", "bank", "bank transfer", "transfer":
 		return s.initWalletTopup(ctx, channel, recipient, user, session, amount, ProviderBankTransfer, "Bank transfer")
 	default:
-		return s.sendWalletTopupMethods(ctx, channel, recipient, amount)
+		return s.sendWalletTopupMethods(ctx, channel, recipient, user, amount)
 	}
 }
 
@@ -76,14 +78,19 @@ func (s *ConversationService) initWalletTopup(ctx context.Context, channel, reci
 		s.payments.HostedCheckoutURL(payment))
 }
 
-func (s *ConversationService) sendWalletTopupMethods(ctx context.Context, channel, recipient string, amount int64) error {
+func (s *ConversationService) sendWalletTopupMethods(ctx context.Context, channel, recipient string, user store.User, amount int64) error {
+	// A top-up is not a merchant collection, so there is no merchant to scope the
+	// habit to; the payer's standing choice orders the buttons.
+	remembered := s.savedRailFor(ctx, user, uuid.Nil)
+	body := fmt.Sprintf("Add %s to your Xego wallet. Choose how to pay:", domain.FormatNGN(amount))
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Add %s to your Xego wallet. Choose how to pay:", domain.FormatNGN(amount)),
-		Buttons: []ports.InteractiveButton{
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "cancel_payment", Title: "Cancel"},
-		},
+		}),
 	})
 }

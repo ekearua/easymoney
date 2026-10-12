@@ -76,12 +76,13 @@ func (a *App) fillDataSubject(r *http.Request, user store.User, data map[string]
 	}
 	data["Export"] = export
 	counts := map[string]int{
-		"Payments":     jsonArrayLen(export.Payments),
-		"DataOrders":   jsonArrayLen(export.DataOrders),
-		"Invoices":     jsonArrayLen(export.Invoices),
-		"ThriftGroups": jsonArrayLen(export.ThriftGroups),
-		"Screening":    jsonArrayLen(export.Screening),
-		"Alerts":       jsonArrayLen(export.TransactionAlerts),
+		"Payments":           jsonArrayLen(export.Payments),
+		"PaymentPreferences": jsonArrayLen(export.PaymentPreferences),
+		"DataOrders":         jsonArrayLen(export.DataOrders),
+		"Invoices":           jsonArrayLen(export.Invoices),
+		"ThriftGroups":       jsonArrayLen(export.ThriftGroups),
+		"Screening":          jsonArrayLen(export.Screening),
+		"Alerts":             jsonArrayLen(export.TransactionAlerts),
 	}
 	data["Counts"] = counts
 }

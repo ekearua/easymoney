@@ -328,23 +328,9 @@ func (a *App) orderMethodActionsByPreference(r *http.Request, flow store.WebFlow
 		}
 	}
 	remembered := a.payments.SavedRail(r.Context(), flow.UserID, store.PreferenceChannelWeb, merchantID)
-	if remembered == "" {
-		return buttons
-	}
-	var chosen *webFlowAction
-	rest := make([]webFlowAction, 0, len(buttons))
-	for _, b := range buttons {
-		if b.Name == remembered && chosen == nil {
-			match := b
-			chosen = &match
-			continue
-		}
-		rest = append(rest, b)
-	}
-	if chosen == nil {
-		return buttons
-	}
-	return append([]webFlowAction{*chosen}, rest...)
+	// The chat picker and this one share the ordering rule via service.OrderByRail,
+	// so they cannot drift apart.
+	return service.OrderByRail(remembered, buttons, func(b webFlowAction) string { return b.Name })
 }
 
 // wfMerchantHasCatalog reports whether the merchant sells services or event

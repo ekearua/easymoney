@@ -221,21 +221,22 @@ func (s *Store) GetDataSubjectRequest(ctx context.Context, id int64) (DataSubjec
 // DataSubjectExport is a JSON-serializable snapshot of everything the system
 // holds about a user, built from the audited tables (NDPR right of access).
 type DataSubjectExport struct {
-	ExportedAt        time.Time       `json:"exported_at"`
-	User              json.RawMessage `json:"user"`
-	KYCProfile        json.RawMessage `json:"kyc_profile"`
-	Verifications     json.RawMessage `json:"verifications"`
-	Screening         json.RawMessage `json:"screening_results"`
-	RiskEvents        json.RawMessage `json:"risk_events"`
-	Consents          json.RawMessage `json:"consents"`
-	Payments          json.RawMessage `json:"payments"`
-	DataOrders        json.RawMessage `json:"data_orders"`
-	Invoices          json.RawMessage `json:"invoices"`
-	ThriftGroups      json.RawMessage `json:"thrift_groups"`
-	ThriftMemberships json.RawMessage `json:"thrift_memberships"`
-	ReviewCases       json.RawMessage `json:"review_cases"`
-	TransactionAlerts json.RawMessage `json:"transaction_alerts"`
-	MerchantOwnership json.RawMessage `json:"merchant_ownership"`
+	ExportedAt         time.Time       `json:"exported_at"`
+	User               json.RawMessage `json:"user"`
+	KYCProfile         json.RawMessage `json:"kyc_profile"`
+	Verifications      json.RawMessage `json:"verifications"`
+	Screening          json.RawMessage `json:"screening_results"`
+	RiskEvents         json.RawMessage `json:"risk_events"`
+	Consents           json.RawMessage `json:"consents"`
+	Payments           json.RawMessage `json:"payments"`
+	PaymentPreferences json.RawMessage `json:"payment_preferences"`
+	DataOrders         json.RawMessage `json:"data_orders"`
+	Invoices           json.RawMessage `json:"invoices"`
+	ThriftGroups       json.RawMessage `json:"thrift_groups"`
+	ThriftMemberships  json.RawMessage `json:"thrift_memberships"`
+	ReviewCases        json.RawMessage `json:"review_cases"`
+	TransactionAlerts  json.RawMessage `json:"transaction_alerts"`
+	MerchantOwnership  json.RawMessage `json:"merchant_ownership"`
 }
 
 // jsonAggSQL wraps a subquery (with %s as the user-id placeholder) into a
@@ -266,6 +267,7 @@ func (s *Store) ExportUserData(ctx context.Context, userID uuid.UUID) (DataSubje
 		{&out.RiskEvents, jsonAggSQL(`SELECT id, user_id, event_type, score, details, occurred_at FROM risk_events WHERE user_id=%s`)},
 		{&out.Consents, jsonAggSQL(`SELECT id, user_id, purpose, status, source, version, granted_at, revoked_at FROM consent_records WHERE user_id=%s`)},
 		{&out.Payments, jsonAggSQL(`SELECT p.id, p.user_id, p.merchant_id, m.name AS merchant_name, p.amount_kobo, p.currency, p.status, p.provider, p.provider_reference, p.channel, p.paid_at, p.created_at FROM payments p JOIN merchants m ON m.id=p.merchant_id WHERE p.user_id=%s`)},
+		{&out.PaymentPreferences, jsonAggSQL(`SELECT user_id AS id, user_id, channel, scope, scope_ref, rail, updated_at FROM payment_preferences WHERE user_id=%s`)},
 		{&out.DataOrders, jsonAggSQL(`SELECT id, user_id, payment_id, channel, recipient, beneficiary_phone, amount_kobo, status, provider_reference, fulfilled_at, created_at FROM data_orders WHERE user_id=%s`)},
 		{&out.Invoices, jsonAggSQL(`SELECT id, merchant_id, created_by_user_id, customer_whatsapp_number, customer_email, reference, status, subtotal_kobo, total_kobo, amount_paid_kobo, created_at, paid_at FROM invoices WHERE created_by_user_id=%s`)},
 		{&out.ThriftGroups, jsonAggSQL(`SELECT id, creator_user_id, name, contribution_amount_kobo, frequency, status, current_cycle, created_at, completed_at FROM thrift_groups WHERE creator_user_id=%s`)},

@@ -91,6 +91,20 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		a.logger.WarnContext(r.Context(), "outbox backlog stats failed", "error", err)
 	}
 	data["SyntheticPanel"] = buildSyntheticPanel(syntheticSummary, outboxBacklog, time.Now(), a.cfg.SyntheticOutboxMaxAge)
+	// Saved-methods evidence (SAVED_CARD_METHODS_PLAN.md Phase 0.5): the figures
+	// behind the card-on-file decision, so it rests on the funnel rather than on
+	// how annoying re-entering card details sounds. A store failure degrades the
+	// panel, never the page.
+	const reentryWindow = 30 * 24 * time.Hour
+	reentryMetrics, err := a.store.CardReentryMetricsSince(r.Context(), time.Now().Add(-reentryWindow))
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "card re-entry metrics failed", "error", err)
+	}
+	reentryByMerchant, err := a.store.CardReentryMetricsByMerchant(r.Context(), time.Now().Add(-reentryWindow), 8)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "card re-entry metrics by merchant failed", "error", err)
+	}
+	data["ReentryPanel"] = buildReentryPanel(reentryMetrics, reentryByMerchant, reentryWindow)
 	a.renderAdmin(w, "metrics.html", r, "Metrics", data)
 }
 

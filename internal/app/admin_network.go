@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"whatsapp-payment-demo/internal/service"
 	"whatsapp-payment-demo/internal/store"
 )
 
@@ -168,14 +169,38 @@ func (a *App) adminKYCProfile(w http.ResponseWriter, r *http.Request) {
 		a.logger.WarnContext(r.Context(), "subject freeze check", "error", err)
 		frozen = false
 	}
+	prefs, err := a.store.PaymentPreferencesForUser(r.Context(), userID)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "payment preferences", "error", err)
+		prefs = nil
+	}
+	var prefLines []string
+	for _, p := range prefs {
+		name := service.RailDisplayName(p.Rail)
+		if name == "" {
+			name = p.Rail
+		}
+		surface := "chat"
+		if p.Channel == store.PreferenceChannelWeb {
+			surface = "web"
+		}
+		if p.Scope == store.PreferenceScopeMerchant && p.ScopeRef != "" {
+			prefLines = append(prefLines, name+" — "+surface+" (merchant "+p.ScopeRef+") updated "+p.UpdatedAt.Format("02 Jan 2006 15:04"))
+			continue
+		}
+		prefLines = append(prefLines, name+" — "+surface+" (default) updated "+p.UpdatedAt.Format("02 Jan 2006 15:04"))
+	}
 	a.renderAdmin(w, "admin_kyc_profile.html", r, "KYC profile", map[string]any{
-		"Profile":       profile,
-		"UserID":        id,
-		"DisplayName":   displayName,
-		"Timeline":      timeline,
-		"SubjectLinks":  subjectLinks,
-		"TimelineCount": len(timeline),
-		"Frozen":        frozen,
+		"Profile":          profile,
+		"UserID":           id,
+		"DisplayName":      displayName,
+		"Timeline":         timeline,
+		"SubjectLinks":     subjectLinks,
+		"TimelineCount":    len(timeline),
+		"Frozen":           frozen,
+		"PaymentPrefs":     prefs,
+		"PaymentPrefLines": prefLines,
+		"HasPaymentPrefs":  len(prefs) > 0,
 	})
 }
 

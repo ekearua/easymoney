@@ -709,14 +709,9 @@ func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, r
 	// used last for this merchant goes first, and the body says so. It
 	// remembers the *choice*, never the card — the method prompt must not read
 	// as though a card is on file, because none is.
-	remembered := ""
-	if s.payments != nil {
-		remembered = s.payments.SavedRail(ctx, user.ID, store.PreferenceChannelWhatsApp, merchant.ID)
-	}
+	remembered := s.savedRailFor(ctx, user, merchant.ID)
 	body := fmt.Sprintf("How would you like to pay %s to %s?\n\nWallet payments are instant from your Xego balance. Bank transfers are completed securely on the Interswitch checkout, and Xego verifies the result before issuing your receipt.", domain.FormatNGN(amount), merchant.Name)
-	if notice := SavedRailNotice(remembered); notice != "" {
-		body += "\n\n" + notice
-	}
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:      recipient,
 		Body:    body,
@@ -726,6 +721,27 @@ func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, r
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 		}),
 	})
+}
+
+// savedRailFor returns the rail a payer used last on the chat surface, for the
+// given merchant (a uuid.Nil merchant resolves to their standing choice). It is
+// best-effort by design: an absent payments service or a read failure degrades
+// to "ask normally" rather than blocking the prompt.
+func (s *ConversationService) savedRailFor(ctx context.Context, user store.User, merchantID uuid.UUID) string {
+	if s.payments == nil || user.ID == uuid.Nil {
+		return ""
+	}
+	return s.payments.SavedRail(ctx, user.ID, store.PreferenceChannelWhatsApp, merchantID)
+}
+
+// savedRailNoticeSuffix is the body suffix that names the remembered habit, or
+// "" when we remember nothing. It exists so every picker appends the same
+// sentence, which is what keeps the chat surfaces from drifting apart.
+func savedRailNoticeSuffix(remembered string) string {
+	if notice := SavedRailNotice(remembered); notice != "" {
+		return "\n\n" + notice
+	}
+	return ""
 }
 
 // methodButtonRail maps a method button to the rail it drafts. The picker needs
@@ -752,21 +768,7 @@ func methodButtonRail(id string) string {
 // surface a habit here — there is no room for a fourth "saved" button. The body
 // sentence carries the acknowledgement instead.
 func orderMethodButtonsByPreference(remembered string, buttons []ports.InteractiveButton) []ports.InteractiveButton {
-	if remembered == "" || len(buttons) < 2 {
-		return buttons
-	}
-	ordered := make([]ports.InteractiveButton, 0, len(buttons))
-	var first *ports.InteractiveButton
-	for _, b := range buttons {
-		if methodButtonRail(b.ID) == remembered {
-			chosen := b
-			first = &chosen
-			continue
-		}
-		ordered = append(ordered, b)
-	}
-	if first == nil {
-		return buttons
-	}
-	return append([]ports.InteractiveButton{*first}, ordered...)
+	return OrderByRail(remembered, buttons, func(b ports.InteractiveButton) string {
+		return methodButtonRail(b.ID)
+	})
 }

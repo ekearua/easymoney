@@ -678,16 +678,19 @@ func (s *ConversationService) handleInvoicePayAmount(ctx context.Context, channe
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
+	remembered := s.savedRailFor(ctx, user, invoice.MerchantID)
+	body := fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
+		invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount))
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
-			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount)),
-		Buttons: []ports.InteractiveButton{
+		To:   recipient,
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
-		},
+		}),
 	})
 }
 
@@ -759,18 +762,21 @@ func (s *ConversationService) handleInvoicePayMethod(ctx context.Context, channe
 	}
 }
 
-func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel, recipient string, invoice store.InvoiceView, amount int64) error {
+func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel, recipient string, user store.User, invoice store.InvoiceView, amount int64) error {
 	remaining := invoice.TotalKobo - invoice.AmountPaidKobo
+	remembered := s.savedRailFor(ctx, user, invoice.MerchantID)
+	body := fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
+		invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount))
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Pay invoice %s\n\nMerchant: %s\nAmount now: %s\nRemaining after this payment: %s\n\nChoose a payment method.",
-			invoice.Reference, invoice.MerchantName, domain.FormatNGN(amount), domain.FormatNGN(remaining-amount)),
-		Buttons: []ports.InteractiveButton{
+		To:   recipient,
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
-		},
+		}),
 	})
 }
 

@@ -170,6 +170,8 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.sendLatestStatus(ctx, channel, recipient, user)
 	case "history", "menu_history", "recent transactions", "my details", "menu_my_details", "my limits", "menu_my_limits", "limits":
 		return s.handleMyDetails(ctx, channel, recipient, user, session)
+	case "forget saved methods", "forget saved payment methods", "stop remembering me", "menu_forget_saved_methods":
+		return s.forgetSavedMethods(ctx, channel, recipient, user)
 	case "link accounts", "menu_link_accounts", "connect accounts", "link":
 		return s.startLinkAccounts(ctx, channel, recipient, user, session)
 	case "complete profile", "menu_profile", "profile":

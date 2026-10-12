@@ -239,10 +239,37 @@ That is a real answer, not a non-answer. **It rules out spending the PCI scope c
 Phase 2's value is unproven and unprovable at this volume, and Option 0 is indistinguishable from
 B until the funnel has traffic. Phase 1 costs nothing to carry — it touches no card data — so it
 stays as the substrate, and the measurement should be re-run once the card rail has completed a
-meaningful number of attempts. **Two figures remain uninstrumented** and must be added before the
-call is made honestly: support contacts attributable to re-entering card details (no contact
-capture exists yet) and repeat-purchase share *per merchant* (the metric currently reports the
-persisted-payer share across all merchants).
+meaningful number of attempts.
+
+**Both remaining figures are now built (2026-10-12) and surfaced on `/admin/metrics`** as the
+"Saved-method evidence" panel (`buildReentryPanel`, `admin_reentry.go` + `metrics.html`):
+
+- **Repeat-purchase share per merchant** — `Store.CardReentryMetricsByMerchant`, rendered as a
+  breakdown ordered by repeat-payer activity, so the question becomes *which* merchant is losing
+  payers to re-entry rather than only whether anyone is.
+- **Support contacts** — `CardReentryMetrics.CardFollowUps`: the number of distinct payers who
+  messaged us within 30 minutes of one of their own card attempts failing. This is a **proxy, and
+  the panel says so**, because a follow-up may be about anything and a payer who gives up in
+  silence is invisible to it.
+
+The proxy is built the way it is on purpose, and the reasons are worth keeping. It reads
+**metadata only** — `users.whatsapp_number` joined to `inbound_messages.sender`, with the
+attempt's `updated_at` against `received_at`. It never reads `inbound_messages.payload`, which is
+sealed at rest (`enc:v1:`), so a content scan would be unreliable *and* the wrong thing to build:
+a metrics query has no business reading customer messages, and any classification of them would
+be personal data needing its own retention and DSR handling. It therefore **undercounts by
+construction**, which is the safe direction to err for a number that would be used to justify
+spending money.
+
+**The panel states its own reading rules rather than implying confidence.** It refuses to call a
+rate below 30 card attempts, and treats ≥15% of attempts not completing as material — both are
+stated conventions (`reentryMinCardAttempts`, `reentryMaterialAbandonment`), not measured facts,
+and the panel names the numbers it used so the argument can be had about the threshold instead of
+about the arithmetic. Every branch of the reading names the sample it rests on.
+
+**Still a named gap:** a true support-contact count needs a channel that records *why* someone
+made contact. No ticket system exists, so the panel proxies it. If support capture is ever built,
+this figure should be replaced rather than kept alongside it.
 
 ---
 
@@ -423,8 +450,11 @@ feature.
   screening block and allowance limit stop the charge; replay of the same reference is a no-op
   (the idempotency property the standing-credit path already relies on); the fee equals the card
   fee; `authorised_via` and `instrument_id` are set exactly once.
-- **App/hermetic:** the picker renders in both postures; the enrollment consent step is not
-  skippable; template contracts parse.
+- **App/hermetic — implemented:** the picker renders in both postures and the enrollment consent
+  step is not skippable (Phase 2). For the Phase 0.5 evidence panel, `admin_reentry_test.go` pins
+  every branch of the reading — including that an empty funnel and a too-small sample are refused
+  rather than called — the displayed figures, the merchant breakdown, the window labels, and that
+  `metrics.html` renders both with and without the panel and escapes a merchant name.
 - **Docs guard:** the runbook's PCI scope line and the decision record agree, in the style of the
   existing G7 drift guard.
 

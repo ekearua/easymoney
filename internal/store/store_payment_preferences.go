@@ -149,6 +149,18 @@ func (s *Store) ClearPaymentPreference(ctx context.Context, userID uuid.UUID, ch
 	return err
 }
 
+// ClearAllPaymentPreferences forgets every remembered rail choice for a payer
+// on every surface and scope. This is the "stop remembering how I pay" control:
+// a payer asking to be forgotten should get one action that forgets everything,
+// not a channel-by-channel checklist.
+func (s *Store) ClearAllPaymentPreferences(ctx context.Context, userID uuid.UUID) error {
+	if userID == uuid.Nil {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM payment_preferences WHERE user_id = $1`, userID)
+	return err
+}
+
 // PaymentPreferencesForUser lists every remembered choice for a payer, for the
 // data-subject export and the admin profile surface.
 func (s *Store) PaymentPreferencesForUser(ctx context.Context, userID uuid.UUID) ([]PaymentPreference, error) {
@@ -207,6 +219,44 @@ type CardReentryMetrics struct {
 	// Payments is every payment in the window, so the repeat share has a
 	// denominator the caller does not have to guess.
 	Payments int64
+	// CardFollowUps is the number of distinct payers who sent us a message
+	// shortly after a card attempt of theirs did not complete — the closest
+	// thing to "support contacts about re-entering card details" that this
+	// platform can honestly measure today.
+	//
+	// Three properties matter more than the number itself. It is built from
+	// metadata only (the sender and the timestamps), never from message
+	// content: inbound payloads are sealed at rest, so content is neither
+	// readable here nor something a metrics query should be reading. It is a
+	// proxy, not a support-ticket count — following up may be about anything,
+	// and it is labelled as a proxy wherever it is shown. And it undercounts
+	// by construction: a payer who gives up in silence is invisible to it.
+	CardFollowUps int64
+}
+
+// CardReentryFollowUpWindow is how long after an abandoned card attempt a
+// customer message still counts as a follow-up about it.
+const CardReentryFollowUpWindow = 30 * time.Minute
+
+// MerchantReentryMetric is the same re-entry picture for one merchant, so the
+// aggregate can be read as "which merchants' payers keep re-entering."
+// Merchants with no payments in the window are absent rather than zero rows.
+type MerchantReentryMetric struct {
+	MerchantID     uuid.UUID
+	MerchantName   string
+	Payments       int64
+	CardAttempts   int64
+	CardAbandoned  int64
+	RepeatPayments int64
+}
+
+// CardAbandonmentRate returns the share of this merchant's card attempts that
+// did not complete, or 0 when there were none.
+func (m MerchantReentryMetric) CardAbandonmentRate() float64 {
+	if m.CardAttempts == 0 {
+		return 0
+	}
+	return float64(m.CardAbandoned) / float64(m.CardAttempts)
 }
 
 // CardAbandonmentRate returns the share of card attempts that did not complete,
@@ -255,5 +305,89 @@ func (s *Store) CardReentryMetricsSince(ctx context.Context, since time.Time) (C
 	if err != nil {
 		return CardReentryMetrics{}, err
 	}
+	followUps, err := s.cardReentryFollowUps(ctx, since)
+	if err != nil {
+		return CardReentryMetrics{}, err
+	}
+	out.CardFollowUps = followUps
 	return out, nil
+}
+
+// cardReentryFollowUps counts distinct payers who messaged us within
+// CardReentryFollowUpWindow of one of their own card attempts failing.
+//
+// Metadata only: users.whatsapp_number joined to inbound_messages.sender, and
+// received_at against the attempt's last update. It never reads
+// inbound_messages.payload — which is sealed at rest, so a content scan would
+// be both unreliable and the wrong thing to build (a metrics query has no
+// business reading customer messages, and a classification of them would be
+// personal data we would have to defend).
+func (s *Store) cardReentryFollowUps(ctx context.Context, since time.Time) (int64, error) {
+	var total int64
+	err := s.pool.QueryRow(ctx, `
+		WITH abandoned AS (
+		    SELECT p.user_id, p.updated_at AS abandoned_at
+		    FROM payments p
+		    WHERE p.created_at >= $1
+		      AND p.provider = 'interswitch'
+		      AND p.status IN ('failed', 'abandoned', 'expired')
+		)
+		SELECT count(DISTINCT a.user_id)
+		FROM abandoned a
+		JOIN users u ON u.id = a.user_id
+		JOIN inbound_messages m
+		  ON m.sender = u.whatsapp_number
+		 AND m.received_at >= a.abandoned_at
+		 AND m.received_at <= a.abandoned_at + make_interval(secs => $2)`, since, CardReentryFollowUpWindow.Seconds()).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// CardReentryMetricsByMerchant breaks the same window down per merchant, most
+// repeat-payer activity first, so "who is losing payers to re-entry" is
+// answerable rather than only "is anyone". limit caps the rows the admin page
+// has to render; the ordering makes the cap a useful one.
+func (s *Store) CardReentryMetricsByMerchant(ctx context.Context, since time.Time, limit int) ([]MerchantReentryMetric, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := s.pool.Query(ctx, `
+		WITH window_payments AS (
+		    SELECT p.merchant_id, p.user_id, p.provider, p.status
+		    FROM payments p
+		    WHERE p.created_at >= $1
+		),
+		prior_payers AS (
+		    SELECT DISTINCT p.user_id
+		    FROM payments p
+		    WHERE p.created_at < $1
+		)
+		SELECT wp.merchant_id, m.name,
+		       count(*),
+		       count(*) FILTER (WHERE wp.provider = 'interswitch'),
+		       count(*) FILTER (WHERE wp.provider = 'interswitch'
+		                        AND wp.status IN ('failed', 'abandoned', 'expired')),
+		       count(*) FILTER (WHERE wp.user_id IN (SELECT user_id FROM prior_payers))
+		FROM window_payments wp
+		JOIN merchants m ON m.id = wp.merchant_id
+		GROUP BY wp.merchant_id, m.name
+		ORDER BY count(*) FILTER (WHERE wp.user_id IN (SELECT user_id FROM prior_payers)) DESC,
+		         count(*) DESC,
+		         m.name ASC
+		LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MerchantReentryMetric
+	for rows.Next() {
+		var m MerchantReentryMetric
+		if err := rows.Scan(&m.MerchantID, &m.MerchantName, &m.Payments, &m.CardAttempts, &m.CardAbandoned, &m.RepeatPayments); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }

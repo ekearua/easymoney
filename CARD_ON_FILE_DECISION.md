@@ -191,6 +191,12 @@ and Option 0 is indistinguishable from it until the funnel carries traffic. **Po
 justified today on the evidence**, independent of what the vendor answers say. Figures and the
 query: `SAVED_CARD_METHODS_PLAN.md` Phase 0.5.
 
+Both figures that were previously missing are now instrumented and surfaced on `/admin/metrics`:
+repeat-purchase share per merchant, and a metadata-only proxy for support follow-ups after a
+failed card attempt (no message content is read — inbound payloads are sealed at rest). The call
+can therefore be re-made from live data once the card rail carries traffic, without building
+anything further.
+
 Then:
 
 - **If Q2 = yes** (a hosted tokenize flow exists): adopt **B′**. One-tap at effectively no new

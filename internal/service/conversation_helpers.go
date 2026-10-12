@@ -618,22 +618,25 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 			return s.sendText(ctx, channel, recipient, "That invoice session expired. Please start again.")
 		}
 		amount, _ := strconv.ParseInt(session.Data["invoice_pay_amount_kobo"], 10, 64)
-		return s.sendInvoicePayMethods(ctx, channel, recipient, invoice, amount)
+		return s.sendInvoicePayMethods(ctx, channel, recipient, user, invoice, amount)
 	case "thrift_pay_method":
 		contribution, err := s.thriftContributionFromSession(ctx, session)
 		if err != nil {
 			return s.sendText(ctx, channel, recipient, "That thrift session expired. Please start again.")
 		}
+		remembered := s.savedRailFor(ctx, user, uuid.Nil)
+		body := fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
+			contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo))
+		body += savedRailNoticeSuffix(remembered)
 		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-			To: recipient,
-			Body: fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
-				contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
-			Buttons: []ports.InteractiveButton{
+			To:   recipient,
+			Body: body,
+			Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 				{ID: "method_card", Title: "Card checkout"},
 				{ID: "method_bank_transfer", Title: "Bank transfer"},
 				{ID: "method_wallet", Title: "Pay from wallet"},
 				{ID: "cancel_payment", Title: "Cancel"},
-			},
+			}),
 		})
 	case "pay_individual_method":
 		return s.sendText(ctx, channel, recipient, "Individual payments use bank transfer or your wallet. Send *bank transfer* or *wallet* to proceed.")
@@ -644,7 +647,7 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		if err != nil || amount <= 0 {
 			return s.sendText(ctx, channel, recipient, "That top-up session expired. Please start again.")
 		}
-		return s.sendWalletTopupMethods(ctx, channel, recipient, amount)
+		return s.sendWalletTopupMethods(ctx, channel, recipient, user, amount)
 	default:
 		// State not backed by a re-renderable screen: the prompt already told
 		// the customer what they were doing, so just confirm the session is

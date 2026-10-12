@@ -131,12 +131,16 @@ func TestAdminKYCProfileTemplateContract(t *testing.T) {
 	}
 	err := tmpl.ExecuteTemplate(&buf, "admin_kyc_profile.html", map[string]any{
 		"AppName": "Xego", "Title": "KYC profile", "CSRF": "x", "AdminRole": "admin",
-		"Profile":       store.KYCProfile{UserID: testUUID(t), Tier: "L2", RiskBand: "medium", RiskScore: 42},
-		"UserID":        testUUID(t).String(),
-		"DisplayName":   "Ada Ring",
-		"Timeline":      timeline,
-		"SubjectLinks":  []store.IdentityLinkRow{{LinkKind: "device", LinkValue: "fingerprint-a", SubjectA: testUUID(t).String(), SubjectB: "u-2", NameB: "Bode", LastSharedAt: now, Sightings: 2}},
-		"TimelineCount": 3,
+		"Profile":          store.KYCProfile{UserID: testUUID(t), Tier: "L2", RiskBand: "medium", RiskScore: 42},
+		"UserID":           testUUID(t).String(),
+		"DisplayName":      "Ada Ring",
+		"Timeline":         timeline,
+		"SubjectLinks":     []store.IdentityLinkRow{{LinkKind: "device", LinkValue: "fingerprint-a", SubjectA: testUUID(t).String(), SubjectB: "u-2", NameB: "Bode", LastSharedAt: now, Sightings: 2}},
+		"TimelineCount":    3,
+		"Frozen":           false,
+		"PaymentPrefs":     []store.PaymentPreference{},
+		"PaymentPrefLines": nil,
+		"HasPaymentPrefs":  false,
 	})
 	if err != nil {
 		t.Fatalf("execute admin_kyc_profile.html: %v", err)
@@ -160,6 +164,10 @@ func TestAdminKYCProfileTemplateContract(t *testing.T) {
 		"Profile": store.KYCProfile{UserID: testUUID(t), Tier: "L0", RiskBand: "high", RiskScore: 80},
 		"UserID":  testUUID(t).String(), "DisplayName": "",
 		"Timeline": []store.TimelineEntry{}, "SubjectLinks": []store.IdentityLinkRow(nil), "TimelineCount": 0,
+		"Frozen":           false,
+		"PaymentPrefs":     []store.PaymentPreference{},
+		"PaymentPrefLines": nil,
+		"HasPaymentPrefs":  false,
 	})
 	if err != nil {
 		t.Fatalf("execute empty admin_kyc_profile.html: %v", err)

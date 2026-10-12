@@ -344,8 +344,39 @@ func (s *ConversationService) sendMyDetailsChat(ctx context.Context, channel, re
 			lines = append(lines, "• "+payment.Desc)
 		}
 	}
+	lines = append(lines, "\nSaved payment methods")
+	if saved := s.savedMethodLines(ctx, user.ID); len(saved) == 0 {
+		lines = append(lines, "• You haven't saved any payment methods.")
+	} else {
+		for _, line := range saved {
+			lines = append(lines, "• "+line)
+		}
+		lines = append(lines, "• Reply \"forget saved methods\" to have Xego stop remembering how you pay.")
+	}
 	lines = append(lines, "\n"+summary.Note)
 	return s.sendText(ctx, channel, recipient, strings.Join(lines, "\n"))
+}
+
+// savedMethodLines loads and renders the payer's remembered rails for the chat
+// details block. A store hiccup degrades to no section rather than a broken
+// details page.
+func (s *ConversationService) savedMethodLines(ctx context.Context, userID uuid.UUID) []string {
+	prefs, err := s.store.PaymentPreferencesForUser(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	return SavedMethodLines(prefs)
+}
+
+// forgetSavedMethods clears every remembered rail for the payer and confirms in
+// chat. The browser "My details" page performs the same clearing, so "forget"
+// means the same thing on every surface: nothing is charged, and the payer is
+// asked to choose a method afresh each time.
+func (s *ConversationService) forgetSavedMethods(ctx context.Context, channel, recipient string, user store.User) error {
+	if err := s.store.ClearAllPaymentPreferences(ctx, user.ID); err != nil {
+		return s.sendText(ctx, channel, recipient, "Could not update your saved payment methods right now. Please try again.")
+	}
+	return s.sendText(ctx, channel, recipient, "Done — Xego will no longer remember how you paid. I'll ask you to choose a payment method each time, and nothing was charged.")
 }
 
 func orDash(value string) string {

@@ -398,7 +398,7 @@ func (s *PaymentService) ConfirmWalletPayment(ctx context.Context, payment store
 		return payment, changed, err
 	}
 	if changed {
-		s.applyPaymentSuccessHooks(ctx, updated)
+		s.onPaymentSucceeded(ctx, updated)
 	}
 	return updated, changed, nil
 }
@@ -626,14 +626,32 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		return payment, changed, err
 	}
 	if changed && target == domain.StatusSucceeded {
-		// Saved methods (SAVED_CARD_METHODS_PLAN.md Phase 1): a payment that
-		// completed is the only evidence of what the payer actually wanted, so
-		// the rail is remembered here — best-effort, and never for a failed or
-		// abandoned attempt. It remembers the choice, not the card.
-		s.rememberPaymentRail(ctx, updated)
-		s.applyPaymentSuccessHooks(ctx, updated)
+		s.onPaymentSucceeded(ctx, updated)
 	}
 	return updated, changed, nil
+}
+
+// onPaymentSucceeded runs the post-success work common to every rail: remembering
+// the payer's chosen method (SAVED_CARD_METHODS_PLAN.md Phase 1) and applying the
+// purpose hooks. Both paths that complete a payment — the gateway authority in
+// VerifyAndApply and the in-platform ConfirmWalletPayment — call this, so a rail
+// is remembered whatever rail it was. A failed or abandoned attempt changes
+// nothing; only success is evidence of what the payer wanted.
+func (s *PaymentService) onPaymentSucceeded(ctx context.Context, payment store.PaymentView) {
+	if s.rememberRailOnSuccess(payment) {
+		s.rememberPaymentRail(ctx, payment)
+	}
+	s.applyPaymentSuccessHooks(ctx, payment)
+}
+
+// rememberRailOnSuccess reports whether a successful payment is a collection
+// with a rail the method pickers could offer. A wallet top-up funds the payer's
+// own wallet and an individual pay settles a recipient payout; neither is a
+// merchant collection, so neither is a habit to remember — remembering either
+// would reorder the rails on the next merchant purchase. Everything else,
+// whatever rail it drafted on, is a collection and is remembered.
+func (s *PaymentService) rememberRailOnSuccess(payment store.PaymentView) bool {
+	return !s.isWalletTopup(payment) && !s.isIndividualPay(payment)
 }
 
 // Post-success purpose application (invoice, thrift, service stock, event

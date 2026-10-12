@@ -536,16 +536,19 @@ func (s *ConversationService) startThriftContribution(ctx context.Context, chann
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
+	remembered := s.savedRailFor(ctx, user, uuid.Nil)
+	body := fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
+		contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo))
+	body += savedRailNoticeSuffix(remembered)
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To: recipient,
-		Body: fmt.Sprintf("Pay thrift contribution\n\nGroup: %s\nCycle: %d\nAmount: %s\n\nChoose a payment method.",
-			contribution.GroupName, contribution.CycleNumber, domain.FormatNGN(contribution.AmountKobo)),
-		Buttons: []ports.InteractiveButton{
+		To:   recipient,
+		Body: body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},
-		},
+		}),
 	})
 }
 

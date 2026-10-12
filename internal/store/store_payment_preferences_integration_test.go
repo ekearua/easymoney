@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +31,7 @@ func paymentPreferenceTestStore(t *testing.T) (*Store, context.Context) {
 	}
 	if _, err := repository.pool.Exec(ctx, `
 		TRUNCATE payment_preferences, payments, ledger_entries, allowance_usage,
-		         wallet_accounts, kyc_profiles, users, merchants
+		         wallet_accounts, kyc_profiles, users, merchants, inbound_messages
 		RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +153,85 @@ func TestPaymentPreferenceLifecycle(t *testing.T) {
 	}
 }
 
+// TestClearAllPaymentPreferences pins the "stop remembering me" control: one
+// action clears every surface and scope, so a payer does not have to know that
+// their habit was remembered per surface to get rid of it.
+func TestClearAllPaymentPreferences(t *testing.T) {
+	repository, ctx := paymentPreferenceTestStore(t)
+	merchants, err := repository.ListActiveMerchants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merchants) < 2 {
+		t.Skip("needs at least two seeded active merchants")
+	}
+	payer, err := repository.GetOrCreateUser(ctx, "+2348012349730")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RememberPaymentRail(ctx, payer.ID, PreferenceChannelWhatsApp, merchants[0].ID, "interswitch"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RememberPaymentRail(ctx, payer.ID, PreferenceChannelWeb, merchants[1].ID, "wallet"); err != nil {
+		t.Fatal(err)
+	}
+	if prefs, _ := repository.PaymentPreferencesForUser(ctx, payer.ID); len(prefs) != 4 {
+		t.Fatalf("expected 4 remembered rows before clearing, got %d: %+v", len(prefs), prefs)
+	}
+
+	if err := repository.ClearAllPaymentPreferences(ctx, payer.ID); err != nil {
+		t.Fatal(err)
+	}
+	prefs, err := repository.PaymentPreferencesForUser(ctx, payer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefs) != 0 {
+		t.Fatalf("forgetting all left %d rows behind: %+v", len(prefs), prefs)
+	}
+	// The control is idempotent: clearing again is a no-op, not an error.
+	if err := repository.ClearAllPaymentPreferences(ctx, payer.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExportUserDataIncludesPaymentPreferences pins that the remembered rail is
+// part of the data-subject inventory: the NDPR right of access has to cover the
+// choices we remember about a payer, even though the table holds no card data.
+func TestExportUserDataIncludesPaymentPreferences(t *testing.T) {
+	repository, ctx := paymentPreferenceTestStore(t)
+	merchants, err := repository.ListActiveMerchants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merchants) == 0 {
+		t.Skip("needs a seeded active merchant")
+	}
+	payer, err := repository.GetOrCreateUser(ctx, "+2348012349720")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.RememberPaymentRail(ctx, payer.ID, PreferenceChannelWhatsApp, merchants[0].ID, "bank_transfer"); err != nil {
+		t.Fatal(err)
+	}
+
+	export, err := repository.ExportUserData(ctx, payer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prefs []map[string]any
+	if err := json.Unmarshal(export.PaymentPreferences, &prefs); err != nil {
+		t.Fatalf("payment_preferences export is not a JSON array: %v (%s)", err, export.PaymentPreferences)
+	}
+	// One default row plus the merchant-scoped row the single payment wrote.
+	if len(prefs) != 2 {
+		t.Fatalf("export carried %d payment preferences, want 2: %s", len(prefs), export.PaymentPreferences)
+	}
+	if blob := string(export.PaymentPreferences); !strings.Contains(blob, "bank_transfer") {
+		t.Fatalf("export missing the remembered rail: %s", blob)
+	}
+}
+
 // TestCardReentryMetrics pins the Phase 0.5 measurement: the numbers that decide
 // whether the saved-methods work earns its cost. They are derived from payments
 // the platform already stores, so the test seeds payments directly and asserts
@@ -186,12 +267,26 @@ func TestCardReentryMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// updated_at is set to the attempt's own time so the follow-up query (which
+	// ages a message against the moment the attempt ended) is deterministic.
 	seed := func(userID uuid.UUID, provider, status string, at time.Time, ref string) {
 		t.Helper()
 		if _, err := repository.pool.Exec(ctx, `
-			INSERT INTO payments(user_id, merchant_id, amount_kobo, status, provider, provider_reference, receipt_token, created_at)
-			VALUES($1, $2, 250000, $3, $4, $5, $6, $7)`,
+			INSERT INTO payments(user_id, merchant_id, amount_kobo, status, provider, provider_reference, receipt_token, created_at, updated_at)
+			VALUES($1, $2, 250000, $3, $4, $5, $6, $7, $7)`,
 			userID, merchant.ID, status, provider, ref, "rcpt-"+ref, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// An inbound message is metadata only for this metric: the sender and the
+	// timestamp. The payload is never read (it is sealed at rest), so a dummy
+	// body is all the fixture needs.
+	message := func(sender string, at time.Time, id string) {
+		t.Helper()
+		if _, err := repository.pool.Exec(ctx, `
+			INSERT INTO inbound_messages(provider_message_id, sender, payload, status, received_at, processed_at)
+			VALUES($1, $2, '{"fixture":true}'::jsonb, 'processed', $3, $3)`, id, sender, at); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -206,6 +301,14 @@ func TestCardReentryMetrics(t *testing.T) {
 	seed(returning.ID, "interswitch", "failed", window.Add(2*time.Hour), "in-2")
 	seed(returning.ID, "interswitch", "expired", window.Add(3*time.Hour), "in-3")
 	seed(fresh.ID, "wallet", "succeeded", window.Add(4*time.Hour), "in-4")
+
+	// The returning payer messaged us five minutes after their card attempt
+	// failed — inside the follow-up window, so they count once. The first-time
+	// payer also messaged us, but nothing of theirs was abandoned, so they must
+	// not count at all: the metric is a follow-up to a failed card attempt, not
+	// a count of inbound traffic.
+	message("+2348012349710", window.Add(2*time.Hour+5*time.Minute), "msg-followup")
+	message("+2348012349711", window.Add(5*time.Hour), "msg-unrelated")
 
 	metrics, err := repository.CardReentryMetricsSince(ctx, window)
 	if err != nil {
@@ -231,6 +334,40 @@ func TestCardReentryMetrics(t *testing.T) {
 	}
 	if got, want := metrics.RepeatPaymentShare(), 3.0/4.0; got != want {
 		t.Errorf("repeat-payer share: got %v, want %v", got, want)
+	}
+	if metrics.CardFollowUps != 1 {
+		t.Errorf("follow-ups after a failed card attempt: got %d, want 1", metrics.CardFollowUps)
+	}
+
+	// The per-merchant breakdown: one merchant here, carrying every figure the
+	// aggregate carries, so "which merchant is losing payers to re-entry" is
+	// answerable rather than only "is anyone".
+	byMerchant, err := repository.CardReentryMetricsByMerchant(ctx, window, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byMerchant) != 1 {
+		t.Fatalf("expected one merchant row, got %d: %+v", len(byMerchant), byMerchant)
+	}
+	row := byMerchant[0]
+	if row.MerchantID != merchant.ID {
+		t.Errorf("merchant row is for %s, want %s", row.MerchantID, merchant.ID)
+	}
+	if row.Payments != 4 || row.CardAttempts != 3 || row.CardAbandoned != 2 || row.RepeatPayments != 3 {
+		t.Errorf("merchant breakdown drifted: %+v", row)
+	}
+	if got, want := row.CardAbandonmentRate(), 2.0/3.0; got != want {
+		t.Errorf("merchant abandon rate: got %v, want %v", got, want)
+	}
+
+	// A window with no payments has no merchants to report rather than an
+	// empty-but-present row.
+	emptyByMerchant, err := repository.CardReentryMetricsByMerchant(ctx, time.Now().Add(time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyByMerchant) != 0 {
+		t.Fatalf("an empty window should report no merchants, got %+v", emptyByMerchant)
 	}
 
 	// An empty window reads as zero rather than dividing by zero.

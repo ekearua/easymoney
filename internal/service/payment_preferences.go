@@ -147,32 +147,77 @@ func PaymentPreferenceChannel(paymentChannel string) string {
 	return ""
 }
 
-// OrderRailsByPreference moves the remembered rail to the front, preserving the
-// relative order of the rest. A remembered rail that is not in the list (a rail
-// since retired, or one this surface does not offer) leaves the order alone
-// rather than dropping a choice.
-func OrderRailsByPreference(remembered string, rails []string) []string {
-	if remembered == "" || len(rails) < 2 {
-		return rails
+// OrderByRail moves the item whose rail matches remembered to the front,
+// preserving the relative order of the rest. railOf extracts the rail an item
+// drafts, so the chat picker (whose items are interactive buttons) and the web
+// picker (whose items are flow actions) share one ordering rule instead of two
+// that can drift apart.
+//
+// A remembered rail that is not among items (a rail since retired, or one this
+// surface does not offer) leaves the order alone rather than dropping a choice:
+// ordering is a hint, never a filter.
+func OrderByRail[T any](remembered string, items []T, railOf func(T) string) []T {
+	if remembered == "" || len(items) < 2 {
+		return items
 	}
-	out := make([]string, 0, len(rails))
 	found := false
-	for _, r := range rails {
-		if r == remembered {
+	for _, it := range items {
+		if railOf(it) == remembered {
 			found = true
 			break
 		}
 	}
 	if !found {
-		return rails
+		return items
 	}
-	out = append(out, remembered)
-	for _, r := range rails {
-		if r != remembered {
-			out = append(out, r)
+	out := make([]T, 0, len(items))
+	for _, it := range items {
+		if railOf(it) == remembered {
+			out = append(out, it)
+			break
+		}
+	}
+	for _, it := range items {
+		if railOf(it) != remembered {
+			out = append(out, it)
 		}
 	}
 	return out
+}
+
+// SavedMethodLines renders a payer's remembered choices as payer-facing
+// "name — surface" lines for the details surfaces. It de-duplicates across
+// scopes so a merchant-scoped habit does not repeat the standing choice, and it
+// is shared by the chat details block and the browser details page so the two
+// cannot describe the saved methods differently. Empty when nothing is
+// remembered, so a caller can hide the whole section.
+func SavedMethodLines(prefs []store.PaymentPreference) []string {
+	seen := map[string]bool{}
+	var lines []string
+	for _, p := range prefs {
+		name := RailDisplayName(p.Rail)
+		if name == "" {
+			continue
+		}
+		key := p.Channel + "|" + p.Rail
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		lines = append(lines, name+" — "+preferenceSurfaceWord(p.Channel))
+	}
+	return lines
+}
+
+// preferenceSurfaceWord names a preference channel in payer-facing copy.
+func preferenceSurfaceWord(channel string) string {
+	switch channel {
+	case store.PreferenceChannelWhatsApp:
+		return "in chat"
+	case store.PreferenceChannelWeb:
+		return "on the web"
+	}
+	return channel
 }
 
 // SavedRailNotice is the one-line acknowledgement appended to a method prompt

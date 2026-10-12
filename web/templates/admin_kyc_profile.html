@@ -28,6 +28,28 @@
 </section>
 {{end}}
 
+{{if .HasPaymentPrefs}}
+<section class="panel">
+  <h2>Saved payment methods</h2>
+  <p class="small-text">The rails the payer was last offered first. These are choices only — no card data is stored.</p>
+  <div class="table-wrap"><table><thead><tr><th>Rail</th><th>Surface</th><th>Scope</th><th>Merchant</th><th>Updated</th></tr></thead><tbody>
+  {{range .PaymentPrefs}}<tr>
+    <td>{{if eq .Rail "interswitch"}}Card checkout{{else if eq .Rail "bank_transfer"}}Bank transfer{{else if eq .Rail "wallet"}}Wallet{{else}}{{.Rail}}{{end}}</td>
+    <td>{{if eq .Channel "whatsapp"}}chat{{else}}{{.Channel}}{{end}}</td>
+    <td>{{.Scope}}</td>
+    <td>{{if .ScopeRef}}<span class="mono">{{.ScopeRef}}</span>{{else}}—{{end}}</td>
+    <td class="nowrap">{{.UpdatedAt.Format "02 Jan 2006 15:04"}}</td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>
+{{end}}
+{{if not .HasPaymentPrefs}}
+<section class="panel">
+  <h2>Saved payment methods</h2>
+  <p class="small-text">No remembered rails yet for this payer.</p>
+</section>
+{{end}}
+
 <section class="panel">
   <h2>Trust timeline</h2>
   {{if not .Timeline}}<p>No alerts, device sightings, or audit entries for this profile yet.</p>{{end}}
