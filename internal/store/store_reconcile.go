@@ -80,7 +80,8 @@ func (s *Store) RunReconciliation(ctx context.Context, runType, createdBy string
 
 	// Leg 2: ledger money-in postings per journal ref. The money-in debit is
 	// the operating bank for gateway payments and the payer's wallet account
-	// (2301_user_wallet:<id>, W1) for wallet-funded payments. A refund posts
+	// (2301_user_wallet:<id>, W1) for wallet-funded payments, or a restricted
+	// program purse account (2302_program_purse:<id>, P1). A refund posts
 	// offsetting reversals, so each money-in debit is netted against its own
 	// reversal (if any): a fully refunded journal nets to zero instead of
 	// being reported as an orphaned posting forever.
@@ -91,9 +92,9 @@ func (s *Store) RunReconciliation(ctx context.Context, runType, createdBy string
 		FROM ledger_entries p
 		LEFT JOIN ledger_entries e ON e.reversal_of = p.id
 		WHERE p.entry_type='debit' AND p.source_type='payment'
-		  AND (p.account = $1 OR p.account LIKE $2)
+		  AND (p.account = $1 OR p.account LIKE $2 OR p.account LIKE $3)
 		GROUP BY p.journal_ref
-		HAVING SUM(CASE WHEN e.id IS NULL THEN p.amount_kobo ELSE 0 END) <> 0`, LedgerAccountOperatingBank, LedgerAccountUserWallet+":%")
+		HAVING SUM(CASE WHEN e.id IS NULL THEN p.amount_kobo ELSE 0 END) <> 0`, LedgerAccountOperatingBank, LedgerAccountUserWallet+":%", LedgerAccountProgramPurse+":%")
 	if err != nil {
 		return ReconciliationRun{}, nil, err
 	}

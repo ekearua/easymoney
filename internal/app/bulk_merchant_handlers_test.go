@@ -133,8 +133,15 @@ func bulkMerchantTemplates(t *testing.T) *template.Template {
 		"percent":     func(value float64) string { return fmt.Sprintf("%.1f%%", value) },
 		"sub":         func(a, b int64) int64 { return a - b },
 		"add":         func(a, b int64) int64 { return a + b },
-		"inc":         func(i int64) int64 { return i + 1 },
-		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"mul":         func(a, b int64) int64 { return a * b },
+		"divf": func(a, b float64, c float64) float64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b * c
+		},
+		"inc":  func(i int64) int64 { return i + 1 },
+		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
 		"date": func(v any) string {
 			if value, ok := v.(time.Time); ok {
 				return value.Local().Format("Jan 2, 2006 3:04 PM")

@@ -161,8 +161,20 @@ type Payment struct {
 	ReceiptToken      string
 	MerchantReference string
 	Metadata          json.RawMessage
-	FailureReason     string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	PaidAt            *time.Time
+	// PurseID binds a payment to the restricted program purse that funds it
+	// (P1). Nil means the payment is funded from the payer's ordinary wallet or
+	// the gateway rails; set means the money may only be spent at an approved
+	// merchant of that purse's program, a condition re-checked authoritatively
+	// inside transitionPayment before any money moves.
+	PurseID *uuid.UUID
+	// PurseAmountKobo is the portion of AmountKobo funded by the purse when a
+	// payment splits its funding between a restricted purse and the payer's
+	// ordinary wallet. It is 0 for a pure wallet/gateway payment and equals
+	// AmountKobo for a payment fully covered by a purse. The purse portion
+	// never counts against the payer's personal tier allowance.
+	PurseAmountKobo int64
+	FailureReason   string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	PaidAt        *time.Time
 }

@@ -75,6 +75,11 @@ var ErrPurseExpired = errors.New("this program purse has expired")
 // ErrPurseNotActive is returned when a purse has already been closed/returned.
 var ErrPurseNotActive = errors.New("this program purse is closed")
 
+// ErrProgramNotActive is returned when a purse's program has been deactivated
+// by the sponsor. It is distinct from ErrPurseMerchantNotApproved so the payer
+// is told the programme was paused, not the merchant de-listed.
+var ErrProgramNotActive = errors.New("this program has been deactivated")
+
 // ErrProgramNotEnrolled is returned when a beneficiary has no active enrollment
 // in a program, so no purse can be opened for them. Callers must refuse the
 // disbursement rather than fall back to an unrestricted credit.
@@ -305,6 +310,59 @@ func (s *Store) ProgramsForSponsor(ctx context.Context, merchantID uuid.UUID) ([
 		programs = append(programs, p)
 	}
 	return programs, rows.Err()
+}
+
+// MerchantType returns a merchant's classification: standard, sponsor, or
+// program_acceptor. An unset value reads as standard.
+func (s *Store) MerchantType(ctx context.Context, merchantID uuid.UUID) (string, error) {
+	var merchantType string
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(merchant_type,'standard') FROM merchants WHERE id=$1`, merchantID).Scan(&merchantType)
+	return merchantType, err
+}
+
+// IsSponsor reports whether a merchant may use sponsor tools. Only a merchant
+// an operator has classified as a sponsor (`merchant_type='sponsor'`) qualifies:
+// a merchant cannot promote itself, and owning a program is not enough.
+func (s *Store) IsSponsor(ctx context.Context, merchantID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(merchant_type,'standard')='sponsor' FROM merchants WHERE id=$1`,
+		merchantID).Scan(&ok)
+	return ok, err
+}
+
+// SponsorMerchants lists the merchants classified as sponsors, for the admin
+// console's sponsor-approval panel.
+func (s *Store) SponsorMerchants(ctx context.Context) ([]Merchant, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always
+		FROM merchants WHERE merchant_type='sponsor' ORDER BY sort_order, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var merchants []Merchant
+	for rows.Next() {
+		merchant, err := scanMerchant(rows)
+		if err != nil {
+			return nil, err
+		}
+		merchants = append(merchants, merchant)
+	}
+	return merchants, rows.Err()
+}
+
+// ProgramOwnedBySponsor reports whether a program belongs to the given sponsor.
+// ProgramByID is unscoped, so every sponsor handler must gate on this before it
+// reads or mutates a program: otherwise a sponsor could act on another
+// sponsor's allow-list by guessing an id.
+func (s *Store) ProgramOwnedBySponsor(ctx context.Context, programID, sponsorID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM merchant_programs WHERE id=$1 AND sponsor_merchant_id=$2)`,
+		programID, sponsorID).Scan(&ok)
+	return ok, err
 }
 
 // SetProgramStatus activates or deactivates a program. Deactivation stops new
@@ -539,7 +597,7 @@ func (s *Store) ensureProgramPurseTx(ctx context.Context, tx pgx.Tx, programID, 
 		return ProgramPurse{}, err
 	}
 	if programStatus != ProgramStatusActive {
-		return ProgramPurse{}, errors.New("program is not active")
+		return ProgramPurse{}, fmt.Errorf("%w: program %s", ErrProgramNotActive, programID)
 	}
 	purseID := uuid.New()
 	var expiresAt any
@@ -789,6 +847,10 @@ func (s *Store) ApprovedPurseForPayee(ctx context.Context, userID, merchantID uu
 // transaction that debits the purse, so a merchant de-listed between draft and
 // confirmation cannot be paid. It reports why a movement was refused so the
 // caller can render a specific message instead of a generic failure.
+//
+// The purse row is locked (FOR UPDATE) so two concurrent spends of the same
+// purse serialise here: each reads the other's debit before checking the
+// balance, so a purse can never be overdrawn by parallel confirmations.
 func (s *Store) PurseSpendAllowedTx(ctx context.Context, tx pgx.Tx, purseID, merchantID uuid.UUID) error {
 	var (
 		purseStatus   string
@@ -808,7 +870,8 @@ func (s *Store) PurseSpendAllowedTx(ctx context.Context, tx pgx.Tx, purseID, mer
 		       )
 		FROM program_purses pu
 		JOIN merchant_programs mp ON mp.id = pu.program_id
-		WHERE pu.id=$1`, purseID, merchantID).Scan(&purseStatus, &programStatus, &expired, &approved)
+		WHERE pu.id=$1
+		FOR UPDATE OF pu`, purseID, merchantID).Scan(&purseStatus, &programStatus, &expired, &approved)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("program purse not found")
 	}
@@ -819,7 +882,7 @@ func (s *Store) PurseSpendAllowedTx(ctx context.Context, tx pgx.Tx, purseID, mer
 		return ErrPurseNotActive
 	}
 	if programStatus != ProgramStatusActive {
-		return ErrPurseMerchantNotApproved
+		return ErrProgramNotActive
 	}
 	if expired {
 		return ErrPurseExpired
@@ -843,6 +906,12 @@ func (s *Store) CreditProgramPurseTx(ctx context.Context, tx pgx.Tx, purse Progr
 	}
 	if purse.Status != PurseStatusActive {
 		return ErrPurseNotActive
+	}
+	// Serialise replays of the same reference: a check-then-insert on its own
+	// races, so two redeliveries of one disbursement could both see no entry and
+	// both post. The transaction-scoped advisory lock is released at commit.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('program_purse_credit'), hashtext($1))`, journalRef); err != nil {
+		return err
 	}
 	var exists bool
 	if err := tx.QueryRow(ctx,
@@ -886,8 +955,10 @@ func (s *Store) CreditProgramPurse(ctx context.Context, purseID uuid.UUID, fromA
 // Expiry
 // ---------------------------------------------------------------------------
 
-// ExpiredPurses lists active purses past their validity window that still hold
-// money, oldest expiry first, for the return sweep.
+// ExpiredPurses lists purses that hold money but can no longer be spent, oldest
+// expiry first, for the return sweep: active purses past their validity window,
+// and closed purses holding a stray balance (a refund that landed after the
+// purse was repatriated, which would otherwise be stranded forever).
 func (s *Store) ExpiredPurses(ctx context.Context, limit int) ([]ExpiredPurse, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -897,12 +968,13 @@ func (s *Store) ExpiredPurses(ctx context.Context, limit int) ([]ExpiredPurse, e
 		FROM program_purses pu
 		JOIN merchant_programs mp ON mp.id = pu.program_id
 		LEFT JOIN users u ON u.id = pu.user_id
-		WHERE pu.status='active'
-		  AND pu.expires_at IS NOT NULL
-		  AND pu.expires_at <= now()
+		WHERE (
+		        (pu.status='active' AND pu.expires_at IS NOT NULL AND pu.expires_at <= now())
+		        OR pu.status='closed'
+		      )
 		  AND COALESCE((SELECT SUM(CASE WHEN e.entry_type='credit' THEN e.amount_kobo ELSE -e.amount_kobo END)
 		                FROM ledger_entries e WHERE e.account = pu.account_code), 0) > 0
-		ORDER BY pu.expires_at ASC
+		ORDER BY pu.expires_at ASC NULLS LAST
 		LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -925,8 +997,13 @@ func (s *Store) ExpiredPurses(ctx context.Context, limit int) ([]ExpiredPurse, e
 }
 
 // ReturnExpiredPurse repatriates a purse's remaining balance to the sponsor and
-// closes the purse. It is idempotent: a purse that is already closed, or whose
-// window has not closed, is left alone and returns 0.
+// closes the purse. It is idempotent: a purse that is still live (active and
+// unexpired) is left alone and returns 0, and a purse with nothing left has
+// nothing to return.
+//
+// A closed purse with a balance is swept too: a refund credited after the
+// original repatriation would otherwise sit in an account nothing can spend
+// from or reach. Its original closed_at is preserved.
 //
 // The return is a normal balanced posting (debit the purse, credit the
 // sponsor's business wallet), so the money never leaves the book and the
@@ -939,27 +1016,29 @@ func (s *Store) ReturnExpiredPurse(ctx context.Context, purseID uuid.UUID, actor
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var (
-		sponsorID uuid.UUID
-		status    string
-		expired   bool
-		account   string
-		programID uuid.UUID
+		sponsorID      uuid.UUID
+		status         string
+		expired        bool
+		account        string
+		programID      uuid.UUID
+		returnedBefore int64
 	)
 	err = tx.QueryRow(ctx, `
 		SELECT mp.sponsor_merchant_id, pu.status,
 		       (pu.expires_at IS NOT NULL AND pu.expires_at <= now()),
-		       pu.account_code, pu.program_id
+		       pu.account_code, pu.program_id, pu.returned_kobo
 		FROM program_purses pu
 		JOIN merchant_programs mp ON mp.id = pu.program_id
 		WHERE pu.id=$1
-		FOR UPDATE OF pu`, purseID).Scan(&sponsorID, &status, &expired, &account, &programID)
+		FOR UPDATE OF pu`, purseID).Scan(&sponsorID, &status, &expired, &account, &programID, &returnedBefore)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, errors.New("program purse not found")
 	}
 	if err != nil {
 		return 0, err
 	}
-	if status != PurseStatusActive || !expired {
+	// A purse still within its validity window is live money: never touch it.
+	if status == PurseStatusActive && !expired {
 		return 0, tx.Commit(ctx)
 	}
 
@@ -972,7 +1051,9 @@ func (s *Store) ReturnExpiredPurse(ctx context.Context, purseID uuid.UUID, actor
 		return 0, fmt.Errorf("ensure sponsor wallet: %w", err)
 	}
 	if balance > 0 {
-		journalRef := "purse-return:" + purseID.String()
+		// returnedBefore makes each repatriation its own journal event, so a
+		// second sweep after a late refund cannot collide with the first ref.
+		journalRef := fmt.Sprintf("purse-return:%s:%d", purseID, returnedBefore)
 		if err := s.postLedgerPair(ctx, tx, journalRef, LedgerSourcePurseRefund, purseID.String(),
 			account, sponsorWallet.AccountCode, "NGN",
 			"Unspent program funds returned to sponsor", "system", balance, nil); err != nil {
@@ -981,7 +1062,7 @@ func (s *Store) ReturnExpiredPurse(ctx context.Context, purseID uuid.UUID, actor
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE program_purses
-		SET status='closed', closed_at=now(), returned_kobo=returned_kobo+$2
+		SET status='closed', closed_at=COALESCE(closed_at, now()), returned_kobo=returned_kobo+$2
 		WHERE id=$1`, purseID, balance); err != nil {
 		return 0, err
 	}

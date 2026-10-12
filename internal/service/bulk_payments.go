@@ -28,17 +28,17 @@ import (
 
 // BulkPaymentsConfig tunes the bulk-payment orchestrator.
 type BulkPaymentsConfig struct {
-	RadiusM          int
-	MaxAccuracyM     float64
-	ChunkSize        int
-	SendRatePerSec   int
-	MaxTargets       int
-	Stage1Template   string
-	BaseURL          string
-	LocationTTL      time.Duration
-	SendMessage      string
-	InviteMessage    string
-	LocationURLPath  string
+	RadiusM         int
+	MaxAccuracyM    float64
+	ChunkSize       int
+	SendRatePerSec  int
+	MaxTargets      int
+	Stage1Template  string
+	BaseURL         string
+	LocationTTL     time.Duration
+	SendMessage     string
+	InviteMessage   string
+	LocationURLPath string
 }
 
 // BulkPaymentsService orchestrates the two-stage bulk-payment lifecycle.
@@ -185,10 +185,10 @@ func (s *BulkPaymentsService) RunStage1(ctx context.Context, batchID uuid.UUID) 
 				messenger = s.messengers[ChannelWhatsApp]
 				channel = ChannelWhatsApp
 			}
-if messenger == nil {
-			_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "no_messenger", "no messenger for channel "+channel)
-			continue
-		}
+			if messenger == nil {
+				_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "no_messenger", "no messenger for channel "+channel)
+				continue
+			}
 			sendErr := s.deliverStage1(ctx, messenger, channel, item.ID, to, registered)
 			switch {
 			case sendErr != nil:
@@ -270,6 +270,15 @@ func (s *BulkPaymentsService) RunStage2(ctx context.Context, batchID uuid.UUID) 
 	if err != nil {
 		return err
 	}
+	// P1: a program batch pays into each recipient's restricted purse instead of
+	// their ordinary wallet. Resolved once for the whole batch so a single
+	// disbursement can never mix the two destinations.
+	var isProgramBatch bool
+	if _, isProgram, perr := s.store.ProgramForBulkBatch(ctx, batchID); perr != nil {
+		return perr
+	} else {
+		isProgramBatch = isProgram
+	}
 	var transient error
 	for _, item := range items {
 		if ctx.Err() != nil {
@@ -295,11 +304,25 @@ func (s *BulkPaymentsService) RunStage2(ctx context.Context, batchID uuid.UUID) 
 			_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemKYCIneligible, "kyc_ineligible", "recipient has not reached Tier 2")
 			continue
 		}
-		if _, err := s.store.PostBulkPaymentItem(ctx, item.ID); err != nil {
-			if errors.Is(err, store.ErrInsufficientWalletBalance) {
-				_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "insufficient_funds", err.Error())
-			} else {
-				transient = err
+		var postErr error
+		if isProgramBatch {
+			_, postErr = s.store.PostBulkProgramPaymentItem(ctx, item.ID)
+		} else {
+			_, postErr = s.store.PostBulkPaymentItem(ctx, item.ID)
+		}
+		if postErr != nil {
+			switch {
+			case errors.Is(postErr, store.ErrInsufficientWalletBalance):
+				_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "insufficient_funds", postErr.Error())
+			case isProgramBatch && (errors.Is(postErr, store.ErrProgramNotEnrolled) ||
+				errors.Is(postErr, store.ErrProgramNotActive) ||
+				errors.Is(postErr, store.ErrPurseNotActive) || errors.Is(postErr, store.ErrPurseExpired)):
+				// The recipient has no live purse for this program (not enrolled, or
+				// the purse already lapsed). Paying them anyway would put restricted
+				// money into a withdrawable balance, so the item is refused instead.
+				_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "program_ineligible", postErr.Error())
+			default:
+				transient = postErr
 			}
 			continue
 		}

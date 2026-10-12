@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+
+	"whatsapp-payment-demo/internal/domain"
 )
 
 // TestProgramPurseLifecycle pins the restricted-funds invariants at the store
@@ -280,6 +282,74 @@ func TestProgramPurseLifecycle(t *testing.T) {
 	if summary.ActivePurseCount != 0 {
 		t.Fatalf("a returned purse should not count as active, got %d", summary.ActivePurseCount)
 	}
+
+	// A refund can land in the purse after it was repatriated (a merchant
+	// refunding a purchase that had already lapsed). The closed purse must be
+	// swept again rather than stranding the money in an account nothing can
+	// spend from or reach.
+	lateRefund := int64(120_000)
+	late, err := repository.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.postLedgerPair(ctx, late, "test:late-refund", "test", "late-1",
+		LedgerAccountOperatingBank, purse.AccountCode, "NGN",
+		"Late refund into a closed purse", "system", lateRefund, nil); err != nil {
+		_ = late.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := late.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gate, err = repository.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.PurseSpendAllowedTx(ctx, gate, purse.ID, acceptor.ID); !errors.Is(err, ErrPurseNotActive) {
+		t.Fatalf("a closed purse holding a late refund must still be unspendable, got %v", err)
+	}
+	_ = gate.Rollback(ctx)
+
+	listedPurses, err := repository.ExpiredPurses(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawClosed bool
+	for _, item := range listedPurses {
+		if item.Purse.ID == purse.ID {
+			sawClosed = true
+		}
+	}
+	if !sawClosed {
+		t.Fatal("a closed purse holding a late refund should be listed for return")
+	}
+
+	swept, err := repository.ReturnExpiredPurse(ctx, purse.ID, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if swept != lateRefund {
+		t.Fatalf("the late refund should be returned, got %d", swept)
+	}
+	reclosed, err := repository.ProgramPurseByID(ctx, purse.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reclosed.Status != PurseStatusClosed || reclosed.BalanceKobo != 0 || reclosed.ReturnedKobo != 500_000+lateRefund {
+		t.Fatalf("re-swept purse state wrong: status=%s returned=%d balance=%d",
+			reclosed.Status, reclosed.ReturnedKobo, reclosed.BalanceKobo)
+	}
+	if reclosed.ClosedAt == nil || closed.ClosedAt == nil || !reclosed.ClosedAt.Equal(*closed.ClosedAt) {
+		t.Fatalf("re-sweeping must preserve the original closed_at: %v vs %v", reclosed.ClosedAt, closed.ClosedAt)
+	}
+	if third, err := repository.ReturnExpiredPurse(ctx, purse.ID, "test"); err != nil || third != 0 {
+		t.Fatalf("a re-swept purse must not return again (got %d, %v)", third, err)
+	}
+	if sponsorAfter, err := repository.WalletBalance(ctx, sponsorWallet.ID); err != nil {
+		t.Fatal(err)
+	} else if sponsorAfter != 1_000_000+lateRefund {
+		t.Fatalf("sponsor should hold the late refund too, got %d", sponsorAfter)
+	}
 }
 
 // TestProgramDisbursement pins the money movement of a program disbursement at
@@ -524,4 +594,179 @@ func TestProgramDisbursement(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestProgramPursePartialSpend pins split funding: when a purse holds less than
+// a purchase, the purse funds what it can and the payer's ordinary wallet funds
+// the rest, each as its own debit leg against the customer float under the one
+// payment journal. A refund must reverse both legs back to their own accounts,
+// so programme money returns to the purse (still restricted) and the wallet
+// portion returns to the wallet — never the other way around.
+func TestProgramPursePartialSpend(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx := context.Background()
+	repository, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.pool.Exec(ctx, `
+		TRUNCATE program_purses, program_enrollments, merchant_program_members, merchant_programs,
+		         payments, payment_splits, refunds, payment_events, ledger_entries, allowance_usage,
+		         wallet_accounts, business_kyb_profiles, kyc_profiles, users, merchants
+		RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Seed(ctx); err != nil {
+		t.Fatal(err)
+	}
+	merchants, err := repository.ListActiveMerchants(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(merchants) < 2 {
+		t.Skip("needs at least two seeded active merchants")
+	}
+	sponsor, acceptor := merchants[0], merchants[1]
+
+	program, err := repository.CreateProgram(ctx, NewProgram{
+		Code:                "prog-split",
+		Name:                "Split program",
+		SponsorMerchantID:   sponsor.ID,
+		PurposeLabel:        "split goods",
+		DefaultValidityDays: 30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beneficiary, err := repository.GetOrCreateUser(ctx, "+2348012349200")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.EnrollUser(ctx, program.ID, beneficiary.ID, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.AddProgramMerchant(ctx, program.ID, acceptor.ID, uuid.Nil); err != nil {
+		t.Fatal(err)
+	}
+	purse, err := repository.EnsureProgramPurse(ctx, program.ID, beneficiary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fund the purse with 3,000 kobo — deliberately less than the 10,000 kobo
+	// purchase below, so the wallet must carry the 7,000 kobo remainder.
+	const purseFunding = int64(3_000)
+	if err := repository.CreditProgramPurse(ctx, purse.ID, LedgerAccountOperatingBank, purseFunding,
+		"test:split-fund", "Test split funding"); err != nil {
+		t.Fatal(err)
+	}
+	funded, err := repository.ProgramPurseByID(ctx, purse.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if funded.BalanceKobo != purseFunding {
+		t.Fatalf("purse funded to %d, want %d", funded.BalanceKobo, purseFunding)
+	}
+
+	// The beneficiary's ordinary wallet is funded and active so the wallet
+	// portion can be drawn.
+	wallet, err := repository.EnsureUserWallet(ctx, beneficiary.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ActivateUserWallet(ctx, beneficiary.ID); err != nil {
+		t.Fatal(err)
+	}
+	const walletFunding = int64(50_000)
+	wtx, err := repository.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.postLedgerPair(ctx, wtx, "test:split-wallet-fund", "test", "1",
+		LedgerAccountOperatingBank, wallet.AccountCode, "NGN",
+		"Test wallet funding", "system", walletFunding, nil); err != nil {
+		_ = wtx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := wtx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	const amountKobo = int64(10_000)
+	const pursePortion = purseFunding
+	const walletPortion = amountKobo - pursePortion
+	payment, err := repository.CreatePayment(ctx, domain.Payment{
+		ID: uuid.New(), UserID: beneficiary.ID, MerchantID: acceptor.ID, AmountKobo: amountKobo,
+		Currency: "NGN", Status: domain.StatusDraft, Provider: ProviderWallet,
+		ProviderReference: "ref-split-pay", ReceiptToken: "tok-split-pay",
+		PurseID: &purse.ID, PurseAmountKobo: pursePortion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := repository.TransitionPayment(ctx, payment.ID, domain.StatusAwaitingConfirmation, "test", nil); err != nil || !changed {
+		t.Fatalf("transition awaiting: changed=%v err=%v", changed, err)
+	}
+	changed, err := repository.TransitionPaymentWithOutbox(ctx, payment.ID, domain.StatusSucceeded, "test", nil, OutboxSpec{Channel: ChannelAPI})
+	if err != nil || !changed {
+		t.Fatalf("split payment succeed: changed=%v err=%v", changed, err)
+	}
+
+	// The purse is drained by exactly its portion; the wallet by its own.
+	afterSpend, err := repository.ProgramPurseByID(ctx, purse.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterSpend.BalanceKobo != 0 {
+		t.Fatalf("purse balance after partial spend = %d, want 0", afterSpend.BalanceKobo)
+	}
+	if balance, _ := repository.WalletBalance(ctx, wallet.ID); balance != walletFunding-walletPortion {
+		t.Fatalf("wallet balance after partial spend = %d, want %d", balance, walletFunding-walletPortion)
+	}
+
+	// Two debit legs, each against its own account, plus one float credit.
+	assertLeg := func(account string, entryType string, want int64) {
+		t.Helper()
+		var got int64
+		if err := repository.pool.QueryRow(ctx, `
+			SELECT COALESCE(sum(amount_kobo),0) FROM ledger_entries
+			WHERE journal_ref=$1 AND account=$2 AND entry_type=$3`,
+			payment.ID.String(), account, entryType).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("ledger %s %s on %s = %d, want %d", entryType, account, payment.ID, got, want)
+		}
+	}
+	assertLeg(purse.AccountCode, "debit", pursePortion)
+	assertLeg(wallet.AccountCode, "debit", walletPortion)
+	assertLeg(LedgerAccountCustomerFloat, "credit", amountKobo)
+	assertLedgerNetsZero(t, repository, ctx)
+
+	// The refund reversal restores both legs to their own accounts: programme
+	// money back to the purse (still restricted), the wallet portion back to the
+	// wallet.
+	if _, err := repository.RefundPayment(ctx, payment.ID, "test split refund", "test", nil); err != nil {
+		t.Fatal(err)
+	}
+	afterRefund, err := repository.ProgramPurseByID(ctx, purse.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRefund.BalanceKobo != pursePortion {
+		t.Fatalf("purse balance after refund = %d, want %d", afterRefund.BalanceKobo, pursePortion)
+	}
+	if balance, _ := repository.WalletBalance(ctx, wallet.ID); balance != walletFunding {
+		t.Fatalf("wallet balance after refund = %d, want %d", balance, walletFunding)
+	}
+	if count, broken, err := repository.VerifyLedgerChain(ctx); err != nil || broken != -1 {
+		t.Fatalf("ledger chain broken at %d of %d: %v", broken, count, err)
+	}
+	assertLedgerNetsZero(t, repository, ctx)
 }

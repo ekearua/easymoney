@@ -14,8 +14,8 @@
     <label>Display name <input name="name" required placeholder="Ministry of Agriculture input support"></label>
     <label>Sponsor merchant
       <select name="sponsor_merchant_id" required>
-        <option value="">Select the sponsoring merchant…</option>
-        {{range .Merchants}}{{if .Active}}<option value="{{.ID}}">{{.Name}} ({{.Slug}})</option>{{end}}{{end}}
+        <option value="">Select an approved sponsor…</option>
+        {{range .Sponsors}}{{if .Active}}<option value="{{.ID}}">{{.Name}} ({{.Slug}})</option>{{end}}{{end}}
       </select>
     </label>
     <label>Label beneficiaries see <input name="purpose_label" placeholder="Agric input funds"></label>
@@ -23,6 +23,42 @@
     <label>Purse validity in days (0 = no expiry) <input name="default_validity_days" type="number" min="0" value="0"></label>
     <button type="submit">Create program</button>
   </form>
+  {{if not .Sponsors}}<p class="muted">No sponsors approved yet — approve one below before creating a program.</p>{{end}}
+</section>
+
+<section class="panel">
+  <h2>Sponsor merchants</h2>
+  <p class="muted">Only approved sponsors can own restricted-fund programs and use the sponsor console. Approving a merchant here is what enables its access; revoking removes the console without touching its programs or balances.</p>
+  <form method="post" action="/admin/programs/sponsor" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Approve sponsor
+      <select name="merchant_id" required>
+        <option value="">Select an active merchant…</option>
+        {{range .Merchants}}{{if .Active}}<option value="{{.ID}}">{{.Name}} ({{.Slug}})</option>{{end}}{{end}}
+      </select>
+    </label>
+    <button type="submit">Approve sponsor</button>
+  </form>
+  {{if .Sponsors}}
+  <table>
+    <thead><tr><th>Merchant</th><th></th></tr></thead>
+    <tbody>
+    {{range .Sponsors}}
+      <tr>
+        <td>{{.Name}} <span class="muted">{{.Slug}}</span></td>
+        <td>
+          <form method="post" action="/admin/programs/sponsor">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="merchant_id" value="{{.ID}}">
+            <input type="hidden" name="revoke" value="1">
+            <button type="submit" class="danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No sponsors approved yet.</p>{{end}}
 </section>
 
 <section class="panel">

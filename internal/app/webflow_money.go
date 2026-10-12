@@ -875,8 +875,10 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			done := a.wfPage(flow)
 			done.Done = true
 			done.DoneTitle = "Payment sent"
-			if payment.PurseID != nil {
+			if payment.PurseID != nil && payment.PurseAmountKobo >= payment.AmountKobo {
 				done.DoneBody = "Your programme-funds payment was completed. This money stayed inside the programme. Check WhatsApp for your receipt."
+			} else if payment.PurseID != nil {
+				done.DoneBody = "Your payment was completed: part came from your restricted programme funds and part from your wallet. Check WhatsApp for your receipt."
 			} else {
 				done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
 			}
@@ -1002,8 +1004,10 @@ func (a *App) wfPayOnePageSubmit(w http.ResponseWriter, r *http.Request, flow st
 		done := a.wfPage(flow)
 		done.Done = true
 		done.DoneTitle = "Payment sent"
-		if payment.PurseID != nil {
+		if payment.PurseID != nil && payment.PurseAmountKobo >= payment.AmountKobo {
 			done.DoneBody = "Your programme-funds payment was completed. This money stayed inside the programme. Check WhatsApp for your receipt."
+		} else if payment.PurseID != nil {
+			done.DoneBody = "Your payment was completed: part came from your restricted programme funds and part from your wallet. Check WhatsApp for your receipt."
 		} else {
 			done.DoneBody = "Your wallet payment was completed. Check WhatsApp for your receipt."
 		}
@@ -1086,6 +1090,8 @@ func friendlyWebPaymentError(err error) string {
 		return "Your wallet balance is too low for this payment. Top up your wallet and try again, or choose another payment method."
 	case errors.Is(err, store.ErrWalletNotActive):
 		return "Wallet payments need an active wallet. Verify your account to reach CBN Tier 1 and activate your wallet, then try again, or choose another payment method."
+	case errors.Is(err, store.ErrProgramNotActive):
+		return "This programme has been paused by the sponsor, so its funds can't be spent right now. Nothing was taken — choose another payment method."
 	case errors.Is(err, store.ErrPurseMerchantNotApproved):
 		return "This merchant is no longer approved to accept the programme funding that would have paid for this, so the payment was stopped and nothing was taken. Choose another payment method."
 	case errors.Is(err, store.ErrPurseExpired):

@@ -58,21 +58,77 @@ func (s *PaymentService) CreateDraft(ctx context.Context, user store.User, merch
 // resolvePurseForPayee returns the restricted program purse that should fund a
 // payment from this payer to this merchant, or nil for an ordinary payment.
 //
-// A purse is selected only when the payee is on the program's allow-list, the
-// purse is live and unexpired, and it can cover the whole charge. No split
-// funding in v1: a purse that cannot cover the amount is left for a smaller
-// purchase rather than being half-drawn, and the payment proceeds on the
-// ordinary rail with the payer's own money. A payee that is not on any of the
-// payer's allow-lists is simply untouched by any of this.
+// A purse is selected when the payee is on the program's allow-list, the purse
+// is live and unexpired, and it holds any spendable balance at all. It no
+// longer has to cover the whole charge: since partial draws are supported, a
+// purse that can only afford part of a purchase funds that part and the
+// payer's ordinary wallet funds the remainder. A payee that is not on any of
+// the payer's allow-lists is simply untouched by any of this.
 func (s *PaymentService) resolvePurseForPayee(ctx context.Context, userID, merchantID uuid.UUID, amountKobo int64) *store.ProgramPurse {
 	purse, ok, err := s.store.ApprovedPurseForPayee(ctx, userID, merchantID)
-	if err != nil || !ok {
-		return nil
-	}
-	if purse.BalanceKobo < amountKobo {
+	if err != nil || !ok || purse.BalanceKobo <= 0 {
 		return nil
 	}
 	return &purse
+}
+
+// purseDraw is a resolved split of a charge between a restricted program purse
+// and the payer's ordinary wallet.
+type purseDraw struct {
+	purse      store.ProgramPurse
+	purseKobo  int64 // restricted portion drawn from the purse
+	walletKobo int64 // ordinary-wallet base portion (the merchant's remainder)
+	feeKobo    int64 // collection fee, charged on the wallet portion only
+}
+
+func (d purseDraw) baseKobo() int64  { return d.purseKobo + d.walletKobo }
+func (d purseDraw) totalKobo() int64 { return d.baseKobo() + d.feeKobo }
+
+// resolvePurseDraw resolves how a charge of baseKobo from this payer to this
+// merchant should be funded. ok is false when the payer holds no eligible purse
+// (or the purse is empty), meaning the charge is an ordinary wallet payment.
+//
+// feeOnWallet is the rail's collection-fee function and is applied only to the
+// ordinary-wallet portion: restricted programme money buys the goods the
+// programme intended and stays fee-free, while the top-up the customer pays
+// from their own wallet is charged like any other purchase. A nil feeOnWallet
+// (the invoice and hosted-web rails, which add no surcharge at all) means no
+// fee on either portion.
+func (s *PaymentService) resolvePurseDraw(ctx context.Context, userID, merchantID uuid.UUID, baseKobo int64, feeOnWallet func(int64) int64) (purseDraw, bool) {
+	purse := s.resolvePurseForPayee(ctx, userID, merchantID, baseKobo)
+	if purse == nil {
+		return purseDraw{}, false
+	}
+	return splitPurseDraw(*purse, baseKobo, feeOnWallet), true
+}
+
+// splitPurseDraw is the pure split arithmetic: the purse funds as much of the
+// base as it holds (never more than the base), the ordinary wallet funds the
+// rest, and the fee is charged only on the wallet portion. It is separated from
+// the store lookup so the arithmetic can be tested in isolation.
+func splitPurseDraw(purse store.ProgramPurse, baseKobo int64, feeOnWallet func(int64) int64) purseDraw {
+	purseKobo := purse.BalanceKobo
+	if purseKobo > baseKobo {
+		purseKobo = baseKobo
+	}
+	if purseKobo < 0 {
+		purseKobo = 0
+	}
+	walletKobo := baseKobo - purseKobo
+	var fee int64
+	if walletKobo > 0 && feeOnWallet != nil {
+		fee = feeOnWallet(walletKobo)
+	}
+	return purseDraw{purse: purse, purseKobo: purseKobo, walletKobo: walletKobo, feeKobo: fee}
+}
+
+// PurseDrawFor reports how a charge of baseKobo would be split between a
+// restricted programme purse and the payer's ordinary wallet, for callers that
+// want to describe the split (review copy) before the customer commits. ok is
+// false when no purse can fund the charge. The authoritative allow-list and
+// balance checks still run in the transaction that moves the money.
+func (s *PaymentService) PurseDrawFor(ctx context.Context, userID, merchantID uuid.UUID, baseKobo int64, feeOnWallet func(int64) int64) (purseDraw, bool) {
+	return s.resolvePurseDraw(ctx, userID, merchantID, baseKobo, feeOnWallet)
 }
 
 // EligiblePurseFor reports the restricted program purse that could fund a
@@ -83,27 +139,27 @@ func (s *PaymentService) EligiblePurseFor(ctx context.Context, userID, merchantI
 }
 
 // CreatePurseOrWalletDraft drafts a wallet-provider payment funded from the
-// payer's restricted program purse when one covers this merchant and amount,
-// and from the ordinary wallet otherwise. Both rails are instant in-platform
-// transfers confirmed inline, which is why the web-flow invoice rail and the
-// checkout wallet tap share this seam: the caller keeps its provider clean
-// ("wallet") and the purse is chosen here, once, for every surface.
+// payer's restricted program purse when one covers this merchant, and from the
+// ordinary wallet otherwise. Both rails are instant in-platform transfers
+// confirmed inline, which is why the web-flow invoice rail and the checkout
+// wallet tap share this seam: the caller keeps its provider clean ("wallet")
+// and the purse is chosen here, once, for every surface.
 //
-// Invoices intentionally pass the merchant's amount un-inflated: the invoice
-// rail never adds a collection fee, and programme money buys the goods the
-// programme intended, so a purse-funded invoice pays the merchant's amount
-// exactly.
-func (s *PaymentService) CreatePurseOrWalletDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, channel, recipient string) (store.PaymentView, error) {
-	purse, hasPurse := s.EligiblePurse(ctx, user.ID, merchant.ID, amountKobo)
-	if !hasPurse {
-		return s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, nil, nil)
+// This rail adds no collection surcharge (it is shared by the invoice rail,
+// which never inflates the merchant's amount and skips collection splits), so a
+// partial draw splits the merchant's amount between the purse and the wallet
+// with no fee on either portion.
+func (s *PaymentService) CreatePurseOrWalletDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, channel, recipient string) (store.PaymentView, error) {
+	draw, ok := s.resolvePurseDraw(ctx, user.ID, merchant.ID, baseKobo, nil)
+	if !ok {
+		return s.createDraftCore(ctx, user, merchant, baseKobo, ProviderWallet, channel, recipient, nil, nil)
 	}
-	view, err := s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, &purse, nil)
+	view, err := s.createDraftCore(ctx, user, merchant, draw.totalKobo(), ProviderWallet, channel, recipient, &draw, nil)
 	if err != nil {
 		// The purse was spent or closed between the eligibility check and the
 		// draft: fall back to the ordinary wallet rather than failing a
 		// customer who was told nothing about programmes.
-		return s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, nil, nil)
+		return s.createDraftCore(ctx, user, merchant, baseKobo, ProviderWallet, channel, recipient, nil, nil)
 	}
 	return view, nil
 }
@@ -126,16 +182,24 @@ func (s *PaymentService) EligiblePurse(ctx context.Context, userID, merchantID u
 // beneficiary's allow-list) asks for it, and the payment is then confirmed
 // inline against the purse rather than through a hosted gateway page.
 //
-// ok is false when the payer holds no purse that can fund this merchant and
-// amount, so the caller falls back to the ordinary rail instead of being told
-// the payment failed. The authoritative allow-list check still happens later, in
-// the transaction that moves the money.
-func (s *PaymentService) CreatePurseFundedDraft(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, channel, recipient string) (store.PaymentView, bool, error) {
-	purse := s.resolvePurseForPayee(ctx, user.ID, merchant.ID, amountKobo)
-	if purse == nil {
+// The purse funds as much of the merchant's amount as it holds; when that is
+// less than the whole amount the payer's ordinary wallet funds the remainder,
+// and the collection fee is charged only on that wallet-funded remainder.
+// Programme money itself is never surcharged.
+//
+// ok is false when the payer holds no purse that can fund this merchant, so the
+// caller falls back to the ordinary rail instead of being told the payment
+// failed. The authoritative allow-list check still happens later, in the
+// transaction that moves the money.
+func (s *PaymentService) CreatePurseFundedDraft(ctx context.Context, user store.User, merchant store.Merchant, baseKobo int64, channel, recipient string) (store.PaymentView, bool, error) {
+	feeOnWallet := func(portion int64) int64 {
+		return XegoCollectionFee(s.cfg, FeeChannelForProvider(ProviderWallet), portion).FeeKobo
+	}
+	draw, ok := s.resolvePurseDraw(ctx, user.ID, merchant.ID, baseKobo, feeOnWallet)
+	if !ok {
 		return store.PaymentView{}, false, nil
 	}
-	view, err := s.createDraftCore(ctx, user, merchant, amountKobo, ProviderWallet, channel, recipient, purse, nil)
+	view, err := s.createDraftCore(ctx, user, merchant, draw.totalKobo(), ProviderWallet, channel, recipient, &draw, nil)
 	if err != nil {
 		return store.PaymentView{}, false, err
 	}
@@ -170,7 +234,7 @@ func (s *PaymentService) CreateCollectionDraft(ctx context.Context, user store.U
 	})
 }
 
-func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string, purse *store.ProgramPurse, meta map[string]any) (store.PaymentView, error) {
+func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, merchant store.Merchant, amountKobo int64, provider, channel, recipient string, draw *purseDraw, meta map[string]any) (store.PaymentView, error) {
 	if provider == ProviderAuto {
 		provider = s.router.PickProvider()
 	}
@@ -184,15 +248,26 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 		return store.PaymentView{}, errors.New("payment recipient is required")
 	}
 	var purseID *uuid.UUID
-	if purse != nil {
-		// P1: a restricted program purse funds this payment. Forcing the wallet
-		// rail is what routes the movement through the inline confirmation path
-		// in transitionPayment, where the allow-list is re-checked inside the
-		// transaction that moves the money. The money-in allowance below is
-		// skipped for the same reason it is skipped for any wallet payment: the
-		// funds are already inside the platform.
+	var purseAmountKobo int64
+	if draw != nil {
+		// P1: a restricted program purse funds (or part-funds) this payment.
+		// Forcing the wallet rail is what routes the movement through the inline
+		// confirmation path in transitionPayment, where the allow-list is
+		// re-checked inside the transaction that moves the money. The money-in
+		// allowance below is skipped for the same reason it is skipped for any
+		// wallet payment: the funds are already inside the platform.
 		provider = ProviderWallet
-		purseID = &purse.ID
+		purseID = &draw.purse.ID
+		purseAmountKobo = draw.purseKobo
+		// Carry the merchant's base and the fee charged on the ordinary-wallet
+		// portion so the post-success split credits the merchant the full base
+		// and books the fee to Xego. The explicit zero fee of a fully
+		// purse-funded purchase must be carried too, or the legacy fallback
+		// would re-derive a card fee and short the merchant.
+		meta = map[string]any{
+			"base_amount_kobo":    draw.baseKobo(),
+			"collection_fee_kobo": draw.feeKobo,
+		}
 	}
 	token, err := domain.NewReceiptToken()
 	if err != nil {
@@ -225,6 +300,7 @@ func (s *PaymentService) createDraftCore(ctx context.Context, user store.User, m
 		CheckoutToken:     checkoutToken,
 		Metadata:          metadata,
 		PurseID:           purseID,
+		PurseAmountKobo:   purseAmountKobo,
 	}
 	// C9-tiers: money-in allowance. The payer's tier ceiling (single/daily/
 	// monthly) is validated and the movement reserved in the same step, keyed by
@@ -285,24 +361,31 @@ func (s *PaymentService) ConfirmWalletPayment(ctx context.Context, payment store
 	if payment.Status == domain.StatusSucceeded {
 		return payment, false, nil // replay
 	}
-	profile, err := s.store.KYCProfileByUser(ctx, payment.UserID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		profile, err = s.store.EnsureKYCProfile(ctx, payment.UserID)
-	}
-	if err != nil {
-		return payment, false, err
-	}
-	if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
-		AccountType:             store.AccountIndividual,
-		SubjectID:               payment.UserID,
-		Direction:               kyc.DirOut,
-		Tier:                    profile.Tier,
-		AmountKobo:              payment.AmountKobo,
-		Ref:                     payment.ProviderReference,
-		RiskBand:                profile.RiskBand,
-		RiskHighSingleLimitKobo: s.cfg.RiskHighSingleLimitKobo,
-	}); err != nil {
-		return payment, false, err
+	// C9-tiers: only the ordinary-wallet portion spends the payer's own money,
+	// so only it counts against their personal money-out tier. A purchase fully
+	// covered by a restricted programme purse is exempt from the allowance
+	// entirely (the money was already inside the platform and is program-bound).
+	walletPortion := payment.AmountKobo - payment.PurseAmountKobo
+	if walletPortion > 0 {
+		profile, err := s.store.KYCProfileByUser(ctx, payment.UserID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			profile, err = s.store.EnsureKYCProfile(ctx, payment.UserID)
+		}
+		if err != nil {
+			return payment, false, err
+		}
+		if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+			AccountType:             store.AccountIndividual,
+			SubjectID:               payment.UserID,
+			Direction:               kyc.DirOut,
+			Tier:                    profile.Tier,
+			AmountKobo:              walletPortion,
+			Ref:                     payment.ProviderReference,
+			RiskBand:                profile.RiskBand,
+			RiskHighSingleLimitKobo: s.cfg.RiskHighSingleLimitKobo,
+		}); err != nil {
+			return payment, false, err
+		}
 	}
 	changed, err := s.store.TransitionPaymentWithOutbox(ctx, payment.ID, domain.StatusSucceeded, "wallet",
 		map[string]any{"wallet_payment": true}, s.resultOutbox(payment, domain.StatusSucceeded))
@@ -816,10 +899,13 @@ func (s *PaymentService) applyCollectionSplits(ctx context.Context, payment stor
 
 // collectionSplitAmounts derives the fee owed to Xego and the merchant's
 // receivable for a succeeded plain collection. For a collection created via
-// CreateCollectionDraft, the metadata carries base_amount_kobo and
-// collection_fee_kobo, so the merchant receives the full base and the customer
-// pays base+fee. Legacy/unknown payments fall back to the historical model
-// (fee deducted from the paid amount).
+// CreateCollectionDraft (or a purse-funded draft, which carries the same
+// metadata), the metadata carries base_amount_kobo and collection_fee_kobo, so
+// the merchant receives the full base and the customer pays base+fee. An
+// explicit zero fee is authoritative — this is how a fully purse-funded
+// purchase pays the merchant the whole amount with no surcharge. Legacy/unknown
+// payments (no base metadata) fall back to the historical model (fee deducted
+// from the paid amount).
 func (s *PaymentService) collectionSplitAmounts(payment store.PaymentView) (feeKobo, merchantRecv int64) {
 	var meta struct {
 		BaseAmountKobo    int64 `json:"base_amount_kobo"`
@@ -828,7 +914,7 @@ func (s *PaymentService) collectionSplitAmounts(payment store.PaymentView) (feeK
 	if len(payment.Metadata) > 0 {
 		_ = json.Unmarshal(payment.Metadata, &meta)
 	}
-	if meta.BaseAmountKobo > 0 && meta.CollectionFeeKobo > 0 && meta.BaseAmountKobo+meta.CollectionFeeKobo == payment.AmountKobo {
+	if meta.BaseAmountKobo > 0 && meta.BaseAmountKobo+meta.CollectionFeeKobo == payment.AmountKobo {
 		return meta.CollectionFeeKobo, meta.BaseAmountKobo
 	}
 	fee := XegoCollectionFee(s.cfg, FeeChannelForProvider(payment.Provider), payment.AmountKobo)

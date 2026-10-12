@@ -15,7 +15,7 @@ type recordingMessenger struct {
 	locations []string
 	links     []string
 	templates []string
-	locErr        error
+	locErr    error
 }
 
 func (m *recordingMessenger) SendText(_ context.Context, _, body string) error {

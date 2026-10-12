@@ -321,14 +321,14 @@ func (s *Store) CreatePayment(ctx context.Context, payment domain.Payment) (doma
 	defer tx.Rollback(ctx)
 	const insert = `
 		INSERT INTO payments
-			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,channel,recipient,receipt_token,checkout_token,merchant_reference,metadata,purse_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)
+			(id,user_id,merchant_id,amount_kobo,currency,status,provider,provider_reference,channel,recipient,receipt_token,checkout_token,merchant_reference,metadata,purse_id,purse_amount_kobo)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16)
 		RETURNING created_at, updated_at`
 	err = tx.QueryRow(ctx, insert,
 		payment.ID, payment.UserID, payment.MerchantID, payment.AmountKobo, payment.Currency,
 		payment.Status, payment.Provider, payment.ProviderReference, payment.Channel, payment.Recipient,
 		payment.ReceiptToken, payment.CheckoutToken, payment.MerchantReference, metadataValue(payment.Metadata),
-		payment.PurseID,
+		payment.PurseID, payment.PurseAmountKobo,
 	).Scan(&payment.CreatedAt, &payment.UpdatedAt)
 	if err != nil {
 		return domain.Payment{}, err
@@ -366,7 +366,8 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 	var userID, merchantID uuid.UUID
 	var provider, reference string
 	var purseID *uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo, currency, user_id, merchant_id, provider, provider_reference, purse_id FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &amountKobo, &currency, &userID, &merchantID, &provider, &reference, &purseID); err != nil {
+	var purseAmountKobo int64
+	if err := tx.QueryRow(ctx, `SELECT status, amount_kobo, currency, user_id, merchant_id, provider, provider_reference, purse_id, purse_amount_kobo FROM payments WHERE id=$1 FOR UPDATE`, paymentID).Scan(&from, &amountKobo, &currency, &userID, &merchantID, &provider, &reference, &purseID, &purseAmountKobo); err != nil {
 		return false, err
 	}
 	if from == to {
@@ -417,8 +418,19 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 		// payment amount, otherwise the whole confirmation fails and no money
 		// moves. The rest of the pipeline (splits, settlement) is unchanged —
 		// the funds land in the customer float exactly like a gateway payment.
-		debitAccount := LedgerAccountOperatingBank
-		description := "Payment received"
+		//
+		// A purse-funded payment may be a partial draw: the restricted purse
+		// covers purse_amount_kobo and the payer's ordinary wallet covers the
+		// remainder, each posted as its own debit leg against the customer
+		// float under the same journal reference, so the existing refund
+		// reversal restores both accounts in the right proportion.
+		postDebit := func(account, desc string, amount int64) error {
+			if amount <= 0 {
+				return nil
+			}
+			return s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
+				account, LedgerAccountCustomerFloat, currency, desc, "system", amount, tag)
+		}
 		switch {
 		case purseID != nil:
 			// P1: this movement is funded by a restricted program purse. The
@@ -430,6 +442,9 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 			if err := s.PurseSpendAllowedTx(ctx, tx, *purseID, merchantID); err != nil {
 				return false, err
 			}
+			if purseAmountKobo <= 0 || purseAmountKobo > amountKobo {
+				return false, fmt.Errorf("invalid purse portion %d for amount %d", purseAmountKobo, amountKobo)
+			}
 			purseAccount, err := s.purseAccountCodeTx(ctx, tx, *purseID)
 			if err != nil {
 				return false, err
@@ -438,11 +453,32 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 			if err != nil {
 				return false, err
 			}
-			if balance < amountKobo {
-				return false, fmt.Errorf("%w: purse has %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amountKobo)
+			if balance < purseAmountKobo {
+				return false, fmt.Errorf("%w: purse has %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, purseAmountKobo)
 			}
-			debitAccount = purseAccount
-			description = "Payment from program purse"
+			if err := postDebit(purseAccount, "Payment from program purse", purseAmountKobo); err != nil {
+				return false, err
+			}
+			// Split funding: the wallet covers whatever the purse could not.
+			if walletPortion := amountKobo - purseAmountKobo; walletPortion > 0 {
+				wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerUser, userID, "", WalletStatusPending)
+				if err != nil {
+					return false, err
+				}
+				if wallet.Status != WalletStatusActive {
+					return false, fmt.Errorf("%w: wallet is %s (reach L1 to pay from wallet)", ErrWalletNotActive, wallet.Status)
+				}
+				wbalance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
+				if err != nil {
+					return false, err
+				}
+				if wbalance < walletPortion {
+					return false, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrInsufficientWalletBalance, wbalance, walletPortion)
+				}
+				if err := postDebit(wallet.AccountCode, "Payment from wallet", walletPortion); err != nil {
+					return false, err
+				}
+			}
 		case provider == ProviderWallet:
 			wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerUser, userID, "", WalletStatusPending)
 			if err != nil {
@@ -458,12 +494,13 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 			if balance < amountKobo {
 				return false, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amountKobo)
 			}
-			debitAccount = wallet.AccountCode
-			description = "Payment from wallet"
-		}
-		if err := s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
-			debitAccount, LedgerAccountCustomerFloat, currency, description, "system", amountKobo, tag); err != nil {
-			return false, err
+			if err := postDebit(wallet.AccountCode, "Payment from wallet", amountKobo); err != nil {
+				return false, err
+			}
+		default:
+			if err := postDebit(LedgerAccountOperatingBank, "Payment received", amountKobo); err != nil {
+				return false, err
+			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -563,7 +600,7 @@ func (s *Store) paymentBy(ctx context.Context, predicate string, args ...any) (P
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
 		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,
-		       p.merchant_reference,p.metadata,p.purse_id,p.failure_reason,
+		       p.merchant_reference,p.metadata,p.purse_id,p.purse_amount_kobo,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -574,7 +611,7 @@ func (s *Store) paymentBy(ctx context.Context, predicate string, args ...any) (P
 	err := s.pool.QueryRow(ctx, query, args...).Scan(
 		&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 		&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-		&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.FailureReason,
+		&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.PurseAmountKobo, &view.FailureReason,
 		&view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 		&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 	)
@@ -595,7 +632,7 @@ func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([
 	query := `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
 		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,
-		       p.merchant_reference,p.metadata,p.purse_id,p.failure_reason,
+		       p.merchant_reference,p.metadata,p.purse_id,p.purse_amount_kobo,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -612,7 +649,7 @@ func (s *Store) listPayments(ctx context.Context, suffix string, args ...any) ([
 		if err := rows.Scan(
 			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-			&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.FailureReason,
+			&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.PurseAmountKobo, &view.FailureReason,
 			&view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 		); err != nil {
@@ -950,7 +987,7 @@ func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.id,p.user_id,p.merchant_id,p.amount_kobo,p.currency,p.status,p.provider,
 		       p.provider_reference,p.channel,p.recipient,p.checkout_url,p.checkout_token,p.receipt_token,
-		       p.merchant_reference,p.metadata,p.purse_id,p.failure_reason,
+		       p.merchant_reference,p.metadata,p.purse_id,p.purse_amount_kobo,p.failure_reason,
 		       p.created_at,p.updated_at,p.paid_at,
 		       u.display_name,u.email,COALESCE(u.whatsapp_number,''),m.name,m.slug,u.last_inbound_at
 		FROM payments p
@@ -969,7 +1006,7 @@ func (s *Store) PaymentsByMerchantID(ctx context.Context, merchantID uuid.UUID, 
 		if err := rows.Scan(
 			&view.ID, &view.UserID, &view.MerchantID, &view.AmountKobo, &view.Currency,
 			&view.Status, &view.Provider, &view.ProviderReference, &view.Channel, &view.Recipient, &view.CheckoutURL,
-			&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.FailureReason,
+			&view.CheckoutToken, &view.ReceiptToken, &view.MerchantReference, &view.Metadata, &view.PurseID, &view.PurseAmountKobo, &view.FailureReason,
 			&view.CreatedAt, &view.UpdatedAt, &view.PaidAt,
 			&view.UserName, &view.UserEmail, &view.WhatsAppNumber, &view.MerchantName, &view.MerchantSlug, &view.LastInboundAt,
 		); err != nil {

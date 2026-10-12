@@ -97,32 +97,47 @@ merchant stays restricted.
 
 ## Known gaps / follow-ups
 
-1. **Other flows do not yet consider purses.** Merchant collections reached
-   through the payment-method menu are wired. Invoice, thrift, data and
-   individual-pay drafts are not — only invoice payments are merchant purchases,
-   so that is the one worth extending next. Web flows (browser) are also not
-   wired.
+1. **Other flows do not yet consider purses.** Merchant collections, invoice, and
+   browser web flows are wired (invoice and web rails split a purse with the
+   wallet). Thrift, data and individual-pay drafts are not — only merchant
+   purchases can be purse-funded, so those are the ones left.
 2. **No beneficiary listing.** There is no "my programme funds" command yet, so
    a beneficiary only discovers a purse when they go to pay. The data is ready:
    `ProgramPursesService.PurseSummariesForUser` returns each purse with the
    merchants it may be spent at.
-3. **Sponsor read-only dashboard** is not built; sponsors currently have no
-   self-service view (the admin console is the only surface).
-4. **No split funding.** If a purse cannot cover the whole charge, the purchase
-   falls back to the ordinary rail rather than drawing part of the purse.
-5. **A purse spend still consumes the individual's money-out tier allowance.**
-   Intentional and conservative, but worth confirming against the tier policy.
-6. **Fee policy for purse purchases** is now explicit: no collection fee is
-   charged on restricted funding (the purse pays the merchant's amount exactly),
-   and the chat review says so. Revisit if programme purchases should attract
-   one.
+3. **Sponsor self-service console is built** at `/merchant/programs`: an approved
+   sponsor creates programs, activates/deactivates them, curates the allow-list,
+   and enrolls or removes beneficiaries. It is scoped to the session merchant
+   (every program path is gated on `ProgramOwnedBySponsor`). Sponsor access is
+   admin-gated: only a merchant an operator has classified as a sponsor
+   (`merchant_type='sponsor'`) can reach the console, and merchants are approved
+   or revoked from the admin program console (`POST /admin/programs/sponsor`).
+   The admin console remains a parallel surface.
+4. **Split funding is built.** If a purse cannot cover the whole charge, the
+   purse funds what it can and the wallet funds the remainder, each as its own
+   debit leg (`payments.purse_amount_kobo` records the restricted portion). Only
+   one purse draws per payment; if the wallet also cannot cover the remainder,
+   the payment fails rather than partially debiting.
+5. **A split spend consumes the money-out tier allowance on the wallet portion
+   only.** The restricted purse portion is exempt; a pure-purse spend consumes
+   none. Confirm this remains the intended tier policy.
+6. **Fee policy for purse purchases.** The restricted purse portion never
+   attracts a collection fee. On the chat collection rail the wallet portion of a
+   split attracts the card collection fee; invoice and browser web rails stay
+   fee-free. Revisit if programme purchases should be fee-free end to end.
 7. **Manual test schedule + README** are not updated for this feature.
 
 ## Testing
 
 - `internal/store/store_programs_integration_test.go` covers the invariants: enrollment
   required, replay-safe funding, withdrawal isolation, allow-list selection and
-  immediate revocation, system merchants never approvable, expiry refusal, and
-  single-shot repatriation with the sponsor made whole.
-- Not yet covered: the bulk program disbursement path
-  (`PostBulkProgramPaymentItem`) end to end, and the admin handlers.
+  immediate revocation, system merchants never approvable, expiry refusal,
+  single-shot repatriation with the sponsor made whole, and split funding
+  (`TestProgramPursePartialSpend`: two debit legs and a refund that restores each
+  account).
+- `internal/service/purse_draw_test.go` covers the split maths; the chat and web
+  copy changes are exercised by the service/app suites.
+- `internal/app/merchant_programs_test.go` covers the sponsor console: CSRF on
+  every mutating route, the template rendering, and cross-sponsor scoping.
+- `internal/service` `TestBulkProgramDisbursementEndToEnd` covers the bulk
+  program disbursement path (`PostBulkProgramPaymentItem`) end to end.

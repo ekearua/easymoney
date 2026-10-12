@@ -100,6 +100,10 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 				return s.sendText(ctx, channel, recipient,
 					fmt.Sprintf("Your wallet balance is too low for this payment (%s).\n\nTop up your wallet, then tap Continue to try again - or type MENU to choose another payment method.", domain.FormatNGN(payment.AmountKobo)))
 			}
+			if errors.Is(err, store.ErrProgramNotActive) {
+				return s.sendText(ctx, channel, recipient,
+					"This programme has been paused by the sponsor, so its funds can't be spent right now. Nothing was taken.\n\nType MENU to pay another way.")
+			}
 			if errors.Is(err, store.ErrPurseMerchantNotApproved) {
 				return s.sendText(ctx, channel, recipient,
 					"This merchant is no longer approved to accept the programme funding that would have paid for this, so the payment was stopped and nothing was taken.\n\nType MENU to choose another way to pay.")
@@ -120,10 +124,17 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 			return err
 		}
 		_ = changed
-		if payment.PurseID != nil {
+		if payment.PurseID != nil && payment.PurseAmountKobo >= payment.AmountKobo {
 			return s.sendText(ctx, channel, recipient,
 				fmt.Sprintf("✅ Paid from your programme funds.\n\nMerchant: %s\nAmount: %s\n\nThis came from restricted programme funding, so it stayed inside the programme.\n\nReceipt: %s/receipts/%s",
 					payment.MerchantName, domain.FormatNGN(payment.AmountKobo), s.cfg.BaseURL, payment.ReceiptToken))
+		}
+		if payment.PurseID != nil {
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("✅ Payment complete.\n\nMerchant: %s\nTotal: %s\n\n%s came from your restricted programme funds and %s from your wallet.\n\nReceipt: %s/receipts/%s",
+					payment.MerchantName, domain.FormatNGN(payment.AmountKobo),
+					domain.FormatNGN(payment.PurseAmountKobo), domain.FormatNGN(payment.AmountKobo-payment.PurseAmountKobo),
+					s.cfg.BaseURL, payment.ReceiptToken))
 		}
 		return s.sendText(ctx, channel, recipient,
 			fmt.Sprintf("✅ Paid from your Xego wallet.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s/receipts/%s",

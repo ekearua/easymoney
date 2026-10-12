@@ -269,17 +269,20 @@ func (s *Store) postWalletPairTx(ctx context.Context, tx pgx.Tx, wallet WalletAc
 }
 
 // paymentTouchesWalletTx reports whether a payment's ledger flow moves money
-// through the payer's wallet under the payment journal: wallet-funded payments
-// (a wallet debit) or wallet top-ups (a wallet credit). Either way the standard
-// refund reversal (keyed on the same journal) restores the wallet to its
-// pre-payment position, so the caller must not credit the wallet a second time.
+// through an account the customer holds under the payment journal: wallet-funded
+// payments (a wallet debit), wallet top-ups (a wallet credit), or restricted
+// program purses (P1 - a purse debit). Either way the standard refund reversal
+// (keyed on the same journal) restores that account to its pre-payment position,
+// so the caller must not credit the wallet a second time. For a purse-funded
+// payment this is exactly the behaviour a program needs: a refund lands back in
+// the purse and stays restricted, rather than becoming spendable cash.
 func (s *Store) paymentTouchesWalletTx(ctx context.Context, tx pgx.Tx, paymentID uuid.UUID) (bool, error) {
 	var touches bool
 	err := tx.QueryRow(ctx, `
 		SELECT EXISTS(
 			SELECT 1 FROM ledger_entries
-			WHERE journal_ref=$1 AND account LIKE $2
-		)`, paymentID.String(), LedgerAccountUserWallet+":%").Scan(&touches)
+			WHERE journal_ref=$1 AND (account LIKE $2 OR account LIKE $3)
+		)`, paymentID.String(), LedgerAccountUserWallet+":%", LedgerAccountProgramPurse+":%").Scan(&touches)
 	return touches, err
 }
 

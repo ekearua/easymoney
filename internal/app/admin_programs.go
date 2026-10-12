@@ -34,7 +34,13 @@ func (a *App) adminPrograms(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "merchants unavailable", http.StatusInternalServerError)
 		return
 	}
-	data := map[string]any{"Programs": programs, "Merchants": merchants}
+	sponsors, err := a.store.SponsorMerchants(ctx)
+	if err != nil {
+		a.logger.WarnContext(ctx, "list sponsor merchants", "error", err)
+		http.Error(w, "sponsors unavailable", http.StatusInternalServerError)
+		return
+	}
+	data := map[string]any{"Programs": programs, "Merchants": merchants, "Sponsors": sponsors}
 	if raw := strings.TrimSpace(r.URL.Query().Get("id")); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
@@ -87,6 +93,10 @@ func (a *App) adminProgramCreate(w http.ResponseWriter, r *http.Request) {
 	sponsorID, err := uuid.Parse(strings.TrimSpace(r.FormValue("sponsor_merchant_id")))
 	if err != nil {
 		http.Error(w, "a sponsor merchant is required", http.StatusBadRequest)
+		return
+	}
+	if approved, err := a.store.IsSponsor(r.Context(), sponsorID); err != nil || !approved {
+		http.Error(w, "select a merchant approved as a sponsor", http.StatusBadRequest)
 		return
 	}
 	validityDays := 0
@@ -239,6 +249,37 @@ func (a *App) adminProgramSetStatus(w http.ResponseWriter, r *http.Request) {
 		"by":     adminEmailFromContext(r.Context()),
 	})
 	a.redirectToProgram(w, r, programID)
+}
+
+// adminProgramSetSponsor approves a merchant as a sponsor, or revokes that
+// status. Only approved sponsors can own programs and use the sponsor console,
+// so this is the single gate on who may run restricted-fund schemes. Revoking is
+// classification-only: it does not touch programs, purses, or balances — the
+// merchant simply loses the sponsor console.
+func (a *App) adminProgramSetSponsor(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	merchantID, err := uuid.Parse(strings.TrimSpace(r.FormValue("merchant_id")))
+	if err != nil {
+		http.Error(w, "a merchant is required", http.StatusBadRequest)
+		return
+	}
+	merchantType := store.MerchantTypeSponsor
+	if strings.TrimSpace(r.FormValue("revoke")) == "1" {
+		merchantType = store.MerchantTypeStandard
+	}
+	if err := a.store.SetMerchantType(r.Context(), merchantID, merchantType); err != nil {
+		a.logger.WarnContext(r.Context(), "set merchant sponsor status", "error", err)
+		http.Error(w, "could not change sponsor status", http.StatusBadRequest)
+		return
+	}
+	a.audit(r, "admin.sponsor_status_changed", "merchant", merchantID.String(), map[string]any{
+		"merchant_type": merchantType,
+		"by":            adminEmailFromContext(r.Context()),
+	})
+	http.Redirect(w, r, "/admin/programs", http.StatusSeeOther)
 }
 
 // programIDFromPath parses the program id and enforces CSRF, since every

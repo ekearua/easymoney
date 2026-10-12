@@ -490,7 +490,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendWalletReview(ctx, channel, recipient, user, merchant, amount)
+		return s.sendWalletReview(ctx, channel, recipient, user, merchant, payment)
 	default:
 		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
 	}
@@ -604,41 +604,72 @@ func (s *ConversationService) sendBankTransferReview(ctx context.Context, channe
 // amount is paid instantly from the payer's Xego wallet (billed under the card
 // fee channel), and the current wallet balance is shown so the customer can
 // see whether it covers the charge before confirming.
-func (s *ConversationService) sendWalletReview(ctx context.Context, channel, recipient string, user store.User, merchant store.Merchant, amount int64) error {
-	fee := XegoCollectionFee(s.cfg, "card", amount).FeeKobo
-	charge := amount + fee
-	var feeLine string
+//
+// A restricted programme purse may fully or partly fund the payment. The purse
+// portion is drawn first (and is never surcharged); the collection fee is
+// charged only on the ordinary-wallet remainder, and the review names the split
+// explicitly so the customer sees exactly which money is about to move.
+func (s *ConversationService) sendWalletReview(ctx context.Context, channel, recipient string, user store.User, merchant store.Merchant, payment store.PaymentView) error {
+	base := payment.AmountKobo
+	fee := int64(0)
+	var meta struct {
+		BaseAmountKobo    int64 `json:"base_amount_kobo"`
+		CollectionFeeKobo int64 `json:"collection_fee_kobo"`
+	}
+	if len(payment.Metadata) > 0 {
+		_ = json.Unmarshal(payment.Metadata, &meta)
+	}
+	if meta.BaseAmountKobo > 0 {
+		base = meta.BaseAmountKobo
+		fee = meta.CollectionFeeKobo
+	}
+	pursePortion := payment.PurseAmountKobo
+	walletBase := base - pursePortion
+	if walletBase < 0 {
+		walletBase = 0
+	}
+	walletCharge := payment.AmountKobo - pursePortion // wallet base + fee
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Review your Faya payment:\n\nMerchant: %s\nAmount: %s", merchant.Name, domain.FormatNGN(base))
+	if pursePortion > 0 {
+		fmt.Fprintf(&b, "\nFrom programme funds: %s", domain.FormatNGN(pursePortion))
+	}
+	if walletBase > 0 {
+		fmt.Fprintf(&b, "\nFrom your wallet: %s", domain.FormatNGN(walletBase))
+	}
 	if fee > 0 {
-		feeLine = fmt.Sprintf("\nCollection fee: %s\nTotal to pay: %s", domain.FormatNGN(fee), domain.FormatNGN(charge))
+		fmt.Fprintf(&b, "\nCollection fee: %s\nTotal to pay: %s", domain.FormatNGN(fee), domain.FormatNGN(payment.AmountKobo))
+	}
+	if pursePortion > 0 {
+		if purse, err := s.store.ProgramPurseByID(ctx, *payment.PurseID); err == nil {
+			expiry := ""
+			if purse.ExpiresAt != nil {
+				expiry = fmt.Sprintf(", expires %s", purse.ExpiresAt.Format("2 Jan 2006"))
+			}
+			programName := purse.ProgramName
+			if programName == "" {
+				programName = "Programme"
+			}
+			if walletBase > 0 {
+				fmt.Fprintf(&b, "\n\n%s funds %s of this purchase; the rest comes from your wallet. Purse expires %s.", programName, domain.FormatNGN(pursePortion), expiry)
+			} else {
+				fmt.Fprintf(&b, "\n\nThis purchase is paid from %s, not your wallet.%s", programName, expiry)
+			}
+		}
 	}
 	balance := int64(0)
 	if wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID); err == nil {
 		balance, _ = s.store.WalletBalance(ctx, wallet.ID)
 	}
-	balanceLine := fmt.Sprintf("\nWallet balance: %s", domain.FormatNGN(balance))
-	purse, hasPurse := s.payments.EligiblePurse(ctx, user.ID, merchant.ID, amount)
-	if hasPurse {
-		// Programme money buys the merchant's amount exactly: no Faya collection
-		// fee is added on top of restricted funding, and the review shows the
-		// programme balance being drawn down instead of the wallet balance.
-		fee = 0
-		charge = amount
-		feeLine = ""
+	fmt.Fprintf(&b, "\n\nWallet balance: %s", domain.FormatNGN(balance))
+	if balance < walletCharge {
+		b.WriteString("\nNot enough in your wallet - top up or choose another payment method.")
 	}
-	purseLine := ""
-	if hasPurse {
-		expiry := ""
-		if purse.ExpiresAt != nil {
-			expiry = fmt.Sprintf(", expires %s", purse.ExpiresAt.Format("2 Jan 2006"))
-		}
-		purseLine = fmt.Sprintf("\n\n%s available: %s%s. This purchase will be paid from that programme funding, not your wallet.", purse.ProgramName, domain.FormatNGN(purse.BalanceKobo), expiry)
-	}
-	if balance < charge {
-		balanceLine += "\nΓÜá∩╕Å Not enough in your wallet ΓÇö top up or choose another payment method."
-	}
+	b.WriteString("\n\nPay instantly from your Faya wallet?")
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To:   recipient,
-		Body: fmt.Sprintf("Review your Faya payment:\n\nMerchant: %s\nAmount: %s%s%s%s\n\nPay instantly from your Faya wallet?", merchant.Name, domain.FormatNGN(amount), feeLine, balanceLine, purseLine),
+		Body: b.String(),
 		Buttons: []ports.InteractiveButton{
 			{ID: "confirm_payment", Title: "Pay from wallet"},
 			{ID: "cancel_payment", Title: "Cancel"},

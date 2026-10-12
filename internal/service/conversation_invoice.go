@@ -776,26 +776,26 @@ func (s *ConversationService) sendInvoicePayMethods(ctx context.Context, channel
 
 // sendInvoiceWalletReview confirms an instant wallet-funded invoice payment
 // of the given partial/full amount (invoices add no collection surcharge).
-// When the draft will be funded from a restricted programme purse the review
-// names that balance instead of the wallet, so the customer sees exactly
-// which money is about to be drawn down before confirming.
+// When a restricted programme purse can fund (part of) the payment the review
+// names the split, so the customer sees exactly which money is about to be
+// drawn down before confirming.
 func (s *ConversationService) sendInvoiceWalletReview(ctx context.Context, channel, recipient string, user store.User, invoice store.InvoiceView, amount int64) error {
-	balanceLine := ""
-	purseName := ""
-	if purse, hasPurse := s.payments.EligiblePurse(ctx, user.ID, invoice.MerchantID, amount); hasPurse {
-		expiry := ""
-		if purse.ExpiresAt != nil {
-			expiry = fmt.Sprintf(", expires %s", purse.ExpiresAt.Format("2 Jan 2006"))
-		}
-		purseName = purse.ProgramName
-		balanceLine = fmt.Sprintf("\n\n%s available: %s%s. This payment will be made from that programme funding, not your wallet.",
-			purse.ProgramName, domain.FormatNGN(purse.BalanceKobo), expiry)
-	} else {
-		balanceLine = s.walletBalanceLine(ctx, user, amount)
-	}
+	balanceLine := s.walletBalanceLine(ctx, user, amount)
 	source := "wallet"
-	if purseName != "" {
-		source = "programme funds"
+	if draw, ok := s.payments.PurseDrawFor(ctx, user.ID, invoice.MerchantID, amount, nil); ok {
+		expiry := ""
+		if draw.purse.ExpiresAt != nil {
+			expiry = fmt.Sprintf(", expires %s", draw.purse.ExpiresAt.Format("2 Jan 2006"))
+		}
+		if draw.walletKobo == 0 {
+			source = "programme funds"
+			balanceLine = fmt.Sprintf("\n\n%s available: %s%s. This payment will be made from that programme funding, not your wallet.",
+				draw.purse.ProgramName, domain.FormatNGN(draw.purse.BalanceKobo), expiry)
+		} else {
+			source = "wallet and programme funds"
+			balanceLine = fmt.Sprintf("\n\n%s of this payment comes from %s programme funding and %s from your wallet.%s",
+				domain.FormatNGN(draw.purseKobo), draw.purse.ProgramName, domain.FormatNGN(draw.walletKobo), expiry)
+		}
 	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
 		To: recipient,

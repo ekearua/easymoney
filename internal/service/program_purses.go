@@ -15,6 +15,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -82,40 +83,71 @@ func (s *ProgramPursesService) SpendableMerchants(ctx context.Context, programID
 	return active, nil
 }
 
+// sweepBatchSize is how many purses one pass fetches. The sweep loops over
+// batches until it catches up or runs out of budget, so a program lapsing with
+// thousands of purses repatriates within a tick instead of 200 at a time.
+const sweepBatchSize = 200
+
+// sweepBudget bounds how long one sweep runs, so a large backlog cannot hold a
+// worker slot indefinitely; the next tick resumes where this one stopped.
+const sweepBudget = 2 * time.Minute
+
 // RunExpirySweep returns unspent balances on lapsed purses to their sponsors.
 // It reports how many purses were closed and the total repatriated, in kobo.
 //
 // A single purse failing does not stop the sweep: the next tick retries it, and
 // ReturnExpiredPurse is idempotent, so a partial failure can never double-return.
 func (s *ProgramPursesService) RunExpirySweep(ctx context.Context) (int, int64, error) {
-	expired, err := s.store.ExpiredPurses(ctx, 200)
-	if err != nil {
-		return 0, 0, err
-	}
 	var (
 		closed   int
 		returned int64
 	)
-	for _, item := range expired {
+	deadline := time.Now().Add(sweepBudget)
+	for {
 		if ctx.Err() != nil {
 			return closed, returned, ctx.Err()
 		}
-		amount, err := s.store.ReturnExpiredPurse(ctx, item.Purse.ID, "expiry_sweep")
+		closedBefore := closed
+		expired, err := s.store.ExpiredPurses(ctx, sweepBatchSize)
 		if err != nil {
-			s.logger.ErrorContext(ctx, "program purse return failed",
-				"purse", item.Purse.ID, "program", item.Purse.ProgramCode, "error", err)
-			continue
+			return closed, returned, err
 		}
-		if amount <= 0 {
-			// Either it was already closed by a concurrent sweep, or it held
-			// nothing. Either way there is no money to report.
-			continue
+		for _, item := range expired {
+			if ctx.Err() != nil {
+				return closed, returned, ctx.Err()
+			}
+			amount, err := s.store.ReturnExpiredPurse(ctx, item.Purse.ID, "expiry_sweep")
+			if err != nil {
+				s.logger.ErrorContext(ctx, "program purse return failed",
+					"purse", item.Purse.ID, "program", item.Purse.ProgramCode, "error", err)
+				continue
+			}
+			if amount <= 0 {
+				// Either it was already closed by a concurrent sweep, or it held
+				// nothing. Either way there is no money to report.
+				continue
+			}
+			closed++
+			returned += amount
+			s.logger.InfoContext(ctx, "program purse returned to sponsor",
+				"purse", item.Purse.ID, "program", item.Purse.ProgramCode,
+				"beneficiary", item.Purse.UserID, "amount_kobo", amount)
 		}
-		closed++
-		returned += amount
-		s.logger.InfoContext(ctx, "program purse returned to sponsor",
-			"purse", item.Purse.ID, "program", item.Purse.ProgramCode,
-			"beneficiary", item.Purse.UserID, "amount_kobo", amount)
+		// A short batch means we have caught up; a full one may hide more.
+		if len(expired) < sweepBatchSize {
+			break
+		}
+		// A full batch that closed nothing is not draining (every return failed
+		// or was already handled): stop rather than re-fetch the same purses for
+		// the rest of the budget. The next tick retries them.
+		if closed == closedBefore {
+			break
+		}
+		if time.Now().After(deadline) {
+			s.logger.InfoContext(ctx, "program purse expiry sweep budget reached",
+				"closed", closed, "returned_kobo", returned)
+			break
+		}
 	}
 	return closed, returned, nil
 }

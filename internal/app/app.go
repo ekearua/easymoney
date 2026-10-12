@@ -838,6 +838,7 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/network", a.adminNetwork)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/programs", a.adminPrograms)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs", a.adminProgramCreate)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/sponsor", a.adminProgramSetSponsor)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/status", a.adminProgramSetStatus)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/merchants", a.adminProgramAddMerchant)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/programs/{id}/enroll", a.adminProgramEnroll)
@@ -947,6 +948,17 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeMerchant))
 		m.Post("/merchant/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeMerchant))
+		m.Get("/merchant/programs", a.merchantPrograms)
+		m.Group(func(sg chi.Router) {
+			sg.Use(a.requireSponsor)
+			sg.Post("/merchant/programs", a.merchantProgramCreate)
+			sg.Post("/merchant/programs/{id}/status", a.merchantProgramSetStatus)
+			sg.Post("/merchant/programs/{id}/merchants", a.merchantProgramAddMerchant)
+			sg.Post("/merchant/programs/{id}/merchants/{merchantID}/block", a.merchantProgramBlockMerchant)
+			sg.Post("/merchant/programs/{id}/merchants/{merchantID}/remove", a.merchantProgramRemoveMerchant)
+			sg.Post("/merchant/programs/{id}/enroll", a.merchantProgramEnroll)
+			sg.Post("/merchant/programs/{id}/enrollments/{userID}/remove", a.merchantProgramRemoveEnrollment)
+		})
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
 	return router
@@ -1093,6 +1105,21 @@ func (a *App) requireMerchant(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, merchantCSRFContextKey, csrf)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (a *App) requireSponsor(next http.Handler) http.Handler {
+	return a.requireMerchant(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ok, err := a.store.IsSponsor(r.Context(), merchantIDFromContext(r.Context()))
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, "sponsor tools are not enabled for this account", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
 }
 
 func (a *App) renderMerchant(w http.ResponseWriter, name string, r *http.Request, title string, data map[string]any) {

@@ -1,0 +1,182 @@
+{{define "merchant_programs.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+<header class="page-header"><div><p class="eyebrow">Restricted funds</p><h1>Programs</h1></div></header>
+
+<section class="panel">
+  <p class="muted">A program is restricted money you sponsor: you fund it, enrolled beneficiaries each hold a <strong>purse</strong>, and that purse can only be spent at the merchants on this allow-list. Money in a purse cannot be withdrawn or sent to another person — it is a separate ledger account precisely so that is true by construction.</p>
+  {{if .IsSponsor}}
+  <form method="post" action="/merchant/programs" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Code <input name="code" required placeholder="agric-input-support"></label>
+    <label>Display name <input name="name" required placeholder="Ministry of Agriculture input support"></label>
+    <label>Label beneficiaries see <input name="purpose_label" placeholder="Agric input funds"></label>
+    <label>Description <input name="description" placeholder="What this round of funding is for"></label>
+    <label>Purse validity in days (0 = no expiry) <input name="default_validity_days" type="number" min="0" value="0"></label>
+    <button type="submit">Create program</button>
+  </form>
+  {{else}}
+  <div class="alert">Sponsor tools are not enabled for this account. Restricted-fund programs are owned by sponsor merchants approved by an administrator — ask an administrator to approve your merchant account as a sponsor.</div>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Your programs</h2>
+  {{if .Programs}}
+  <table>
+    <thead><tr><th>Code</th><th>Name</th><th>Label</th><th>Validity</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {{range .Programs}}
+      <tr>
+        <td>{{.Code}}</td>
+        <td>{{.Name}}</td>
+        <td>{{.PurposeLabel}}</td>
+        <td>{{if .DefaultValidityDays}}{{.DefaultValidityDays}} days{{else}}no expiry{{end}}</td>
+        <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+        <td><a href="/merchant/programs?id={{.ID}}">Open</a></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No programs yet.</p>{{end}}
+</section>
+
+{{with .Program}}
+<section class="panel">
+  <h2>{{.Name}} <span class="muted">({{.Code}})</span></h2>
+  <p class="muted">{{if .PurposeLabel}}{{.PurposeLabel}}{{end}}{{if .Description}} · {{.Description}}{{end}}</p>
+  <form method="post" action="/merchant/programs/{{.ID}}/status" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Status
+      <select name="status">
+        <option value="active">active</option>
+        <option value="inactive">inactive</option>
+      </select>
+    </label>
+    <button type="submit">Set status</button>
+  </form>
+  <p class="muted">Deactivating stops new spending from every purse in this program immediately. Balances are untouched — money already granted stays until it is spent or expires.</p>
+</section>
+
+{{with $.Summary}}
+<section class="panel">
+  <h2>Roll-up</h2>
+  <table>
+    <tbody>
+      <tr><th>Enrolled beneficiaries</th><td>{{.EnrolledCount}}</td></tr>
+      <tr><th>Active purses</th><td>{{.ActivePurseCount}}</td></tr>
+      <tr><th>Approved merchants</th><td>{{.ApprovedMerchants}}</td></tr>
+      <tr><th>Disbursed to beneficiaries</th><td>{{money .DisbursedKobo}}</td></tr>
+      <tr><th>Spent at approved merchants</th><td>{{money .SpentKobo}}</td></tr>
+      <tr><th>Returned to sponsor at expiry</th><td>{{money .ReturnedKobo}}</td></tr>
+      <tr><th>Currently held in purses</th><td>{{money .HeldKobo}}</td></tr>
+    </tbody>
+  </table>
+</section>
+{{end}}
+
+<section class="panel">
+  <h2>Approved merchants</h2>
+  <p class="muted">Only these merchants can be paid from this program's purses. Blocking is immediate and applies to payments already drafted.</p>
+  <form method="post" action="/merchant/programs/{{.ID}}/merchants" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Approve merchant
+      <select name="merchant_id" required>
+        <option value="">Select an active merchant…</option>
+        {{$sponsor := $.MerchantID}}
+        {{range $.Merchants}}{{if and .Active (ne .ID $sponsor)}}<option value="{{.ID}}">{{.Name}} ({{.Slug}})</option>{{end}}{{end}}
+      </select>
+    </label>
+    <button type="submit">Approve</button>
+  </form>
+  {{if $.Members}}
+  <table>
+    <thead><tr><th>Merchant</th><th>State</th><th>Reason</th><th></th></tr></thead>
+    <tbody>
+    {{range $.Members}}
+      <tr>
+        <td>{{.MerchantName}} <span class="muted">{{.MerchantSlug}}</span></td>
+        <td>
+          {{if .RemovedAt}}<span class="status">removed</span>
+          {{else}}<span class="status {{statusClass .Status}}">{{.Status}}</span>{{end}}
+        </td>
+        <td>{{.BlockReason}}</td>
+        <td>
+          {{if not .RemovedAt}}
+          <form method="post" action="/merchant/programs/{{$.Program.ID}}/merchants/{{.MerchantID}}/block">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input name="reason" placeholder="Reason">
+            <button type="submit">Block</button>
+          </form>
+          <form method="post" action="/merchant/programs/{{$.Program.ID}}/merchants/{{.MerchantID}}/remove">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No merchants approved yet — this program cannot fund anything until at least one is.</p>{{end}}
+</section>
+
+<section class="panel">
+  <h2>Beneficiaries</h2>
+  <p class="muted">A beneficiary must be enrolled before a purse can be opened for them. Removing an enrollment stops future grants but does not claw back money already granted.</p>
+  <form method="post" action="/merchant/programs/{{.ID}}/enroll" class="stack">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label>Enroll by phone number <input name="phone" required placeholder="+234..."></label>
+    <button type="submit">Enroll</button>
+  </form>
+  {{if $.Enrollments}}
+  <table>
+    <thead><tr><th>Beneficiary</th><th>Phone</th><th>Status</th><th>Enrolled</th><th></th></tr></thead>
+    <tbody>
+    {{range $.Enrollments}}
+      <tr>
+        <td>{{if .UserName}}{{.UserName}}{{else}}{{.UserID}}{{end}}</td>
+        <td>{{.UserPhone}}</td>
+        <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+        <td>{{date .EnrolledAt}}</td>
+        <td>
+          {{if eq .Status "active"}}
+          <form method="post" action="/merchant/programs/{{$.Program.ID}}/enrollments/{{.UserID}}/remove">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No beneficiaries enrolled yet.</p>{{end}}
+</section>
+
+<section class="panel">
+  <h2>Purses</h2>
+  {{if $.Purses}}
+  <table>
+    <thead><tr><th>Beneficiary</th><th>Phone</th><th>Balance</th><th>Expires</th><th>Returned</th><th>Status</th></tr></thead>
+    <tbody>
+    {{range $.Purses}}
+      <tr>
+        <td>{{if .UserName}}{{.UserName}}{{else}}{{.UserID}}{{end}}</td>
+        <td>{{.UserPhone}}</td>
+        <td>{{money .BalanceKobo}}</td>
+        <td>{{if .ExpiresAt}}{{date .ExpiresAt}}{{else}}no expiry{{end}}</td>
+        <td>{{money .ReturnedKobo}}</td>
+        <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="muted">No purses opened yet. A purse is created automatically the first time a disbursement reaches an enrolled beneficiary.</p>{{end}}
+</section>
+{{end}}
+</main></body></html>
+{{end}}
