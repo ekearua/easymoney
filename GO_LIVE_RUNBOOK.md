@@ -173,6 +173,15 @@ a *directory* and the scheduler fails at `up`:
 cp deploy/rclone.conf.example deploy/rclone.conf   # then fill in
 ```
 
+- [ ] **Backup bucket in-country.** CBN Circular PSS/DIR/PUB/CIR/001/004
+      requires payment transaction data — including offsite backups, WAL
+      archives and DR copies — to be stored in Nigeria by 1 January 2027.
+      Point `RCLONE_REMOTE` at a bucket in a Nigerian region (self-hosted
+      MinIO on a third in-country box, or an in-country S3-compatible
+      service); never an offshore OCI/AWS bucket. See
+      `CBN_DATA_LOCALITY_GAP.md` (gap G16) and the "Local Hosting Options"
+      sheet in `reports/Xego_Production_Requirements.xlsx`.
+
 - [ ] **WAL-shipping split.** The daily base backup alone cannot honor
       `BACKUP_RPO=1h` — WAL only leaves the box when `deploy/backup.sh` runs.
       Install the 15-minute WAL timer so offsite WAL freshness is independent
