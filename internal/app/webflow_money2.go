@@ -29,7 +29,7 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 	switch flow.Step {
 	case "", "amount":
 		if flow.Step == "" {
-			return a.wfPayInvoiceOnePage(flow, invoice, remaining), nil
+			return a.wfPayInvoiceOnePage(r, flow, invoice, remaining), nil
 		}
 		page.Title = "Pay invoice " + invoice.Reference
 		page.Review = []webFlowLine{
@@ -70,7 +70,7 @@ func (a *App) wfPayInvoiceStep(r *http.Request, flow store.WebFlow, user store.U
 // facts, the amount field (prefilled with the remaining balance for a one-tap
 // pay-in-full), and the payment rails together. Nothing is charged until a
 // method button is tapped — the submit validates the amount first.
-func (a *App) wfPayInvoiceOnePage(flow store.WebFlow, invoice store.InvoiceView, remaining int64) webFlowPage {
+func (a *App) wfPayInvoiceOnePage(r *http.Request, flow store.WebFlow, invoice store.InvoiceView, remaining int64) webFlowPage {
 	page := a.wfPage(flow)
 	page.Title = "Pay invoice " + invoice.Reference
 	page.Review = []webFlowLine{
@@ -90,7 +90,7 @@ func (a *App) wfPayInvoiceOnePage(flow store.WebFlow, invoice store.InvoiceView,
 		field.Value = wfKoboToNairaInput(remaining)
 	}
 	page.Fields = []webFlowField{field}
-	page.Actions = a.wfMethodButtons(true)
+	page.Actions = a.wfMethodButtons(r, flow, true)
 	return page
 }
 
@@ -339,7 +339,7 @@ func (a *App) wfThriftOnePage(r *http.Request, flow store.WebFlow, user store.Us
 		field.Value = name
 	}
 	page.Fields = []webFlowField{field}
-	page.Actions = a.wfMethodButtons(true)
+	page.Actions = a.wfMethodButtons(r, flow, true)
 	if field.Value != "" {
 		if contribution, err := a.wfThriftContribution(r, flow); err == nil {
 			page.Review = []webFlowLine{
@@ -535,7 +535,7 @@ func (a *App) wfDataOnePage(r *http.Request, flow store.WebFlow) (webFlowPage, e
 		phoneField.Value = phone
 	}
 	page.Fields = []webFlowField{field, phoneField}
-	page.Actions = a.wfMethodButtons(true)
+	page.Actions = a.wfMethodButtons(r, flow, true)
 	return page, nil
 }
 
@@ -646,7 +646,7 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 	switch flow.Step {
 	case "", "amount":
 		if flow.Step == "" {
-			return a.wfTopupOnePage(flow), nil
+			return a.wfTopupOnePage(r, flow), nil
 		}
 		page.Title = "Top up your wallet"
 		page.Intro = fmt.Sprintf("How much would you like to add? Between %s and %s.", domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(a.cfg.PaymentMaxKobo))
@@ -673,7 +673,7 @@ func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) 
 // wfTopupOnePage is the top-up flow's single-page fresh path: the amount
 // field and the payment rails together. Nothing is charged until a method
 // button is tapped — the submit validates the amount first.
-func (a *App) wfTopupOnePage(flow store.WebFlow) webFlowPage {
+func (a *App) wfTopupOnePage(r *http.Request, flow store.WebFlow) webFlowPage {
 	page := a.wfPage(flow)
 	page.Title = "Top up your wallet"
 	page.Intro = fmt.Sprintf("How much would you like to add? Between %s and %s. Choose how to pay below — nothing is charged until you tap a payment method.", domain.FormatNGN(a.cfg.PaymentMinKobo), domain.FormatNGN(a.cfg.PaymentMaxKobo))
@@ -682,7 +682,7 @@ func (a *App) wfTopupOnePage(flow store.WebFlow) webFlowPage {
 		field.Value = wfKoboToNairaInput(amount)
 	}
 	page.Fields = []webFlowField{field}
-	page.Actions = a.wfMethodButtons(false)
+	page.Actions = a.wfMethodButtons(r, flow, false)
 	return page
 }
 
@@ -817,7 +817,7 @@ func (a *App) wfIndividualPayStep(r *http.Request, flow store.WebFlow, user stor
 			{Term: "Recipient receives", Desc: domain.FormatNGN(amount-nipFee) + " (after NIP fee)"},
 		}
 		page.Fields = []webFlowField{{Name: "account_number", Label: "Recipient's account number", Type: "text", Required: true, Hint: "10 digits", Value: flow.Payload["account_number"]}}
-		page.Actions = append(a.wfMethodButtons(true), webFlowAction{Name: "back", Label: "Back"})
+		page.Actions = append(a.wfMethodButtons(r, flow, true), webFlowAction{Name: "back", Label: "Back"})
 		return page, nil
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil

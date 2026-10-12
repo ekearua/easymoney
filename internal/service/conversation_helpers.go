@@ -596,7 +596,7 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		if err != nil {
 			return s.sendText(ctx, channel, recipient, "That payment session expired. Please start again.")
 		}
-		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+		return s.sendPaymentMethods(ctx, channel, recipient, user, merchant, amount)
 	case "confirm_payment":
 		merchant, amount, err := s.sessionMerchantAndAmount(ctx, session)
 		if err != nil {

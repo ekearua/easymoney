@@ -281,7 +281,11 @@ func (a *App) wfChangeMethod(w http.ResponseWriter, r *http.Request, flow store.
 // attributes let webflow-onepage.js re-label the buttons as the amount is
 // edited on a one-page flow; they are display-only, the server always
 // recomputes from the posted amount.
-func (a *App) wfMethodButtons(includeWallet bool) []webFlowAction {
+//
+// The payer's remembered rail is moved to the front (see
+// orderMethodActionsByPreference) so a returning payer's habit is the first
+// thing they see.
+func (a *App) wfMethodButtons(r *http.Request, flow store.WebFlow, includeWallet bool) []webFlowAction {
 	buttons := []webFlowAction{
 		{
 			Name:     service.ProviderInterswitch,
@@ -295,7 +299,52 @@ func (a *App) wfMethodButtons(includeWallet bool) []webFlowAction {
 	if includeWallet {
 		buttons = append(buttons, webFlowAction{Name: service.ProviderWallet, Label: "Pay from wallet", FeeBPS: a.cfg.FeeCardBPS, FeeFixed: a.cfg.FeeCardFixedKobo, FeeCap: a.cfg.FeeCardCapKobo})
 	}
-	return buttons
+	return a.orderMethodActionsByPreference(r, flow, buttons)
+}
+
+// orderMethodActionsByPreference puts the rail the payer used last first, so a
+// returning payer sees their habit in the first position rather than the same
+// three buttons in the same order every time (SAVED_CARD_METHODS_PLAN.md
+// Phase 1).
+//
+// It reorders and deliberately does not relabel. webflow-onepage.js captures
+// each button's label as dataset.labelBase at load and rewrites textContent
+// from it on every amount keystroke, so a server-side marker such as "· saved"
+// on a fee-bearing button would be silently replaced the moment the customer
+// touched the amount — a label that vanishes is worse than no label. Ordering
+// survives that rewrite, and the chat surface (where we own the message body)
+// carries the written acknowledgement instead.
+//
+// A payer we remember nothing about, or a remembered rail this page does not
+// offer, gets the buttons unchanged: a preference is a hint, never a filter.
+func (a *App) orderMethodActionsByPreference(r *http.Request, flow store.WebFlow, buttons []webFlowAction) []webFlowAction {
+	if a.payments == nil || flow.UserID == uuid.Nil || len(buttons) < 2 {
+		return buttons
+	}
+	merchantID := uuid.Nil
+	if slug := strings.TrimSpace(flow.Payload["merchant_slug"]); slug != "" {
+		if merchant, err := a.wfLoadMerchant(r, slug); err == nil {
+			merchantID = merchant.ID
+		}
+	}
+	remembered := a.payments.SavedRail(r.Context(), flow.UserID, store.PreferenceChannelWeb, merchantID)
+	if remembered == "" {
+		return buttons
+	}
+	var chosen *webFlowAction
+	rest := make([]webFlowAction, 0, len(buttons))
+	for _, b := range buttons {
+		if b.Name == remembered && chosen == nil {
+			match := b
+			chosen = &match
+			continue
+		}
+		rest = append(rest, b)
+	}
+	if chosen == nil {
+		return buttons
+	}
+	return append([]webFlowAction{*chosen}, rest...)
 }
 
 // wfMerchantHasCatalog reports whether the merchant sells services or event
@@ -349,7 +398,7 @@ func (a *App) wfPayOnePage(r *http.Request, flow store.WebFlow, user store.User,
 		}
 	}
 	page.Fields = append([]webFlowField{askField, merchantField, amountField}, wfBillCaptureFields()...)
-	page.Actions = a.wfMethodButtons(true)
+	page.Actions = a.wfMethodButtons(r, flow, true)
 	// Inline summary: once a merchant is known, confirm the payee above the
 	// rails — the review contract the old flow had, kept without the hop.
 	if merchantField.Value != "" {

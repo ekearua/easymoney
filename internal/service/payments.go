@@ -626,6 +626,11 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 		return payment, changed, err
 	}
 	if changed && target == domain.StatusSucceeded {
+		// Saved methods (SAVED_CARD_METHODS_PLAN.md Phase 1): a payment that
+		// completed is the only evidence of what the payer actually wanted, so
+		// the rail is remembered here — best-effort, and never for a failed or
+		// abandoned attempt. It remembers the choice, not the card.
+		s.rememberPaymentRail(ctx, updated)
 		s.applyPaymentSuccessHooks(ctx, updated)
 	}
 	return updated, changed, nil

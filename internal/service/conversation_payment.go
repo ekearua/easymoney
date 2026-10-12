@@ -30,7 +30,7 @@ func (s *ConversationService) handleAmount(ctx context.Context, channel, recipie
 	if err := s.saveSession(ctx, session); err != nil {
 		return err
 	}
-	return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+	return s.sendPaymentMethods(ctx, channel, recipient, user, merchant, amount)
 }
 
 func (s *ConversationService) handleServiceOrAmount(ctx context.Context, channel, recipient string, user store.User, session store.Session, input string) error {
@@ -417,7 +417,7 @@ func (s *ConversationService) handleConfirmServicePurchase(ctx context.Context, 
 		if err := s.saveSession(ctx, session); err != nil {
 			return err
 		}
-		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+		return s.sendPaymentMethods(ctx, channel, recipient, user, merchant, amount)
 	}
 	session.State = "select_merchant"
 	session.Data = map[string]string{}
@@ -492,7 +492,7 @@ func (s *ConversationService) handlePaymentMethod(ctx context.Context, channel, 
 		}
 		return s.sendWalletReview(ctx, channel, recipient, user, merchant, payment)
 	default:
-		return s.sendPaymentMethods(ctx, channel, recipient, merchant, amount)
+		return s.sendPaymentMethods(ctx, channel, recipient, user, merchant, amount)
 	}
 }
 
@@ -704,14 +704,69 @@ func (s *ConversationService) walletBalanceLine(ctx context.Context, user store.
 	return line
 }
 
-func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, merchant store.Merchant, amount int64) error {
+func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, user store.User, merchant store.Merchant, amount int64) error {
+	// Saved methods (SAVED_CARD_METHODS_PLAN.md Phase 1): the rail the payer
+	// used last for this merchant goes first, and the body says so. It
+	// remembers the *choice*, never the card — the method prompt must not read
+	// as though a card is on file, because none is.
+	remembered := ""
+	if s.payments != nil {
+		remembered = s.payments.SavedRail(ctx, user.ID, store.PreferenceChannelWhatsApp, merchant.ID)
+	}
+	body := fmt.Sprintf("How would you like to pay %s to %s?\n\nWallet payments are instant from your Xego balance. Bank transfers are completed securely on the Interswitch checkout, and Xego verifies the result before issuing your receipt.", domain.FormatNGN(amount), merchant.Name)
+	if notice := SavedRailNotice(remembered); notice != "" {
+		body += "\n\n" + notice
+	}
 	return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
-		To:   recipient,
-		Body: fmt.Sprintf("How would you like to pay %s to %s?\n\nWallet payments are instant from your Xego balance. Bank transfers are completed securely on the Interswitch checkout, and Xego verifies the result before issuing your receipt.", domain.FormatNGN(amount), merchant.Name),
-		Buttons: []ports.InteractiveButton{
+		To:      recipient,
+		Body:    body,
+		Buttons: orderMethodButtonsByPreference(remembered, []ports.InteractiveButton{
 			{ID: "method_card", Title: "Card checkout"},
 			{ID: "method_wallet", Title: "Pay from wallet"},
 			{ID: "method_bank_transfer", Title: "Bank transfer"},
-		},
+		}),
 	})
+}
+
+// methodButtonRail maps a method button to the rail it drafts. The picker needs
+// this to order its buttons; the handler keeps its own switch on the button id,
+// because the handler also accepts typed words the button never sends.
+func methodButtonRail(id string) string {
+	switch id {
+	case "method_card":
+		return ProviderInterswitch
+	case "method_wallet":
+		return ProviderWallet
+	case "method_bank_transfer":
+		return ProviderBankTransfer
+	}
+	return ""
+}
+
+// orderMethodButtonsByPreference puts the remembered rail's button first and
+// leaves the rest in their original order. Buttons whose id names no rail, and a
+// remembered rail this picker does not offer, both fall back to the original
+// order rather than dropping a choice.
+//
+// WhatsApp allows at most three reply buttons, so ordering is the only way to
+// surface a habit here — there is no room for a fourth "saved" button. The body
+// sentence carries the acknowledgement instead.
+func orderMethodButtonsByPreference(remembered string, buttons []ports.InteractiveButton) []ports.InteractiveButton {
+	if remembered == "" || len(buttons) < 2 {
+		return buttons
+	}
+	ordered := make([]ports.InteractiveButton, 0, len(buttons))
+	var first *ports.InteractiveButton
+	for _, b := range buttons {
+		if methodButtonRail(b.ID) == remembered {
+			chosen := b
+			first = &chosen
+			continue
+		}
+		ordered = append(ordered, b)
+	}
+	if first == nil {
+		return buttons
+	}
+	return append([]ports.InteractiveButton{*first}, ordered...)
 }
