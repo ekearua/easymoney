@@ -11,7 +11,7 @@ import (
 )
 
 // TestDeclaredPaymentRailsPriceNonZero is the guard behind the saved-methods
-// design decision (SAVED_CARD_METHODS_PLAN.md §3).
+// design decision (docs/payments/SAVED_CARD_METHODS_PLAN.md §3).
 //
 // Two defaults line up to make a new rail fail *silently*:
 //

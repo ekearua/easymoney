@@ -17,6 +17,9 @@ v-kaf/
 whatsapp-payment-demo
 ~$*.docx
 *.xlsx
+*.xlsx.bak
+*.bak
+*.pdf
 *.png
 *.docx
 # Cloudflare tunnel debugging scratch
@@ -35,3 +38,7 @@ deploy/rclone.conf
 
 # deploy/release.sh last-good release marker (host-local state)
 deploy/.release-state
+
+# Generated documentation artifacts (regenerable from scripts/)
+gitingest_readme.txt
+local_hosting_preview.html

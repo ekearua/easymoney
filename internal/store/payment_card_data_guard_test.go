@@ -11,7 +11,7 @@ import (
 )
 
 // TestNoCardholderDataShapes is the negative guard behind
-// SAVED_CARD_METHODS_PLAN.md §6 and §8.
+// docs/payments/SAVED_CARD_METHODS_PLAN.md §6 and §8.
 //
 // The platform holds no card data at all today: the card rail renders
 // Interswitch's Hosted Fields iframes, so the PAN lives in Interswitch's frame
@@ -35,7 +35,7 @@ import (
 //
 // A failure here is not a style complaint. It means either the change is wrong,
 // or someone has decided to take on PCI DSS scope — and that decision belongs in
-// CARD_ON_FILE_DECISION.md, not in a diff.
+// docs/payments/CARD_ON_FILE_DECISION.md, not in a diff.
 func TestNoCardholderDataShapes(t *testing.T) {
 	t.Parallel()
 	root := repoRoot(t)
@@ -82,7 +82,7 @@ func TestNoCardholderDataShapes(t *testing.T) {
 	}
 	if len(violations) > 0 {
 		t.Fatalf("cardholder-data shapes found (%d) — the platform stores no card data, and this is how that changes:\n  %s\n\n"+
-			"If this is intentional, the PCI DSS scope change belongs in CARD_ON_FILE_DECISION.md first.",
+			"If this is intentional, the PCI DSS scope change belongs in docs/payments/CARD_ON_FILE_DECISION.md first.",
 			len(violations), strings.Join(violations, "\n  "))
 	}
 }

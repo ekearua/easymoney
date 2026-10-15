@@ -1,5 +1,5 @@
 // This file wires Dojah payment-time counterparty screening behind the
-// PaymentScreener port, per AML_VENDOR_DECISION_RECORD.md §11.1 (the same
+// PaymentScreener port, per docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1 (the same
 // synchronous AML screening endpoint as onboarding). Dojah authenticates with
 // "Authorization: <secret key>" (raw) and "AppId: <app id>". The response is
 // normalized into the same decision vocabulary the simulator uses, so the G2

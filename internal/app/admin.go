@@ -91,7 +91,7 @@ func (a *App) adminMetrics(w http.ResponseWriter, r *http.Request) {
 		a.logger.WarnContext(r.Context(), "outbox backlog stats failed", "error", err)
 	}
 	data["SyntheticPanel"] = buildSyntheticPanel(syntheticSummary, outboxBacklog, time.Now(), a.cfg.SyntheticOutboxMaxAge)
-	// Saved-methods evidence (SAVED_CARD_METHODS_PLAN.md Phase 0.5): the figures
+	// Saved-methods evidence (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 0.5): the figures
 	// behind the card-on-file decision, so it rests on the funnel rather than on
 	// how annoying re-entering card details sounds. A store failure degrades the
 	// panel, never the page.

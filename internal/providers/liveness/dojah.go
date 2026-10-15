@@ -1,6 +1,6 @@
 // This file wires the Dojah biometric liveness endpoint
 // (POST /api/v1/ml/liveness) behind the LivenessVerifier port, per
-// AML_VENDOR_DECISION_RECORD.md §11.1 (G10). Dojah authenticates with
+// docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1 (G10). Dojah authenticates with
 // "Authorization: <secret key>" (raw) and "AppId: <app id>". The response is
 // normalized into the passed/failed/review vocabulary, so the Tier-3 EDD gate
 // grants EvEDDCompleted only on a provider pass.

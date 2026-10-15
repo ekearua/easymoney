@@ -1,6 +1,6 @@
 package app
 
-// Drift guard for CBN_AML_COMPLIANCE_SPEC.md.
+// Drift guard for docs/compliance/CBN_AML_COMPLIANCE_SPEC.md.
 //
 // The spec is the compliance file a reviewer traces obligation -> code -> test
 // from, so its gap register must never quietly disagree with itself. The class
@@ -38,7 +38,7 @@ import (
 	"testing"
 )
 
-const amlSpecPath = "CBN_AML_COMPLIANCE_SPEC.md"
+const amlSpecPath = "docs/compliance/CBN_AML_COMPLIANCE_SPEC.md"
 
 // amlSpecClosed and amlSpecOpen are the canonical status of every register row.
 var amlSpecClosed = []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
@@ -254,12 +254,14 @@ func containsInt(ids []int, want int) bool {
 
 // section returns the text between start and the next end marker (or the end of
 // the document when end is empty).
-// amlReferencedDocs are repo-root documents the spec cites by filename. They are
-// asserted to exist so a rename cannot leave the compliance file pointing at a
-// file nobody can open - the G9 evidence cell points at one of them.
+// amlReferencedDocs are documents the spec cites by filename, mapped to their
+// in-tree location. They are asserted to exist so a rename cannot leave the
+// compliance file pointing at a file nobody can open - the G9 evidence cell
+// points at one of them. The spec text refers to them by bare filename, so the
+// containment check uses the base name while existence is asserted at this path.
 var amlReferencedDocs = []string{
-	"AML_VENDOR_EVIDENCE_PACK.md",
-	"AML_VENDOR_DECISION_RECORD.md",
+	"docs/compliance/AML_VENDOR_EVIDENCE_PACK.md",
+	"docs/compliance/AML_VENDOR_DECISION_RECORD.md",
 }
 
 // TestAMLSpecReferencedDocsExist pins the cross-document references the register
@@ -267,13 +269,14 @@ var amlReferencedDocs = []string{
 func TestAMLSpecReferencedDocsExist(t *testing.T) {
 	spec := amlSpecRead(t)
 	root := amlSpecRepoRoot(t)
-	for _, name := range amlReferencedDocs {
+	for _, rel := range amlReferencedDocs {
+		name := filepath.Base(rel)
 		if !strings.Contains(spec, name) {
 			t.Errorf("the spec no longer references %s; update amlReferencedDocs if that was intentional", name)
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
-			t.Errorf("the spec references %s but no such file exists at the repo root: %v", name, err)
+		if _, err := os.Stat(filepath.Join(root, rel)); err != nil {
+			t.Errorf("the spec references %s but no such file exists at %s: %v", name, rel, err)
 		}
 	}
 }

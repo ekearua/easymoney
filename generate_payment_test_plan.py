@@ -457,7 +457,7 @@ def _write_sheet(wb, title, headers, rows, widths):
 
 
 def main():
-    out = pathlib.Path(__file__).parent / "reports" / "Payment_Pipeline_Test_Plan.xlsx"
+    out = pathlib.Path(__file__).parent / "docs" / "testing" / "Payment_Pipeline_Test_Plan.xlsx"
     out.parent.mkdir(parents=True, exist_ok=True)
 
     wb = Workbook()

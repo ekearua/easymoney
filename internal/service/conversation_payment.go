@@ -705,7 +705,7 @@ func (s *ConversationService) walletBalanceLine(ctx context.Context, user store.
 }
 
 func (s *ConversationService) sendPaymentMethods(ctx context.Context, channel, recipient string, user store.User, merchant store.Merchant, amount int64) error {
-	// Saved methods (SAVED_CARD_METHODS_PLAN.md Phase 1): the rail the payer
+	// Saved methods (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1): the rail the payer
 	// used last for this merchant goes first, and the body says so. It
 	// remembers the *choice*, never the card — the method prompt must not read
 	// as though a card is on file, because none is.

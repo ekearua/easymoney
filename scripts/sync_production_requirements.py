@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sync reports/Xego_Production_Requirements.xlsx with the code as shipped.
+"""Sync docs/cost-models/Xego_Production_Requirements.xlsx with the code as shipped.
 
 The workbook is edited in place through raw OOXML (openpyxl segfaults on this
 box): shared strings get the Faya rename, individual cells are rewritten as
@@ -16,7 +16,7 @@ import shutil
 import zipfile
 from xml.etree import ElementTree as ET
 
-XLSX = "reports/Xego_Production_Requirements.xlsx"
+XLSX = "docs/cost-models/Xego_Production_Requirements.xlsx"
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 ET.register_namespace("", MAIN)
@@ -403,7 +403,7 @@ def main():
          note="app port in network topology")
     edit(dep, shared, ["Domain name (xego.com)"], "B",
          "Domain name (Faya-branded; replaces xego.com)", note="prereq domain")
-    # Resilience prerequisites (GO_LIVE_RUNBOOK §3.7/§4): the four items
+    # Resilience prerequisites (docs/runbooks/GO_LIVE_RUNBOOK.md §3.7/§4): the four items
     # that separate "configured" from "recoverable". Guarded insert after
     # the last existing prerequisite row (PCI QSA); no merges/formulas
     # below that point, so the renumber is safe.

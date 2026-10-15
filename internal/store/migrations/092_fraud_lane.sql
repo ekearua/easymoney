@@ -1,4 +1,4 @@
--- Spec G13 (CBN_AML_COMPLIANCE_SPEC.md §3.7): the fraud lane. Payment and
+-- Spec G13 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): the fraud lane. Payment and
 -- payout fraud signals (failed-attempt bursts, chargeback/refund velocity,
 -- destination churn) are a distinct rule family from the C14 AML monitor, so
 -- they share transaction_alerts but carry lane='fraud' and are listed and

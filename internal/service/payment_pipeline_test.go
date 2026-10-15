@@ -1,6 +1,6 @@
 package service
 
-// Coverage-gap tests from reports/Payment_Pipeline_Test_Plan.xlsx:
+// Coverage-gap tests from docs/testing/Payment_Pipeline_Test_Plan.xlsx:
 //
 //   - C2 (card declined): a gateway requery that reports "failed" must move the
 //     initialized payment to a terminal failed state and must not post any

@@ -54,7 +54,7 @@
     {{range .ReentryPanel.Merchants}}<article><span>{{.Name}}</span><strong>{{.RepeatPayments}}</strong><em class="small-text">{{.Payments}} payments, {{.CardAttempts}} card attempt(s), {{.AbandonRate}} not completed</em></article>{{end}}
   </section>{{end}}
   <p class="small-text">{{.ReentryPanel.Reading}}</p>
-  <p class="small-text">Derived from payments and KYC-free metadata only: no message content is read (inbound payloads are sealed at rest), so the follow-up figure is a proxy for support contact and undercounts a payer who gives up in silence. Figures and thresholds: <code>SAVED_CARD_METHODS_PLAN.md</code> Phase 0.5.</p>
+  <p class="small-text">Derived from payments and KYC-free metadata only: no message content is read (inbound payloads are sealed at rest), so the follow-up figure is a proxy for support contact and undercounts a payer who gives up in silence. Figures and thresholds: <code>docs/payments/SAVED_CARD_METHODS_PLAN.md</code> Phase 0.5.</p>
 </section>{{end}}
 {{if .SyntheticPanel}}<section class="panel"><h2>Post-deploy synthetic checks</h2>
   <p class="small-text">{{.SyntheticPanel.Title}}{{if .SyntheticPanel.RanAt}} · last run {{.SyntheticPanel.RanAt}} ({{.SyntheticPanel.Source}}){{end}}</p>

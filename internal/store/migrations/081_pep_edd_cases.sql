@@ -1,4 +1,4 @@
--- Spec G1 (CBN_AML_COMPLIANCE_SPEC.md §3.3a): PEP EDD with senior-management
+-- Spec G1 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.3a): PEP EDD with senior-management
 -- approval. A politically-exposed-person determination must open an enhanced
 -- due diligence case, and no tier advancement may proceed while it is open.
 -- The determination rides the existing review-queue table as a new case type;

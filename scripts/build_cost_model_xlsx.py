@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Build EXTERNAL_SERVICE_COST_MODEL.xlsx from editable assumption cells.
+"""Build docs/cost-models/EXTERNAL_SERVICE_COST_MODEL.xlsx from editable assumption cells.
 
 Raw-OpenXML generator (stdlib only; openpyxl segfaults on this box), same
 approach as the docx builders. Workbook layout:
@@ -33,7 +33,7 @@ import zipfile
 # COST_MODEL_OUT (or argv[1]) so the workbook can be rebuilt to a scratch path
 # while the live copy is open and locked by Excel.
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.environ.get(
-    "COST_MODEL_OUT", "EXTERNAL_SERVICE_COST_MODEL.xlsx")
+    "COST_MODEL_OUT", os.path.join("docs", "cost-models", "EXTERNAL_SERVICE_COST_MODEL.xlsx"))
 
 # ---------- minimal OpenXML helpers (same style as sync_manual_schedule) ---
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -428,7 +428,7 @@ def build_scale(base_ref, low_ref, high_ref, blended_ref):
                         cell("N%d" % n, formula="SUM(N4:N%d)" % last, style=4),
                         cell("O%d" % n, "")]))
     rows.append(row(n + 2, [cell("A%d" % (n + 2),
-        "The five rows are alternative scenarios, so the total row sums money columns only; per-user and per-payment cells are deliberately left blank. Low/high columns apply the Assumptions price ranges to the variable cost; infrastructure is held constant across the band. The screening and identity discount cells (0.20 at 50,000 users; 0.25 screening / 0.15 identity at 100,000) apply committed-tier savings only to those line families - WhatsApp, AI, SMS, email, CAC, FIRS and geocoding always scale at list price. Fee earnings use the blended collection fee and rail mix on the Assumptions sheet; Net per payment = (fee earnings - all-in cost) per payment, so a positive value means fees cover the external bill. The hosting mix follows section 6 of EXTERNAL_SERVICE_COST_MODEL.md.",
+        "The five rows are alternative scenarios, so the total row sums money columns only; per-user and per-payment cells are deliberately left blank. Low/high columns apply the Assumptions price ranges to the variable cost; infrastructure is held constant across the band. The screening and identity discount cells (0.20 at 50,000 users; 0.25 screening / 0.15 identity at 100,000) apply committed-tier savings only to those line families - WhatsApp, AI, SMS, email, CAC, FIRS and geocoding always scale at list price. Fee earnings use the blended collection fee and rail mix on the Assumptions sheet; Net per payment = (fee earnings - all-in cost) per payment, so a positive value means fees cover the external bill. The hosting mix follows section 6 of docs/cost-models/EXTERNAL_SERVICE_COST_MODEL.md.",
         style=0)]))
     return rows
 

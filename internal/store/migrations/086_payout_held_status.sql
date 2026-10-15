@@ -1,4 +1,4 @@
--- Spec G2 (CBN_AML_COMPLIANCE_SPEC.md §3.5): payment-time counterparty
+-- Spec G2 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.5): payment-time counterparty
 -- screening. The payouts.status CHECK predates the G2 hold: an ambiguous
 -- screen parks a payout in 'held' for reviewer disposition while its
 -- money-out reservation stays in place. Extend the constraint in place.

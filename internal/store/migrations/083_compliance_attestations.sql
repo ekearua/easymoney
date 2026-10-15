@@ -1,4 +1,4 @@
--- Spec G8 (CBN_AML_COMPLIANCE_SPEC.md §5): the annual independent-validation
+-- Spec G8 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): the annual independent-validation
 -- attestation. The CBN Baseline Standards expect an OFI's automated AML
 -- solution to be independently validated on a documented cadence; the
 -- evidence — who validated, the scope, what they found, and the remediation

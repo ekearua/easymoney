@@ -1,4 +1,4 @@
--- Spec G14 (CBN_AML_COMPLIANCE_SPEC.md §3.7): geography + expected-activity
+-- Spec G14 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): geography + expected-activity
 -- risk inputs. The risk engine previously scored observations, tier and
 -- screening without ever asking where a customer lives or how much activity
 -- they expect, so two inputs a risk-based approach names could never move a

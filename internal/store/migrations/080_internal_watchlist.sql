@@ -1,4 +1,4 @@
--- Spec G3 (CBN_AML_COMPLIANCE_SPEC.md §5): the owned internal watchlist.
+-- Spec G3 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): the owned internal watchlist.
 -- The CBN Baseline Standards for Automated AML/CFT/CPF Solutions name an
 -- internal watchlist as a capability no screening vendor supplies: the
 -- platform's own list of named identities that must never be auto-cleared.

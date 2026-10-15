@@ -1,7 +1,7 @@
 package service
 
-// Drift guard for reports/Payment_Pipeline_Test_Plan.xlsx. The workbook is a
-// local, gitignored artifact (/reports/ is ignored), so it cannot be the
+// Drift guard for docs/testing/Payment_Pipeline_Test_Plan.xlsx. The workbook is a
+// local, gitignored artifact (*.xlsx is ignored), so it cannot be the
 // source of truth — this file is. Every scenario row in the workbook's
 // "Existing Test Coverage" sheet must map to a test function that exists in
 // the tree; when a test is renamed or deleted without updating this table,

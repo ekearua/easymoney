@@ -1,6 +1,6 @@
 package store
 
-// Spec G1 (CBN_AML_COMPLIANCE_SPEC.md §3.3a): PEP enhanced due diligence with
+// Spec G1 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.3a): PEP enhanced due diligence with
 // senior-management approval. A PEP determination (screening decision
 // possible, strong, or blocked) opens one pep_edd review case; the case stays
 // pending until a senior manager disposes it with the sm_approve or sm_reject

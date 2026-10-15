@@ -1,7 +1,7 @@
-"""Sync MANUAL_TEST_SCHEDULE.xlsx with the aggregated-collection manual cases.
+"""Sync docs/testing/MANUAL_TEST_SCHEDULE.xlsx with the aggregated-collection manual cases.
 
 Repoints the affected cells at new shared strings (matching the wording in
-MANUAL_TEST_SCHEDULE.md) without disturbing the rest of the workbook:
+docs/testing/MANUAL_TEST_SCHEDULE.md) without disturbing the rest of the workbook:
 
   P2  TC-02-002  steps + expected   (aggregated Tier-1 details, code gate)
   P2  TC-02-004  steps + expected   (Telegram verifies the emailed code)
@@ -12,11 +12,13 @@ MANUAL_TEST_SCHEDULE.md) without disturbing the rest of the workbook:
 Usage: python scripts/sync_manual_schedule_aggregation.py
 """
 
+import os
 import shutil
 import zipfile
 import xml.etree.ElementTree as ET
 
-SRC = "MANUAL_TEST_SCHEDULE.xlsx"
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "docs", "testing", "MANUAL_TEST_SCHEDULE.xlsx")
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 RNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 ET.register_namespace("", NS)

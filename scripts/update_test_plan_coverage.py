@@ -1,12 +1,12 @@
 """Rewrite the 'Existing Test Coverage' sheet (sheet5) of
-Payment_Pipeline_Test_Plan.xlsx in place, preserving cell styles: same 24
+docs/testing/Payment_Pipeline_Test_Plan.xlsx in place, preserving cell styles: same 24
 data rows, only the text changes. Values are inlineStr cells.
 """
 import shutil
 import zipfile
 from xml.etree import ElementTree as ET
 
-SRC = "reports/Payment_Pipeline_Test_Plan.xlsx"
+SRC = "docs/testing/Payment_Pipeline_Test_Plan.xlsx"
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 M = "{%s}" % NS
 ET.register_namespace("", NS)

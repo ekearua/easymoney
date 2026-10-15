@@ -42,7 +42,7 @@ func paymentPreferenceTestStore(t *testing.T) (*Store, context.Context) {
 }
 
 // TestPaymentPreferenceLifecycle pins the saved-methods store contract
-// (SAVED_CARD_METHODS_PLAN.md Phase 1):
+// (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1):
 //
 //   - nothing is remembered for a payer we have not seen pay;
 //   - a successful payment remembers the habit at that merchant *and* the

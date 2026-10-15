@@ -1,4 +1,4 @@
--- Payment preferences (SAVED_CARD_METHODS_PLAN.md Phase 1): the rail a payer
+-- Payment preferences (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1): the rail a payer
 -- chose last time, remembered per surface so the method picker can offer it
 -- first instead of asking the same question on every purchase.
 --
@@ -6,7 +6,7 @@
 -- "remember the choice, not the instrument": there is no card number, CVV or
 -- PIN column here, and there never may be (a schema guard test fails the build
 -- if one appears). The saved-token instrument table ships separately, behind
--- the tokenizer decision recorded in CARD_ON_FILE_DECISION.md — a table is not
+-- the tokenizer decision recorded in docs/payments/CARD_ON_FILE_DECISION.md — a table is not
 -- created before the code that populates it exists.
 --
 -- Two scopes:

@@ -22,7 +22,7 @@
 #
 # Rollback is image-only and deliberate. It does NOT reverse migrations: a
 # release whose migration was destructive is recovered with point-in-time
-# recovery (§9 of GO_LIVE_RUNBOOK.md), which is exactly why step 3 runs before
+# recovery (§9 of docs/runbooks/GO_LIVE_RUNBOOK.md), which is exactly why step 3 runs before
 # step 4. The script says so out loud when it has to roll back.
 #
 # Runs on either host of the dual-Caddy topology: the primary stack
@@ -239,7 +239,7 @@ rollback() {
   if [ -z "${PREV_IMAGE}" ]; then
     log "ROLLBACK SKIPPED: no previously running image recorded."
     log "  Recover by pinning APP_IMAGE to the last known-good tag and re-running,"
-    log "  or restore data with the PITR procedure (GO_LIVE_RUNBOOK.md §9)."
+    log "  or restore data with the PITR procedure (docs/runbooks/GO_LIVE_RUNBOOK.md §9)."
     return 1
   fi
   if [ "${PREV_IMAGE}" = "${NEW_IMAGE}" ]; then
@@ -255,7 +255,7 @@ rollback() {
     log "ROLLBACK OK — ${PREV_IMAGE} is serving again"
     return 0
   fi
-  log "ROLLBACK FAILED — the previous revision did not come up either; escalate (GO_LIVE_RUNBOOK.md §9)"
+  log "ROLLBACK FAILED — the previous revision did not come up either; escalate (docs/runbooks/GO_LIVE_RUNBOOK.md §9)"
   return 1
 }
 
@@ -367,7 +367,7 @@ if has_service migrate; then
   log "applying migrations"
   if ! compose run --rm migrate; then
     log "MIGRATION FAILED — app left untouched on ${PREV_IMAGE:-its current image}"
-    log "Schema is forward-only; if the migration is destructive, recover with PITR (GO_LIVE_RUNBOOK.md §9)."
+    log "Schema is forward-only; if the migration is destructive, recover with PITR (docs/runbooks/GO_LIVE_RUNBOOK.md §9)."
     exit 1
   fi
   log "migrations ok"

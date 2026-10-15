@@ -1,4 +1,4 @@
--- Spec G2 (CBN_AML_COMPLIANCE_SPEC.md §3.5): payment-time counterparty
+-- Spec G2 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.5): payment-time counterparty
 -- screening. Every money-out movement is screened in the ReserveAllowance →
 -- dispatch window; the money-out reservation stays in place so the movement
 -- cannot be re-attempted past the screen. Three outcomes:

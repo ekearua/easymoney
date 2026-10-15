@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Payment preferences (SAVED_CARD_METHODS_PLAN.md Phase 1): the rail a payer
+// Payment preferences (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1): the rail a payer
 // picked last time, remembered so the method picker can offer it first.
 //
 // The table holds no card data — posture A is "remember the choice, not the
@@ -191,7 +191,7 @@ func (s *Store) PaymentPreferencesForUser(ctx context.Context, userID uuid.UUID)
 // =========================================================================
 
 // CardReentryMetrics is the evidence behind the saved-card decision
-// (SAVED_CARD_METHODS_PLAN.md Phase 0.5). It is read-only and derived from
+// (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 0.5). It is read-only and derived from
 // payments the platform already stores; it collects no new data.
 //
 // The question it answers: how much does re-entering card details actually

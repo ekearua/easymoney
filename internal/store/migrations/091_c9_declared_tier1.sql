@@ -1,4 +1,4 @@
--- C9 (reports/Remediation_Backlog.md): retire the Tier-1 "approved_simulated"
+-- C9 (docs/payments/Remediation_Backlog.md): retire the Tier-1 "approved_simulated"
 -- residue.
 --
 -- individual_profiles.kyc_status was written as the constant

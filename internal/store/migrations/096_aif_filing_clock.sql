@@ -1,4 +1,4 @@
--- Spec G15 (CBN_AML_COMPLIANCE_SPEC.md §3.4): the Account Information File
+-- Spec G15 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.4): the Account Information File
 -- (AIF) is an NFIU goAML filing that reports the platform's
 -- accounts-of-record register. It joins STR/CTR/PEP as a first-class report
 -- type with its own filing clock: filed on request or on the same monthly

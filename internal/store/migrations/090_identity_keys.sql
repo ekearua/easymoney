@@ -1,4 +1,4 @@
--- Spec G11 (CBN_AML_COMPLIANCE_SPEC.md §3.7): duplicate-identity detection.
+-- Spec G11 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): duplicate-identity detection.
 -- One person -> one customer. BVN/NIN numbers are already persisted inside
 -- customer_verifications.result as JSONB, but that is not a uniqueness key: a
 -- second profile presenting the same number cannot be detected. This table

@@ -1,4 +1,4 @@
--- Spec gap G9 (CBN_AML_COMPLIANCE_SPEC.md): adverse-media + domestic-list
+-- Spec gap G9 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md): adverse-media + domestic-list
 -- screening. Domestic lists (NSC/NIGSAC) are already owned through the
 -- internal watchlist (G3); this table records the adverse-media lane from the
 -- distinct AdverseMediaScreener provider port. The decision vocabulary is the

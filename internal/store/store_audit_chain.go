@@ -1,6 +1,6 @@
 package store
 
-// Spec G7 residual (CBN_AML_COMPLIANCE_SPEC.md §5): scheduled audit
+// Spec G7 residual (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): scheduled audit
 // chain-verification. VerifyAuditChain recomputes the audit_logs hash chain
 // and the dashboard renders the result on page load; this layer makes the
 // sweep persistent and alerting:

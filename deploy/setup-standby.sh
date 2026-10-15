@@ -10,7 +10,7 @@
 #   bash deploy/setup-standby.sh status        # is it streaming? lag?
 #   bash deploy/setup-standby.sh promote       # MANUAL FAILOVER (see below)
 #
-# Promote procedure (documented in GO_LIVE_RUNBOOK.md §4.1):
+# Promote procedure (documented in docs/runbooks/GO_LIVE_RUNBOOK.md §4.1):
 #   1. promote                              -> standby becomes primary
 #   2. repoint PgBouncer/app DATABASE_URL   -> point at the promoted host
 #   3. rebuild the old primary as standby  -> pg_rewind or fresh basebackup

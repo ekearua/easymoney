@@ -1,6 +1,6 @@
 // This file wires the Dojah sanctions/PEP screening endpoint
 // (POST /api/v1/aml/v2/screening) behind the SanctionsScreener port, per
-// AML_VENDOR_DECISION_RECORD.md §11.1. Dojah authenticates with two headers on
+// docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1. Dojah authenticates with two headers on
 // every call: "Authorization: <secret key>" (raw, no Bearer prefix) and
 // "AppId: <app id>". The request/response contract is the same normalized
 // envelope the generic HTTP adapter documents, so the port contract is

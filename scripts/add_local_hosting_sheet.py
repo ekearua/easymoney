@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Add a styled "Local Hosting Options" sheet to reports/Xego_Production_Requirements.xlsx.
+"""Add a styled "Local Hosting Options" sheet to docs/cost-models/Xego_Production_Requirements.xlsx.
 
 CBN data-locality planning aid: Nigerian VPS prices (Oct 2026) with server-cost
 aggregation, a colocation capacity comparison and a fixed-vs-variable cost model.
@@ -17,7 +17,7 @@ import zipfile
 from xml.sax.saxutils import escape
 
 SHEET_NAME = "Local Hosting Options"
-XLSX = "reports/Xego_Production_Requirements.xlsx"
+XLSX = "docs/cost-models/Xego_Production_Requirements.xlsx"
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 RELNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
@@ -165,9 +165,9 @@ ROWS = [
     ("td", ["Colocation benchmarks", "colocationscout.com (Aug 2026); Equinix Q2 2026 results", "Oct 2026", "", "", "", "", ""]),
     ("td", ["NG VPS market", "lineserve.net blog 'What VPS Hosting Costs in Nigeria' (Jul 2026)", "Oct 2026", "", "", "", "", ""]),
     ("spacer", []),
-    ("note", ["G16 (see CBN_DATA_LOCALITY_GAP.md): the offsite backup / WAL bucket region is the single most important open item. The rclone target (base + WAL) must be in-country - self-hosted MinIO on a Lagos box, or an in-country S3-compatible service; a config-only change. Combination A closes it."]),
+    ("note", ["G16 (see docs/compliance/CBN_DATA_LOCALITY_GAP.md): the offsite backup / WAL bucket region is the single most important open item. The rclone target (base + WAL) must be in-country - self-hosted MinIO on a Lagos box, or an in-country S3-compatible service; a config-only change. Combination A closes it."]),
     ("note", ["Naira billing is part of the compliance rationale (CBN wants payment-infrastructure spend kept in-country): WhoGoHost, HOSTAFRICA and Hostraha bill naira; AFRICLOUD and Melbicom bill USD/EUR; Equinix and Rack Centre bill USD."]),
-    ("note", ["Hyperscaler local-zone / Outposts racks inside a Nigerian Tier III facility: interpretation pending (see CBN_DATA_LOCALITY_GAP.md). Do not architect the compliance story on it."]),
+    ("note", ["Hyperscaler local-zone / Outposts racks inside a Nigerian Tier III facility: interpretation pending (see docs/compliance/CBN_DATA_LOCALITY_GAP.md). Do not architect the compliance story on it."]),
     ("note", ["PCI scope is unaffected by hosting location: hosted-fields checkout keeps SAQ-A scope; ASV scans and penetration tests follow the card schemes, not the CBN."]),
     ("note", ["Site diversity rule: the DB primary and the async streaming standby (a P1 add-on on the second app server, runbook 4.1) must sit in different physical facilities; a third facility (or the MinIO box) holds the backup target."]),
     ("spacer", []),

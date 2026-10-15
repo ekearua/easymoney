@@ -1,6 +1,6 @@
 package store
 
-// Spec G3 (CBN_AML_COMPLIANCE_SPEC.md §5): the owned internal watchlist —
+// Spec G3 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): the owned internal watchlist —
 // the platform's own list of named identities that must never be auto-
 // cleared by any screening provider. Entries are reviewer-owned (reason +
 // listed_by); enforcement rewrites any screening decision on a watchlisted

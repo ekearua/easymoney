@@ -1,4 +1,4 @@
--- Spec G12 (CBN_AML_COMPLIANCE_SPEC.md §3.7): document authenticity.
+-- Spec G12 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): document authenticity.
 --
 -- A corporate document was uploaded, OCR'd and human-reviewed, but never
 -- checked for tampering — and no selfie was ever compared against the photo on

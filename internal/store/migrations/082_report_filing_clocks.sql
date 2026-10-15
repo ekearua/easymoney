@@ -1,4 +1,4 @@
--- Spec G5 (CBN_AML_COMPLIANCE_SPEC.md §3.4): filing-clock tracking. NFIU
+-- Spec G5 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.4): filing-clock tracking. NFIU
 -- instructions set real deadlines — an STR within 24 hours of the
 -- determination of suspicion, a CTR by the 7th of the following month — and a
 -- missed clock is itself a reportable failure. Report rows are regenerated on

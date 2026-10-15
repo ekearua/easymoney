@@ -7,7 +7,7 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
-// Saved-methods evidence panel (SAVED_CARD_METHODS_PLAN.md Phase 0.5).
+// Saved-methods evidence panel (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 0.5).
 //
 // The saved-card decision turns on a question nobody had measured: how much
 // does re-entering card details actually cost? Posture A is cheap and delivers

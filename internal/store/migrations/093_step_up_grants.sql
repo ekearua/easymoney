@@ -1,4 +1,4 @@
--- Spec G13 (CBN_AML_COMPLIANCE_SPEC.md §3.7): step-up re-authentication. A
+-- Spec G13 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): step-up re-authentication. A
 -- high-risk merchant owner's payout request must present a fresh second factor
 -- before the settlement service will dispatch funds. A verified factor records
 -- a short-lived, action-scoped grant here; the merchant portal checks it at

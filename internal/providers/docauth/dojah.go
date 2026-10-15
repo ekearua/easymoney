@@ -1,6 +1,6 @@
 // This file wires the Dojah document-analysis endpoint
 // (POST /api/v1/document/analysis) behind the DocumentAuthenticityVerifier
-// port, per AML_VENDOR_DECISION_RECORD.md §11.1 (G12). Dojah authenticates
+// port, per docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1 (G12). Dojah authenticates
 // with "Authorization: <secret key>" (raw) and "AppId: <app id>". The
 // response is normalized into the shared genuine/tampered/inconclusive
 // vocabulary, so a reviewer-verified key counts as evidence only when the

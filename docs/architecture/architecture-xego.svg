@@ -1,0 +1,1819 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 1400 900"
+   font-family="Segoe UI, Arial, sans-serif"
+   font-size="11"
+   version="1.1"
+   id="svg154"
+   sodipodi:docname="architecture-xego.svg"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview154"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="0.69"
+     inkscape:cx="700"
+     inkscape:cy="683.33333"
+     inkscape:window-width="1366"
+     inkscape:window-height="705"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg154" />
+  <defs
+     id="defs6">
+    <marker
+       id="arrow"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#555"
+         id="polygon1" />
+    </marker>
+    <marker
+       id="arrow-red"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#c0392b"
+         id="polygon2" />
+    </marker>
+    <marker
+       id="arrow-teal"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#16a085"
+         id="polygon3" />
+    </marker>
+    <marker
+       id="arrow-orange"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#d35400"
+         id="polygon4" />
+    </marker>
+    <marker
+       id="arrow-blue"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#2980b9"
+         id="polygon5" />
+    </marker>
+    <marker
+       id="arrow-dark"
+       viewBox="0 0 10 7"
+       refX="10"
+       refY="3.5"
+       markerWidth="8"
+       markerHeight="6"
+       orient="auto">
+      <polygon
+         points="0 0, 10 3.5, 0 7"
+         fill="#1a5276"
+         id="polygon6" />
+    </marker>
+    <filter
+       id="shadow"
+       x="-0.0045454545"
+       y="-0.011904762"
+       width="1.0090909"
+       height="1.0238095">
+      <feDropShadow
+         dx="1"
+         dy="1"
+         stdDeviation="2"
+         flood-opacity="0.15" />
+    </filter>
+  </defs>
+  <!-- Title -->
+  <text
+     x="700"
+     y="28"
+     text-anchor="middle"
+     font-size="18"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text6">Xego WhatsApp Payment Gateway — High-Level Architecture</text>
+  <text
+     x="700"
+     y="46"
+     text-anchor="middle"
+     font-size="10"
+     fill="#7f8c8d"
+     id="text7">Modular Monolith · Ports &amp; Adapters · Event-Driven · Double-Entry Ledger</text>
+  <!-- ═══════════ ACTORS (Top) ═══════════ -->
+  <rect
+     x="30"
+     y="70"
+     width="110"
+     height="42"
+     rx="6"
+     fill="#ecf0f1"
+     stroke="#bdc3c7"
+     filter="url(#shadow)"
+     id="rect7" />
+  <text
+     x="85"
+     y="88"
+     text-anchor="middle"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text8">Customers</text>
+  <text
+     x="85"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     fill="#7f8c8d"
+     id="text9">WhatsApp · Telegram</text>
+  <rect
+     x="170"
+     y="70"
+     width="110"
+     height="42"
+     rx="6"
+     fill="#ecf0f1"
+     stroke="#bdc3c7"
+     filter="url(#shadow)"
+     id="rect9" />
+  <text
+     x="225"
+     y="88"
+     text-anchor="middle"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text10">Merchants</text>
+  <text
+     x="225"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     fill="#7f8c8d"
+     id="text11">Checkout · API</text>
+  <rect
+     x="320"
+     y="70"
+     width="130"
+     height="42"
+     rx="6"
+     fill="#ecf0f1"
+     stroke="#bdc3c7"
+     filter="url(#shadow)"
+     id="rect11" />
+  <text
+     x="385"
+     y="88"
+     text-anchor="middle"
+     font-weight="bold"
+     fill="#2c3e50"
+     id="text12">Admin / Compliance</text>
+  <text
+     x="385"
+     y="102"
+     text-anchor="middle"
+     font-size="9"
+     fill="#7f8c8d"
+     id="text13">RBAC Console · TOTP 2FA</text>
+  <!-- Arrows: actors → gateway -->
+  <line
+     x1="85"
+     y1="112"
+     x2="85"
+     y2="140"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line13" />
+  <line
+     x1="225"
+     y1="112"
+     x2="225"
+     y2="140"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line14" />
+  <line
+     x1="385"
+     y1="112"
+     x2="385"
+     y2="140"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line15" />
+  <!-- ═══════════ INBOUND GATEWAY ═══════════ -->
+  <rect
+     x="30"
+     y="140"
+     width="440"
+     height="70"
+     rx="8"
+     fill="#3498db"
+     filter="url(#shadow)"
+     id="rect15" />
+  <text
+     x="250"
+     y="162"
+     text-anchor="middle"
+     font-size="13"
+     font-weight="bold"
+     fill="white"
+     id="text15">Inbound Gateway</text>
+  <text
+     x="80"
+     y="182"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text16">WhatsApp Cloud API</text>
+  <text
+     x="210"
+     y="182"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text17">Telegram Bot API</text>
+  <text
+     x="330"
+     y="182"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text18">Partner REST API</text>
+  <text
+     x="80"
+     y="198"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text19">Webhook Validation</text>
+  <text
+     x="210"
+     y="198"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text20">Rate Limiting</text>
+  <text
+     x="330"
+     y="198"
+     font-size="10"
+     fill="#d5e8f7"
+     id="text21">ChatGuard PCI/CBN</text>
+  <!-- ═══════════ CORE SERVICES (Center) ═══════════ -->
+  <rect
+     x="30"
+     y="240"
+     width="200"
+     height="110"
+     rx="8"
+     fill="#2ecc71"
+     filter="url(#shadow)"
+     id="rect21" />
+  <text
+     x="130"
+     y="262"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="white"
+     id="text22">Conversation Service</text>
+  <text
+     x="40"
+     y="280"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text23">Chatbot FSM (50+ states)</text>
+  <text
+     x="40"
+     y="294"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text24">Multi-channel dispatch</text>
+  <text
+     x="40"
+     y="308"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text25">Onboarding · KYC L0→L4</text>
+  <text
+     x="40"
+     y="322"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text26">Merchant selection</text>
+  <text
+     x="40"
+     y="336"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text27">Menu · Invoice · Thrift</text>
+  <rect
+     x="260"
+     y="240"
+     width="200"
+     height="110"
+     rx="8"
+     fill="#27ae60"
+     filter="url(#shadow)"
+     id="rect27" />
+  <text
+     x="360"
+     y="262"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="white"
+     id="text28">Payment Service</text>
+  <text
+     x="270"
+     y="280"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text29">Draft → Initialize → Verify</text>
+  <text
+     x="270"
+     y="294"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text30">Card / Bank Transfer</text>
+  <text
+     x="270"
+     y="308"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text31">Reconciliation (1min)</text>
+  <text
+     x="270"
+     y="322"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text32">Receipt/QR scan tokens</text>
+  <text
+     x="270"
+     y="336"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text33">Checkout link mgmt</text>
+  <rect
+     x="490"
+     y="240"
+     width="200"
+     height="110"
+     rx="8"
+     fill="#27ae60"
+     filter="url(#shadow)"
+     id="rect33" />
+  <text
+     x="590"
+     y="262"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="white"
+     id="text34">Settlement Service</text>
+  <text
+     x="500"
+     y="280"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text35">Batch cutting (250 bps fee)</text>
+  <text
+     x="500"
+     y="294"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text36">Payout dispatch (bank rail)</text>
+  <text
+     x="500"
+     y="308"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text37">Retry / Reverse</text>
+  <text
+     x="500"
+     y="322"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text38">Refund + Ledger reversal</text>
+  <text
+     x="500"
+     y="336"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text39">Dispute lifecycle</text>
+  <rect
+     x="720"
+     y="240"
+     width="160"
+     height="110"
+     rx="8"
+     fill="#27ae60"
+     filter="url(#shadow)"
+     id="rect39" />
+  <text
+     x="800"
+     y="262"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="white"
+     id="text40">Data Service</text>
+  <text
+     x="730"
+     y="280"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text41">Mobile data orders</text>
+  <text
+     x="730"
+     y="294"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text42">VTPass integration</text>
+  <text
+     x="730"
+     y="308"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text43">Provider webhooks</text>
+  <text
+     x="730"
+     y="322"
+     font-size="10"
+     fill="#d5f5e3"
+     id="text44">Fulfilment status</text>
+  <!-- Arrows: gateway → services -->
+  <line
+     x1="130"
+     y1="210"
+     x2="130"
+     y2="240"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line44" />
+  <line
+     x1="250"
+     y1="210"
+     x2="360"
+     y2="240"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line45" />
+  <line
+     x1="360"
+     y1="210"
+     x2="360"
+     y2="240"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line46" />
+  <line
+     x1="450"
+     y1="210"
+     x2="590"
+     y2="240"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line47" />
+  <!-- ═══════════ EVENT BUS ═══════════ -->
+  <rect
+     x="30"
+     y="380"
+     width="850"
+     height="50"
+     rx="8"
+     fill="#9b59b6"
+     filter="url(#shadow)"
+     id="rect47" />
+  <text
+     x="455"
+     y="402"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="white"
+     id="text47">Event Bus (In-Memory / Kafka) — Transactional Outbox Pattern</text>
+  <text
+     x="455"
+     y="418"
+     text-anchor="middle"
+     font-size="9"
+     fill="#e8d5f5"
+     id="text48">Topics: payment.succeeded · payment.failed · settlement.batch.* · payout.* · payment.refunded · payment.disputed</text>
+  <!-- Arrows: services → event bus (publish) -->
+  <line
+     x1="130"
+     y1="350"
+     x2="130"
+     y2="380"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line48" />
+  <line
+     x1="360"
+     y1="350"
+     x2="360"
+     y2="380"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line49" />
+  <line
+     x1="590"
+     y1="350"
+     x2="590"
+     y2="380"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line50" />
+  <line
+     x1="800"
+     y1="350"
+     x2="800"
+     y2="380"
+     stroke="#555"
+     stroke-width="1.5"
+     marker-end="url(#arrow)"
+     id="line51" />
+  <!-- ═══════════ CONSUMERS (Below event bus) ═══════════ -->
+  <rect
+     x="30"
+     y="455"
+     width="180"
+     height="55"
+     rx="6"
+     fill="#8e44ad"
+     filter="url(#shadow)"
+     id="rect51" />
+  <text
+     x="120"
+     y="475"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text51">Notification Consumer</text>
+  <text
+     x="120"
+     y="492"
+     text-anchor="middle"
+     font-size="9"
+     fill="#e8d5f5"
+     id="text52">Merchant payment alerts</text>
+  <rect
+     x="230"
+     y="455"
+     width="180"
+     height="55"
+     rx="6"
+     fill="#8e44ad"
+     filter="url(#shadow)"
+     id="rect52" />
+  <text
+     x="320"
+     y="475"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text53">Compliance Consumer</text>
+  <text
+     x="320"
+     y="492"
+     text-anchor="middle"
+     font-size="9"
+     fill="#e8d5f5"
+     id="text54">Transaction monitoring</text>
+  <rect
+     x="430"
+     y="455"
+     width="190"
+     height="55"
+     rx="6"
+     fill="#8e44ad"
+     filter="url(#shadow)"
+     id="rect54" />
+  <text
+     x="525"
+     y="475"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text55">Webhook Consumer</text>
+  <text
+     x="525"
+     y="492"
+     text-anchor="middle"
+     font-size="9"
+     fill="#e8d5f5"
+     id="text56">Merchant signed webhooks</text>
+  <!-- [FIX #4] Arrows: event bus → consumers + background workers -->
+  <line
+     x1="120"
+     y1="430"
+     x2="120"
+     y2="455"
+     stroke="#555"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line56" />
+  <line
+     x1="320"
+     y1="430"
+     x2="320"
+     y2="455"
+     stroke="#555"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line57" />
+  <line
+     x1="525"
+     y1="430"
+     x2="525"
+     y2="455"
+     stroke="#555"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line58" />
+  <!-- Background Workers -->
+  <rect
+     x="660"
+     y="455"
+     width="220"
+     height="55"
+     rx="6"
+     fill="#d35400"
+     filter="url(#shadow)"
+     id="rect58" />
+  <text
+     x="770"
+     y="475"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text58">Background Workers</text>
+  <text
+     x="770"
+     y="492"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text59">Outbox · Payouts · Recon · Monitor · Retention</text>
+  <!-- [FIX #4] Arrow: event bus → background workers -->
+  <line
+     x1="770"
+     y1="430"
+     x2="770"
+     y2="455"
+     stroke="#d35400"
+     stroke-width="1.5"
+     marker-end="url(#arrow-orange)"
+     id="line59" />
+  <!-- [FIX #4] Arrows: consumers + background workers → services (bidirectional feedback) -->
+  <line
+     x1="120"
+     y1="510"
+     x2="120"
+     y2="518"
+     stroke="#8e44ad"
+     stroke-width="1"
+     stroke-dasharray="3,2"
+     id="line60" />
+  <line
+     x1="120"
+     y1="518"
+     x2="130"
+     y2="535"
+     stroke="#555"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line61" />
+  <line
+     x1="770"
+     y1="510"
+     x2="770"
+     y2="535"
+     stroke="#d35400"
+     stroke-width="1"
+     stroke-dasharray="3,2"
+     id="line62" />
+  <!-- ═══════════ PORTS ═══════════ -->
+  <rect
+     x="30"
+     y="535"
+     width="850"
+     height="60"
+     rx="8"
+     fill="#34495e"
+     filter="url(#shadow)"
+     id="rect62" />
+  <text
+     x="455"
+     y="555"
+     text-anchor="middle"
+     font-size="11"
+     font-weight="bold"
+     fill="white"
+     id="text62">Ports (interfaces)</text>
+  <text
+     x="100"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text63">PaymentGateway</text>
+  <text
+     x="210"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text64">Messenger</text>
+  <text
+     x="285"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text65">EmailSender</text>
+  <text
+     x="370"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text66">DataProvider</text>
+  <text
+     x="460"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text67">IdentityVerifier</text>
+  <text
+     x="565"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text68">SanctionsScreener</text>
+  <text
+     x="675"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text69">PayoutProvider</text>
+  <text
+     x="770"
+     y="575"
+     font-size="9"
+     fill="#bdc3c7"
+     id="text70">RefundProvider</text>
+  <!-- [FIX #5] Arrows: services → ports (services call through port interfaces) -->
+  <line
+     x1="95"
+     y1="350"
+     x2="95"
+     y2="535"
+     stroke="#34495e"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow)"
+     id="line70" />
+  <line
+     x1="240"
+     y1="350"
+     x2="240"
+     y2="535"
+     stroke="#34495e"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow)"
+     id="line71" />
+  <line
+     x1="460"
+     y1="350"
+     x2="460"
+     y2="535"
+     stroke="#34495e"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow)"
+     id="line72" />
+  <line
+     x1="675"
+     y1="350"
+     x2="675"
+     y2="535"
+     stroke="#34495e"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow)"
+     id="line73" />
+  <line
+     x1="800"
+     y1="350"
+     x2="770"
+     y2="535"
+     stroke="#34495e"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow)"
+     id="line74" />
+  <!-- ═══════════ ADAPTERS (Below ports) ═══════════ -->
+  <rect
+     x="30"
+     y="615"
+     width="130"
+     height="44"
+     rx="6"
+     fill="#e67e22"
+     filter="url(#shadow)"
+     id="rect74" />
+  <text
+     x="95"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text74">Paystack</text>
+  <text
+     x="95"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text75">Card checkout</text>
+  <rect
+     x="175"
+     y="615"
+     width="130"
+     height="44"
+     rx="6"
+     fill="#e67e22"
+     filter="url(#shadow)"
+     id="rect75" />
+  <text
+     x="240"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text76">WhatsApp API</text>
+  <text
+     x="240"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text77">Cloud messaging</text>
+  <rect
+     x="320"
+     y="615"
+     width="130"
+     height="44"
+     rx="6"
+     fill="#e67e22"
+     filter="url(#shadow)"
+     id="rect77" />
+  <text
+     x="385"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text78">Telegram Bot</text>
+  <text
+     x="385"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text79">Bot messaging</text>
+  <rect
+     x="465"
+     y="615"
+     width="110"
+     height="44"
+     rx="6"
+     fill="#e67e22"
+     filter="url(#shadow)"
+     id="rect79" />
+  <text
+     x="520"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text80">VTPass</text>
+  <text
+     x="520"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text81">Data bundles</text>
+  <rect
+     x="590"
+     y="615"
+     width="110"
+     height="44"
+     rx="6"
+     fill="#e67e22"
+     filter="url(#shadow)"
+     id="rect81" />
+  <text
+     x="645"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text82">SMTP Email</text>
+  <text
+     x="645"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#fdebd0"
+     id="text83">Transactional</text>
+  <rect
+     x="715"
+     y="615"
+     width="80"
+     height="44"
+     rx="6"
+     fill="#7f8c8d"
+     filter="url(#shadow)"
+     id="rect83" />
+  <text
+     x="755"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text84">Sim</text>
+  <text
+     x="755"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#d5d8dc"
+     id="text85">Payout</text>
+  <rect
+     x="805"
+     y="615"
+     width="75"
+     height="44"
+     rx="6"
+     fill="#7f8c8d"
+     filter="url(#shadow)"
+     id="rect85" />
+  <text
+     x="843"
+     y="634"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="white"
+     id="text86">Sim</text>
+  <text
+     x="843"
+     y="649"
+     text-anchor="middle"
+     font-size="9"
+     fill="#d5d8dc"
+     id="text87">Refund</text>
+  <!-- Arrows: ports → adapters -->
+  <line
+     x1="95"
+     y1="595"
+     x2="95"
+     y2="615"
+     stroke="#e67e22"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line87" />
+  <line
+     x1="240"
+     y1="595"
+     x2="240"
+     y2="615"
+     stroke="#e67e22"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line88" />
+  <line
+     x1="385"
+     y1="595"
+     x2="385"
+     y2="615"
+     stroke="#e67e22"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line89" />
+  <line
+     x1="520"
+     y1="595"
+     x2="520"
+     y2="615"
+     stroke="#e67e22"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line90" />
+  <line
+     x1="645"
+     y1="595"
+     x2="645"
+     y2="615"
+     stroke="#e67e22"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line91" />
+  <line
+     x1="755"
+     y1="595"
+     x2="755"
+     y2="615"
+     stroke="#7f8c8d"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line92" />
+  <line
+     x1="843"
+     y1="595"
+     x2="843"
+     y2="615"
+     stroke="#7f8c8d"
+     stroke-width="1"
+     marker-end="url(#arrow)"
+     id="line93" />
+  <!-- ═══════════ STORE (Database) ═══════════ -->
+  <rect
+     x="30"
+     y="690"
+     width="850"
+     height="80"
+     rx="8"
+     fill="#1a5276"
+     filter="url(#shadow)"
+     id="rect93" />
+  <text
+     x="455"
+     y="712"
+     text-anchor="middle"
+     font-size="12"
+     font-weight="bold"
+     fill="#aed6f1"
+     id="text93">PostgreSQL — Single Database (43 Migrations)</text>
+  <text
+     x="80"
+     y="732"
+     font-size="9"
+     fill="#85c1e9"
+     id="text94">payments · merchants · users</text>
+  <text
+     x="280"
+     y="732"
+     font-size="9"
+     fill="#85c1e9"
+     id="text95">settlements · payouts</text>
+  <text
+     x="440"
+     y="732"
+     font-size="9"
+     fill="#85c1e9"
+     id="text96">refunds · disputes</text>
+  <text
+     x="590"
+     y="732"
+     font-size="9"
+     fill="#85c1e9"
+     id="text97">ledger_entries</text>
+  <text
+     x="720"
+     y="732"
+     font-size="9"
+     fill="#85c1e9"
+     id="text98">audit_logs</text>
+  <text
+     x="80"
+     y="748"
+     font-size="9"
+     fill="#85c1e9"
+     id="text99">kyc_profiles · sessions</text>
+  <text
+     x="280"
+     y="748"
+     font-size="9"
+     fill="#85c1e9"
+     id="text100">data_orders · invoices</text>
+  <text
+     x="440"
+     y="748"
+     font-size="9"
+     fill="#85c1e9"
+     id="text101">chat_messages (AES-256-GCM)</text>
+  <text
+     x="590"
+     y="748"
+     font-size="9"
+     fill="#85c1e9"
+     id="text102">outbox · webhooks</text>
+  <text
+     x="720"
+     y="748"
+     font-size="9"
+     fill="#85c1e9"
+     id="text103">reconciliations</text>
+  <!-- Arrows: ports → store -->
+  <line
+     x1="200"
+     y1="595"
+     x2="200"
+     y2="690"
+     stroke="#1a5276"
+     stroke-width="1.5"
+     marker-end="url(#arrow-dark)"
+     id="line103" />
+  <line
+     x1="455"
+     y1="595"
+     x2="455"
+     y2="690"
+     stroke="#1a5276"
+     stroke-width="2"
+     marker-end="url(#arrow-dark)"
+     id="line104" />
+  <line
+     x1="700"
+     y1="595"
+     x2="700"
+     y2="690"
+     stroke="#1a5276"
+     stroke-width="1.5"
+     marker-end="url(#arrow-dark)"
+     id="line105" />
+  <!-- ═══════════ COMPLIANCE LAYER (Right side) ═══════════ -->
+  <rect
+     x="920"
+     y="70"
+     width="460"
+     height="140"
+     rx="8"
+     fill="#c0392b"
+     filter="url(#shadow)"
+     id="rect105"
+     transform="matrix(0.67250225,0,0,1,304.12273,0)" />
+  <text
+     x="1165.5273"
+     y="90.209435"
+     text-anchor="middle"
+     font-size="11.7664px"
+     font-weight="bold"
+     fill="#ffffff"
+     id="text105"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Compliance Layer</text>
+  <text
+     x="954.71173"
+     y="109.82018"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text106"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">KYC Tier Ladder (L0→L4) — CBN Requirements</text>
+  <text
+     x="954.71173"
+     y="125.50877"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text107"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Transaction Monitoring (velocity, structuring, round amounts)</text>
+  <text
+     x="954.71173"
+     y="141.19737"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text108"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Sanctions/PEP Screening (OFAC/UN/EU)</text>
+  <text
+     x="954.71173"
+     y="156.88597"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text109"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">ChatGuard: PCI/CBN credential detection (Luhn)</text>
+  <text
+     x="954.71173"
+     y="172.57455"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text110"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">SIEM: Unified event log (outbox + audit)</text>
+  <text
+     x="954.71173"
+     y="188.26315"
+     font-size="9.80538px"
+     fill="#f5b7b1"
+     id="text111"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">STR/CTR/PEP Reports for NFIU/CBN</text>
+  <!-- [FIX #1] Compliance → services: arrow from compliance left edge to services right edge -->
+  <line
+     x1="920"
+     y1="140"
+     x2="885"
+     y2="295"
+     stroke="#c0392b"
+     stroke-width="1.5"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-red)"
+     id="line111" />
+  <text
+     x="893"
+     y="260"
+     font-size="8"
+     fill="#c0392b"
+     transform="rotate(-30,893,260)"
+     id="text112">monitor</text>
+  <!-- [FIX #1] Compliance → event bus: subscribes to compliance consumer -->
+  <line
+     x1="920"
+     y1="200"
+     x2="885"
+     y2="400"
+     stroke="#c0392b"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-red)"
+     id="line112" />
+  <text
+     x="893"
+     y="300"
+     font-size="8"
+     fill="#c0392b"
+     transform="rotate(-45,893,300)"
+     id="text113">subscribe</text>
+  <!-- ═══════════ SECURITY LAYER ═══════════ -->
+  <!-- [FIX #2] Changed color from #8e44ad (too close to event bus) to #1b4f72 (dark navy-blue) -->
+  <rect
+     x="920"
+     y="225"
+     width="460"
+     height="80"
+     rx="8"
+     fill="#1b4f72"
+     filter="url(#shadow)"
+     id="rect113"
+     transform="matrix(0.68391764,0,0,1,291.92413,0)" />
+  <text
+     x="1165.5273"
+     y="243.17325"
+     text-anchor="middle"
+     font-size="11.7664px"
+     font-weight="bold"
+     fill="#aed6f1"
+     id="text114"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Security Layer</text>
+  <text
+     x="954.71173"
+     y="262.784"
+     font-size="9.80538px"
+     fill="#85c1e9"
+     id="text115"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">AES-256-GCM Encryption at Rest (chat payloads)</text>
+  <text
+     x="954.71173"
+     y="278.4726"
+     font-size="9.80538px"
+     fill="#85c1e9"
+     id="text116"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Double-Entry Ledger (SHA-256 chained, append-only)</text>
+  <text
+     x="954.71173"
+     y="294.16116"
+     font-size="9.80538px"
+     fill="#85c1e9"
+     id="text117"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Three-Way Reconciliation (internal vs ledger vs bank)</text>
+  <!-- [FIX #2] Security → store: encryption/ledger lives in store -->
+  <line
+     x1="1150"
+     y1="305"
+     x2="1150"
+     y2="690"
+     stroke="#1b4f72"
+     stroke-width="1.5"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-dark)"
+     id="line117" />
+  <text
+     x="490.26865"
+     y="-1173.3716"
+     font-size="7.8443px"
+     fill="#1b4f72"
+     transform="matrix(0,1.019849,-0.9805373,0,0,0)"
+     id="text118"
+     style="stroke-width:0.980537">encrypt · chain · reconcile</text>
+  <!-- [FIX #2] Security → services: security policies enforced at service layer -->
+  <line
+     x1="920"
+     y1="265"
+     x2="885"
+     y2="350"
+     stroke="#1b4f72"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-dark)"
+     id="line118" />
+  <text
+     x="893"
+     y="310"
+     font-size="8"
+     fill="#1b4f72"
+     transform="rotate(-20,893,310)"
+     id="text119">enforce</text>
+  <!-- ═══════════ PARTNER API ═══════════ -->
+  <rect
+     x="920"
+     y="320"
+     width="460"
+     height="80"
+     rx="8"
+     fill="#16a085"
+     filter="url(#shadow)"
+     id="rect119"
+     transform="matrix(0.6877723,0,0,1,288.3859,0)" />
+  <text
+     x="1165.5273"
+     y="336.32428"
+     text-anchor="middle"
+     font-size="11.7664px"
+     font-weight="bold"
+     fill="#ffffff"
+     id="text120"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Partner API</text>
+  <text
+     x="954.71173"
+     y="355.93503"
+     font-size="9.80538px"
+     fill="#a3e4d7"
+     id="text121"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">POST /api/v1/payments — HMAC-SHA256 signed</text>
+  <text
+     x="954.71173"
+     y="371.62363"
+     font-size="9.80538px"
+     fill="#a3e4d7"
+     id="text122"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">GET /api/v1/payments/{id} · POST refund</text>
+  <text
+     x="954.71173"
+     y="387.31223"
+     font-size="9.80538px"
+     fill="#a3e4d7"
+     id="text123"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">GET /settlements · /payouts · /refunds · /disputes</text>
+  <!-- Partner API → services -->
+  <line
+     x1="920"
+     y1="360"
+     x2="885"
+     y2="300"
+     stroke="#16a085"
+     stroke-width="1.5"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-teal)"
+     id="line123" />
+  <text
+     x="893"
+     y="330"
+     font-size="8"
+     fill="#16a085"
+     transform="rotate(-15,893,330)"
+     id="text124">REST</text>
+  <!-- ═══════════ ADMIN DASHBOARD ═══════════ -->
+  <rect
+     x="920"
+     y="415"
+     width="460"
+     height="95"
+     rx="8"
+     fill="#2c3e50"
+     filter="url(#shadow)"
+     id="rect124"
+     transform="matrix(0.69933629,0,0,1,277.77121,0)" />
+  <text
+     x="1165.5273"
+     y="429.47531"
+     text-anchor="middle"
+     font-size="11.7664px"
+     font-weight="bold"
+     fill="#ffffff"
+     id="text125"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Admin Dashboard</text>
+  <text
+     x="954.71173"
+     y="449.08606"
+     font-size="8.82484px"
+     fill="#bdc3c7"
+     id="text126"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">/admin/payments · /admin/settlements · /admin/refunds</text>
+  <text
+     x="954.71173"
+     y="464.77469"
+     font-size="8.82484px"
+     fill="#bdc3c7"
+     id="text127"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">/admin/disputes · /admin/ledger · /admin/reconciliation</text>
+  <text
+     x="954.71173"
+     y="480.46326"
+     font-size="8.82484px"
+     fill="#bdc3c7"
+     id="text128"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">/admin/kyc · /admin/siem · /admin/analytics · /admin/reports</text>
+  <text
+     x="954.71173"
+     y="496.15186"
+     font-size="8.82484px"
+     fill="#bdc3c7"
+     id="text129"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">RBAC: admin · compliance · support · readonly</text>
+  <!-- Admin → store -->
+  <line
+     x1="1000"
+     y1="510"
+     x2="1000"
+     y2="690"
+     stroke="#2c3e50"
+     stroke-width="1"
+     stroke-dasharray="3,2"
+     marker-end="url(#arrow)"
+     id="line129" />
+  <text
+     x="1026.291"
+     y="588.32233"
+     font-size="7.8443px"
+     fill="#2c3e50"
+     id="text130"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">queries</text>
+  <!-- Admin → compliance (view-only) -->
+  <line
+     x1="1142.843"
+     y1="415"
+     x2="1142.843"
+     y2="215"
+     stroke="#2c3e50"
+     stroke-width="0.980537"
+     stroke-dasharray="3, 2"
+     id="line130" />
+  <text
+     x="1173.3716"
+     y="313.77194"
+     font-size="7.8443px"
+     fill="#2c3e50"
+     id="text131"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">view</text>
+  <!-- ═══════════ DOUBLE-ENTRY LEDGER (C16) ═══════════ -->
+  <rect
+     x="920"
+     y="525"
+     width="460"
+     height="65"
+     rx="8"
+     fill="#1a5276"
+     filter="url(#shadow)"
+     id="rect131"
+     transform="matrix(0.71090028,0,0,1,267.15652,0)" />
+  <text
+     x="1165.5273"
+     y="537.33441"
+     text-anchor="middle"
+     font-size="11.7664px"
+     font-weight="bold"
+     fill="#aed6f1"
+     id="text132"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">Double-Entry Ledger (C16)</text>
+  <text
+     x="954.71173"
+     y="556.94519"
+     font-size="8.82484px"
+     fill="#85c1e9"
+     id="text133"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">1100 Operating Bank · 2100 Customer Float · 3100 Merchant Payable</text>
+  <text
+     x="954.71173"
+     y="572.63379"
+     font-size="8.82484px"
+     fill="#85c1e9"
+     id="text134"
+     transform="scale(0.9805373,1.019849)"
+     style="stroke-width:0.980537">3200 Settlement Payable · 5200 Settlement Fees · 4100 Revenue</text>
+  <!-- [FIX #3] Ledger → store: ledger entries live in PostgreSQL -->
+  <line
+     x1="1150"
+     y1="590"
+     x2="1150"
+     y2="690"
+     stroke="#1a5276"
+     stroke-width="2"
+     marker-end="url(#arrow-dark)"
+     id="line134" />
+  <text
+     x="1158"
+     y="640"
+     font-size="8"
+     fill="#1a5276"
+     id="text135">ledger_entries</text>
+  <!-- [FIX #3] Ledger ← services: services post ledger pairs -->
+  <line
+     x1="920"
+     y1="555"
+     x2="885"
+     y2="310"
+     stroke="#1a5276"
+     stroke-width="1"
+     stroke-dasharray="4,3"
+     marker-end="url(#arrow-dark)"
+     id="line135" />
+  <text
+     x="893"
+     y="430"
+     font-size="8"
+     fill="#1a5276"
+     transform="rotate(-40,893,430)"
+     id="text136">post pairs</text>
+  <!-- ═══════════ FLOW LABELS ═══════════ -->
+  <text
+     x="15"
+     y="162"
+     font-size="9"
+     fill="#2c3e50"
+     font-weight="bold"
+     id="text137">①</text>
+  <text
+     x="492"
+     y="262"
+     font-size="9"
+     fill="#2c3e50"
+     font-weight="bold"
+     id="text138">②</text>
+  <text
+     x="455"
+     y="398"
+     font-size="9"
+     fill="white"
+     font-weight="bold"
+     id="text139">③</text>
+  <!-- ═══════════ LEGEND ═══════════ -->
+  <rect
+     x="920"
+     y="610"
+     width="460"
+     height="70"
+     rx="6"
+     fill="#f8f9fa"
+     stroke="#dee2e6"
+     id="rect139" />
+  <text
+     x="1150"
+     y="630"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#495057"
+     id="text140">Legend</text>
+  <rect
+     x="935"
+     y="640"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#2ecc71"
+     id="rect140" />
+  <text
+     x="952"
+     y="650"
+     font-size="9"
+     fill="#495057"
+     id="text141">Core Services</text>
+  <rect
+     x="1045"
+     y="640"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#9b59b6"
+     id="rect141" />
+  <text
+     x="1062"
+     y="650"
+     font-size="9"
+     fill="#495057"
+     id="text142">Event Bus</text>
+  <rect
+     x="1140"
+     y="640"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#e67e22"
+     id="rect142" />
+  <text
+     x="1157"
+     y="650"
+     font-size="9"
+     fill="#495057"
+     id="text143">External Adapters</text>
+  <rect
+     x="1270"
+     y="640"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#1a5276"
+     id="rect143" />
+  <text
+     x="1287"
+     y="650"
+     font-size="9"
+     fill="#495057"
+     id="text144">Storage</text>
+  <rect
+     x="935"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#c0392b"
+     id="rect144" />
+  <text
+     x="952"
+     y="668"
+     font-size="9"
+     fill="#495057"
+     id="text145">Compliance</text>
+  <rect
+     x="1045"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#1b4f72"
+     id="rect145" />
+  <text
+     x="1062"
+     y="668"
+     font-size="9"
+     fill="#495057"
+     id="text146">Security</text>
+  <rect
+     x="1140"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#3498db"
+     id="rect146" />
+  <text
+     x="1157"
+     y="668"
+     font-size="9"
+     fill="#495057"
+     id="text147">Gateway</text>
+  <rect
+     x="1210"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#2c3e50"
+     id="rect147" />
+  <text
+     x="1227"
+     y="668"
+     font-size="9"
+     fill="#495057"
+     id="text148">Admin / API</text>
+  <rect
+     x="1290"
+     y="658"
+     width="12"
+     height="12"
+     rx="2"
+     fill="#d35400"
+     id="rect148" />
+  <text
+     x="1307"
+     y="668"
+     font-size="9"
+     fill="#495057"
+     id="text149">Workers</text>
+  <!-- ═══════════ DIFFERENCES CALLOUT ═══════════ -->
+  <rect
+     x="920"
+     y="710"
+     width="460"
+     height="80"
+     rx="6"
+     fill="#fef9e7"
+     stroke="#f39c12"
+     stroke-dasharray="3,2"
+     id="rect149" />
+  <text
+     x="1150"
+     y="730"
+     text-anchor="middle"
+     font-size="10"
+     font-weight="bold"
+     fill="#7d6608"
+     id="text150">Differences from Reference PDF</text>
+  <text
+     x="935"
+     y="746"
+     font-size="9"
+     fill="#7d6608"
+     id="text151">• Single PostgreSQL DB (not separate Payment/Transaction/Outbox)</text>
+  <text
+     x="935"
+     y="760"
+     font-size="9"
+     fill="#7d6608"
+     id="text152">• Paystack + simulated adapters (not Stripe)</text>
+  <text
+     x="935"
+     y="774"
+     font-size="9"
+     fill="#7d6608"
+     id="text153">• Conversation FSM adds WhatsApp/Telegram multi-channel + KYC</text>
+  <text
+     x="935"
+     y="788"
+     font-size="9"
+     fill="#7d6608"
+     id="text154">• Added: Ledger · Reconciliation · SIEM · Analytics · ChatGuard</text>
+</svg>

@@ -69,7 +69,7 @@ func (a *App) wfMyDetailsStep(r *http.Request, flow store.WebFlow, user store.Us
 		review = append(review, webFlowLine{Term: "Recent payments", Desc: strings.Join(paymentParts, "\n")})
 	}
 	review = append(review, webFlowLine{Term: "Account number", Desc: summary.Note})
-	// Saved payment methods (SAVED_CARD_METHODS_PLAN.md Phase 1): show what we
+	// Saved payment methods (docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1): show what we
 	// remember and offer one action to forget all of it. Nothing here is card
 	// data — only which rail the payer chose last.
 	saved := a.savedMethodLines(r, user.ID)

@@ -1,4 +1,4 @@
--- Spec G7 residual (CBN_AML_COMPLIANCE_SPEC.md §5): scheduled audit
+-- Spec G7 residual (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): scheduled audit
 -- chain-verification. VerifyAuditChain recomputes the audit_logs hash chain;
 -- the admin dashboard already renders chain status on page load. The residual
 -- is a persistent record of the scheduled sweep so a break is detectable (and

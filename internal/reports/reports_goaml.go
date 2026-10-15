@@ -1,4 +1,4 @@
-// Spec G4 (CBN_AML_COMPLIANCE_SPEC.md §3.4): the goAML filing format. The
+// Spec G4 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.4): the goAML filing format. The
 // NFIU files STRs/CTRs (and the AIF accounts-of-record register) through the
 // goAML portal, which ingests an XML schema derived from the UNODC goAML data
 // model, not CSV. The encoders here emit a faithful element-mapped document

@@ -1,6 +1,6 @@
 package service
 
-// Expiry coverage for reports/Payment_Pipeline_Test_Plan.xlsx scenarios B2
+// Expiry coverage for docs/testing/Payment_Pipeline_Test_Plan.xlsx scenarios B2
 // (unconfirmed bank-transfer draft) and C3 (card checkout abandoned
 // before the hosted page). Both walk the real Reconcile worker: Unresolved
 // gateway payments are requeried first, then expireStale terminates drafts

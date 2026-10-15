@@ -1,6 +1,6 @@
 package store
 
-// Spec G11 (CBN_AML_COMPLIANCE_SPEC.md §3.7): duplicate-identity detection.
+// Spec G11 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.7): duplicate-identity detection.
 // One person -> one customer. A second profile presenting a BVN or NIN that is
 // already verified on another profile is refused, and the collision opens a
 // review case for a human. The identity itself is owned by the identity_keys

@@ -2,7 +2,7 @@
 // AdverseMediaScreener port for spec gap G9. It mirrors the
 // cac/firs/geo/screening simulated-adapter convention: a deterministic,
 // dependency-free stand-in for the real vendor (the Dojah screening purchase
-// named in AML_VENDOR_DECISION_RECORD.md §11), so the domestic-list and
+// named in docs/compliance/AML_VENDOR_DECISION_RECORD.md §11), so the domestic-list and
 // adverse-media decision vocabulary is exercisable end to end and a live
 // adapter can be dropped in behind the same interface without touching the
 // service seam. Domestic lists (NSC/NIGSAC) are already owned through the

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Builds ONBOARDING_PAYMENTS_JOURNEY.docx: the end-to-end individual and
+"""Builds docs/platform/ONBOARDING_PAYMENTS_JOURNEY.docx: the end-to-end individual and
 business journey (onboarding through the highest KYC/KYB tier, payments,
 external services, Trust Fabric, AML/CFT controls), with three rendered
-diagrams. House document style is cloned from CBN_AML_COMPLIANCE_SPEC.docx
+diagrams. House document style is cloned from docs/compliance/CBN_AML_COMPLIANCE_SPEC.docx
 (same raw-OOXML approach as spec2docx: python-docx segfaults on this box).
 
     python scripts/build_journey_docx.py
@@ -16,8 +16,8 @@ from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = os.path.join(os.environ.get("TEMP", "/tmp"), "faya_journey")
 os.makedirs(TMP, exist_ok=True)
-SRC_DOCX = os.path.join(ROOT, "CBN_AML_COMPLIANCE_SPEC.docx")
-OUT_DOCX = os.path.join(ROOT, "ONBOARDING_PAYMENTS_JOURNEY.docx")
+SRC_DOCX = os.path.join(ROOT, "docs", "compliance", "CBN_AML_COMPLIANCE_SPEC.docx")
+OUT_DOCX = os.path.join(ROOT, "docs", "platform", "ONBOARDING_PAYMENTS_JOURNEY.docx")
 
 GREEN = "#157a5f"; MINT = "#dff5ec"; INK = "#17211d"; AMBER = "#b7791f"
 AMBERBG = "#fff2cc"; RED = "#b42318"; PAPER = "#f7faf9"

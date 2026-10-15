@@ -10,13 +10,13 @@ import (
 )
 
 // Saved payment methods — the posture-neutral half of
-// SAVED_CARD_METHODS_PLAN.md Phase 1.
+// docs/payments/SAVED_CARD_METHODS_PLAN.md Phase 1.
 //
 // What this is NOT: a stored card. The platform holds no card data at all — the
 // card rail renders Interswitch's Hosted Fields iframes, so the PAN never
 // reaches us — and this layer only remembers *which rail* the payer chose, per
 // surface, so the picker can stop asking the same question on every purchase.
-// A saved card is a separate, gated decision (CARD_ON_FILE_DECISION.md): it
+// A saved card is a separate, gated decision (docs/payments/CARD_ON_FILE_DECISION.md): it
 // changes PCI scope, and nothing here presumes its outcome.
 //
 // The remembered rail is a hint, never an authorisation. A payer arriving on a

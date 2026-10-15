@@ -2,7 +2,7 @@
 // screening vendor behind the PaymentScreener port. It mirrors the
 // cac/firs/geo simulated-adapter convention: a deterministic, dependency-free
 // stand-in for the real vendor (Firco/Actimize/Napier lane in
-// AML_VENDOR_DECISION_RECORD.md), so the G2 hold/interdiction semantics are
+// docs/compliance/AML_VENDOR_DECISION_RECORD.md), so the G2 hold/interdiction semantics are
 // exercisable end to end and a live adapter can be dropped in behind the same
 // interface without touching the service seam.
 package paymentscreening

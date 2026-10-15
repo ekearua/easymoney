@@ -1,6 +1,6 @@
 package store
 
-// Spec G5 (CBN_AML_COMPLIANCE_SPEC.md §3.4): filing-clock tracking. NFIU
+// Spec G5 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §3.4): filing-clock tracking. NFIU
 // instructions set real deadlines — an STR within 24 hours of the
 // determination of suspicion, a CTR by the 7th of the following month — and
 // the PEP/AIF registry extracts follow that monthly cadence; a missed clock is

@@ -304,7 +304,7 @@ func (a *App) wfMethodButtons(r *http.Request, flow store.WebFlow, includeWallet
 
 // orderMethodActionsByPreference puts the rail the payer used last first, so a
 // returning payer sees their habit in the first position rather than the same
-// three buttons in the same order every time (SAVED_CARD_METHODS_PLAN.md
+// three buttons in the same order every time (docs/payments/SAVED_CARD_METHODS_PLAN.md
 // Phase 1).
 //
 // It reorders and deliberately does not relabel. webflow-onepage.js captures

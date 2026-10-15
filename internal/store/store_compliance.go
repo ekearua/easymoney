@@ -1,6 +1,6 @@
 package store
 
-// Spec G8 (CBN_AML_COMPLIANCE_SPEC.md §5): the annual independent-validation
+// Spec G8 (docs/compliance/CBN_AML_COMPLIANCE_SPEC.md §5): the annual independent-validation
 // attestation. One row per validation cycle year; the admin console lists
 // them as a checklist (cycle year, scope, status, due date, evidence link)
 // and the operator records the validation once it happens. Every mutation is

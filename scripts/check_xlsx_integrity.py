@@ -3,7 +3,7 @@
 
 One workbook in this repo was silently zero-filled (every byte replaced with
 NUL) by a crashed edit session, and the damage was only discovered when a
-later task tried to open it. This check fails loudly instead: any reports/*.xlsx
+later task tried to open it. This check fails loudly instead: any docs/**/*.xlsx
 or repo-root *.xlsx that is not a healthy OOXML zip is named with the reason
 and the process exits 1.
 
@@ -29,11 +29,15 @@ from xml.etree import ElementTree as ET
 
 def workbooks():
     found = []
-    for pattern in ("reports/*.xlsx", "*.xlsx"):
-        for path in sorted(glob.glob(pattern)):
+    seen = set()
+    for pattern in ("docs/**/*.xlsx", "*.xlsx"):
+        for path in sorted(glob.glob(pattern, recursive=True)):
             base = os.path.basename(path)
             if base.startswith("~$") or base.endswith(".bak"):
                 continue
+            if path in seen:
+                continue
+            seen.add(path)
             found.append(path)
     return found
 
