@@ -1,35 +1,530 @@
 ---
-import { SITE } from '../config';
-import BaseLayout from '../layouts/BaseLayout.astro';
-
-const pages = [
-  { href: '/privacy', title: 'Privacy Policy', desc: 'How we collect, use, share and protect personal data.' },
-  { href: '/terms', title: 'Terms of Service', desc: 'The rules for using the Faya payment and messaging service.' },
-  { href: '/data-deletion', title: 'Data Deletion', desc: 'Request deletion of your data, and what we keep by law.' },
-  { href: '/contact', title: 'Contact', desc: 'Reach support, our Data Protection Officer, or our registered office.' },
-];
+import LandingLayout from '../layouts/LandingLayout.astro';
 ---
 
-<BaseLayout
-  title="Legal & Trust Centre"
-  description="Faya by Xego legal and trust centre: privacy policy, terms of service and data deletion."
+<LandingLayout
+  title="FAYA by Xego — Let's talk money."
+  description="Meet FAYA by Xego. From a conversation to a complete transaction. Explore the buyer and business experience."
 >
-  <section class="home">
-    <div class="wrap">
-      <p class="lede" style="text-transform:uppercase; letter-spacing:2px; font-weight:700; font-size:13px; color:var(--faya-orange);">Faya by Xego</p>
-      <h1>Legal &amp; Trust Centre</h1>
-      <p class="lede">
-        {SITE.brand} moves money inside the chats people already use. These are the documents that
-        explain how we handle your data and the rules for using the service.
-      </p>
-      <div class="cards">
-        {pages.map((page) => (
-          <a class="card" href={page.href}>
-            <h2>{page.title}</h2>
-            <p>{page.desc}</p>
-          </a>
-        ))}
+  <header>
+    <div class="wrap nav">
+      <a class="brand" href="#" aria-label="FAYA by Xego home">
+        <svg class="symbol" viewBox="550 550 500 500" aria-hidden="true" focusable="false">
+          <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
+        </svg>
+        <span>
+          FAYA<small>BY XEGO</small>
+        </span>
+      </a>
+      <button class="menu" aria-label="Open navigation" aria-expanded="false">☰</button>
+      <nav class="navlinks" aria-label="Main navigation">
+        <a href="#how-it-works">How it works</a>
+        <a href="#business">For business</a>
+        <a href="#why-faya">Why FAYA</a>
+        <a href="#faqs">FAQs</a>
+        <button class="help-nav" data-info="help">Help</button>
+        <button class="btn" data-demo="buyer">Fayago <span>↗</span></button>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="eyebrow">It starts with a conversation</div>
+          <h1>
+            From a conversation<br />
+            to a <span>complete<br />transaction.</span>
+          </h1>
+          <p class="lead">
+            Talk to a business. Fund your wallet. Pay with FAYA. Bring your next transaction
+            closer, wherever you connect.
+          </p>
+          <div class="actions">
+            <button class="btn" data-demo="buyer">Fayago <span>↗</span></button>
+            <a class="btn outline" href="#business">For businesses <span>→</span></a>
+          </div>
+          <p class="hero-note">For the things you want. For the business you’re building.</p>
+        </div>
+        <div class="visual" aria-label="Illustrative WhatsApp buyer and seller conversation">
+          <div class="orbit"></div>
+          <div class="phone">
+            <div class="phone-top">
+              <span>9:41</span>
+              <span>▰ ▰</span>
+            </div>
+            <div class="notch"></div>
+            <div class="chathead">
+              <span>‹</span>
+              <span class="avatar">A</span>
+              <div>
+                <b>Ade’s Store</b>
+                <small>WhatsApp · Business conversation</small>
+              </div>
+            </div>
+            <div class="chatbody">
+              <div class="day">TODAY</div>
+              <div class="bubble sent">Hi, is this bag available?<small>10:24 ✓✓</small></div>
+              <div class="bubble">Yes, it is. Which colour would you like?<small>10:25</small></div>
+              <div class="bubble sent">The brown one. How much?<small>10:25 ✓✓</small></div>
+              <div class="bubble">It’s ₦25,000. 🤎<small>10:26</small></div>
+              <div class="chatpay">
+                <span class="mini-brand">FAYA</span>
+                <hr />
+                <div class="amount">
+                  <span>Brown everyday bag<br />Ade’s Store</span>
+                  <strong>₦25,000</strong>
+                </div>
+                <button data-demo="buyer">Fayago →</button>
+              </div>
+              <div class="demo-label">Illustrative product experience</div>
+            </div>
+          </div>
+          <div class="float wallet">
+            <span class="icon">▣</span>
+            Your wallet
+            <strong>₦40,000<span style="font-size:12px">.00</span></strong>
+            <span style="display:block;font-size:9px;margin-top:8px;color:#68748b">Ready for your next transaction</span>
+          </div>
+          <div class="float paid">
+            <span class="tick">✓</span>
+            <div>
+              <strong>Payment complete</strong>
+              <small>A good conversation. A done deal.</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <div class="strip">
+      <div class="wrap">
+        <p>Meet your next transaction<br />where conversations happen.</p>
+        <div class="channels">
+          <span class="channel wa"><i>◔</i> WhatsApp</span>
+          <span class="channel ig"><i>◎</i> Instagram</span>
+          <span class="channel tg"><i>➤</i> Telegram</span>
+          <span class="channel fb"><i>f</i> Facebook</span>
+        </div>
       </div>
     </div>
-  </section>
-</BaseLayout>
+    <section class="content" id="explore">
+      <div class="wrap">
+        <div class="section-top">
+          <div>
+            <div class="eyebrow">Let’s talk money</div>
+            <h2>One conversation.<br />So many possibilities.</h2>
+          </div>
+          <p>
+            From a customer asking “How much?” to a business making its next sale, FAYA helps the
+            conversation move forward.
+          </p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature">
+            <div class="feature-icon">↔</div>
+            <h3>Start a conversation</h3>
+            <p>Connect with a business, ask your questions, and agree on what you’re buying.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-icon">▣</div>
+            <h3>Fund your wallet</h3>
+            <p>Add money to your FAYA wallet and get ready for your next purchase.</p>
+          </article>
+          <article class="feature">
+            <div class="feature-icon">↗</div>
+            <h3>Pay a business</h3>
+            <p>Check the business and amount, make your payment, and see the transaction through.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="content how" id="how-it-works">
+      <div class="wrap how-layout">
+        <div class="intro">
+          <div class="eyebrow">How it works</div>
+          <h2>A simple path<br />from hello to paid.</h2>
+          <p>
+            Buying something you love or selling something you’re proud of? Here’s where you come
+            in.
+          </p>
+          <div class="tabs" role="tablist" aria-label="Choose your FAYA journey">
+            <button id="buyer-tab" role="tab" aria-selected="true" aria-controls="journey" data-journey="buyer">
+              I’m buying
+            </button>
+            <button id="business-tab" role="tab" aria-selected="false" aria-controls="journey" data-journey="business">
+              I’m a business
+            </button>
+          </div>
+          <button class="try" id="try-journey">Try the buyer walkthrough ↗</button>
+        </div>
+        <div class="steps" id="journey" role="tabpanel" aria-labelledby="buyer-tab"></div>
+      </div>
+    </section>
+    <section class="content" id="business">
+      <div class="wrap">
+        <div class="business-panel">
+          <div>
+            <div class="eyebrow">FAYA for business</div>
+            <h2>Your business.<br />Your customers.<br />More possibilities.</h2>
+            <p>
+              For market women, neighbourhood shops, online vendors, and growing businesses. Let
+              the conversations you already have with customers lead to completed transactions.
+            </p>
+            <button class="btn" data-demo="business">
+              Explore business onboarding <span>↗</span>
+            </button>
+          </div>
+          <div class="seller-window">
+            <div class="window-header">
+              <b>Business overview</b>
+              <span class="tag">ILLUSTRATION</span>
+            </div>
+            <div class="store">
+              <div class="avatar">A</div>
+              <div>
+                <b>Ade’s Store</b>
+                <small>Every conversation is an opportunity.</small>
+              </div>
+            </div>
+            <div class="order">
+              <div>Brown everyday bag<small>Buyer · WhatsApp</small></div>
+              <div>
+                <strong>₦25,000</strong>
+                <em>Payment complete ✓</em>
+              </div>
+            </div>
+            <div class="order">
+              <div>Woven tote bag<small>Buyer · Instagram</small></div>
+              <div>
+                <strong>₦18,000</strong>
+                <em>Payment complete ✓</em>
+              </div>
+            </div>
+            <p style="font-size:11px;line-height:1.6;color:#68748b;margin:18px 0 0">
+              Join FAYA → Set up your business → Connect with buyers → Receive payments
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="content" id="why-faya" style="padding-top:0">
+      <div class="wrap">
+        <div class="section-top">
+          <div>
+            <div class="eyebrow">What moves us</div>
+            <h2>Built around what<br />matters to you.</h2>
+          </div>
+          <p>
+            Freedom, speed, and availability are our guiding principles. Honesty and transparency
+            shape the experience.
+          </p>
+        </div>
+        <div class="values">
+          <article class="value">
+            <span>01 / FREEDOM</span>
+            <h3>Make your own moves.</h3>
+            <p>Buy what you need. Build the business you want. Connect in the spaces that feel familiar.</p>
+          </article>
+          <article class="value">
+            <span>02 / SPEED</span>
+            <h3>Keep things moving.</h3>
+            <p>A clear path from conversation to payment, so you can get on with your day.</p>
+          </article>
+          <article class="value">
+            <span>03 / AVAILABILITY</span>
+            <h3>Closer to your everyday.</h3>
+            <p>
+              A presence across the platforms where people chat, discover businesses, and make
+              buying decisions.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+    <section class="content" id="about" style="padding-top:0">
+      <div class="wrap">
+        <div class="about-line">
+          <h3>We believe everyday conversations<br />can open new possibilities.</h3>
+          <p>
+            FAYA by Xego brings people, businesses, and transactions closer together. Our focus is
+            a clear journey: connect, fund your wallet, and pay a business—with freedom, speed, and
+            availability at its heart.
+          </p>
+        </div>
+      </div>
+    </section>
+    <section class="content faq" id="faqs">
+      <div class="wrap faq-layout">
+        <div>
+          <div class="eyebrow">A little more clarity</div>
+          <h2>Good questions.<br />Clear answers.</h2>
+        </div>
+        <div>
+          <details open>
+            <summary>What is FAYA?</summary>
+            <p>
+              FAYA by Xego brings conversations and transactions together. Its proposed journey lets
+              buyers connect with businesses, fund a wallet, and pay.
+            </p>
+          </details>
+          <details>
+            <summary>Who is FAYA for?</summary>
+            <p>
+              Buyers and sellers: market women, shop owners, online vendors, and other business
+              owners connecting with customers.
+            </p>
+          </details>
+          <details>
+            <summary>How do I fund my wallet?</summary>
+            <p>
+              Start with the wallet funding step, choose from the funding options made available,
+              and check your updated balance before paying. Try the walkthrough above to see this
+              website concept’s example.
+            </p>
+          </details>
+          <details>
+            <summary>Which platforms are included?</summary>
+            <p>
+              This website concept shows WhatsApp, Instagram, Telegram, and Facebook as FAYA’s
+              conversation channels. Channel availability and the final experience will be
+              confirmed at launch.
+            </p>
+          </details>
+          <details>
+            <summary>How does a business join?</summary>
+            <p>
+              The business journey starts with registration and setting up your business details.
+              From there, buyers can connect with your business and complete payments. Explore the
+              business walkthrough for the proposed flow.
+            </p>
+          </details>
+          <details>
+            <summary>Can I make a real payment on this website?</summary>
+            <p>
+              This is a website design preview. The walkthrough uses sample balances and
+              transactions. Real account registration, wallet funding, and payments are not
+              connected.
+            </p>
+          </details>
+          <details>
+            <summary>Where can I get help?</summary>
+            <p>
+              Use the Help button to explore wallet, buyer, and business guidance. Official support
+              contact details will be added when confirmed.
+            </p>
+          </details>
+        </div>
+      </div>
+    </section>
+    <section class="closing">
+      <div class="wrap">
+        <div>
+          <h2>Your next transaction<br />starts with a conversation.</h2>
+          <p>For buyers. For businesses. For wherever you connect.</p>
+        </div>
+        <button class="btn" data-demo="buyer">Fayago <span>↗</span></button>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="wrap">
+      <div class="footer-top">
+        <div>
+          <a href="#" class="brand footbrand">
+            <svg class="symbol" viewBox="550 550 500 500" aria-hidden="true" focusable="false">
+              <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
+            </svg>
+            <span>
+              FAYA<small>BY XEGO</small>
+            </span>
+          </a>
+          <p>Where conversations lead to more.</p>
+        </div>
+        <div class="footer-links">
+          <a href="#how-it-works">How it works</a>
+          <a href="#business">For business</a>
+          <a href="#faqs">FAQs</a>
+        </div>
+      </div>
+      <div class="info-links">
+        <a href="#about">About FAYA</a>
+        <button data-info="help">Help centre</button>
+        <a href="/privacy">Privacy</a>
+        <a href="/terms">Terms</a>
+        <a href="/data-deletion">Data deletion</a>
+        <a href="/contact">Contact</a>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 FAYA by Xego</span>
+        <span>Website concept · Sample transactions · No real payments</span>
+      </div>
+    </div>
+  </footer>
+  <button class="help-float" data-info="help" aria-label="Open FAYA help centre">? &nbsp; Help</button>
+  <dialog id="info">
+    <div class="dialog-top">
+      <span class="preview-tag">FAYA by Xego</span>
+      <button class="close info-close" aria-label="Close information">×</button>
+    </div>
+    <div id="info-content"></div>
+  </dialog>
+  <dialog id="demo">
+    <div class="dialog-top">
+      <span class="preview-tag">FAYA experience preview</span>
+      <button class="close" aria-label="Close walkthrough">×</button>
+    </div>
+    <div class="demo-content" id="demo-content"></div>
+    <div class="dialog-actions">
+      <button class="back">← Back</button>
+      <button class="btn" id="demo-next">Next →</button>
+    </div>
+    <p class="statusline">Illustrative walkthrough. No account is created or money moved.</p>
+  </dialog>
+
+  <script>
+    const journeys = {
+      buyer: [
+        ['Start with a conversation', 'Chat with a business on a supported platform. Ask about the item, price, and details before you decide.'],
+        ['Get your wallet ready', 'Set up your FAYA wallet and add the money you need using an available funding option.'],
+        ['Review, then pay', 'Check who you’re paying and the agreed amount. Use your funded wallet to complete the payment.'],
+        ['See the transaction through', 'Review the confirmation with the business and agree on the next steps for your purchase.'],
+      ],
+      business: [
+        ['Join as a business', 'Begin registration and provide your business details to start the onboarding process.'],
+        ['Set up your business', 'Complete the required onboarding steps so buyers can identify who they are paying.'],
+        ['Connect with buyers', 'Continue customer conversations on supported platforms and agree on the purchase details.'],
+        ['Receive and confirm payment', 'Check the completed payment, confirm with your buyer, and arrange fulfilment.'],
+      ],
+    };
+    let active = 'buyer';
+    const journey = document.querySelector('#journey');
+    function renderJourney(type) {
+      active = type;
+      journey.innerHTML = journeys[type]
+        .map(([h, p]) => `<article class="step"><div><h3>${h}</h3><p>${p}</p></div></article>`)
+        .join('');
+      document.querySelectorAll('[data-journey]').forEach((b) => {
+        b.setAttribute('aria-selected', b.dataset.journey === type);
+        b.tabIndex = b.dataset.journey === type ? 0 : -1;
+      });
+      journey.setAttribute('aria-labelledby', type + '-tab');
+      document.querySelector('#try-journey').textContent = `Try the ${type === 'buyer' ? 'buyer' : 'business'} walkthrough ↗`;
+    }
+    document.querySelectorAll('[data-journey]').forEach((b) => {
+      b.onclick = () => renderJourney(b.dataset.journey);
+      b.onkeydown = (e) => {
+        if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault();
+          const other = b.dataset.journey === 'buyer' ? 'business' : 'buyer';
+          renderJourney(other);
+          document.querySelector('#' + other + '-tab').focus();
+        }
+      };
+    });
+    renderJourney('buyer');
+
+    const menu = document.querySelector('.menu');
+    const nav = document.querySelector('.navlinks');
+    menu.onclick = () => {
+      const open = nav.classList.toggle('open');
+      menu.setAttribute('aria-expanded', open);
+      menu.textContent = open ? '×' : '☰';
+    };
+    nav.querySelectorAll('a,button').forEach((a) =>
+      a.addEventListener('click', () => {
+        nav.classList.remove('open');
+        menu.setAttribute('aria-expanded', 'false');
+        menu.textContent = '☰';
+      })
+    );
+
+    const dialog = document.querySelector('#demo');
+    let demoType = 'buyer';
+    let demoStep = 0;
+    const previews = {
+      buyer: [
+        ['A conversation with Ade’s Store', 'You: “How much is the brown bag?”<br>Business: “It’s ₦25,000.”<br><br>Agree on your purchase before you pay.'],
+        ['Fund your wallet', 'Example starting balance: ₦15,000<br>Example amount added: ₦25,000<br><span class="demo-amount">₦40,000</span>Wallet ready for your purchase.'],
+        ['Review your payment', 'Business: <b>Ade’s Store</b><br>Item: Brown everyday bag<br><span class="demo-amount">₦25,000</span>Available wallet balance: ₦40,000'],
+        ['Transaction complete ✓', 'Sample payment: ₦25,000<br>Sample remaining balance: ₦15,000<br><br>Your next step: confirm delivery or collection with the business.'],
+      ],
+      business: [
+        ['Welcome to FAYA for business', 'Example business: <b>Ade’s Store</b><br>Business type: Retail shop<br><br>Registration starts with your business details.'],
+        ['Complete your onboarding', 'Provide the required information and complete the onboarding process.<br><br>Final requirements will appear in the live product.'],
+        ['Connect with your buyer', 'Buyer: “Is this bag available?”<br>You: “Yes. It’s ₦25,000.”<br><br>Agree on the item, amount, and fulfilment details.'],
+        ['A completed transaction ✓', 'Sample payment received: <b>₦25,000</b><br>Buyer: WhatsApp customer<br><br>Confirm payment, then arrange delivery or collection.'],
+      ],
+    };
+    function renderDemo() {
+      const [h, p] = previews[demoType][demoStep];
+      document.querySelector('#demo-content').innerHTML =
+        `<span class="preview-tag">${demoType} journey · ${demoStep + 1} of 4</span><h3 style="margin-top:15px">${h}</h3><div>${p}</div>`;
+      document.querySelector('.back').disabled = demoStep === 0;
+      document.querySelector('.back').style.visibility = demoStep === 0 ? 'hidden' : 'visible';
+      document.querySelector('#demo-next').textContent =
+        demoStep === 3 ? 'Done ✓' : demoStep === 2 && demoType === 'buyer' ? 'Fayago →' : 'Next →';
+    }
+    function openDemo(type) {
+      demoType = type;
+      demoStep = 0;
+      renderDemo();
+      dialog.showModal();
+    }
+    document.querySelectorAll('[data-demo]').forEach((b) => (b.onclick = () => openDemo(b.dataset.demo)));
+    document.querySelector('#try-journey').onclick = () => openDemo(active);
+    dialog.querySelector('.close').onclick = () => dialog.close();
+    document.querySelector('.back').onclick = () => {
+      if (demoStep > 0) {
+        demoStep--;
+        renderDemo();
+      }
+    };
+    document.querySelector('#demo-next').onclick = () => {
+      if (demoStep === 3) dialog.close();
+      else {
+        demoStep++;
+        renderDemo();
+      }
+    };
+    dialog.addEventListener('click', (e) => {
+      if (e.target === dialog) {
+        const r = dialog.getBoundingClientRect();
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)
+          dialog.close();
+      }
+    });
+
+    const info = document.querySelector('#info');
+    const support = {
+      wallet: ['Wallet funding', 'In the proposed flow, open your wallet, use an available funding option, and check the updated balance before making a payment. The buyer walkthrough shows a sample balance changing from ₦15,000 to ₦40,000.'],
+      buyer: ['Buying from a business', 'Start a conversation with the business, confirm the item and price, then check the business name and amount before paying. After payment, agree on delivery or collection with the seller.'],
+      business: ['Joining as a business', 'Start business registration, provide the required business details, and complete onboarding. The business walkthrough shows the proposed journey from joining to a completed customer payment.'],
+      payment: ['Questions about a payment', 'For a live payment query, keep the transaction reference and relevant details ready for the official support channel. Official contact information will be added to the live site. This preview cannot access or process transactions.'],
+    };
+    function helpHome() {
+      document.querySelector('#info-content').innerHTML =
+        '<h2>How can we help?</h2><p>Choose a topic to find your next step.</p>' +
+        Object.entries(support)
+          .map(([k, v]) => `<button class="support-topic" data-topic="${k}">${v[0]} <span style="float:right">→</span></button>`)
+          .join('') +
+        '<p style="font-size:11px">Help centre preview · Official support contact details to be confirmed.</p>';
+      info.querySelectorAll('[data-topic]').forEach(
+        (b) =>
+          (b.onclick = () => {
+            const [title, answer] = support[b.dataset.topic];
+            document.querySelector('#info-content').innerHTML =
+              `<h2>${title}</h2><div class="support-answer">${answer}</div><button class="support-topic" id="help-back">← All help topics</button>`;
+            document.querySelector('#help-back').onclick = helpHome;
+          })
+      );
+    }
+    document.querySelectorAll('[data-info]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          helpHome();
+          info.showModal();
+        })
+    );
+    document.querySelector('.info-close').onclick = () => info.close();
+  </script>
+</LandingLayout>
