@@ -909,6 +909,10 @@ footer {
   color: white
 }
 
+.footbrand small {
+  color: #ffffff
+}
+
 dialog {
   border: 0;
   border-radius: 18px;
