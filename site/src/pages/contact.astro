@@ -1,0 +1,69 @@
+---
+import { SITE } from '../config';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const channels = [
+  {
+    title: 'Customer support',
+    desc: 'Help with payments, wallets, invoices, thrift groups, data top-ups, disputes and refunds.',
+    email: SITE.supportEmail,
+    cta: 'Email support',
+  },
+  {
+    title: 'Privacy & data requests',
+    desc: 'Access, correction, export, erasure, or any question for our Data Protection Officer, Bisi Oladiran.',
+    email: SITE.privacyEmail,
+    cta: 'Email our DPO',
+  },
+  {
+    title: 'Merchants & partnerships',
+    desc: 'Onboarding, settlements, KYB, the partner API, or working with Faya.',
+    email: SITE.supportEmail,
+    cta: 'Talk to us',
+  },
+];
+---
+
+<BaseLayout
+  title="Contact"
+  description="Contact Faya by Xego — customer support, privacy and data requests, merchants and partnerships, and our registered office."
+>
+  <section class="home">
+    <div class="wrap">
+      <p class="lede" style="text-transform:uppercase; letter-spacing:2px; font-weight:700; font-size:13px; color:var(--faya-orange);">Faya by Xego</p>
+      <h1>Contact</h1>
+      <p class="lede">
+        We're a Nigerian team. Reach us by email and we'll get back to you as quickly as we can.
+      </p>
+
+      <div class="cards">
+        {channels.map((c) => (
+          <div class="card">
+            <h2>{c.title}</h2>
+            <p>{c.desc}</p>
+            <p style="margin:12px 0 0;">
+              <a href={`mailto:${c.email}`} style="font-weight:700;">{c.cta} →</a>
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <h2 style="margin:40px 0 8px; font-size:22px; color:var(--faya-blue);">Registered office</h2>
+      <p style="margin:0;">
+        {SITE.legalEntity} (Faya)<br />
+        {SITE.address}
+      </p>
+      <p style="margin:8px 0 0; color:var(--faya-muted); font-size:14px;">RC 9933966</p>
+
+      <h2 style="margin:36px 0 8px; font-size:22px; color:var(--faya-blue);">Regulator</h2>
+      <p style="margin:0;">
+        <a href="https://ndpc.gov.ng/" rel="noopener">Nigeria Data Protection Commission (NDPC)</a>
+      </p>
+
+      <p style="margin:36px 0 0;">
+        Looking for our policies? See the <a href="/privacy">Privacy Policy</a>,
+        <a href="/terms">Terms of Service</a> and <a href="/data-deletion">Data Deletion</a>.
+      </p>
+    </div>
+  </section>
+</BaseLayout>

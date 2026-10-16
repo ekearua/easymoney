@@ -1,0 +1,17 @@
+---
+import { getEntry, render } from 'astro:content';
+import LegalLayout from '../layouts/LegalLayout.astro';
+
+const entry = await getEntry('legal', 'terms');
+if (!entry) throw new Error('Missing legal entry: terms');
+const { Content } = await render(entry);
+---
+
+<LegalLayout
+  title={entry.data.title}
+  description={entry.data.description}
+  updated={entry.data.updated}
+  lede="The rules for using the Faya payment and messaging service."
+>
+  <Content />
+</LegalLayout>

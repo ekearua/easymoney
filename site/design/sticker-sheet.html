@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FAYA by Xego — Design Sticker Sheet</title>
+<meta name="description" content="Design sticker sheet extracted from the FAYA by Xego concept mockup: brand mark, palette, type, buttons, channel chips, chat components and cards.">
+<link rel="icon" href="../public/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="design-tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--faya-cream);
+    color: var(--faya-ink);
+    font-family: var(--faya-font);
+    line-height: 1.5;
+  }
+  .sheet-head {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    padding: 18px 32px; background: rgba(252,250,245,.94);
+    border-bottom: 1px solid var(--faya-line); backdrop-filter: blur(10px);
+  }
+  .sheet-head h1 { font-size: 18px; margin: 0; letter-spacing: -.4px; }
+  .sheet-head p { margin: 2px 0 0; font-size: 12px; color: var(--faya-muted); }
+  main { max-width: 1180px; margin: 0 auto; padding: 40px 32px 90px; }
+  .grid { display: grid; gap: 18px; }
+  section { margin-top: 54px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 22px; border-bottom: 2px solid var(--faya-ink); padding-bottom: 12px; }
+  .sec-head .num { font-size: 12px; font-weight: 700; color: var(--faya-orange); letter-spacing: 1px; }
+  .sec-head h2 { font-size: 24px; margin: 0; letter-spacing: -1px; }
+  .sec-head p { margin: 0 0 0 auto; font-size: 13px; color: var(--faya-muted); max-width: 420px; }
+  .sticker {
+    background: var(--faya-surface); border: 1px solid var(--faya-line);
+    border-radius: var(--faya-radius-card); padding: 22px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .sticker > .label { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--faya-muted); font-weight: 700; }
+  .stage { display: flex; align-items: center; justify-content: center; min-height: 120px; padding: 8px; position: relative; }
+  .stage.tall { min-height: 200px; }
+  .stage.swatch-bg-cream { background: var(--faya-cream); border-radius: var(--faya-radius-md); }
+  .stage.swatch-bg-blue { background: var(--faya-blue); border-radius: var(--faya-radius-md); }
+  .stage.swatch-bg-yellow { background: var(--faya-yellow); border-radius: var(--faya-radius-md); }
+  .stage.swatch-bg-ink { background: var(--faya-ink); border-radius: var(--faya-radius-md); }
+  .meta { font-size: 11px; color: var(--faya-muted); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+
+  /* --- Brand lockup (placeholder mark) --- */
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 29px; font-weight: 800; letter-spacing: var(--faya-tracking-brand); }
+  .brand .symbol { width: 34px; height: 35px; display: inline-block; flex-shrink: 0; }
+  .brand > span { color: var(--faya-orange); }
+  .brand small { display: block; letter-spacing: 1px; font-size: 9px; font-weight: 700; margin-top: 2px; color: var(--faya-blue); }
+  .brand.on-dark > span { color: var(--faya-yellow); }
+  .brand.on-dark small { color: var(--faya-on-blue); }
+  .brand.on-yellow > span { color: var(--faya-ink); }
+  .brand.on-yellow small { color: var(--faya-blue); }
+  .brand.on-yellow .mark-fill { fill: var(--faya-ink); }
+  .brand .mark-fill { fill: var(--faya-orange); }
+  .brand.on-dark .mark-fill { fill: var(--faya-yellow); }
+  .brand .mark-glyph { fill: var(--faya-cream); }
+  .brand.on-yellow .mark-glyph { fill: var(--faya-yellow); }
+
+  /* --- Palette swatches --- */
+  .palette { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; }
+  .swatch { border: 1px solid var(--faya-line); border-radius: var(--faya-radius-md); overflow: hidden; background: #fff; }
+  .swatch .chip { height: 78px; }
+  .swatch .info { padding: 10px 12px; }
+  .swatch .info b { display: block; font-size: 12px; }
+  .swatch .info span { font-size: 11px; color: var(--faya-muted); font-family: ui-monospace, Consolas, monospace; }
+
+  /* --- Type scale --- */
+  .type-row { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; border-bottom: 1px dashed var(--faya-line); padding: 14px 0; }
+  .type-row .meta { text-align: right; white-space: nowrap; }
+  .t-display { font-size: 66px; line-height: 1.08; letter-spacing: var(--faya-tracking-tight); font-weight: 700; margin: 0; }
+  .t-h2 { font-size: 46px; line-height: 1.12; letter-spacing: var(--faya-tracking-head); margin: 0; }
+  .t-h3 { font-size: 22px; letter-spacing: -.6px; margin: 0; }
+  .t-lead { font-size: 17px; color: var(--faya-muted); margin: 0; }
+  .t-body { font-size: 14px; color: var(--faya-muted); margin: 0; }
+  .eyebrow { text-transform: uppercase; font-size: 11px; letter-spacing: var(--faya-tracking-eyebrow); font-weight: 700; display: flex; align-items: center; gap: 10px; }
+  .eyebrow:before { content: ''; width: 22px; height: 2px; background: var(--faya-orange); }
+  .eyebrow.on-dark { color: var(--faya-yellow); }
+
+  /* --- Buttons --- */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 18px; border: 0; border-radius: var(--faya-radius-btn); padding: 17px 22px; background: var(--faya-orange); color: #fff; font-size: 14px; font-weight: 700; transition: transform var(--faya-ease); cursor: pointer; font-family: inherit; }
+  .btn:hover { transform: translateY(-2px); }
+  .btn.light { background: #fff; color: var(--faya-ink); }
+  .btn.outline { background: transparent; border: 1px solid #ffffff70; color: #fff; }
+  .btn.ink { background: var(--faya-ink); color: #fff; }
+  .btn.small { padding: 13px 18px; }
+  .btn .arrow { font-weight: 700; }
+
+  /* --- Channel chips --- */
+  .channels { display: flex; gap: 30px; flex-wrap: wrap; }
+  .channel { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+  .channel i { font-style: normal; font-weight: bold; font-size: 15px; border: 1.5px solid currentColor; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; }
+  .wa { color: var(--faya-whatsapp); } .ig { color: var(--faya-instagram); }
+  .tg { color: var(--faya-telegram); } .fb { color: var(--faya-facebook); }
+
+  /* --- Feature icons --- */
+  .feature-icons { display: flex; gap: 16px; flex-wrap: wrap; }
+  .feature-icon { font-size: 24px; width: 45px; height: 45px; display: grid; place-items: center; border-radius: var(--faya-radius-md); background: var(--faya-orange-tint); color: var(--faya-orange); }
+  .feature-icon.y { background: var(--faya-yellow-tint); color: #806100; }
+  .feature-icon.b { background: var(--faya-blue-tint); color: var(--faya-blue); }
+
+  /* --- Chat mock --- */
+  .chat { width: 260px; background: var(--faya-phone-bg); border-radius: var(--faya-radius-md); overflow: hidden; border: 1px solid var(--faya-line-strong); }
+  .chathead { background: #fff; padding: 12px; display: flex; gap: 10px; align-items: center; font-size: 12px; }
+  .avatar { display: grid; place-items: center; width: 33px; height: 33px; border-radius: 50%; background: var(--faya-avatar-bg); color: var(--faya-avatar-ink); }
+  .chathead small { display: block; font-size: 9px; color: #6b7a83; margin-top: 3px; }
+  .chatbody { padding: 13px; font-size: 11px; line-height: 1.6; color: #283649; }
+  .day { text-align: center; font-size: 8px; color: #7c858e; margin-bottom: 14px; }
+  .bubble { padding: 10px 11px; border-radius: 12px 12px 12px 2px; background: #fff; max-width: 90%; margin-bottom: 10px; }
+  .bubble.sent { background: var(--faya-bubble-out); margin-left: auto; border-radius: 12px 12px 2px 12px; }
+  .bubble small { font-size: 8px; color: #768880; display: block; text-align: right; }
+  .chatpay { border-radius: var(--faya-radius-md); background: #fff; padding: 13px; margin-top: 14px; }
+  .chatpay .mini-brand { font-weight: 800; color: var(--faya-orange); font-size: 12px; }
+  .chatpay hr { border: 0; border-top: 1px solid #eef0f4; margin: 10px 0; }
+  .amount { display: flex; justify-content: space-between; font-size: 10px; }
+  .amount strong { font-size: 16px; color: var(--faya-ink); }
+  .chatpay .pay { width: 100%; margin-top: 11px; padding: 10px; border: 0; border-radius: var(--faya-radius-sm); background: var(--faya-orange); color: #fff; font-size: 10px; font-weight: bold; }
+
+  /* --- Float stickers --- */
+  .float { background: #fff; color: var(--faya-ink); padding: 16px 18px; border-radius: var(--faya-radius-md); box-shadow: var(--faya-shadow-float); font-size: 11px; width: 180px; }
+  .float .icon { color: var(--faya-orange); float: right; font-size: 18px; }
+  .float strong { display: block; font-size: 23px; letter-spacing: -.6px; margin-top: 8px; }
+  .float strong .cents { font-size: 12px; }
+  .float .sub { display: block; font-size: 9px; margin-top: 8px; color: var(--faya-muted); }
+  .float.paid { display: flex; gap: 12px; align-items: center; width: auto; }
+  .tick { background: var(--faya-yellow); color: var(--faya-ink); width: 31px; height: 31px; border-radius: 50%; display: grid; place-items: center; font-size: 16px; flex-shrink: 0; }
+  .float.paid strong { font-size: 12px; margin: 0 0 5px; letter-spacing: 0; }
+  .float.paid small { color: var(--faya-muted); font-size: 10px; }
+
+  /* --- Cards --- */
+  .feature { padding: 26px; border: 1px solid var(--faya-line); border-radius: var(--faya-radius-card); background: #fff; }
+  .feature h3 { margin: 16px 0 10px; font-size: 20px; }
+  .feature p { color: var(--faya-muted); font-size: 14px; line-height: 1.7; margin: 0; }
+  .value { border-top: 2px solid var(--faya-ink); padding-top: 18px; }
+  .value span { font-size: 12px; color: var(--faya-muted); }
+  .value h3 { margin: 10px 0 8px; }
+  .value p { color: var(--faya-muted); font-size: 14px; line-height: 1.7; margin: 0; }
+  .window { background: #fff; border-radius: var(--faya-radius-card); padding: 20px; box-shadow: var(--faya-shadow-window); width: min(360px, 100%); }
+  .window-header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #eef0f5; padding-bottom: 14px; font-size: 13px; }
+  .tag { font-size: 9px; letter-spacing: 1px; background: var(--faya-tag-bg); padding: 6px 8px; border-radius: var(--faya-radius-xs); color: var(--faya-tag-ink); }
+  .store { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
+  .store .avatar { width: 45px; height: 45px; }
+  .store b { font-size: 15px; }
+  .store small { display: block; font-size: 11px; color: var(--faya-muted); margin-top: 5px; }
+  .order { display: flex; justify-content: space-between; padding: 12px 0; border-top: 1px solid #eef0f5; font-size: 12px; }
+  .order small { display: block; margin-top: 5px; color: var(--faya-muted); font-size: 10px; }
+  .order em { display: block; margin-top: 5px; font-style: normal; font-size: 9px; color: var(--faya-success); }
+
+  /* --- Tabs & accordion --- */
+  .tabs { display: flex; background: var(--faya-surface-tint); border-radius: var(--faya-radius-tabs); padding: 5px; max-width: 320px; }
+  .tabs button { flex: 1; border: 0; border-radius: var(--faya-radius-sm); padding: 12px; background: transparent; font-weight: 700; font-size: 13px; color: var(--faya-ink); font-family: inherit; }
+  .tabs button[aria-selected="true"] { background: #fff; box-shadow: 0 2px 6px #00000009; }
+  details { border-bottom: 1px solid #dedfdf; padding: 16px 0; }
+  summary { list-style: none; cursor: pointer; font-size: 15px; font-weight: 700; display: flex; justify-content: space-between; gap: 15px; }
+  summary::-webkit-details-marker { display: none; }
+  summary:after { content: '+'; font-size: 20px; font-weight: 400; }
+  details[open] summary:after { content: '−'; }
+  details p { font-size: 13px; line-height: 1.7; color: var(--faya-muted); }
+
+  /* --- Radius / shadow spec stickers --- */
+  .specs { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px; }
+  .spec { text-align: center; }
+  .spec .box { height: 84px; background: var(--faya-blue-tint); border: 1px solid var(--faya-blue); display: grid; place-items: center; color: var(--faya-blue); font-weight: 700; font-size: 13px; }
+  .spec .box.shadow { background: #fff; border: 0; box-shadow: var(--faya-shadow-float); border-radius: var(--faya-radius-md); }
+  .spec .meta { display: block; margin-top: 8px; }
+
+  .foot { margin-top: 70px; padding-top: 22px; border-top: 1px solid var(--faya-line); font-size: 12px; color: var(--faya-muted); display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+
+  @media print {
+    .sheet-head { position: static; }
+    section { break-inside: avoid; }
+    body { background: #fff; }
+  }
+  @media (max-width: 700px) {
+    main { padding: 24px 18px 60px; }
+    .sec-head { flex-wrap: wrap; }
+    .sec-head p { margin-left: 0; }
+    .t-display { font-size: 42px; } .t-h2 { font-size: 34px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="sheet-head">
+  <div>
+    <h1>FAYA by Xego — Design Sticker Sheet</h1>
+    <p>Assets extracted from the myfayago.com concept mockup · tokens in <span class="meta">design-tokens.css</span></p>
+  </div>
+  <span class="meta">myfayago.com</span>
+</header>
+
+<main>
+
+  <!-- 01 · BRAND -->
+  <section id="brand">
+    <div class="sec-head"><span class="num">01</span><h2>Brand &amp; lockups</h2><p>Wordmark is Arial 800, tracking −1.5px. Symbol is a placeholder pending the final approved icon.</p></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))">
+      <div class="sticker">
+        <span class="label">Primary lockup · on cream</span>
+        <div class="stage swatch-bg-cream">
+          <span class="brand">
+            <svg class="symbol" viewBox="0 0 120 120" aria-hidden="true"><rect class="mark-fill" x="6" y="6" width="108" height="108" rx="32"/><path class="mark-glyph" d="M40 34h44v12H52v14h26v12H52v22H40z"/><path class="mark-fill" d="M18 96l18 6-6-18z"/></svg>
+            <span>FAYA<small>BY XEGO</small></span>
+          </span>
+        </div>
+        <span class="meta">--faya-orange #ff6237 · --faya-blue #1848be</span>
+      </div>
+      <div class="sticker">
+        <span class="label">Reversed · on blue</span>
+        <div class="stage swatch-bg-blue">
+          <span class="brand on-dark">
+            <svg class="symbol" viewBox="0 0 120 120" aria-hidden="true"><rect class="mark-fill" x="6" y="6" width="108" height="108" rx="32"/><path class="mark-glyph" d="M40 34h44v12H52v14h26v12H52v22H40z"/><path class="mark-fill" d="M18 96l18 6-6-18z"/></svg>
+            <span>FAYA<small>BY XEGO</small></span>
+          </span>
+        </div>
+        <span class="meta">--faya-yellow #ffd447 · on --faya-blue</span>
+      </div>
+      <div class="sticker">
+        <span class="label">On yellow</span>
+        <div class="stage swatch-bg-yellow">
+          <span class="brand on-yellow">
+            <svg class="symbol" viewBox="0 0 120 120" aria-hidden="true"><rect class="mark-fill" x="6" y="6" width="108" height="108" rx="32"/><path class="mark-glyph" d="M40 34h44v12H52v14h26v12H52v22H40z"/><path class="mark-fill" d="M18 96l18 6-6-18z"/></svg>
+            <span>FAYA<small>BY XEGO</small></span>
+          </span>
+        </div>
+        <span class="meta">--faya-ink #102a63 on --faya-yellow</span>
+      </div>
+      <div class="sticker">
+        <span class="label">Symbol only · app icon base</span>
+        <div class="stage swatch-bg-cream">
+          <svg width="88" height="88" viewBox="0 0 120 120" aria-hidden="true"><rect class="mark-fill" x="6" y="6" width="108" height="108" rx="32"/><path class="mark-glyph" d="M40 34h44v12H52v14h26v12H52v22H40z"/><path class="mark-fill" d="M18 96l18 6-6-18z"/></svg>
+        </div>
+        <span class="meta">1024px export → app icon / favicon</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 · PALETTE -->
+  <section id="palette">
+    <div class="sec-head"><span class="num">02</span><h2>Colour palette</h2><p>Six core tokens drive the system; accents and tints are derived from them.</p></div>
+    <div class="palette">
+      <div class="swatch"><div class="chip" style="background:var(--faya-blue)"></div><div class="info"><b>Blue</b><span>#1848be · --faya-blue</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-ink)"></div><div class="info"><b>Ink</b><span>#102a63 · --faya-ink</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-orange)"></div><div class="info"><b>Orange</b><span>#ff6237 · --faya-orange</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-yellow)"></div><div class="info"><b>Yellow</b><span>#ffd447 · --faya-yellow</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-cream)"></div><div class="info"><b>Cream</b><span>#fcfaf5 · --faya-cream</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-muted)"></div><div class="info"><b>Muted</b><span>#68748b · --faya-muted</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-whatsapp)"></div><div class="info"><b>WhatsApp</b><span>#24905e</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-instagram)"></div><div class="info"><b>Instagram</b><span>#a2478b</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-telegram)"></div><div class="info"><b>Telegram</b><span>#3789bb</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-facebook)"></div><div class="info"><b>Facebook</b><span>#2862ae</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-peach)"></div><div class="info"><b>Peach</b><span>#ffeadc · business band</span></div></div>
+      <div class="swatch"><div class="chip" style="background:var(--faya-success)"></div><div class="info"><b>Success</b><span>#29845c</span></div></div>
+    </div>
+  </section>
+
+  <!-- 03 · TYPE -->
+  <section id="type">
+    <div class="sec-head"><span class="num">03</span><h2>Typography</h2><p>Single family: Arial / Helvetica. Display and headings carry tight negative tracking.</p></div>
+    <div class="sticker">
+      <div class="type-row"><span class="meta">Display · 66px / 700 / −3px</span></div>
+      <div class="type-row"><p class="t-display">From a conversation to a<br>complete transaction.</p></div>
+      <div class="type-row"><p class="t-h2">One conversation. So many possibilities.</p><span class="meta">H2 · 46px / −1.9px</span></div>
+      <div class="type-row"><h3 class="t-h3">Fund your wallet</h3><span class="meta">H3 · 22px / −0.6px</span></div>
+      <div class="type-row"><p class="t-lead">Talk to a business. Fund your wallet. Pay with FAYA.</p><span class="meta">Lead · 17px</span></div>
+      <div class="type-row"><p class="t-body">Body copy for feature descriptions and legal prose.</p><span class="meta">Body · 14px</span></div>
+      <div class="type-row"><span class="eyebrow">It starts with a conversation</span><span class="meta">Eyebrow · 11px / 2px</span></div>
+    </div>
+  </section>
+
+  <!-- 04 · BUTTONS -->
+  <section id="buttons">
+    <div class="sec-head"><span class="num">04</span><h2>Buttons</h2><p>Radius 8px, 700 weight, orange primary; lift on hover.</p></div>
+    <div class="sticker">
+      <div class="stage">
+        <div class="actions" style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center">
+          <button class="btn">Fayago <span class="arrow">↗</span></button>
+          <button class="btn light">For businesses <span class="arrow">→</span></button>
+          <button class="btn ink">Get started</button>
+          <button class="btn small">Small</button>
+        </div>
+      </div>
+      <div class="stage swatch-bg-blue">
+        <button class="btn outline">For businesses <span class="arrow">→</span></button>
+      </div>
+      <span class="meta">--faya-orange · --faya-ink · outline on dark · --faya-radius-btn 8px</span>
+    </div>
+  </section>
+
+  <!-- 05 · CHANNELS -->
+  <section id="channels">
+    <div class="sec-head"><span class="num">05</span><h2>Channel chips</h2><p>Bordered glyph badge + label in each platform's accent colour.</p></div>
+    <div class="sticker">
+      <div class="stage">
+        <div class="channels">
+          <span class="channel wa"><i>◔</i>WhatsApp</span>
+          <span class="channel ig"><i>◎</i>Instagram</span>
+          <span class="channel tg"><i>➤</i>Telegram</span>
+          <span class="channel fb"><i>f</i>Facebook</span>
+        </div>
+      </div>
+      <span class="meta">26px badge · 8px radius · 1.5px currentColor border</span>
+    </div>
+  </section>
+
+  <!-- 06 · ICONS -->
+  <section id="icons">
+    <div class="sec-head"><span class="num">06</span><h2>Feature &amp; UI icons</h2><p>45px tile, 12px radius, with orange / yellow / blue tint variants.</p></div>
+    <div class="sticker">
+      <div class="stage">
+        <div class="feature-icons">
+          <span class="feature-icon">↔</span>
+          <span class="feature-icon y">▣</span>
+          <span class="feature-icon b">↗</span>
+          <span class="feature-icon">✓</span>
+        </div>
+      </div>
+      <span class="meta">--faya-orange-tint / --faya-yellow-tint / --faya-blue-tint</span>
+    </div>
+  </section>
+
+  <!-- 07 · CHAT -->
+  <section id="chat">
+    <div class="sec-head"><span class="num">07</span><h2>Chat &amp; payment mock</h2><p>The conversation-to-payment unit: bubbles, inline pay card, status.</p></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))">
+      <div class="sticker">
+        <span class="label">Conversation thread</span>
+        <div class="stage tall swatch-bg-cream">
+          <div class="chat">
+            <div class="chathead"><span class="avatar">A</span><div><b>Ade’s Store</b><small>WhatsApp · Business</small></div></div>
+            <div class="chatbody">
+              <div class="day">TODAY</div>
+              <div class="bubble sent">Hi, is this bag available?<small>10:24 ✓✓</small></div>
+              <div class="bubble">Yes, it is. Which colour?<small>10:25</small></div>
+              <div class="bubble sent">The brown one. How much?<small>10:25 ✓✓</small></div>
+              <div class="chatpay">
+                <span class="mini-brand">FAYA</span><hr>
+                <div class="amount"><span>Brown everyday bag<br>Ade’s Store</span><strong>₦25,000</strong></div>
+                <button class="pay">Fayago →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sticker">
+        <span class="label">Wallet float</span>
+        <div class="stage tall swatch-bg-cream">
+          <div class="float"><span class="icon">▣</span>Your wallet<strong>₦40,000<span class="cents">.00</span></strong><span class="sub">Ready for your next transaction</span></div>
+        </div>
+      </div>
+      <div class="sticker">
+        <span class="label">Paid confirmation float</span>
+        <div class="stage tall swatch-bg-cream">
+          <div class="float paid"><span class="tick">✓</span><div><strong>Payment complete</strong><small>A good conversation. A done deal.</small></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 08 · CARDS -->
+  <section id="cards">
+    <div class="sec-head"><span class="num">08</span><h2>Cards &amp; rows</h2><p>Feature card, value column, and the business "seller window" summary.</p></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(250px,1fr))">
+      <div class="sticker">
+        <span class="label">Feature card</span>
+        <article class="feature"><div class="feature-icon">↗</div><h3>Pay a business</h3><p>Check the business and amount, make your payment, and see the transaction through.</p></article>
+      </div>
+      <div class="sticker">
+        <span class="label">Value column</span>
+        <article class="value"><span>01 / FREEDOM</span><h3>Make your own moves.</h3><p>Buy what you need. Build the business you want. Connect in the spaces that feel familiar.</p></article>
+      </div>
+      <div class="sticker">
+        <span class="label">Order row + success tag</span>
+        <div class="stage">
+          <div class="window">
+            <div class="window-header"><b>Business overview</b><span class="tag">ILLUSTRATION</span></div>
+            <div class="store"><div class="avatar">A</div><div><b>Ade’s Store</b><small>Every conversation is an opportunity.</small></div></div>
+            <div class="order"><div>Brown everyday bag<small>Buyer · WhatsApp</small></div><div style="text-align:right"><strong>₦25,000</strong><em>Payment complete ✓</em></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 09 · CONTROLS -->
+  <section id="controls">
+    <div class="sec-head"><span class="num">09</span><h2>Controls</h2><p>Journey tabs and the FAQ accordion.</p></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      <div class="sticker">
+        <span class="label">Tabs</span>
+        <div class="stage"><div class="tabs" role="tablist"><button role="tab" aria-selected="true">I’m buying</button><button role="tab" aria-selected="false">I’m a business</button></div></div>
+      </div>
+      <div class="sticker">
+        <span class="label">Accordion</span>
+        <details open><summary>What is FAYA?</summary><p>FAYA by Xego brings conversations and transactions together.</p></details>
+        <details><summary>Who is FAYA for?</summary><p>Buyers and sellers connecting with customers.</p></details>
+      </div>
+    </div>
+  </section>
+
+  <!-- 10 · SPECS -->
+  <section id="specs">
+    <div class="sec-head"><span class="num">10</span><h2>Radius &amp; shadow</h2><p>Corner and elevation tokens reused across components.</p></div>
+    <div class="sticker">
+      <div class="specs">
+        <div class="spec"><div class="box" style="border-radius:8px">8px</div><span class="meta">Buttons</span></div>
+        <div class="spec"><div class="box" style="border-radius:12px">12px</div><span class="meta">Tiles / floats</span></div>
+        <div class="spec"><div class="box" style="border-radius:14px">14px</div><span class="meta">Feature cards</span></div>
+        <div class="spec"><div class="box" style="border-radius:20px">20px</div><span class="meta">Panels</span></div>
+        <div class="spec"><div class="box shadow">shadow</div><span class="meta">Float elevation</span></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">
+    <span>FAYA by Xego — design sticker sheet · extracted from the fayago-conversations mockup.</span>
+    <span class="meta">Print-friendly · open in a browser and Save as PDF</span>
+  </div>
+
+</main>
+</body>
+</html>

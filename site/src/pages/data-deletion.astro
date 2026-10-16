@@ -1,0 +1,17 @@
+---
+import { getEntry, render } from 'astro:content';
+import LegalLayout from '../layouts/LegalLayout.astro';
+
+const entry = await getEntry('legal', 'data-deletion');
+if (!entry) throw new Error('Missing legal entry: data-deletion');
+const { Content } = await render(entry);
+---
+
+<LegalLayout
+  title={entry.data.title}
+  description={entry.data.description}
+  updated={entry.data.updated}
+  lede="How to request deletion, what we delete, and what we must keep by law."
+>
+  <Content />
+</LegalLayout>

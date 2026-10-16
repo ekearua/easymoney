@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="FAYA by Xego — From a conversation to a complete transaction.">
+  <title>FAYA by Xego — myfayago.com</title>
+  <defs>
+    <linearGradient id="band" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1848be"/>
+      <stop offset="1" stop-color="#102a63"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .word { font-family: Arial, Helvetica, sans-serif; font-weight: 800; fill: #ff6237; }
+    .sub { font-family: Arial, Helvetica, sans-serif; font-weight: 700; fill: #1848be; letter-spacing: 2px; }
+    .h1 { font-family: Arial, Helvetica, sans-serif; font-weight: 700; fill: #ffffff; letter-spacing: -3px; }
+    .h1 span { fill: #ffd447; }
+    .lead { font-family: Arial, Helvetica, sans-serif; fill: #e3eaff; }
+    .eyebrow { font-family: Arial, Helvetica, sans-serif; font-weight: 700; fill: #ffd447; letter-spacing: 2px; }
+    .url { font-family: Arial, Helvetica, sans-serif; font-weight: 700; fill: #c9d7ff; }
+  </style>
+
+  <rect width="440" height="630" fill="url(#band)"/>
+  <g transform="translate(64 70)">
+    <rect fill="#ffd447" x="0" y="0" width="88" height="88" rx="26"/>
+    <path fill="#102a63" d="M24 20h40v12H37v13h22v12H37v21H24z"/>
+    <text class="word" x="112" y="62" font-size="52">FAYA</text>
+    <text class="sub" x="116" y="84" font-size="12">BY XEGO</text>
+  </g>
+  <text class="url" x="64" y="560" font-size="20">myfayago.com</text>
+
+  <g transform="translate(520 0)">
+    <rect x="0" y="0" width="680" height="630" fill="#fcfaf5"/>
+    <text class="eyebrow" x="60" y="200" font-size="16">IT STARTS WITH A CONVERSATION</text>
+    <text class="h1" x="60" y="280" font-size="62">From a conversation</text>
+    <text class="h1" x="60" y="348" font-size="62">to a <tspan fill="#ff6237">complete transaction.</tspan></text>
+    <text class="lead" x="60" y="418" font-size="24">Talk to a business. Fund your wallet. Pay with FAYA.</text>
+
+    <g transform="translate(60 470)">
+      <rect x="0" y="0" width="250" height="60" rx="10" fill="#ff6237"/>
+      <text x="125" y="37" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#ffffff" font-size="20">Fayago &#8599;</text>
+      <rect x="270" y="0" width="250" height="60" rx="10" fill="none" stroke="#102a63" stroke-opacity="0.25"/>
+      <text x="395" y="37" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" fill="#102a63" font-size="20">For businesses &#8594;</text>
+    </g>
+  </g>
+</svg>

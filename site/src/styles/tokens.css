@@ -1,0 +1,33 @@
+/* FAYA by Xego — design tokens (site build). Mirrors site/design/design-tokens.css. */
+:root {
+  --faya-blue: #1848be;
+  --faya-ink: #102a63;
+  --faya-orange: #ff6237;
+  --faya-yellow: #ffd447;
+  --faya-cream: #fcfaf5;
+  --faya-muted: #68748b;
+  --faya-on-blue: #e3eaff;
+  --faya-on-blue-soft: #c9d7ff;
+  --faya-surface: #ffffff;
+  --faya-surface-alt: #f0f2f8;
+  --faya-surface-tint: #e2e7f1;
+  --faya-surface-soft: #f5f6fa;
+  --faya-line: #e6e6e1;
+  --faya-line-strong: #dce1eb;
+  --faya-line-soft: #102a6310;
+  --faya-orange-tint: #fff0e6;
+  --faya-yellow-tint: #fff4c5;
+  --faya-blue-tint: #e8edff;
+  --faya-peach: #ffeadc;
+  --faya-tag-bg: #fff3c2;
+  --faya-tag-ink: #795e03;
+  --faya-success: #29845c;
+  --faya-radius-sm: 6px;
+  --faya-radius-btn: 8px;
+  --faya-radius-md: 12px;
+  --faya-radius-card: 14px;
+  --faya-radius-panel: 20px;
+  --faya-shadow-float: 0 10px 30px #001b4d20;
+  --faya-font: Arial, Helvetica, sans-serif;
+  --faya-ease: 0.2s;
+}

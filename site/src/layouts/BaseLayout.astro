@@ -1,0 +1,130 @@
+---
+import { SITE } from '../config';
+import '../styles/site.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site ?? SITE.url).href;
+const pageTitle = `${title} · ${SITE.brand} by Xego`;
+const navItems = [
+  { href: '/', label: 'Home' },
+  { href: '/privacy', label: 'Privacy' },
+  { href: '/terms', label: 'Terms' },
+  { href: '/data-deletion', label: 'Data Deletion' },
+  { href: '/contact', label: 'Contact' },
+];
+const current = Astro.url.pathname.replace(/\/$/, '') || '/';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{pageTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta name="theme-color" content="#1848be" />
+    <meta name="robots" content="index, follow" />
+
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={`${SITE.brand} by Xego`} />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={new URL('/og-image.png', SITE.url).href} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={pageTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={new URL('/og-image.png', SITE.url).href} />
+
+    {SITE.metaDomainVerification && (
+      <meta name="facebook-domain-verification" content={SITE.metaDomainVerification} />
+    )}
+    {SITE.tiktokVerification && (
+      <meta name="tiktok-developers-site-verification" content={SITE.tiktokVerification} />
+    )}
+
+    <script type="application/ld+json" set:html={JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'Organization',
+      name: SITE.legalEntity,
+      url: SITE.url,
+      email: SITE.supportEmail,
+      address: {
+        '@type': 'PostalAddress',
+        streetAddress: SITE.address,
+        addressCountry: 'NG',
+      },
+    })} />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="wrap">
+        <a class="brand" href="/" aria-label={`${SITE.brand} by Xego home`}>
+          <svg viewBox="0 0 128 128" aria-hidden="true">
+            <rect width="128" height="128" rx="38" fill="#ff6237" />
+            <path d="M38 30h56v16H56v18h32v16H56v30H38z" fill="#fcfaf5" />
+            <path d="M6 120l26 8-8-26z" fill="#ff6237" />
+          </svg>
+          <span>
+            <span class="brand-name">FAYA</span>
+            <span class="brand-sub">{SITE.brandLine}</span>
+          </span>
+        </a>
+        <nav class="nav" aria-label="Primary">
+          {navItems.map((item) => (
+            <a href={item.href} aria-current={current === item.href ? 'page' : undefined}>
+              {item.label}
+            </a>
+          ))}
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <slot />
+    </main>
+
+    <footer class="site-footer">
+      <div class="wrap">
+        <div>
+          <strong>{SITE.brand} by Xego</strong>
+          <p style="margin:8px 0 0; max-width:280px;">From a conversation to a complete transaction.</p>
+        </div>
+        <div class="cols">
+          <div>
+            <h3>Legal</h3>
+            <ul>
+              <li><a href="/privacy">Privacy Policy</a></li>
+              <li><a href="/terms">Terms of Service</a></li>
+              <li><a href="/data-deletion">Data Deletion</a></li>
+              <li><a href="/contact">Contact</a></li>
+            </ul>
+          </div>
+          <div>
+            <h3>Contact</h3>
+            <ul>
+              <li><a href={`mailto:${SITE.supportEmail}`}>{SITE.supportEmail}</a></li>
+              <li><a href={`mailto:${SITE.privacyEmail}`}>{SITE.privacyEmail}</a></li>
+            </ul>
+          </div>
+        </div>
+        <p class="legal-line">
+          © {new Date().getFullYear()} {SITE.legalEntity}. {SITE.address}. All rights reserved.
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

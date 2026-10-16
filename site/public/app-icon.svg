@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="FAYA by Xego app icon">
+  <title>FAYA by Xego</title>
+  <!-- Full-bleed icon: platforms apply their own rounding, so the background fills the canvas. -->
+  <rect width="1024" height="1024" fill="#ff6237"/>
+  <path fill="#fcfaf5" d="M300 250h430v130H455v145h230v130H455v219H300z"/>
+  <path fill="#102a63" d="M64 950l190 58-58-190z" opacity="0.9"/>
+</svg>

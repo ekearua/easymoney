@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="160" viewBox="0 0 520 160" role="img" aria-label="FAYA by Xego">
+  <title>FAYA by Xego</title>
+  <style>
+    .symbol-fill { fill: #ff6237; }
+    .symbol-glyph { fill: #fcfaf5; }
+    .word { font-family: Arial, Helvetica, sans-serif; font-weight: 800; font-size: 74px; letter-spacing: -1.5px; fill: #ff6237; }
+    .sub { font-family: Arial, Helvetica, sans-serif; font-weight: 700; font-size: 16px; letter-spacing: 2px; fill: #1848be; }
+  </style>
+  <g transform="translate(8 16)">
+    <rect class="symbol-fill" x="0" y="0" width="128" height="128" rx="38"/>
+    <path class="symbol-glyph" d="M38 30h56v16H56v18h32v16H56v30H38z"/>
+    <path class="symbol-fill" d="M6 120l26 8-8-26z"/>
+  </g>
+  <text class="word" x="164" y="96">FAYA</text>
+  <text class="sub" x="168" y="124">BY XEGO</text>
+</svg>

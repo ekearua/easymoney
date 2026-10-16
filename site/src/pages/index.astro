@@ -1,0 +1,35 @@
+---
+import { SITE } from '../config';
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const pages = [
+  { href: '/privacy', title: 'Privacy Policy', desc: 'How we collect, use, share and protect personal data.' },
+  { href: '/terms', title: 'Terms of Service', desc: 'The rules for using the Faya payment and messaging service.' },
+  { href: '/data-deletion', title: 'Data Deletion', desc: 'Request deletion of your data, and what we keep by law.' },
+  { href: '/contact', title: 'Contact', desc: 'Reach support, our Data Protection Officer, or our registered office.' },
+];
+---
+
+<BaseLayout
+  title="Legal & Trust Centre"
+  description="Faya by Xego legal and trust centre: privacy policy, terms of service and data deletion."
+>
+  <section class="home">
+    <div class="wrap">
+      <p class="lede" style="text-transform:uppercase; letter-spacing:2px; font-weight:700; font-size:13px; color:var(--faya-orange);">Faya by Xego</p>
+      <h1>Legal &amp; Trust Centre</h1>
+      <p class="lede">
+        {SITE.brand} moves money inside the chats people already use. These are the documents that
+        explain how we handle your data and the rules for using the service.
+      </p>
+      <div class="cards">
+        {pages.map((page) => (
+          <a class="card" href={page.href}>
+            <h2>{page.title}</h2>
+            <p>{page.desc}</p>
+          </a>
+        ))}
+      </div>
+    </div>
+  </section>
+</BaseLayout>

@@ -1,0 +1,92 @@
+/* ==========================================================================
+   FAYA by Xego — design tokens
+   Extracted from the "fayago-conversations" concept mockup (myfayago.com).
+   Single source of truth for colour, type, radius, shadow and motion.
+   ========================================================================== */
+
+:root {
+  /* --- Core brand palette (from the mockup :root) --- */
+  --faya-blue: #1848be;
+  --faya-ink: #102a63;
+  --faya-orange: #ff6237;
+  --faya-yellow: #ffd447;
+  --faya-cream: #fcfaf5;
+  --faya-muted: #68748b;
+
+  /* --- Text on dark surfaces (hero) --- */
+  --faya-on-blue: #e3eaff;
+  --faya-on-blue-soft: #c9d7ff;
+
+  /* --- Surfaces & lines --- */
+  --faya-surface: #ffffff;
+  --faya-surface-alt: #f0f2f8;   /* "How it works" band */
+  --faya-surface-tint: #e2e7f1;  /* tab track */
+  --faya-surface-soft: #f5f6fa;  /* dialog inner block */
+  --faya-line: #e6e6e1;
+  --faya-line-strong: #dce1eb;
+  --faya-line-soft: #102a6310;
+
+  /* --- Accent tints --- */
+  --faya-orange-tint: #fff0e6;
+  --faya-yellow-tint: #fff4c5;
+  --faya-blue-tint: #e8edff;
+  --faya-peach: #ffeadc;
+  --faya-peach-ink: #766658;
+  --faya-peach-accent: #9e4f24;
+  --faya-tag-bg: #fff3c2;
+  --faya-tag-ink: #795e03;
+  --faya-success: #29845c;
+
+  /* --- Channel brand accents --- */
+  --faya-whatsapp: #24905e;
+  --faya-instagram: #a2478b;
+  --faya-telegram: #3789bb;
+  --faya-facebook: #2862ae;
+
+  /* --- Chat / device mock --- */
+  --faya-bubble-out: #dcf4d4;
+  --faya-avatar-bg: #ffe9cc;
+  --faya-avatar-ink: #bd6723;
+  --faya-phone: #0e2860;
+  --faya-phone-bg: #f5f3ed;
+
+  /* --- Footer --- */
+  --faya-footer: #102a63;
+  --faya-footer-text: #c4d0ea;
+  --faya-footer-faint: #b8c7e7;
+  --faya-scrim: #0b215dcc;
+
+  /* --- Radii --- */
+  --faya-radius-xs: 4px;
+  --faya-radius-sm: 6px;
+  --faya-radius-btn: 8px;
+  --faya-radius-tabs: 9px;
+  --faya-radius-md: 12px;
+  --faya-radius-card: 14px;
+  --faya-radius-panel: 20px;
+  --faya-radius-phone: 38px;
+  --faya-radius-dialog: 18px;
+  --faya-radius-pill: 50px;
+
+  /* --- Shadows --- */
+  --faya-shadow-phone: 0 25px 70px #00174650;
+  --faya-shadow-float: 0 10px 30px #001b4d20;
+  --faya-shadow-window: 0 12px 40px #9c5e1810;
+  --faya-shadow-dialog: 0 20px 70px #0004;
+  --faya-shadow-nav: 0 10px 20px #0001;
+
+  /* --- Typography --- */
+  --faya-font: Arial, Helvetica, sans-serif;
+  --faya-tracking-tight: -3px;   /* h1 */
+  --faya-tracking-head: -1.9px;  /* h2 */
+  --faya-tracking-brand: -1.5px; /* wordmark */
+  --faya-tracking-eyebrow: 2px;
+
+  /* --- Motion --- */
+  --faya-ease: 0.2s;
+}
+
+/* Opt-out for reduced motion, mirrored from the mockup. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --faya-ease: 0s; }
+}

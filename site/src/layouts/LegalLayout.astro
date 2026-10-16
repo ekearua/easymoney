@@ -1,0 +1,32 @@
+---
+import BaseLayout from './BaseLayout.astro';
+
+interface Props {
+  title: string;
+  description: string;
+  updated: Date;
+  lede?: string;
+}
+
+const { title, description, updated, lede } = Astro.props;
+const updatedLabel = updated.toLocaleDateString('en-GB', {
+  day: 'numeric',
+  month: 'long',
+  year: 'numeric',
+});
+---
+
+<BaseLayout title={title} description={description}>
+  <article class="legal">
+    <div class="wrap">
+      <header class="legal-head">
+        <h1>{title}</h1>
+        {lede && <p class="lede">{lede}</p>}
+        <span class="updated">Last updated {updatedLabel}</span>
+      </header>
+      <div class="prose">
+        <slot />
+      </div>
+    </div>
+  </article>
+</BaseLayout>
