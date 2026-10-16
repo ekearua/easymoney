@@ -454,6 +454,16 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handlePayIndividualConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "pay_individual_method":
 		return s.handlePayIndividualMethod(ctx, message.Channel, recipient, user, session, input)
+	case "send_agent_name":
+		return s.handleSendAgentName(ctx, message.Channel, recipient, user, session, input)
+	case "send_agent_phone":
+		return s.handleSendAgentPhone(ctx, message.Channel, recipient, user, session, input)
+	case "send_agent_amount":
+		return s.handleSendAgentAmount(ctx, message.Channel, recipient, user, session, input)
+	case "send_agent_region":
+		return s.handleSendAgentRegion(ctx, message.Channel, recipient, user, session, input)
+	case "send_agent_confirm":
+		return s.handleSendAgentConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_amount":
 		return s.handleWalletTopupAmount(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_method":

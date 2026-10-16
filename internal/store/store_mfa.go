@@ -18,10 +18,12 @@ const (
 	MFAKindPasskey = "webauthn"
 )
 
-// Second-factor scopes: the two portals that share the two-step login flow.
+// Second-factor scopes: the portals that share the two-step login flow. The
+// agent console (migration 103) reuses it for agent_users identities.
 const (
 	MFAScopeAdmin    = "admin"
 	MFAScopeMerchant = "merchant"
+	MFAScopeAgent    = "agent"
 )
 
 // MFAFactor is one enrolled second factor. SecretCipher is the AES-256-GCM

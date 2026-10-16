@@ -1,0 +1,60 @@
+{{define "agent_redeem.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "agent_nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Agent</p><h1>Cash pickup</h1></div></header>
+
+{{if .Error}}<section class="panel"><div class="alert">{{.Error}}</div></section>{{end}}
+
+{{if not .Enabled}}
+<section class="panel">
+  <h2>Cash pickup is unavailable</h2>
+  <p class="muted">Agent cash-out is switched off on this deployment. Please try again later.</p>
+</section>
+{{else}}
+<section class="panel">
+  <h2>Pay out a pickup</h2>
+  <p class="muted">Check the recipient's government photo ID, then enter the pickup code the sender shared, the one-time code the sender forwarded, and the ID details. The recipient must be the named person.</p>
+  <form method="post" action="/agent/redeem">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Pickup code<input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" required></label>
+    <label>One-time code<input type="text" name="otp" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required></label>
+    <label>Government ID type
+      <select name="id_type" required>
+        <option value="nin">NIN</option>
+        <option value="bvn">BVN</option>
+        <option value="drivers_licence">Driver's licence</option>
+        <option value="voters_card">Voter's card</option>
+        <option value="passport">Passport</option>
+      </select>
+    </label>
+    <label>Government ID number<input type="text" name="id_number" autocomplete="off" required></label>
+    {{if .StepUpRequired}}
+      {{if .StepUpAvailable}}
+      <label>Authenticator code<input type="text" name="step_up_code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" required></label>
+      {{else}}
+      <p class="muted">No authenticator app is enrolled. Add one under <a href="/agent/security">Security</a> before paying out.</p>
+      {{end}}
+    {{end}}
+    <button type="submit">Pay out cash</button>
+  </form>
+</section>
+{{end}}
+
+<section class="panel">
+  <h2>Awaiting pickup{{if .AgentName}} · {{.AgentName}}{{end}}</h2>
+  <div class="table-wrap"><table><thead><tr><th>Recipient</th><th>Phone</th><th>Amount</th><th>Expires</th><th>Created</th></tr></thead><tbody>
+  {{range .Pickups}}<tr>
+    <td>{{.RecipientName}}</td>
+    <td class="mono">{{maskPII .RecipientPhone}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{if .ExpiresAt}}{{date .ExpiresAt}}{{else}}—{{end}}</td>
+    <td>{{date .CreatedAt}}</td>
+  </tr>{{else}}<tr><td colspan="5">No pickups awaiting cash-out at this agent.</td></tr>{{end}}
+  </tbody></table></div>
+  <p class="muted">Only the pickup code resolves a payout; this list is for staffing and does not authorise anything.</p>
+</section>
+
+</main></body></html>
+{{end}}

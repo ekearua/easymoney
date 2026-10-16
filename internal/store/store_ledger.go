@@ -42,6 +42,16 @@ const (
 	// restricted money cannot be cashed out by construction rather than by a
 	// check that could be forgotten.
 	LedgerAccountProgramPurse = "2302_program_purse"
+	// POS agent network (migration 103). A remittance holds the sender's money
+	// as a per-remittance payable ("2350_remittance_payable:<remittance-id>")
+	// until a recipient redeems it at an agent. The agent's float
+	// ("2400_agent_float:<merchant-id>") is the amount Xego owes the agent for
+	// cash the agent fronted; it is settled to the agent's bank on a cycle.
+	// The optional security deposit ("2401_agent_deposit:<merchant-id>") is a
+	// liability held against a defaulting agent.
+	LedgerAccountRemittancePayable = "2350_remittance_payable"
+	LedgerAccountAgentFloat        = "2400_agent_float"
+	LedgerAccountAgentDeposit      = "2401_agent_deposit"
 )
 
 // validLedgerAccounts is the set of allowed account codes. Every posting must
@@ -68,6 +78,9 @@ var validLedgerAccountPrefixes = []string{
 	LedgerAccountUserWallet + ":",
 	LedgerAccountBusinessWallet + ":",
 	LedgerAccountProgramPurse + ":",
+	LedgerAccountRemittancePayable + ":",
+	LedgerAccountAgentFloat + ":",
+	LedgerAccountAgentDeposit + ":",
 }
 
 // isKnownLedgerAccount reports whether an account code is in the fixed chart

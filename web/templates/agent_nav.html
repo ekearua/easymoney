@@ -1,0 +1,9 @@
+{{define "agent_nav"}}
+<nav class="topbar" hx-boost="true">
+  <a class="brand" href="/agent/redeem">{{.AppName}}</a>
+  <div class="navlinks">
+    <a href="/agent/redeem">Cash pickup</a><a href="/agent/security">Security</a>
+    <form method="post" action="/agent/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="link-button">Sign out</button></form>
+  </div>
+</nav>
+{{end}}

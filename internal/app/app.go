@@ -60,6 +60,7 @@ import (
 
 const adminCookieName = "wpd_admin"
 const merchantCookieName = "wpd_merchant"
+const agentCookieName = "wpd_agent"
 
 // App is the fully assembled payment demo.
 type App struct {
@@ -119,6 +120,7 @@ type App struct {
 	onboardReminders *service.OnboardingReminderService
 	bulkPayments     *service.BulkPaymentsService
 	programPurses    *service.ProgramPursesService
+	agentRemittance  *service.AgentRemittanceService
 	bulkSlots        chan struct{}
 	workerWg         sync.WaitGroup
 	// workerPools holds the bounded worker-pool slots and per-handler gates
@@ -548,6 +550,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			LocationTTL:    cfg.BulkLocationTTL,
 		}),
 		programPurses: programPursesService,
+		agentRemittance: service.NewAgentRemittanceService(cfg, repository, sanctionsScreener),
 		bulkSlots:     make(chan struct{}, bulkConcurrency),
 		workerPools:   newWorkerPools(cfg),
 		imageReader:   imageReader,
@@ -961,6 +964,36 @@ func (a *App) routes() http.Handler {
 		})
 		m.Post("/merchant/logout", a.merchantLogout)
 	})
+
+	// Agent console (POS_AGENT_NETWORK_PLAN.md §9): sign-in, cash-pickup
+	// redemption, printable receipt, and the shared security page for enrolling
+	// the authenticator app the per-payout step-up checks.
+	router.Get("/agent/login", a.agentLoginPage)
+	router.With(a.limitLogin).Post("/agent/login", a.agentLoginPost)
+	router.Get("/agent/login/2fa", a.secondFactorPage)
+	router.With(a.limitLogin).Post("/agent/login/2fa", a.secondFactorVerify)
+	router.With(a.limitLogin).Post("/agent/login/2fa/passkey", a.secondFactorPasskey)
+	router.Group(func(agent chi.Router) {
+		agent.Use(a.requireAgent)
+		agent.Use(a.rateLimit("agent", 120))
+		agent.Get("/agent", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/agent/redeem", http.StatusSeeOther)
+		})
+		agent.Get("/agent/redeem", a.agentRedeemPage)
+		agent.Post("/agent/redeem", a.agentRedeemPost)
+		agent.Get("/agent/receipt/{id}", a.agentReceiptPage)
+		agent.Post("/agent/logout", a.agentLogout)
+		agent.Get("/agent/security", a.securityPage(store.MFAScopeAgent))
+		agent.Post("/agent/security/totp", a.securityStartTOTP(store.MFAScopeAgent))
+		agent.Post("/agent/security/totp/verify", a.securityVerifyFactor(store.MFAScopeAgent))
+		agent.Post("/agent/security/email", a.securityStartEmail(store.MFAScopeAgent))
+		agent.Post("/agent/security/email/verify", a.securityVerifyFactor(store.MFAScopeAgent))
+		agent.Post("/agent/security/passkeys/begin", a.securityPasskeyBegin(store.MFAScopeAgent))
+		agent.Post("/agent/security/passkeys/finish", a.securityPasskeyFinish(store.MFAScopeAgent))
+		agent.Post("/agent/security/factors/{id}/revoke", a.securityRevokeFactor(store.MFAScopeAgent))
+		agent.Post("/agent/security/factors/{id}/rename", a.securityRenameFactor(store.MFAScopeAgent))
+		agent.Post("/agent/security/factors/revoke-all", a.securityRevokeAll(store.MFAScopeAgent))
+	})
 	return router
 }
 
@@ -993,6 +1026,9 @@ const adminRoleContextKey contextKey = "admin_role"
 const adminEmailContextKey contextKey = "admin_email"
 const merchantIDContextKey contextKey = "merchant_id"
 const merchantCSRFContextKey contextKey = "merchant_csrf"
+const agentUserIDContextKey contextKey = "agent_user_id"
+const agentMerchantIDContextKey contextKey = "agent_merchant_id"
+const agentCSRFContextKey contextKey = "agent_csrf"
 
 func (a *App) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1026,6 +1062,9 @@ func (a *App) audit(r *http.Request, action, resourceType, resourceID string, de
 	}
 	if id := merchantIDFromContext(ctx); id != uuid.Nil {
 		entry.ActorType = "merchant"
+		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
+	} else if id := agentUserIDFromContext(ctx); id != uuid.Nil {
+		entry.ActorType = "agent"
 		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
 	} else if id := adminIDFromContext(ctx); id != uuid.Nil {
 		entry.ActorType = "admin"
@@ -1087,6 +1126,58 @@ func merchantIDFromContext(ctx context.Context) uuid.UUID {
 func merchantCSRFFromContext(ctx context.Context) string {
 	value, _ := ctx.Value(merchantCSRFContextKey).(string)
 	return value
+}
+
+func agentUserIDFromContext(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(agentUserIDContextKey).(uuid.UUID)
+	return id
+}
+
+func agentMerchantIDFromContext(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(agentMerchantIDContextKey).(uuid.UUID)
+	return id
+}
+
+func agentCSRFFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(agentCSRFContextKey).(string)
+	return value
+}
+
+// requireAgent gates the agent console: a valid agent session loads the console
+// identity and the agent merchant it operates, both of which the handlers scope
+// every read and write to.
+func (a *App) requireAgent(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie(agentCookieName)
+		if err != nil {
+			http.Redirect(w, r, "/agent/login", http.StatusSeeOther)
+			return
+		}
+		agentUserID, agentMerchantID, csrf, err := a.store.ValidateAgentSession(r.Context(), cookie.Value)
+		if err != nil {
+			http.Redirect(w, r, "/agent/login", http.StatusSeeOther)
+			return
+		}
+		ctx := context.WithValue(r.Context(), agentUserIDContextKey, agentUserID)
+		ctx = context.WithValue(ctx, agentMerchantIDContextKey, agentMerchantID)
+		ctx = context.WithValue(ctx, agentCSRFContextKey, csrf)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// renderAgent renders an agent-console page with the shared chrome and the
+// session's CSRF token.
+func (a *App) renderAgent(w http.ResponseWriter, name string, r *http.Request, title string, data map[string]any) {
+	a.renderAgentStatus(w, name, r, title, data, http.StatusOK)
+}
+
+// renderAgentStatus renders an agent-console page with an explicit status code.
+func (a *App) renderAgentStatus(w http.ResponseWriter, name string, r *http.Request, title string, data map[string]any, status int) {
+	data["AppName"] = a.cfg.AppName
+	data["Title"] = title
+	data["CSRF"] = agentCSRFFromContext(r.Context())
+	data["AgentMerchantID"] = agentMerchantIDFromContext(r.Context())
+	a.renderStatus(w, name, data, status)
 }
 
 func (a *App) requireMerchant(next http.Handler) http.Handler {

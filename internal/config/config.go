@@ -256,12 +256,12 @@ type Config struct {
 	AITimeout  time.Duration
 	AIMaxRPM   int
 
-	MonitorVelocityWindow     time.Duration
+	MonitorVelocityWindow time.Duration
 
 	// Release/CD (demo synthetic): the post-deploy check fails when the oldest
 	// non-terminal outbox row is older than this, i.e. the message pipeline
 	// stopped draining. Zero disables the backlog assertion.
-	SyntheticOutboxMaxAge time.Duration
+	SyntheticOutboxMaxAge     time.Duration
 	MonitorVelocityLimit      int
 	MonitorStructuringWindow  time.Duration
 	MonitorStructuringCount   int
@@ -431,9 +431,70 @@ type Config struct {
 	PayoutDailyCapKobo    int64
 	PayoutDailyCountLimit int
 
+	// POS agent network (migration 103, POS_AGENT_NETWORK_PLAN.md §12). A local
+	// agent fronts cash to a remittance recipient and Xego owes it on
+	// 2400_agent_float. AgentNetworkEnabled is the feature kill switch;
+	// RemittanceTTL/RemittanceOTPTTL are the pickup policy (72h window, short
+	// OTP); AgentIDRequired forces a government ID on every payout (needed so a
+	// recipient's cash-outs can be summed for the CBN per-customer ceiling). The
+	// per-tier values seed an agent's limits and commission when an operator
+	// activates it; the real enforcement is per-payout/per-customer at
+	// redemption. Every number is bounded by the CBN ceilings (agent ₦1.2m/day;
+	// customer ₦100k/day) in validateAgentNetwork.
+	AgentNetworkEnabled bool
+	RemittanceTTL       time.Duration
+	RemittanceOTPTTL    time.Duration
+	AgentIDRequired     bool
+	AgentDefaultTier    string
+
+	// AgentIDHashPepper keys the deterministic salted hash of a recipient's
+	// government ID (receiver_id_hash): the stable per-customer cap key. It is
+	// the same pepper at every agent so a recipient's cash-outs aggregate across
+	// the network. Empty is acceptable in development (the hash is still
+	// deterministic and cross-agent); production should set AGENT_ID_HASH_PEPPER
+	// to a server-side secret.
+	AgentIDHashPepper string
+
+	AgentStandardPerPayoutKobo      int64
+	AgentStandardDailyKobo          int64
+	AgentStandardMaxOutstandingKobo int64
+	AgentStandardCommissionBPS      int
+	AgentSuperPerPayoutKobo         int64
+	AgentSuperDailyKobo             int64
+	AgentSuperMaxOutstandingKobo    int64
+	AgentSuperCommissionBPS         int
+	AgentMaxPerPayoutKobo           int64
+	AgentMaxDailyKobo               int64
+	AgentMaxMaxOutstandingKobo      int64
+	AgentMaxCommissionBPS           int
+
 	AuthSessionTTL time.Duration
 
 	InvoiceAcceptedNumbers []string
+}
+
+// CBN agent-banking ceilings (POS_AGENT_NETWORK_PLAN.md §12): a POS agent may
+// cash out at most ₦1,200,000 per day cumulatively, and a single recipient at
+// most ₦100,000 per day (₦500,000 per week). Tier configuration may not exceed
+// these; redemption enforces the real per-payout, per-agent and per-customer
+// limits at runtime.
+const (
+	CBNMaxAgentDailyCashOutKobo      int64 = 120_000_000
+	CBNMaxCustomerDailyCashOutKobo   int64 = 10_000_000
+	CBNMaxCustomerWeeklyCashOutKobo  int64 = 50_000_000
+)
+
+// AgentTierDefaults resolves an agent tier's limit and commission defaults from
+// configuration. An unknown tier falls back to standard.
+func (c Config) AgentTierDefaults(tier string) (maxOutstandingKobo, perPayoutKobo, dailyKobo int64, commissionBps int) {
+	switch tier {
+	case "super":
+		return c.AgentSuperMaxOutstandingKobo, c.AgentSuperPerPayoutKobo, c.AgentSuperDailyKobo, c.AgentSuperCommissionBPS
+	case "max":
+		return c.AgentMaxMaxOutstandingKobo, c.AgentMaxPerPayoutKobo, c.AgentMaxDailyKobo, c.AgentMaxCommissionBPS
+	default:
+		return c.AgentStandardMaxOutstandingKobo, c.AgentStandardPerPayoutKobo, c.AgentStandardDailyKobo, c.AgentStandardCommissionBPS
+	}
 }
 
 // Load reads settings from the process environment and applies safe local defaults.
@@ -663,6 +724,25 @@ func Load() (Config, error) {
 		PayoutDailyCapKobo:    EnvInt64("PAYOUT_DAILY_CAP_KOBO", 50_000_00),
 		PayoutDailyCountLimit: int(EnvInt64("PAYOUT_DAILY_COUNT_LIMIT", 10)),
 
+		AgentNetworkEnabled:             envBool("AGENT_NETWORK_ENABLED", true),
+		RemittanceTTL:                   envDuration("REMITTANCE_TTL", 72*time.Hour),
+		RemittanceOTPTTL:                envDuration("REMITTANCE_OTP_TTL", 10*time.Minute),
+		AgentIDRequired:                 envBool("AGENT_ID_REQUIRED", true),
+		AgentDefaultTier:                env("AGENT_DEFAULT_TIER", "standard"),
+		AgentIDHashPepper:               strings.TrimSpace(os.Getenv("AGENT_ID_HASH_PEPPER")),
+		AgentStandardPerPayoutKobo:      EnvInt64("AGENT_STANDARD_PER_PAYOUT_KOBO", 2_000_000),
+		AgentStandardDailyKobo:          EnvInt64("AGENT_STANDARD_DAILY_KOBO", 20_000_000),
+		AgentStandardMaxOutstandingKobo: EnvInt64("AGENT_STANDARD_MAX_OUTSTANDING_KOBO", 50_000_000),
+		AgentStandardCommissionBPS:      int(EnvInt64("AGENT_STANDARD_COMMISSION_BPS", 50)),
+		AgentSuperPerPayoutKobo:         EnvInt64("AGENT_SUPER_PER_PAYOUT_KOBO", 5_000_000),
+		AgentSuperDailyKobo:             EnvInt64("AGENT_SUPER_DAILY_KOBO", 60_000_000),
+		AgentSuperMaxOutstandingKobo:    EnvInt64("AGENT_SUPER_MAX_OUTSTANDING_KOBO", 150_000_000),
+		AgentSuperCommissionBPS:         int(EnvInt64("AGENT_SUPER_COMMISSION_BPS", 40)),
+		AgentMaxPerPayoutKobo:           EnvInt64("AGENT_MAX_PER_PAYOUT_KOBO", 10_000_000),
+		AgentMaxDailyKobo:               EnvInt64("AGENT_MAX_DAILY_KOBO", 120_000_000),
+		AgentMaxMaxOutstandingKobo:      EnvInt64("AGENT_MAX_MAX_OUTSTANDING_KOBO", 250_000_000),
+		AgentMaxCommissionBPS:           int(EnvInt64("AGENT_MAX_COMMISSION_BPS", 30)),
+
 		AuthSessionTTL: envDuration("AUTH_SESSION_TTL", 12*time.Hour),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
@@ -841,6 +921,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AMLRecordRetention != 0 && cfg.RetentionPeriod > cfg.AMLRecordRetention {
 		return Config{}, fmt.Errorf("RETENTION_PERIOD (%s) cannot exceed AML_RECORD_RETENTION (%s)", cfg.RetentionPeriod, cfg.AMLRecordRetention)
+	}
+	if err := cfg.validateAgentNetwork(); err != nil {
+		return Config{}, err
 	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
 		cfg.WhatsAppGraphVersion = "v23.0"
@@ -1023,6 +1106,65 @@ func (c Config) UsesDojah() bool {
 		}
 	}
 	return false
+}
+
+// validateAgentNetwork bounds the POS agent knobs. The pickup and OTP windows
+// must be positive, the default tier must be one of the three, and no tier's
+// per-payout or daily cap may exceed the CBN ceilings (POS_AGENT_NETWORK_PLAN.md
+// §12) — an operator can widen a specific agent's limits, but it is a
+// configuration error for the shipped tier defaults to advertise a cap the
+// regulator does not allow.
+func (c Config) validateAgentNetwork() error {
+	nonNegative := map[string]int64{
+		"AGENT_STANDARD_PER_PAYOUT_KOBO":      c.AgentStandardPerPayoutKobo,
+		"AGENT_STANDARD_DAILY_KOBO":           c.AgentStandardDailyKobo,
+		"AGENT_STANDARD_MAX_OUTSTANDING_KOBO": c.AgentStandardMaxOutstandingKobo,
+		"AGENT_STANDARD_COMMISSION_BPS":       int64(c.AgentStandardCommissionBPS),
+		"AGENT_SUPER_PER_PAYOUT_KOBO":         c.AgentSuperPerPayoutKobo,
+		"AGENT_SUPER_DAILY_KOBO":              c.AgentSuperDailyKobo,
+		"AGENT_SUPER_MAX_OUTSTANDING_KOBO":    c.AgentSuperMaxOutstandingKobo,
+		"AGENT_SUPER_COMMISSION_BPS":          int64(c.AgentSuperCommissionBPS),
+		"AGENT_MAX_PER_PAYOUT_KOBO":           c.AgentMaxPerPayoutKobo,
+		"AGENT_MAX_DAILY_KOBO":                c.AgentMaxDailyKobo,
+		"AGENT_MAX_MAX_OUTSTANDING_KOBO":      c.AgentMaxMaxOutstandingKobo,
+		"AGENT_MAX_COMMISSION_BPS":            int64(c.AgentMaxCommissionBPS),
+	}
+	for name, value := range nonNegative {
+		if value < 0 {
+			return fmt.Errorf("%s must not be negative", name)
+		}
+	}
+	if c.RemittanceTTL <= 0 {
+		return errors.New("REMITTANCE_TTL must be positive")
+	}
+	if c.RemittanceOTPTTL <= 0 {
+		return errors.New("REMITTANCE_OTP_TTL must be positive")
+	}
+	tiers := []struct {
+		name             string
+		perPayout, daily int64
+	}{
+		{"STANDARD", c.AgentStandardPerPayoutKobo, c.AgentStandardDailyKobo},
+		{"SUPER", c.AgentSuperPerPayoutKobo, c.AgentSuperDailyKobo},
+		{"MAX", c.AgentMaxPerPayoutKobo, c.AgentMaxDailyKobo},
+	}
+	for _, t := range tiers {
+		if t.perPayout > CBNMaxCustomerDailyCashOutKobo {
+			return fmt.Errorf("AGENT_%s_PER_PAYOUT_KOBO exceeds the CBN ₦100,000 per-customer daily ceiling", t.name)
+		}
+		if t.daily > CBNMaxAgentDailyCashOutKobo {
+			return fmt.Errorf("AGENT_%s_DAILY_KOBO exceeds the CBN ₦1,200,000 agent daily ceiling", t.name)
+		}
+		if t.daily > 0 && t.perPayout > t.daily {
+			return fmt.Errorf("AGENT_%s_PER_PAYOUT_KOBO cannot exceed its daily cap", t.name)
+		}
+	}
+	switch c.AgentDefaultTier {
+	case "standard", "super", "max":
+	default:
+		return fmt.Errorf("AGENT_DEFAULT_TIER must be \"standard\", \"super\" or \"max\", got %q", c.AgentDefaultTier)
+	}
+	return nil
 }
 
 func env(name, fallback string) string {

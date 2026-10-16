@@ -38,6 +38,9 @@ func securityRoutesFor(scope string) securityRoutes {
 	if scope == store.MFAScopeMerchant {
 		base = "/merchant/security"
 	}
+	if scope == store.MFAScopeAgent {
+		base = "/agent/security"
+	}
 	return securityRoutes{
 		Page:          base,
 		TOTPStart:     base + "/totp",
@@ -106,6 +109,9 @@ func (a *App) securitySubject(r *http.Request, scope string) (uuid.UUID, bool) {
 	if scope == store.MFAScopeMerchant {
 		id = merchantIDFromContext(r.Context())
 	}
+	if scope == store.MFAScopeAgent {
+		id = agentUserIDFromContext(r.Context())
+	}
 	return id, id != uuid.Nil
 }
 
@@ -113,6 +119,9 @@ func (a *App) securitySubject(r *http.Request, scope string) (uuid.UUID, bool) {
 func (a *App) checkSecurityCSRF(w http.ResponseWriter, r *http.Request, scope string) bool {
 	token := r.FormValue("csrf_token")
 	if scope == store.MFAScopeMerchant && token == merchantCSRFFromContext(r.Context()) {
+		return true
+	}
+	if scope == store.MFAScopeAgent && token != "" && token == agentCSRFFromContext(r.Context()) {
 		return true
 	}
 	if scope == store.MFAScopeAdmin && token == csrfFromContext(r.Context()) {
@@ -127,6 +136,9 @@ func (a *App) checkSecurityCSRF(w http.ResponseWriter, r *http.Request, scope st
 func (a *App) checkJSONCSRF(w http.ResponseWriter, r *http.Request, scope string) bool {
 	token := r.Header.Get("X-CSRF-Token")
 	if scope == store.MFAScopeMerchant && token == merchantCSRFFromContext(r.Context()) {
+		return true
+	}
+	if scope == store.MFAScopeAgent && token != "" && token == agentCSRFFromContext(r.Context()) {
 		return true
 	}
 	if scope == store.MFAScopeAdmin && token == csrfFromContext(r.Context()) {
@@ -228,6 +240,10 @@ func (a *App) securityPage(scope string) http.HandlerFunc {
 		}
 		if scope == store.MFAScopeMerchant {
 			a.renderMerchant(w, "merchant_security.html", r, "Sign-in security", data)
+			return
+		}
+		if scope == store.MFAScopeAgent {
+			a.renderAgent(w, "agent_security.html", r, "Sign-in security", data)
 			return
 		}
 		a.renderAdmin(w, "admin_security.html", r, "Sign-in security", data)

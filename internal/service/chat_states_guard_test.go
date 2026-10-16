@@ -146,6 +146,13 @@ var exemptChatStates = map[string]string{
 	"invoice_edit_value":          "single picked-field value",
 	"link_phone":                  "phone",
 
+	// Cash-pickup remittance: single-value turns mirroring individual pay.
+	"send_agent_name":    "recipient name",
+	"send_agent_phone":   "phone",
+	"send_agent_amount":  "amount",
+	"send_agent_region":  "selection",
+	"send_agent_confirm": "confirm",
+
 	// Legacy delegates into aggregated handlers (classification kept here so
 	// the switch case lists stay discoverable).
 	"onboard_confirm_account": "confirm",

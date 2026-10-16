@@ -45,6 +45,9 @@ func secondFactorPaths(scope string) (stepPath, loginPath string) {
 	if scope == store.MFAScopeMerchant {
 		return "/merchant/login/2fa", "/merchant/login"
 	}
+	if scope == store.MFAScopeAgent {
+		return "/agent/login/2fa", "/agent/login"
+	}
 	return "/admin/login/2fa", "/admin/login"
 }
 
@@ -72,6 +75,9 @@ func signInCopy(scope string) stepCopy {
 	if scope == store.MFAScopeMerchant {
 		copy.Eyebrow = "Merchant"
 	}
+	if scope == store.MFAScopeAgent {
+		copy.Eyebrow = "Agent"
+	}
 	return copy
 }
 
@@ -81,6 +87,9 @@ func scopeFromPath(path string) string {
 	if strings.HasPrefix(path, "/merchant") {
 		return store.MFAScopeMerchant
 	}
+	if strings.HasPrefix(path, "/agent") {
+		return store.MFAScopeAgent
+	}
 	return store.MFAScopeAdmin
 }
 
@@ -88,6 +97,9 @@ func scopeFromPath(path string) string {
 func loginTemplateFor(scope string) string {
 	if scope == store.MFAScopeMerchant {
 		return "merchant_login.html"
+	}
+	if scope == store.MFAScopeAgent {
+		return "agent_login.html"
 	}
 	return "login.html"
 }
@@ -620,6 +632,10 @@ func (a *App) completeSecondFactor(r *http.Request, challenge store.MFAChallenge
 func (a *App) finishSecondFactor(w http.ResponseWriter, r *http.Request, challenge store.MFAChallenge) {
 	if challenge.Scope == store.MFAScopeMerchant {
 		a.completeMerchantLogin(w, r, challenge.SubjectID)
+		return
+	}
+	if challenge.Scope == store.MFAScopeAgent {
+		a.completeAgentLogin(w, r, challenge.SubjectID)
 		return
 	}
 	a.completeAdminLogin(w, r, challenge.SubjectID)

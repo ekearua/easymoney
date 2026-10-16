@@ -651,7 +651,7 @@ func (s *PaymentService) onPaymentSucceeded(ctx context.Context, payment store.P
 // would reorder the rails on the next merchant purchase. Everything else,
 // whatever rail it drafted on, is a collection and is remembered.
 func (s *PaymentService) rememberRailOnSuccess(payment store.PaymentView) bool {
-	return !s.isWalletTopup(payment) && !s.isIndividualPay(payment)
+	return !s.isWalletTopup(payment) && !s.isIndividualPay(payment) && !s.isRemittance(payment)
 }
 
 // Post-success purpose application (invoice, thrift, service stock, event
@@ -671,6 +671,10 @@ func (s *PaymentService) applyPaymentSuccessHooks(ctx context.Context, payment s
 		// Individual pay skips the collection-purpose hooks and settles the
 		// recipient payout instead.
 		hooks = []string{store.PaymentHookIndividualPay}
+	} else if s.isRemittance(payment) {
+		// A remittance skips the collection-purpose hooks and opens the
+		// remittance (pickup code, payable) instead.
+		hooks = []string{store.PaymentHookRemittance}
 	}
 	if err := s.store.EnsurePaymentHooks(ctx, payment.ID, hooks); err != nil {
 		s.logger.Error("ensure payment hooks failed", "payment_id", payment.ID, "error", err)
@@ -708,6 +712,8 @@ func (s *PaymentService) runPaymentHook(ctx context.Context, payment store.Payme
 		return s.createReceiptScanToken(ctx, payment)
 	case store.PaymentHookIndividualPay:
 		return s.applyIndividualPaySettlement(ctx, payment)
+	case store.PaymentHookRemittance:
+		return s.applyRemittanceSettlement(ctx, payment)
 	case store.PaymentHookWalletTopup:
 		return s.store.ApplyWalletTopup(ctx, payment.ID, payment.UserID, payment.AmountKobo)
 	default:
@@ -876,6 +882,137 @@ func (s *PaymentService) applyIndividualPaySettlement(ctx context.Context, payme
 		return err
 	}
 	return nil
+}
+
+// remittanceMeta carries the destination agent and recipient details for a
+// remittance sender payment. It is stored in payment metadata at draft creation
+// so the post-success hook can open the remittance and mint its pickup code
+// without any session.
+type remittanceMeta struct {
+	AgentMerchantID string `json:"agent_merchant_id"`
+	RegionID        string `json:"region_id"`
+	RecipientName   string `json:"recipient_name"`
+	RecipientPhone  string `json:"recipient_phone"`
+	AmountKobo      int64  `json:"amount_kobo"`
+	FeeKobo         int64  `json:"fee_kobo"`
+	CommissionKobo  int64  `json:"commission_kobo"`
+}
+
+// CreateRemittanceDraft creates the sender's collection payment for a cash
+// pickup remittance. Like an individual pay it is a plain collection against a
+// Xego system merchant on the chosen rail; the remittance and its pickup code
+// are opened by the post-success hook. The sender's total (amount + transfer
+// fee + agent commission) is charged here.
+func (s *PaymentService) CreateRemittanceDraft(ctx context.Context, user store.User, channel, recipient string, totalPay int64, provider string, meta map[string]any) (store.PaymentView, error) {
+	merchant, err := s.store.IndividualPaySystemMerchant(ctx)
+	if err != nil {
+		return store.PaymentView{}, err
+	}
+	return s.createDraftCore(ctx, user, merchant, totalPay, provider, channel, recipient, nil, meta)
+}
+
+// isRemittance reports whether the payment is a remittance sender payment
+// (identified by its metadata).
+func (s *PaymentService) isRemittance(payment store.PaymentView) bool {
+	var wrapped struct {
+		Remittance json.RawMessage `json:"remittance"`
+	}
+	if len(payment.Metadata) > 0 {
+		_ = json.Unmarshal(payment.Metadata, &wrapped)
+	}
+	return len(wrapped.Remittance) > 0
+}
+
+// applyRemittanceSettlement opens the remittance once the sender's payment is
+// verified. It mints a pickup code, ring-fences the amount on the per-remittance
+// payable, credits the agent commission, and delivers the code to the sender. It
+// is idempotent on the payment id, and the code is delivered only when the
+// remittance is first created (an incomplete delivery is retried by the hook
+// worker without minting a second code).
+func (s *PaymentService) applyRemittanceSettlement(ctx context.Context, payment store.PaymentView) error {
+	if !s.cfg.AgentNetworkEnabled {
+		return fmt.Errorf("agent network disabled; cannot settle remittance for payment %s", payment.ID)
+	}
+	var wrapped struct {
+		Remittance json.RawMessage `json:"remittance"`
+	}
+	if len(payment.Metadata) > 0 {
+		if err := json.Unmarshal(payment.Metadata, &wrapped); err != nil {
+			return err
+		}
+	}
+	var meta remittanceMeta
+	if len(wrapped.Remittance) > 0 {
+		if err := json.Unmarshal(wrapped.Remittance, &meta); err != nil {
+			return err
+		}
+	}
+	agentID, err := uuid.Parse(meta.AgentMerchantID)
+	if err != nil {
+		return fmt.Errorf("remittance metadata missing agent for payment %s: %w", payment.ID, err)
+	}
+	regionID, err := uuid.Parse(meta.RegionID)
+	if err != nil {
+		return fmt.Errorf("remittance metadata missing region for payment %s: %w", payment.ID, err)
+	}
+	if meta.AmountKobo <= 0 || strings.TrimSpace(meta.RecipientName) == "" {
+		return fmt.Errorf("remittance metadata incomplete for payment %s", payment.ID)
+	}
+
+	salt, err := store.NewRemittanceSalt()
+	if err != nil {
+		return err
+	}
+	code, err := store.NewRemittanceCode()
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().Add(s.cfg.RemittanceTTL)
+	_, created, err := s.store.CreateRemittanceTx(ctx, store.CreateRemittanceParams{
+		SenderUserID:    payment.UserID,
+		AgentMerchantID: agentID,
+		RegionID:        regionID,
+		AmountKobo:      meta.AmountKobo,
+		FeeKobo:         meta.FeeKobo,
+		CommissionKobo:  meta.CommissionKobo,
+		RecipientName:   meta.RecipientName,
+		RecipientPhone:  meta.RecipientPhone,
+		PaymentID:       payment.ID,
+		CodeHash:        store.RemittanceCodeHash(salt, code),
+		CodeSalt:        salt,
+		ExpiresAt:       expiresAt,
+	})
+	if err != nil {
+		return err
+	}
+	if !created {
+		return nil // already settled and the code already delivered
+	}
+
+	channel := payment.Channel
+	if channel == "" {
+		channel = "whatsapp"
+	}
+	recipient := payment.Recipient
+	if recipient == "" {
+		recipient = payment.WhatsAppNumber
+	}
+	body := fmt.Sprintf(
+		"Your Xego cash pickup code for %s to %s is %s. Give it to %s at the agent when collecting. The code expires %s. Request an OTP when the recipient is ready to collect.",
+		nairaString(meta.AmountKobo), meta.RecipientName, code, meta.RecipientName,
+		expiresAt.Format("2 Jan 2006 15:04"))
+	if err := s.store.EnqueueTextForChannel(ctx, payment.UserID, channel, recipient, body); err != nil {
+		return err
+	}
+	return nil
+}
+
+// nairaString renders kobo as a plain naira amount for customer-facing copy.
+func nairaString(kobo int64) string {
+	if kobo < 0 {
+		kobo = -kobo
+	}
+	return fmt.Sprintf("₦%d.%02d", kobo/100, kobo%100)
 }
 
 // applyCollectionSplits computes the Faya platform fee and records the split

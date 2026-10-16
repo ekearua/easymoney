@@ -62,6 +62,7 @@ func (a *App) runWorkers(ctx context.Context) {
 			a.dispatch(ctx, a.workerPools.data, "data_fulfilments", a.processDataFulfilments)
 			a.dispatch(ctx, nil, "outbox", a.deliverOutbox)
 			a.dispatch(ctx, a.workerPools.misc, "expire_checkouts", a.expireCheckouts)
+			a.dispatch(ctx, a.workerPools.misc, "expire_remittances", a.expireRemittances)
 			a.dispatch(ctx, a.workerPools.misc, "pending_payment_hooks", a.processPendingPaymentHooks)
 		case <-eventTicker.C:
 			a.dispatch(ctx, a.workerPools.misc, "event_drain", func(ctx context.Context) {
@@ -325,6 +326,19 @@ func (a *App) processMerchantWebhooks(ctx context.Context) {
 func (a *App) expireCheckouts(ctx context.Context) {
 	if err := a.store.ExpireCheckouts(ctx, time.Now()); err != nil {
 		a.logger.WarnContext(ctx, "expire checkouts", "error", err)
+	}
+}
+
+// expireRemittances refunds cash-pickup remittances whose window passed without
+// a pickup, reversing the amount and the agent commission to the sender. It is
+// idempotent, so re-running after a crash is safe; it is skipped entirely when
+// the agent network is disabled.
+func (a *App) expireRemittances(ctx context.Context) {
+	if !a.cfg.AgentNetworkEnabled {
+		return
+	}
+	if _, err := a.store.ExpireRemittances(ctx, 100); err != nil {
+		a.logger.WarnContext(ctx, "expire remittances", "error", err)
 	}
 }
 

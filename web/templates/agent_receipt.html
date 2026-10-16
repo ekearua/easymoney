@@ -1,0 +1,29 @@
+{{define "agent_receipt.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "agent_nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Agent</p><h1>Cash pickup receipt</h1></div></header>
+
+<section class="panel">
+  <h2>Payout {{.Receipt.Remittance.ID}}</h2>
+  <div class="table-wrap"><table><tbody>
+    <tr><th>Recipient</th><td>{{.Receipt.Remittance.RecipientName}}</td></tr>
+    <tr><th>Amount paid</th><td>{{money .Receipt.Remittance.AmountKobo}}</td></tr>
+    <tr><th>Agent</th><td>{{if .Receipt.AgentName}}{{.Receipt.AgentName}}{{else}}—{{end}}</td></tr>
+    <tr><th>Region</th><td>{{if .Receipt.RegionName}}{{.Receipt.RegionName}}{{else}}—{{end}}</td></tr>
+    <tr><th>ID presented</th><td>{{.Receipt.Payout.ReceiverIDType}}</td></tr>
+    <tr><th>Paid at</th><td>{{date .Receipt.Payout.PaidAt}}</td></tr>
+    {{if .Receipt.Payout.GeoLat}}<tr><th>Location</th><td class="mono">{{.Receipt.Payout.GeoLat}}, {{.Receipt.Payout.GeoLng}}</td></tr>{{end}}
+    <tr><th>Journal ref</th><td class="mono">{{.Receipt.Payout.JournalRef}}</td></tr>
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Receipt text</h2>
+  <pre class="mono break-all">{{.Receipt.ReceiptText}}</pre>
+  <button type="button" onclick="window.print()">Print</button>
+</section>
+
+</main></body></html>
+{{end}}

@@ -30,6 +30,9 @@ import (
 const (
 	RailMerchantPayout   = "merchant_payout"
 	RailWalletWithdrawal = "wallet_withdrawal"
+	// RailCashPickup screens a remittance recipient (a counterparty with no Xego
+	// account) at POS-agent redemption. The movement ref is the remittance id.
+	RailCashPickup = "cash_pickup"
 )
 
 // payoutMovementRef composes the payout screening ref.
@@ -118,6 +121,20 @@ func (s *Store) PaymentScreeningByID(ctx context.Context, id int64) (PaymentScre
 		return PaymentScreening{}, fmt.Errorf("payment screening by id: %w", err)
 	}
 	return collectPaymentScreening(rows)
+}
+
+// PaymentScreeningForRef is PaymentScreeningByRef with an explicit found flag, so
+// callers outside this package need not import pgx to tell "no recorded
+// decision" from a real error.
+func (s *Store) PaymentScreeningForRef(ctx context.Context, rail, movementRef string) (PaymentScreening, bool, error) {
+	scr, err := s.PaymentScreeningByRef(ctx, rail, movementRef)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PaymentScreening{}, false, nil
+	}
+	if err != nil {
+		return PaymentScreening{}, false, err
+	}
+	return scr, true, nil
 }
 
 // ListPaymentScreenings returns recent screening rows, optionally restricted

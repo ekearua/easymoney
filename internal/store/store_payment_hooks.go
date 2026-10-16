@@ -18,6 +18,7 @@ const (
 	PaymentHookSplits        = "splits"
 	PaymentHookReceiptScan   = "receipt_scan"
 	PaymentHookIndividualPay = "individual_pay"
+	PaymentHookRemittance    = "remittance"
 	PaymentHookWalletTopup   = "wallet_topup"
 )
 

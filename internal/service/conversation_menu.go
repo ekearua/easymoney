@@ -86,6 +86,10 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowIndividualPay, "", "", nil)
 		}
 		return s.startPayIndividual(ctx, channel, recipient, user, session)
+	case "send cash", "cash pickup", "send cash for pickup", "send to agent", "pay agent", "cash pickup at agent":
+		return s.startSendToAgent(ctx, channel, recipient, user, session)
+	case "otp", "get otp", "request otp", "pickup otp":
+		return s.requestRemittanceOTP(ctx, channel, recipient, user, session)
 	case "fund wallet", "menu_fund_wallet", "top up", "wallet top up", "add money":
 		if s.WebFlowEnabled(channel, WebFlowTopup) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowTopup, "", "", nil)

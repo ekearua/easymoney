@@ -109,6 +109,21 @@ func (a *App) issueSession(w http.ResponseWriter, r *http.Request, scope string,
 		})
 		return "/merchant/scanner", nil
 	}
+	if scope == store.MFAScopeAgent {
+		user, err := a.store.AgentUserByID(r.Context(), subjectID)
+		if err != nil {
+			return "", err
+		}
+		if err := a.store.CreateAgentSession(r.Context(), subjectID, user.AgentMerchantID, token, csrf, expiry); err != nil {
+			return "", err
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name: agentCookieName, Value: token, Path: "/agent", HttpOnly: true,
+			Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode,
+			MaxAge: int(ttl.Seconds()),
+		})
+		return "/agent/redeem", nil
+	}
 	if err := a.store.CreateAdminSession(r.Context(), subjectID, token, csrf, expiry); err != nil {
 		return "", err
 	}
@@ -135,6 +150,18 @@ func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID
 // scanner.
 func (a *App) completeMerchantLogin(w http.ResponseWriter, r *http.Request, merchantID uuid.UUID) {
 	landing, err := a.issueSession(w, r, store.MFAScopeMerchant, merchantID)
+	if err != nil {
+		http.Error(w, "session error", http.StatusInternalServerError)
+		return
+	}
+	a.limiter.success(clientIP(r))
+	http.Redirect(w, r, landing, http.StatusSeeOther)
+}
+
+// completeAgentLogin issues the agent session cookie and lands on the redemption
+// page.
+func (a *App) completeAgentLogin(w http.ResponseWriter, r *http.Request, agentUserID uuid.UUID) {
+	landing, err := a.issueSession(w, r, store.MFAScopeAgent, agentUserID)
 	if err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
 		return
@@ -177,6 +204,13 @@ func (a *App) subjectEmail(ctx context.Context, scope string, subjectID uuid.UUI
 			return ""
 		}
 		return strings.TrimSpace(owner.Email)
+	}
+	if scope == store.MFAScopeAgent {
+		user, err := a.store.AgentUserByID(ctx, subjectID)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(user.Email)
 	}
 	admin, err := a.store.AdminUserByID(ctx, subjectID)
 	if err != nil || admin == nil {

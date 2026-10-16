@@ -31,6 +31,10 @@ const (
 	MerchantTypeStandard        = "standard"
 	MerchantTypeSponsor         = "sponsor"
 	MerchantTypeProgramAcceptor = "program_acceptor"
+	// MerchantTypeAgent classifies a local POS cash agent (migration 103). Like
+	// the others it is classification only: the agent's real powers come from
+	// its agent_profiles row and limits.
+	MerchantTypeAgent = "agent"
 )
 
 // Program statuses.
@@ -383,11 +387,11 @@ func (s *Store) SetProgramStatus(ctx context.Context, id uuid.UUID, status strin
 	return nil
 }
 
-// SetMerchantType classifies a merchant (standard | sponsor | program_acceptor).
-// Classification only: it never affects what a program allows.
+// SetMerchantType classifies a merchant (standard | sponsor | program_acceptor |
+// agent). Classification only: it never affects what a program allows.
 func (s *Store) SetMerchantType(ctx context.Context, merchantID uuid.UUID, merchantType string) error {
 	switch merchantType {
-	case MerchantTypeStandard, MerchantTypeSponsor, MerchantTypeProgramAcceptor:
+	case MerchantTypeStandard, MerchantTypeSponsor, MerchantTypeProgramAcceptor, MerchantTypeAgent:
 	default:
 		return fmt.Errorf("invalid merchant type %q", merchantType)
 	}
