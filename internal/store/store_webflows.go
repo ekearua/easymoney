@@ -306,6 +306,10 @@ func (s *Store) UserContactForChannel(ctx context.Context, userID uuid.UUID, cha
 		var igsid string
 		err := s.pool.QueryRow(ctx, `SELECT COALESCE(instagram_igsid,'') FROM users WHERE id=$1`, userID).Scan(&igsid)
 		return igsid, err
+	case "facebookmessenger":
+		var psid string
+		err := s.pool.QueryRow(ctx, `SELECT COALESCE(facebook_psid,'') FROM users WHERE id=$1`, userID).Scan(&psid)
+		return psid, err
 	case "tiktok":
 		var openID string
 		err := s.pool.QueryRow(ctx, `SELECT COALESCE(tiktok_open_id,'') FROM users WHERE id=$1`, userID).Scan(&openID)

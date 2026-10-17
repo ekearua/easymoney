@@ -130,6 +130,16 @@ func linkChannelStatement(channel string) (string, bool) {
 				onboarding_complete=true,
 				updated_at=now()
 			WHERE id=$1`, true
+	case "facebookmessenger":
+		return `
+			UPDATE users SET
+				facebook_psid=$2,
+				facebook_username=CASE WHEN $3<>'' THEN $3 ELSE facebook_username END,
+				facebook_verified_at=COALESCE(facebook_verified_at, now()),
+				facebook_confirmed_at=COALESCE(facebook_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`, true
 	case "tiktok":
 		return `
 			UPDATE users SET
@@ -162,6 +172,8 @@ func clearChannelHandleStatement(channel string) (string, bool) {
 		return `UPDATE users SET whatsapp_number=NULL, updated_at=now() WHERE id=$1`, true
 	case "instagram":
 		return `UPDATE users SET instagram_igsid=NULL, instagram_username='', updated_at=now() WHERE id=$1`, true
+	case "facebookmessenger":
+		return `UPDATE users SET facebook_psid=NULL, facebook_username='', updated_at=now() WHERE id=$1`, true
 	case "tiktok":
 		return `UPDATE users SET tiktok_open_id=NULL, tiktok_union_id=NULL, tiktok_username='', updated_at=now() WHERE id=$1`, true
 	case "telegram":

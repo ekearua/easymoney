@@ -116,6 +116,16 @@ type Config struct {
 	InstagramVerifyToken  string
 	InstagramGraphVersion string
 
+	// Facebook Messenger (Meta Graph API). Requires a Facebook Page with
+	// messaging enabled and an app with pages_messaging / the Messenger
+	// product; identity is the Page-scoped ID (PSID).
+	FacebookMessengerEnabled      bool
+	FacebookMessengerAppSecret    string
+	FacebookMessengerAccessToken  string
+	FacebookMessengerPageID       string // Page id owning the Messenger channel (Send API object)
+	FacebookMessengerVerifyToken  string
+	FacebookMessengerGraphVersion string
+
 	// TikTok Business Messaging. Full-parity channel adapter: interactive
 	// primitives degrade to numbered text menus (platform has no buttons).
 	TikTokEnabled     bool
@@ -571,6 +581,12 @@ func Load() (Config, error) {
 		InstagramPageID:                 strings.TrimSpace(os.Getenv("INSTAGRAM_PAGE_ID")),
 		InstagramVerifyToken:            os.Getenv("INSTAGRAM_VERIFY_TOKEN"),
 		InstagramGraphVersion:           strings.TrimSpace(os.Getenv("INSTAGRAM_GRAPH_VERSION")),
+		FacebookMessengerEnabled:        envBool("FACEBOOK_MESSENGER_ENABLED", false),
+		FacebookMessengerAppSecret:      os.Getenv("FACEBOOK_MESSENGER_APP_SECRET"),
+		FacebookMessengerAccessToken:    os.Getenv("FACEBOOK_MESSENGER_ACCESS_TOKEN"),
+		FacebookMessengerPageID:         strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_PAGE_ID")),
+		FacebookMessengerVerifyToken:    os.Getenv("FACEBOOK_MESSENGER_VERIFY_TOKEN"),
+		FacebookMessengerGraphVersion:   strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_GRAPH_VERSION")),
 		TikTokEnabled:                   envBool("TIKTOK_ENABLED", false),
 		TikTokAppSecret:                 os.Getenv("TIKTOK_APP_SECRET"),
 		TikTokAccessToken:               os.Getenv("TIKTOK_ACCESS_TOKEN"),
@@ -984,6 +1000,18 @@ func Load() (Config, error) {
 			} {
 				if value == "" {
 					return Config{}, fmt.Errorf("%s is required when INSTAGRAM_ENABLED=true", name)
+				}
+			}
+		}
+		if cfg.FacebookMessengerEnabled {
+			for name, value := range map[string]string{
+				"FACEBOOK_MESSENGER_APP_SECRET":   cfg.FacebookMessengerAppSecret,
+				"FACEBOOK_MESSENGER_ACCESS_TOKEN": cfg.FacebookMessengerAccessToken,
+				"FACEBOOK_MESSENGER_PAGE_ID":      cfg.FacebookMessengerPageID,
+				"FACEBOOK_MESSENGER_VERIFY_TOKEN": cfg.FacebookMessengerVerifyToken,
+			} {
+				if value == "" {
+					return Config{}, fmt.Errorf("%s is required when FACEBOOK_MESSENGER_ENABLED=true", name)
 				}
 			}
 		}

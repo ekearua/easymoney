@@ -310,12 +310,14 @@ FROM (
         CASE
             WHEN COALESCE(u.telegram_chat_id,'') <> '' THEN 'telegram'
             WHEN COALESCE(u.instagram_igsid,'') <> '' THEN 'instagram'
+            WHEN COALESCE(u.facebook_psid,'') <> '' THEN 'facebookmessenger'
             WHEN COALESCE(u.tiktok_open_id,'') <> '' THEN 'tiktok'
             ELSE 'whatsapp'
         END AS channel,
         CASE
             WHEN COALESCE(u.telegram_chat_id,'') <> '' THEN u.telegram_chat_id
             WHEN COALESCE(u.instagram_igsid,'') <> '' THEN u.instagram_igsid
+            WHEN COALESCE(u.facebook_psid,'') <> '' THEN u.facebook_psid
             WHEN COALESCE(u.tiktok_open_id,'') <> '' THEN u.tiktok_open_id
             ELSE p.wa_number
         END AS recipient,

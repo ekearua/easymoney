@@ -174,6 +174,8 @@ func (s *ConversationService) sendAccountConfirmation(ctx context.Context, chann
 		label = "Telegram account"
 	case ChannelInstagram:
 		label = "Instagram account"
+	case ChannelFacebookMessenger:
+		label = "Facebook Messenger account"
 	case ChannelTikTok:
 		label = "TikTok account"
 	}

@@ -39,6 +39,7 @@ import (
 	cacprovider "whatsapp-payment-demo/internal/providers/cac"
 	docauthprovider "whatsapp-payment-demo/internal/providers/docauth"
 	emailprovider "whatsapp-payment-demo/internal/providers/email"
+	"whatsapp-payment-demo/internal/providers/facebookmessenger"
 	firsprovider "whatsapp-payment-demo/internal/providers/firs"
 	geoprovider "whatsapp-payment-demo/internal/providers/geo"
 	identityprovider "whatsapp-payment-demo/internal/providers/identity"
@@ -70,6 +71,7 @@ type App struct {
 	interswitch           *interswitchprovider.Client
 	telegram              *telegram.Client
 	instagram             *instagram.Client
+	facebookmessenger     *facebookmessenger.Client
 	tiktok                *tiktok.Client
 	whatsapp              *whatsapp.Client
 	payments              *service.PaymentService
@@ -194,6 +196,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	whatsappClient := whatsapp.New(cfg.WhatsAppAppSecret, cfg.WhatsAppAccessToken, cfg.WhatsAppPhoneNumberID, cfg.WhatsAppGraphVersion, cfg.WhatsAppTemplateLocale)
 	var telegramClient *telegram.Client
 	var instagramClient *instagram.Client
+	var facebookMessengerClient *facebookmessenger.Client
 	var tiktokClient *tiktok.Client
 	messengers := map[string]ports.Messenger{service.ChannelWhatsApp: whatsappClient}
 	if cfg.TelegramEnabled {
@@ -207,6 +210,10 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		}
 		instagramClient = instagram.New(cfg.InstagramAppSecret, cfg.InstagramAccessToken, sendObjectID, cfg.InstagramGraphVersion)
 		messengers[service.ChannelInstagram] = instagramClient
+	}
+	if cfg.FacebookMessengerEnabled {
+		facebookMessengerClient = facebookmessenger.New(cfg.FacebookMessengerAppSecret, cfg.FacebookMessengerAccessToken, cfg.FacebookMessengerPageID, cfg.FacebookMessengerGraphVersion)
+		messengers[service.ChannelFacebookMessenger] = facebookMessengerClient
 	}
 	if cfg.TikTokEnabled {
 		tiktokClient = tiktok.New(cfg.TikTokAppSecret, cfg.TikTokAccessToken, cfg.TikTokAPIBase)
@@ -521,7 +528,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	convo.SetProgramPursesService(programPursesService)
 	app := &App{
 		cfg: cfg, logger: logger, store: repository, interswitch: interswitchClient,
-		telegram: telegramClient, instagram: instagramClient, tiktok: tiktokClient,
+		telegram: telegramClient, instagram: instagramClient, facebookmessenger: facebookMessengerClient, tiktok: tiktokClient,
 		whatsapp: whatsappClient, payments: paymentService,
 		data:         dataService,
 		conversation: convo,
@@ -589,6 +596,11 @@ func (a *App) Download(ctx context.Context, channel, mediaID, mediaURL string) (
 			return nil, "", errors.New("Instagram is not configured")
 		}
 		return a.instagram.DownloadFile(ctx, mediaID, mediaURL)
+	case service.ChannelFacebookMessenger:
+		if a.facebookmessenger == nil {
+			return nil, "", errors.New("Facebook Messenger is not configured")
+		}
+		return a.facebookmessenger.DownloadFile(ctx, mediaID, mediaURL)
 	case service.ChannelTikTok:
 		if a.tiktok == nil {
 			return nil, "", errors.New("TikTok is not configured")
@@ -721,6 +733,8 @@ func (a *App) routes() http.Handler {
 	router.With(webhookLimit).Post("/webhooks/telegram", a.receiveTelegramWebhook)
 	router.Get("/webhooks/instagram", a.verifyInstagramWebhook)
 	router.With(webhookLimit).Post("/webhooks/instagram", a.receiveInstagramWebhook)
+	router.Get("/webhooks/facebookmessenger", a.verifyFacebookMessengerWebhook)
+	router.With(webhookLimit).Post("/webhooks/facebookmessenger", a.receiveFacebookMessengerWebhook)
 	router.With(webhookLimit).Post("/webhooks/tiktok", a.receiveTikTokWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms", a.receiveSMSWebhook)
 	router.With(webhookLimit).Post("/webhooks/sms/status", a.receiveSMSStatusWebhook)

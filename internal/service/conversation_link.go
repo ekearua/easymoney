@@ -148,6 +148,8 @@ func channelHandleForUser(user store.User, channel string) (string, string) {
 	switch channel {
 	case ChannelInstagram:
 		return user.InstagramIGSID.String, user.InstagramUsername
+	case ChannelFacebookMessenger:
+		return user.FacebookMessengerPSID.String, user.FacebookMessengerUsername
 	case ChannelTikTok:
 		return user.TikTokOpenID.String, user.TikTokUsername
 	case ChannelTelegram:
@@ -160,6 +162,8 @@ func channelDisplayName(channel string) string {
 	switch channel {
 	case ChannelInstagram:
 		return "Instagram"
+	case ChannelFacebookMessenger:
+		return "Facebook Messenger"
 	case ChannelTikTok:
 		return "TikTok"
 	case ChannelTelegram:

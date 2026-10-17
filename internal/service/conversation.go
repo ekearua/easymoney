@@ -24,6 +24,9 @@ const (
 	// ChannelInstagram identifies customer conversations received through the
 	// Instagram Messaging API (Meta Graph, IGSID identity).
 	ChannelInstagram = "instagram"
+	// ChannelFacebookMessenger identifies customer conversations received
+	// through the Facebook Messenger API (Meta Graph, PSID identity).
+	ChannelFacebookMessenger = "facebookmessenger"
 	// ChannelTikTok identifies customer conversations received through the
 	// TikTok Business Messaging API (open_id/union_id identity).
 	ChannelTikTok = "tiktok"
@@ -535,6 +538,10 @@ func (s *ConversationService) resolveUser(ctx context.Context, message store.Inb
 		igsid := strings.TrimSpace(message.Sender)
 		user, err = s.store.GetOrCreateInstagramUser(ctx, igsid, message.Username)
 		recipient = igsid
+	case ChannelFacebookMessenger:
+		psid := strings.TrimSpace(message.Sender)
+		user, err = s.store.GetOrCreateFacebookMessengerUser(ctx, psid, message.Username)
+		recipient = psid
 	case ChannelTikTok:
 		openID := strings.TrimSpace(message.Sender)
 		// Identity is keyed on the open_id; the union_id is kept for cross-app
@@ -572,6 +579,8 @@ func (s *ConversationService) onboardingCompleteForChannel(user store.User, chan
 		return user.TelegramConfirmedAt.Valid
 	case ChannelInstagram:
 		return user.InstagramConfirmedAt.Valid
+	case ChannelFacebookMessenger:
+		return user.FacebookMessengerConfirmedAt.Valid
 	case ChannelTikTok:
 		return user.TikTokConfirmedAt.Valid
 	}
@@ -667,6 +676,9 @@ func normalizeChannel(channel string) string {
 	}
 	if strings.EqualFold(channel, ChannelInstagram) {
 		return ChannelInstagram
+	}
+	if strings.EqualFold(channel, ChannelFacebookMessenger) {
+		return ChannelFacebookMessenger
 	}
 	if strings.EqualFold(channel, ChannelTikTok) {
 		return ChannelTikTok

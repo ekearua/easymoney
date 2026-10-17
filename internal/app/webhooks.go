@@ -13,6 +13,7 @@ import (
 
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/providers/facebookmessenger"
 	"whatsapp-payment-demo/internal/providers/instagram"
 	"whatsapp-payment-demo/internal/providers/telegram"
 	"whatsapp-payment-demo/internal/providers/tiktok"
@@ -190,6 +191,73 @@ func (a *App) receiveInstagramWebhook(w http.ResponseWriter, r *http.Request) {
 	for _, message := range messages {
 		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
 			ID: message.ID, Channel: service.ChannelInstagram, Sender: message.IGSID, Recipient: message.IGSID,
+			Text: message.Text, Interactive: message.Interactive, Username: message.Username,
+			MediaType: message.MediaType, MediaID: message.MediaID, MediaURL: message.MediaURL, MediaMime: message.MediaMime, Caption: message.Caption,
+		}); err != nil {
+			_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", err.Error())
+			http.Error(w, "storage error", http.StatusServiceUnavailable)
+			return
+		}
+	}
+	_ = a.store.CompleteWebhook(r.Context(), deliveryID, "accepted", "")
+	w.WriteHeader(http.StatusOK)
+}
+
+// verifyFacebookMessengerWebhook answers Meta's subscription verification
+// handshake (hub.mode/hub.verify_token/hub.challenge), mirroring the WhatsApp
+// flow.
+func (a *App) verifyFacebookMessengerWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("hub.mode") != "subscribe" ||
+		r.URL.Query().Get("hub.verify_token") != a.cfg.FacebookMessengerVerifyToken {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte(r.URL.Query().Get("hub.challenge")))
+}
+
+// receiveFacebookMessengerWebhook accepts signed Messenger events. The
+// signature is checked against the raw body before parsing; events are
+// recorded for dedup/audit, then normalized messages are enqueued for the
+// conversation worker exactly like the Instagram channel.
+func (a *App) receiveFacebookMessengerWebhook(w http.ResponseWriter, r *http.Request) {
+	if !a.cfg.FacebookMessengerEnabled || a.facebookmessenger == nil {
+		http.Error(w, "facebookmessenger disabled", http.StatusNotFound)
+		return
+	}
+	body, err := readBody(r, 1<<20)
+	if err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	a.logWebhookBody("facebookmessenger", body)
+	if a.cfg.WebhookBodyLogEnabled {
+		a.logger.InfoContext(r.Context(), "facebookmessenger signature", "signature", r.Header.Get("X-Hub-Signature-256"))
+	}
+	validationErr := a.facebookmessenger.ValidateSignature(body, r.Header.Get("X-Hub-Signature-256"))
+	messages, parseErr := facebookmessenger.ParseInbound(body)
+	eventKey := digest(body)
+	if len(messages) > 0 && messages[0].ID != "" {
+		eventKey = messages[0].ID
+	}
+	deliveryID, _, storeErr := a.store.RecordWebhook(r.Context(), service.ChannelFacebookMessenger, eventKey, validationErr == nil && parseErr == nil, json.RawMessage(`{}`))
+	if storeErr != nil {
+		http.Error(w, "storage error", http.StatusServiceUnavailable)
+		return
+	}
+	if validationErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "rejected", "invalid signature")
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if parseErr != nil {
+		_ = a.store.CompleteWebhook(r.Context(), deliveryID, "failed", parseErr.Error())
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
+	}
+	for _, message := range messages {
+		if _, err := a.store.EnqueueInboundMessage(r.Context(), store.InboundMessage{
+			ID: message.ID, Channel: service.ChannelFacebookMessenger, Sender: message.PSID, Recipient: message.PSID,
 			Text: message.Text, Interactive: message.Interactive, Username: message.Username,
 			MediaType: message.MediaType, MediaID: message.MediaID, MediaURL: message.MediaURL, MediaMime: message.MediaMime, Caption: message.Caption,
 		}); err != nil {

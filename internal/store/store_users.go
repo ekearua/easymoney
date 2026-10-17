@@ -34,6 +34,10 @@ type User struct {
 	InstagramUsername    string
 	InstagramVerifiedAt  sql.NullTime
 	InstagramConfirmedAt sql.NullTime
+	FacebookMessengerPSID       sql.NullString
+	FacebookMessengerUsername    string
+	FacebookMessengerVerifiedAt  sql.NullTime
+	FacebookMessengerConfirmedAt sql.NullTime
 	TikTokOpenID         sql.NullString
 	TikTokUnionID        sql.NullString
 	TikTokUsername       string
@@ -90,6 +94,7 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at,
 			(xmax = 0) AS first_contact`
@@ -101,6 +106,7 @@ func (s *Store) GetOrCreateUser(ctx context.Context, number string) (User, error
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -130,6 +136,7 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
@@ -140,6 +147,7 @@ func (s *Store) GetOrCreateTelegramUser(ctx context.Context, chatID, userID, use
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -156,6 +164,7 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE id=$1`
@@ -167,6 +176,7 @@ func (s *Store) UserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -349,6 +359,16 @@ func (s *Store) LinkChannelToUser(ctx context.Context, userID uuid.UUID, channel
 				onboarding_complete=true,
 				updated_at=now()
 			WHERE id=$1`
+	case "facebookmessenger":
+		statement = `
+			UPDATE users SET
+				facebook_psid=$2,
+				facebook_username=CASE WHEN $3<>'' THEN $3 ELSE facebook_username END,
+				facebook_verified_at=COALESCE(facebook_verified_at, now()),
+				facebook_confirmed_at=COALESCE(facebook_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
 	case "tiktok":
 		statement = `
 			UPDATE users SET
@@ -387,6 +407,8 @@ func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle str
 		column = "whatsapp_number"
 	case "instagram":
 		column = "instagram_igsid"
+	case "facebookmessenger":
+		column = "facebook_psid"
 	case "tiktok":
 		column = "tiktok_open_id"
 	case "telegram":
@@ -400,6 +422,7 @@ func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle str
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE `+column+`=$1`, handle).Scan(
@@ -409,6 +432,7 @@ func (s *Store) FindUserByChannelHandle(ctx context.Context, channel, handle str
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -436,6 +460,7 @@ func (s *Store) FindUserByWhatsAppNumber(ctx context.Context, number string) (Us
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE whatsapp_number=$1`
@@ -447,6 +472,7 @@ func (s *Store) FindUserByWhatsAppNumber(ctx context.Context, number string) (Us
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -498,6 +524,19 @@ func (s *Store) ConfirmInstagramAccount(ctx context.Context, id uuid.UUID) error
 	return err
 }
 
+// ConfirmFacebookMessengerAccount records the customer's explicit Facebook
+// Messenger confirmation.
+func (s *Store) ConfirmFacebookMessengerAccount(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users
+		SET onboarding_complete=true,
+			facebook_confirmed_at=COALESCE(facebook_confirmed_at, now()),
+			verification_level='facebookmessenger_confirmed',
+			updated_at=now()
+		WHERE id=$1`, id)
+	return err
+}
+
 // ConfirmTikTokAccount records the customer's explicit TikTok confirmation.
 func (s *Store) ConfirmTikTokAccount(ctx context.Context, id uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `
@@ -542,6 +581,13 @@ func (s *Store) MarkChannelOnboarded(ctx context.Context, id uuid.UUID, channel 
 				onboarding_complete=true,
 				updated_at=now()
 			WHERE id=$1`
+	case "facebookmessenger":
+		statement = `
+			UPDATE users SET
+				facebook_confirmed_at=COALESCE(facebook_confirmed_at, now()),
+				onboarding_complete=true,
+				updated_at=now()
+			WHERE id=$1`
 	case "tiktok":
 		statement = `
 			UPDATE users SET
@@ -554,6 +600,46 @@ func (s *Store) MarkChannelOnboarded(ctx context.Context, id uuid.UUID, channel 
 	}
 	_, err := s.pool.Exec(ctx, statement, id)
 	return err
+}
+
+// GetOrCreateFacebookMessengerUser resolves a Facebook Messenger customer by
+// stable Page-scoped ID (PSID).
+func (s *Store) GetOrCreateFacebookMessengerUser(ctx context.Context, psid, username string) (User, error) {
+	const query = `
+		INSERT INTO users (facebook_psid, facebook_username, facebook_verified_at, verification_level)
+		VALUES ($1,$2,now(),'facebookmessenger_inbound')
+		ON CONFLICT (facebook_psid) DO UPDATE SET
+			facebook_username=EXCLUDED.facebook_username,
+			facebook_verified_at=COALESCE(users.facebook_verified_at, now()),
+			last_inbound_at=now(),
+			updated_at=now(),
+			verification_level = CASE
+				WHEN users.facebook_confirmed_at IS NOT NULL THEN users.verification_level
+				WHEN users.verification_level IN ('unverified','whatsapp_inbound','telegram_inbound','instagram_inbound','tiktok_inbound') THEN 'facebookmessenger_inbound'
+				ELSE users.verification_level
+			END
+		RETURNING id, COALESCE(whatsapp_number,''), display_name, email, onboarding_complete,
+			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
+			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
+			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
+			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
+			last_inbound_at, created_at, updated_at`
+	var user User
+	err := s.pool.QueryRow(ctx, query, psid, username).Scan(
+		&user.ID, &user.WhatsAppNumber, &user.DisplayName, &user.Email,
+		&user.OnboardingComplete, &user.WhatsAppVerifiedAt, &user.NumberConfirmedAt,
+		&user.EmailVerifiedAt, &user.VerificationLevel, &user.AccountLevel, &user.TelegramChatID,
+		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
+		&user.TelegramConfirmedAt,
+		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
+		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
+		&user.MergedIntoID,
+		&user.LastInboundAt,
+		&user.CreatedAt, &user.UpdatedAt,
+	)
+	return user, err
 }
 
 // GetOrCreateInstagramUser resolves an Instagram customer by stable IGSID.
@@ -575,6 +661,7 @@ func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username st
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
@@ -585,6 +672,7 @@ func (s *Store) GetOrCreateInstagramUser(ctx context.Context, igsid, username st
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -613,6 +701,7 @@ func (s *Store) GetOrCreateTikTokUser(ctx context.Context, openID, unionID, user
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at`
 	var user User
@@ -623,6 +712,7 @@ func (s *Store) GetOrCreateTikTokUser(ctx context.Context, openID, unionID, user
 		&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.MergedIntoID,
 		&user.LastInboundAt,
@@ -638,6 +728,7 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at, merged_into_id,
 			last_inbound_at, created_at, updated_at
 		FROM users ORDER BY created_at DESC LIMIT $1`, limit)
@@ -654,6 +745,7 @@ func (s *Store) ListUsers(ctx context.Context, limit int) ([]User, error) {
 			&user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 			&user.TelegramConfirmedAt,
 			&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+			&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 			&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 			&user.MergedIntoID,
 			&user.LastInboundAt,

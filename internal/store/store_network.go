@@ -99,6 +99,8 @@ channel_cols AS (
     UNION ALL
     SELECT id, display_name, updated_at, 'instagram', instagram_igsid FROM users WHERE instagram_igsid IS NOT NULL AND instagram_igsid <> ''
     UNION ALL
+    SELECT id, display_name, updated_at, 'facebookmessenger', facebook_psid FROM users WHERE facebook_psid IS NOT NULL AND facebook_psid <> ''
+    UNION ALL
     SELECT id, display_name, updated_at, 'tiktok', tiktok_open_id FROM users WHERE tiktok_open_id IS NOT NULL AND tiktok_open_id <> ''
 ),
 channel_edges AS (

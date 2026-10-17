@@ -461,6 +461,11 @@ func (a *App) sendOutboxText(ctx context.Context, channel, recipient, body strin
 			return "", errors.New("Instagram is not configured")
 		}
 		return "", a.instagram.SendText(ctx, recipient, body)
+	case service.ChannelFacebookMessenger:
+		if a.facebookmessenger == nil {
+			return "", errors.New("Facebook Messenger is not configured")
+		}
+		return "", a.facebookmessenger.SendText(ctx, recipient, body)
 	case service.ChannelTikTok:
 		if a.tiktok == nil {
 			return "", errors.New("TikTok is not configured")
@@ -497,6 +502,11 @@ func (a *App) sendOutboxImage(ctx context.Context, channel, recipient, imageData
 			return "", errors.New("Instagram is not configured")
 		}
 		return "", a.instagram.SendImage(ctx, recipient, imageData, caption)
+	case service.ChannelFacebookMessenger:
+		if a.facebookmessenger == nil {
+			return "", errors.New("Facebook Messenger is not configured")
+		}
+		return "", a.facebookmessenger.SendImage(ctx, recipient, imageData, caption)
 	case service.ChannelTikTok:
 		if a.tiktok == nil {
 			return "", errors.New("TikTok is not configured")

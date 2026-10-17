@@ -321,6 +321,8 @@ func (s *ConversationService) handleAccountConfirmation(ctx context.Context, cha
 			err = s.store.ConfirmTelegramAccount(ctx, user.ID)
 		case ChannelInstagram:
 			err = s.store.ConfirmInstagramAccount(ctx, user.ID)
+		case ChannelFacebookMessenger:
+			err = s.store.ConfirmFacebookMessengerAccount(ctx, user.ID)
 		case ChannelTikTok:
 			err = s.store.ConfirmTikTokAccount(ctx, user.ID)
 		default:

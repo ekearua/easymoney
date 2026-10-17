@@ -317,6 +317,14 @@ The service validates `X-Telegram-Bot-Api-Secret-Token` before accepting Telegra
 - Instagram gets full web flows (link-button messages render as generic templates), quick replies for interactive menus, and inbound image/audio attachments feed the same OCR/STT pipeline as WhatsApp.
 - Identity: customers are keyed by their Instagram-scoped ID (IGSID); an email confirmed during onboarding links the handle to an existing Xego account so receipts, wallet, and KYC history follow the customer across channels.
 
+### Facebook Messenger
+
+- Requires a Facebook Page with messaging enabled and a Meta app with the Messenger product (pages_messaging). Set `FACEBOOK_MESSENGER_ENABLED=true`.
+- Store `FACEBOOK_MESSENGER_APP_SECRET`, `FACEBOOK_MESSENGER_ACCESS_TOKEN` (Page access token), `FACEBOOK_MESSENGER_PAGE_ID` (the Page that owns the channel), and a random `FACEBOOK_MESSENGER_VERIFY_TOKEN`.
+- Webhook URL: `https://<host>/webhooks/facebookmessenger` — subscribe to the `messages` field. Meta's subscription verification (hub.mode/hub.verify_token/hub.challenge) is answered on GET; event POSTs are authenticated with `X-Hub-Signature-256` (HMAC-SHA256 of the raw body using `FACEBOOK_MESSENGER_APP_SECRET`).
+- Messenger shares the Instagram Messaging Send API, so the channel gets the same capabilities: full web flows (link-button messages render as generic templates), quick replies for interactive menus, and inbound image/audio attachments feed the same OCR/STT pipeline as WhatsApp. Note the standard 24-hour messaging window: outbound messages require the customer to message first (message tags for `CONFIRMED_EVENT_UPDATE`, `ACCOUNT_UPDATE`, and `POST_PURCHASE_UPDATE` were retired by Meta in April 2026).
+- Identity: customers are keyed by their Page-scoped ID (PSID); an email confirmed during onboarding links the handle to an existing Xego account so receipts, wallet, and KYC history follow the customer across channels.
+
 ### TikTok Business Messaging
 
 - Requires a TikTok for Business app with the Business Messaging product and an access token. Set `TIKTOK_ENABLED=true`.

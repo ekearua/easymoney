@@ -296,6 +296,7 @@ func (s *Store) FindUserByPhone(ctx context.Context, phone string) (User, error)
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE whatsapp_number=$1`, phone).Scan(&user.ID, &user.WhatsAppNumber,
@@ -304,6 +305,7 @@ func (s *Store) FindUserByPhone(ctx context.Context, phone string) (User, error)
 		&user.TelegramChatID, &user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.LastInboundAt, &user.CreatedAt, &user.UpdatedAt)
 	if err == pgx.ErrNoRows {
@@ -320,6 +322,7 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 			whatsapp_verified_at, number_confirmed_at, email_verified_at, verification_level, account_level,
 			telegram_chat_id, telegram_user_id, telegram_username, telegram_verified_at, telegram_confirmed_at,
 			instagram_igsid, instagram_username, instagram_verified_at, instagram_confirmed_at,
+			facebook_psid, facebook_username, facebook_verified_at, facebook_confirmed_at,
 			tiktok_open_id, tiktok_union_id, tiktok_username, tiktok_verified_at, tiktok_confirmed_at,
 			last_inbound_at, created_at, updated_at
 		FROM users WHERE id=$1`, id).Scan(&user.ID, &user.WhatsAppNumber,
@@ -328,6 +331,7 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&user.TelegramChatID, &user.TelegramUserID, &user.TelegramUsername, &user.TelegramVerifiedAt,
 		&user.TelegramConfirmedAt,
 		&user.InstagramIGSID, &user.InstagramUsername, &user.InstagramVerifiedAt, &user.InstagramConfirmedAt,
+		&user.FacebookMessengerPSID, &user.FacebookMessengerUsername, &user.FacebookMessengerVerifiedAt, &user.FacebookMessengerConfirmedAt,
 		&user.TikTokOpenID, &user.TikTokUnionID, &user.TikTokUsername, &user.TikTokVerifiedAt, &user.TikTokConfirmedAt,
 		&user.LastInboundAt, &user.CreatedAt, &user.UpdatedAt)
 	if err == pgx.ErrNoRows {
