@@ -2,7 +2,9 @@
 -- three CBN rungs. L4 is retired. No profile may sit above CBN Tier 1 (L1)
 -- without BOTH a verified BVN and NIN (both are now collected at the L2 gate),
 -- so legacy L2/L3/L4 holders are demoted to the new L1. The obsolete evidence
--- keys (identity_on_file, nin_or_bvn_verified) are pruned from stored evidence.
+-- keys (identity_on_file, nin_or_bvn_verified) are retired: pruned from the
+-- kyc_profiles.evidence JSON and re-keyed on the customer_verifications rows
+-- onto the surviving Tier-1 declaration key (see section 3).
 --
 -- The individual Tier-1 self-declared data set gains gender (collected with
 -- name/dob/address at onboarding). customer_verifications.verification_type is
@@ -81,6 +83,20 @@ ALTER TABLE manual_review_cases
 
 ALTER TABLE customer_verifications
     DROP CONSTRAINT IF EXISTS customer_verifications_verification_type_check;
+
+-- Re-key the retired verification types onto the surviving Tier-1 declaration
+-- key, in the gap between the DROP and the ADD: 026 seeded 'identity_on_file'
+-- rows for every previously-approved profile, and neither the old CHECK (which
+-- forbids the new key) nor the new CHECK (which rejects the old ones) allows
+-- the rows to survive the swap otherwise. Kept rather than deleted because
+-- customer_verifications is DSR-exported - a customer sees these rows in their
+-- export - and 091 rewrites the simulated Tier-1 rows to the recorded
+-- declaration shape. Re-keying never fabricates a BVN/NIN match: these rows
+-- were demoted to L1 precisely because no such verification exists.
+UPDATE customer_verifications
+SET verification_type = 'tier1_basic_details'
+WHERE verification_type IN ('identity_on_file','nin_or_bvn_verified');
+
 ALTER TABLE customer_verifications
     ADD CONSTRAINT customer_verifications_verification_type_check
         CHECK (verification_type IN (
