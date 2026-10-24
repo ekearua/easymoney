@@ -1,10 +1,15 @@
-// This file wires the Dojah sanctions/PEP screening endpoint
-// (POST /api/v1/aml/v2/screening) behind the SanctionsScreener port, per
-// docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1. Dojah authenticates with two headers on
-// every call: "Authorization: <secret key>" (raw, no Bearer prefix) and
-// "AppId: <app id>". The request/response contract is the same normalized
-// envelope the generic HTTP adapter documents, so the port contract is
-// unchanged; the §7 vendor trial confirms the live payload shape.
+// This file wires Dojah's AML screening endpoint
+// (POST /api/v2/aml/screening) behind the SanctionsScreener port, per
+// docs/compliance/AML_VENDOR_DECISION_RECORD.md. Dojah authenticates with two
+// headers on every call: "Authorization: <secret key>" (raw, no Bearer prefix)
+// and "AppId: <app id>". The vendor reports a match status rather than a
+// decision, so this adapter maps "No Match" / "Partially Matched" /
+// "Potential Match" / "Confirmed Match" onto the shared clear / possible /
+// blocked vocabulary and rejects anything else instead of clearing it.
+//
+// Dojah does not publish a list-version identifier in the response. The
+// operator-supplied DOJAH_LIST_VERSION stamp is recorded instead (empty when
+// unset), so the stale-list re-evaluation only fires when that stamp moves.
 package screening
 
 import (
@@ -18,6 +23,7 @@ import (
 	"time"
 
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/providers/dojahaml"
 )
 
 // Dojah screens identities against Dojah's AML screening API.
@@ -27,11 +33,13 @@ type Dojah struct {
 	secretKey      string
 	httpClient     *http.Client
 	matchThreshold float64
+	listVersion    string
 }
 
 // NewDojah creates the Dojah screening adapter. An empty baseURL defaults to
 // production (https://api.dojah.io); an empty timeout defaults to 30 seconds.
-func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64) *Dojah {
+// listVersion is the operator-supplied list stamp recorded with each decision.
+func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64, listVersion string) *Dojah {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -45,21 +53,12 @@ func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThre
 		secretKey:      strings.TrimSpace(secretKey),
 		httpClient:     &http.Client{Timeout: timeout},
 		matchThreshold: matchThreshold,
+		listVersion:    strings.TrimSpace(listVersion),
 	}
 }
 
 // ProviderName returns the adapter identifier for audit records.
 func (d *Dojah) ProviderName() string { return "dojah" }
-
-// dojahScreenRequest is the wire body sent to Dojah.
-type dojahScreenRequest struct {
-	LegalName      string  `json:"legal_name"`
-	DateOfBirth    string  `json:"date_of_birth,omitempty"`
-	PhoneNumber    string  `json:"phone_number,omitempty"`
-	Address        string  `json:"address,omitempty"`
-	CountryCode    string  `json:"country_code,omitempty"`
-	MatchThreshold float64 `json:"match_threshold"`
-}
 
 // Screen performs one sanctions/PEP lookup against Dojah.
 func (d *Dojah) Screen(ctx context.Context, request ports.ScreeningRequest) (ports.ScreeningDecision, error) {
@@ -67,56 +66,52 @@ func (d *Dojah) Screen(ctx context.Context, request ports.ScreeningRequest) (por
 	if name == "" {
 		return ports.ScreeningDecision{}, fmt.Errorf("legal name is required for screening")
 	}
-	resp, err := d.lookup(ctx, request)
+	entity, err := d.lookup(ctx, request)
 	if err != nil {
-		switch {
-		case err == errUnauthorized:
-			return ports.ScreeningDecision{}, fmt.Errorf("screening API key rejected (401)")
-		case err == errRateLimited:
-			return ports.ScreeningDecision{}, fmt.Errorf("screening rate limit exceeded (429)")
-		default:
-			return ports.ScreeningDecision{}, fmt.Errorf("screening lookup: %w", err)
-		}
+		return ports.ScreeningDecision{}, fmt.Errorf("screening lookup: %w", err)
 	}
-	decision, ok := normalizeDecision(resp)
+	decision, ok := dojahaml.Decision(entity.MatchStatus)
 	if !ok {
-		return ports.ScreeningDecision{}, fmt.Errorf("unrecognized screening decision (decision=%q status=%q)", resp.Decision, resp.Status)
+		return ports.ScreeningDecision{}, fmt.Errorf("unrecognized screening match status %q", entity.MatchStatus)
 	}
-	ref := firstNonEmpty(resp.Reference, resp.ProviderRef, resp.ReportID)
+	ref := strings.TrimSpace(entity.EntityID)
 	if ref == "" {
 		ref = "DOJAH-SCR-" + shortHash(name)
 	}
-	message := strings.TrimSpace(resp.Message)
-	if message == "" {
-		message = defaultDecisionMessage(decision)
-	}
 	return ports.ScreeningDecision{
 		Decision:     decision,
-		MatchedNames: resp.MatchedNames,
+		MatchedNames: dojahaml.MatchedNames(entity.Results),
 		ProviderRef:  ref,
-		ListVersion:  strings.TrimSpace(resp.ListVersion),
-		Message:      message,
+		ListVersion:  d.listVersion,
+		Message:      defaultDecisionMessage(decision),
 	}, nil
 }
 
 // lookup performs the HTTP POST with Dojah's auth headers and decodes the
-// normalized response envelope.
-func (d *Dojah) lookup(ctx context.Context, request ports.ScreeningRequest) (httpScreenResponse, error) {
-	payload := dojahScreenRequest{
-		LegalName:      strings.TrimSpace(request.LegalName),
-		DateOfBirth:    strings.TrimSpace(request.DateOfBirth),
-		PhoneNumber:    strings.TrimSpace(request.PhoneNumber),
-		Address:        strings.TrimSpace(request.Address),
-		CountryCode:    strings.TrimSpace(request.CountryCode),
-		MatchThreshold: d.matchThreshold,
+// documented AML response.
+func (d *Dojah) lookup(ctx context.Context, request ports.ScreeningRequest) (*dojahaml.Entity, error) {
+	payload := dojahaml.Request{
+		Schema: "individual",
+		Properties: dojahaml.Properties{
+			Names:       strings.TrimSpace(request.LegalName),
+			DateOfBirth: strings.TrimSpace(request.DateOfBirth),
+			Nationality: nationality(request.CountryCode),
+			IDNumber:    "",
+		},
+		ScreeningOptions: dojahaml.Options{
+			PEPCheck:          true,
+			Sanction:          true,
+			AdverseMediaCheck: false,
+			MatchThreshold:    d.matchThreshold,
+		},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return httpScreenResponse{}, err
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/api/v1/aml/v2/screening", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+dojahaml.Path, bytes.NewReader(body))
 	if err != nil {
-		return httpScreenResponse{}, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -129,33 +124,61 @@ func (d *Dojah) lookup(ctx context.Context, request ports.ScreeningRequest) (htt
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return httpScreenResponse{}, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
 	if err != nil {
-		return httpScreenResponse{}, fmt.Errorf("read response body: %w", err)
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
-
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
-		// fall through to parse
-	case http.StatusUnauthorized:
-		return httpScreenResponse{}, errUnauthorized
-	case http.StatusTooManyRequests:
-		return httpScreenResponse{}, errRateLimited
-	default:
-		var errResp httpScreenResponse
-		if json.Unmarshal(respBody, &errResp) == nil && strings.TrimSpace(errResp.Message) != "" {
-			return httpScreenResponse{}, fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, errResp.Message)
-		}
-		return httpScreenResponse{}, fmt.Errorf("API error HTTP %d", resp.StatusCode)
+	if err := dojahHTTPError(resp.StatusCode, respBody); err != nil {
+		return nil, err
 	}
-
-	var parsed httpScreenResponse
+	var parsed dojahaml.Response
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return httpScreenResponse{}, fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	return parsed, nil
+	if parsed.Entity == nil {
+		return nil, fmt.Errorf("Dojah returned no screening entity")
+	}
+	return parsed.Entity, nil
+}
+
+// dojahHTTPError maps a non-2xx reply onto an operator-safe error. A 402 means
+// the Dojah wallet is empty and a 424 that an upstream source is down; both are
+// returned as errors so the caller fails closed (holds) rather than clearing.
+func dojahHTTPError(status int, body []byte) error {
+	switch status {
+	case http.StatusOK, http.StatusCreated:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("screening API key rejected (401)")
+	case http.StatusPaymentRequired:
+		return fmt.Errorf("screening unavailable: Dojah wallet balance is too low (402)")
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("screening rate limit exceeded (429)")
+	case http.StatusFailedDependency:
+		return fmt.Errorf("screening unavailable: Dojah upstream source failed (424)")
+	}
+	var errResp struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil {
+		if msg := firstNonEmpty(errResp.Message, errResp.Error); msg != "" {
+			return fmt.Errorf("API error (HTTP %d): %s", status, msg)
+		}
+	}
+	return fmt.Errorf("API error HTTP %d", status)
+}
+
+// nationality converts the platform's two-letter country code into the country
+// name Dojah's match scoring expects; other values pass through unchanged.
+func nationality(code string) string {
+	trimmed := strings.TrimSpace(code)
+	if strings.EqualFold(trimmed, "NG") {
+		return "Nigerian"
+	}
+	return trimmed
 }

@@ -1,6 +1,31 @@
 package app
 
-import "net/http"
+import (
+	"net/http"
+
+	"whatsapp-payment-demo/internal/store"
+)
+
+// screeningCostRates holds the percentage splits shown on the screening-cost
+// page. They are computed here rather than in the template so the template
+// needs only the shared "percent" helper (also used by the messaging view).
+type screeningCostRates struct {
+	Clear  float64
+	Review float64
+	Block  float64
+}
+
+func newScreeningCostRates(summary store.OnboardingScreeningCost) screeningCostRates {
+	if summary.ScreeningsTotal <= 0 {
+		return screeningCostRates{}
+	}
+	total := float64(summary.ScreeningsTotal)
+	return screeningCostRates{
+		Clear:  float64(summary.ScreeningsClear) * 100 / total,
+		Review: float64(summary.ScreeningsPossible+summary.ScreeningsStrong) * 100 / total,
+		Block:  float64(summary.ScreeningsBlocked) * 100 / total,
+	}
+}
 
 // adminScreeningCost renders an operations tracking page for onboarding and
 // screening activity: customer screening results (with decision split), adverse
@@ -18,5 +43,6 @@ func (a *App) adminScreeningCost(w http.ResponseWriter, r *http.Request) {
 	}
 	a.renderAdmin(w, "admin_screening_cost.html", r, "Onboarding & screening cost", map[string]any{
 		"Summary": summary,
+		"Rates":   newScreeningCostRates(summary),
 	})
 }

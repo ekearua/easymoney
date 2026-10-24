@@ -42,3 +42,6 @@ deploy/.release-state
 # Generated documentation artifacts (regenerable from scripts/)
 gitingest_readme.txt
 local_hosting_preview.html
+
+# deploy/aws/setup-phase1.sh discovery output (instance ids / private ips)
+deploy/aws/phase1.env

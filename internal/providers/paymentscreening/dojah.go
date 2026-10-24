@@ -1,10 +1,14 @@
 // This file wires Dojah payment-time counterparty screening behind the
-// PaymentScreener port, per docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1 (the same
-// synchronous AML screening endpoint as onboarding). Dojah authenticates with
-// "Authorization: <secret key>" (raw) and "AppId: <app id>". The response is
-// normalized into the same decision vocabulary the simulator uses, so the G2
-// hold/interdiction semantics are unchanged; an unrecognized reply is rejected
-// rather than treated as clear (fail-closed).
+// PaymentScreener port, per docs/compliance/AML_VENDOR_DECISION_RECORD.md. It
+// calls the same documented AML endpoint as onboarding
+// (POST /api/v2/aml/screening) with "Authorization: <secret key>" (raw) and
+// "AppId: <app id>". The vendor's match status is mapped onto the shared
+// decision vocabulary, so the G2 hold/interdiction semantics are unchanged; an
+// unrecognized reply is rejected rather than treated as clear (fail-closed).
+//
+// Dojah does not publish a list-version identifier; the operator-supplied
+// DOJAH_LIST_VERSION stamp is recorded instead so stale-list re-evaluation
+// only fires when that stamp moves.
 package paymentscreening
 
 import (
@@ -19,6 +23,7 @@ import (
 
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/providers/dojahaml"
 )
 
 // Dojah screens payment counterparties against Dojah's AML screening API.
@@ -28,12 +33,14 @@ type Dojah struct {
 	secretKey      string
 	httpClient     *http.Client
 	matchThreshold float64
+	listVersion    string
 }
 
 // NewDojah creates the Dojah payment-screening adapter. An empty baseURL
 // defaults to production (https://api.dojah.io); an empty timeout defaults to
-// 30 seconds.
-func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64) *Dojah {
+// 30 seconds. listVersion is the operator-supplied list stamp recorded with
+// each decision.
+func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64, listVersion string) *Dojah {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -47,32 +54,12 @@ func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThre
 		secretKey:      strings.TrimSpace(secretKey),
 		httpClient:     &http.Client{Timeout: timeout},
 		matchThreshold: matchThreshold,
+		listVersion:    strings.TrimSpace(listVersion),
 	}
 }
 
 // ProviderName names the vendor recorded on screening rows.
 func (d *Dojah) ProviderName() string { return "dojah" }
-
-type dojahPaymentRequest struct {
-	LegalName      string  `json:"legal_name"`
-	AccountNumber  string  `json:"account_number,omitempty"`
-	BankCode       string  `json:"bank_code,omitempty"`
-	Amount         int64   `json:"amount,omitempty"`
-	Rail           string  `json:"rail,omitempty"`
-	MatchThreshold float64 `json:"match_threshold"`
-}
-
-type dojahPaymentResponse struct {
-	Decision     string   `json:"decision"`
-	Status       string   `json:"status"`
-	Matched      *bool    `json:"matched"`
-	MatchedNames []string `json:"matched_names"`
-	Reference    string   `json:"reference"`
-	ProviderRef  string   `json:"provider_ref"`
-	ReportID     string   `json:"report_id"`
-	ListVersion  string   `json:"list_version"`
-	Message      string   `json:"message"`
-}
 
 // ScreenPayment performs one counterparty lookup against Dojah. An empty
 // counterparty name is rejected as an error rather than cleared, because a
@@ -82,49 +69,51 @@ func (d *Dojah) ScreenPayment(ctx context.Context, req ports.PaymentScreenReques
 	if name == "" {
 		return ports.PaymentScreenDecision{}, fmt.Errorf("counterparty name is required for payment screening")
 	}
-	resp, err := d.lookup(ctx, req)
+	entity, err := d.lookup(ctx, req)
 	if err != nil {
 		return ports.PaymentScreenDecision{}, err
 	}
-	decision, ok := dojahPaymentDecision(resp)
+	decision, ok := dojahaml.Decision(entity.MatchStatus)
 	if !ok {
-		return ports.PaymentScreenDecision{}, fmt.Errorf("unrecognized payment-screening decision (decision=%q status=%q)", resp.Decision, resp.Status)
+		return ports.PaymentScreenDecision{}, fmt.Errorf("unrecognized payment-screening match status %q", entity.MatchStatus)
 	}
-	ref := firstNonEmpty(resp.Reference, resp.ProviderRef, resp.ReportID)
+	ref := strings.TrimSpace(entity.EntityID)
 	if ref == "" {
 		ref = "DOJAH-PSCR-" + shortHash(name)
 	}
-	message := strings.TrimSpace(resp.Message)
-	if message == "" {
-		message = defaultPaymentMessage(decision)
-	}
 	return ports.PaymentScreenDecision{
 		Decision:     decision,
-		MatchedNames: resp.MatchedNames,
+		MatchedNames: dojahaml.MatchedNames(entity.Results),
 		ProviderRef:  ref,
-		ListVersion:  strings.TrimSpace(resp.ListVersion),
-		Message:      message,
+		ListVersion:  d.listVersion,
+		Message:      defaultPaymentMessage(decision),
 	}, nil
 }
 
 // lookup performs the HTTP POST with Dojah's auth headers and decodes the
-// normalized response envelope.
-func (d *Dojah) lookup(ctx context.Context, req ports.PaymentScreenRequest) (dojahPaymentResponse, error) {
-	payload := dojahPaymentRequest{
-		LegalName:      strings.TrimSpace(req.CounterpartyName),
-		AccountNumber:  strings.TrimSpace(req.AccountNumber),
-		BankCode:       strings.TrimSpace(req.BankCode),
-		Amount:         req.AmountKobo,
-		Rail:           strings.TrimSpace(req.Rail),
-		MatchThreshold: d.matchThreshold,
+// documented AML response.
+func (d *Dojah) lookup(ctx context.Context, req ports.PaymentScreenRequest) (*dojahaml.Entity, error) {
+	payload := dojahaml.Request{
+		Schema:          "individual",
+		UniqueReference: uniqueReference(req),
+		Properties: dojahaml.Properties{
+			Names:    strings.TrimSpace(req.CounterpartyName),
+			IDNumber: "",
+		},
+		ScreeningOptions: dojahaml.Options{
+			PEPCheck:          true,
+			Sanction:          true,
+			AdverseMediaCheck: false,
+			MatchThreshold:    d.matchThreshold,
+		},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return dojahPaymentResponse{}, err
+		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/api/v1/aml/v2/screening", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+dojahaml.Path, bytes.NewReader(body))
 	if err != nil {
-		return dojahPaymentResponse{}, err
+		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -137,68 +126,69 @@ func (d *Dojah) lookup(ctx context.Context, req ports.PaymentScreenRequest) (doj
 
 	resp, err := d.httpClient.Do(httpReq)
 	if err != nil {
-		return dojahPaymentResponse{}, fmt.Errorf("payment screening request failed: %w", err)
+		return nil, fmt.Errorf("payment screening request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
 	if err != nil {
-		return dojahPaymentResponse{}, fmt.Errorf("read payment screening response: %w", err)
+		return nil, fmt.Errorf("read payment screening response: %w", err)
 	}
-
-	switch resp.StatusCode {
-	case http.StatusOK, http.StatusCreated:
-		// fall through to parse
-	case http.StatusUnauthorized:
-		return dojahPaymentResponse{}, fmt.Errorf("payment screening API key rejected (401)")
-	case http.StatusTooManyRequests:
-		return dojahPaymentResponse{}, fmt.Errorf("payment screening rate limit exceeded (429)")
-	default:
-		var errResp dojahPaymentResponse
-		if json.Unmarshal(respBody, &errResp) == nil && strings.TrimSpace(errResp.Message) != "" {
-			return dojahPaymentResponse{}, fmt.Errorf("payment screening error (HTTP %d): %s", resp.StatusCode, errResp.Message)
-		}
-		return dojahPaymentResponse{}, fmt.Errorf("payment screening error HTTP %d", resp.StatusCode)
+	if err := paymentHTTPError(resp.StatusCode, respBody); err != nil {
+		return nil, err
 	}
-
-	var parsed dojahPaymentResponse
+	var parsed dojahaml.Response
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return dojahPaymentResponse{}, fmt.Errorf("decode payment screening response: %w", err)
+		return nil, fmt.Errorf("decode payment screening response: %w", err)
 	}
-	return parsed, nil
+	if parsed.Entity == nil {
+		return nil, fmt.Errorf("Dojah returned no payment-screening entity")
+	}
+	return parsed.Entity, nil
 }
 
-// dojahPaymentDecision maps a vendor decision/status token (or a boolean
-// matched flag) onto the kyc screening vocabulary.
-func dojahPaymentDecision(resp dojahPaymentResponse) (string, bool) {
-	for _, token := range []string{resp.Decision, resp.Status} {
-		if decision, ok := dojahPaymentToken(token); ok {
-			return decision, true
-		}
+// uniqueReference gives Dojah an echoed reconciliation key without sending
+// more counterparty data than the name. It is omitted when neither value is
+// available.
+func uniqueReference(req ports.PaymentScreenRequest) string {
+	rail := strings.TrimSpace(req.Rail)
+	account := strings.TrimSpace(req.AccountNumber)
+	switch {
+	case rail != "" && account != "":
+		return rail + ":" + account
+	case account != "":
+		return account
+	default:
+		return ""
 	}
-	if resp.Matched != nil && resp.Decision == "" && resp.Status == "" {
-		if *resp.Matched {
-			return kyc.ScreenStrong, true
-		}
-		return kyc.ScreenClear, true
-	}
-	return "", false
 }
 
-// dojahPaymentToken maps one token onto the screening vocabulary.
-func dojahPaymentToken(raw string) (string, bool) {
-	token := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(raw)))
-	switch token {
-	case "clear", "no_match", "not_matched", "no_hit", "clean", "pass":
-		return kyc.ScreenClear, true
-	case "possible", "potential", "potential_match", "pep", "review", "needs_review", "manual_review":
-		return kyc.ScreenPossible, true
-	case "strong", "match", "matched", "exact_match", "confirmed_match", "hit", "hits":
-		return kyc.ScreenStrong, true
-	case "blocked", "block", "sanctioned", "sanctions", "prohibited", "confirmed", "interdict":
-		return kyc.ScreenBlocked, true
+// paymentHTTPError maps a non-2xx reply onto an operator-safe error. A 402
+// means the Dojah wallet is empty and a 424 that an upstream source is down;
+// both are returned as errors so the movement is held, never cleared.
+func paymentHTTPError(status int, body []byte) error {
+	switch status {
+	case http.StatusOK, http.StatusCreated:
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("payment screening API key rejected (401)")
+	case http.StatusPaymentRequired:
+		return fmt.Errorf("payment screening unavailable: Dojah wallet balance is too low (402)")
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("payment screening rate limit exceeded (429)")
+	case http.StatusFailedDependency:
+		return fmt.Errorf("payment screening unavailable: Dojah upstream source failed (424)")
 	}
-	return "", false
+	var errResp struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil {
+		if msg := firstNonEmpty(errResp.Message, errResp.Error); msg != "" {
+			return fmt.Errorf("payment screening error (HTTP %d): %s", status, msg)
+		}
+	}
+	return fmt.Errorf("payment screening error HTTP %d", status)
 }
 
 func defaultPaymentMessage(decision string) string {

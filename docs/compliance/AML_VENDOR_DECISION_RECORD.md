@@ -347,7 +347,7 @@ This section is authoritative and **supersedes §6**.
 | Identity NIN/BVN/CAC | **Keep `ninbvnportal`** (live) | existing identity port |
 | Liveness / face (G10) | **Dojah** | `POST /api/v1/ml/liveness` |
 | Document authenticity (G12) | **Dojah** | `POST /api/v1/document/analysis` |
-| AML screening — customer (G9) | **Dojah** | `POST /api/v1/aml/v2/screening` |
+| AML screening — customer (G9) | **Dojah** | `POST /api/v2/aml/screening` |
 | AML screening — payment | **Dojah** | same endpoint, synchronous |
 | Domestic lists (NSC) | **Owned** — see §11.2 | `internal_watchlist` (G3) |
 

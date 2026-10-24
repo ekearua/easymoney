@@ -1,25 +1,32 @@
-// This file wires the Dojah biometric liveness endpoint
-// (POST /api/v1/ml/liveness) behind the LivenessVerifier port, per
-// docs/compliance/AML_VENDOR_DECISION_RECORD.md §11.1 (G10). Dojah authenticates with
-// "Authorization: <secret key>" (raw) and "AppId: <app id>". The response is
-// normalized into the passed/failed/review vocabulary, so the Tier-3 EDD gate
-// grants EvEDDCompleted only on a provider pass.
+// This file wires Dojah's liveness endpoint (POST /api/v1/ml/liveness) behind
+// the LivenessVerifier port, per docs/compliance/AML_VENDOR_DECISION_RECORD.md
+// (G10). Dojah authenticates with "Authorization: <secret key>" (raw) and
+// "AppId: <app id>". The endpoint accepts a Base64 selfie image and answers
+// with entity.liveness.liveness_check / liveness_probability, which this
+// adapter maps onto the shared passed/failed vocabulary.
+//
+// The port carries a capture reference today, not an image: the chat and
+// browser EDD flows record "chat-confirm:<user>" / "browser-edd:<user>" rather
+// than a selfie. A non-image capture is rejected as an error (fail closed)
+// instead of being sent to the vendor as if it were a photo.
 package liveness
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"whatsapp-payment-demo/internal/ports"
 )
 
-// Dojah is the biometric liveness adapter for the Tier-3 EDD step.
+// Dojah verifies selfies against Dojah's liveness API.
 type Dojah struct {
 	baseURL    string
 	appID      string
@@ -45,82 +52,70 @@ func NewDojah(baseURL, appID, secretKey string, timeout time.Duration) *Dojah {
 	}
 }
 
-// ProviderName labels the outcome in the verification's provider column.
+// ProviderName returns the adapter identifier for audit records.
 func (d *Dojah) ProviderName() string { return "dojah" }
 
+// dojahLivenessRequest is the documented wire body: a Base64 image with no
+// data: URI prefix.
 type dojahLivenessRequest struct {
-	UserID       string `json:"user_id,omitempty"`
-	LegalName    string `json:"legal_name,omitempty"`
-	PhoneNumber  string `json:"phone_number,omitempty"`
-	SelfieRef    string `json:"selfie_ref"`
-	BrowserImage string `json:"image_ref,omitempty"`
+	Image string `json:"image"`
+}
+
+// dojahLivenessEntity is the documented reply body. It is reached through a
+// pointer so an empty body is distinguishable from a failed check.
+type dojahLivenessEntity struct {
+	Liveness struct {
+		Check       bool    `json:"liveness_check"`
+		Probability float64 `json:"liveness_probability"`
+	} `json:"liveness"`
+	Face struct {
+		Detected bool   `json:"face_detected"`
+		Message  string `json:"message"`
+	} `json:"face"`
 }
 
 type dojahLivenessResponse struct {
-	Status      string  `json:"status"`
-	Decision    string  `json:"decision"`
-	Live        *bool   `json:"live"`
-	Passed      *bool   `json:"passed"`
-	Confidence  float64 `json:"confidence"`
-	Liveness    float64 `json:"liveness_score"`
-	Reference   string  `json:"reference"`
-	ProviderRef string  `json:"provider_ref"`
-	Message     string  `json:"message"`
+	Entity *dojahLivenessEntity `json:"entity"`
 }
 
-// VerifyLiveness performs one face-liveness check against Dojah. A missing
-// capture is an error rather than a pass, because the gate exists precisely so
-// an absent selfie cannot grant EDD.
+// VerifyLiveness performs one face-liveness check against Dojah. A missing or
+// non-image capture is an error rather than a pass, because the gate exists
+// precisely so an absent selfie cannot grant EDD.
 func (d *Dojah) VerifyLiveness(ctx context.Context, request ports.LivenessRequest) (ports.LivenessResult, error) {
-	capture := strings.TrimSpace(request.CaptureRef)
-	if capture == "" {
-		return ports.LivenessResult{}, fmt.Errorf("a liveness capture is required")
+	image, ok := decodeImage(request.CaptureRef)
+	if !ok {
+		return ports.LivenessResult{}, fmt.Errorf("Dojah liveness requires a Base64 selfie image; the capture reference is not an image")
 	}
-	resp, err := d.lookup(ctx, request)
+	entity, err := d.lookup(ctx, image)
 	if err != nil {
 		return ports.LivenessResult{}, err
 	}
-	status, ok := dojahLivenessStatus(resp)
-	if !ok {
-		return ports.LivenessResult{}, fmt.Errorf("unrecognized liveness status (status=%q decision=%q)", resp.Status, resp.Decision)
-	}
-	ref := firstNonEmpty(resp.Reference, resp.ProviderRef)
-	if ref == "" {
-		ref = "DOJAH-LIVE-" + shortHash(capture)
-	}
-	confidence := resp.Confidence
-	if confidence <= 0 {
-		confidence = resp.Liveness
-	}
-	message := strings.TrimSpace(resp.Message)
-	if message == "" {
+	status := ports.LivenessFailed
+	message := defaultLivenessMessage(status)
+	if entity.Liveness.Check {
+		status = ports.LivenessPassed
 		message = defaultLivenessMessage(status)
+	} else if !entity.Face.Detected && strings.TrimSpace(entity.Face.Message) != "" {
+		message = "no face was detected in the capture"
 	}
 	return ports.LivenessResult{
 		Status:      status,
-		ProviderRef: ref,
-		Confidence:  confidence,
+		ProviderRef: "DOJAH-LIVE-" + shortHash(image),
+		Confidence:  clampProbability(entity.Liveness.Probability),
 		Message:     message,
 	}, nil
 }
 
 // lookup performs the HTTP POST with Dojah's auth headers and decodes the
-// normalized response envelope.
-func (d *Dojah) lookup(ctx context.Context, request ports.LivenessRequest) (dojahLivenessResponse, error) {
-	payload := dojahLivenessRequest{
-		UserID:       strings.TrimSpace(request.UserID),
-		LegalName:    strings.TrimSpace(request.LegalName),
-		PhoneNumber:  strings.TrimSpace(request.PhoneNumber),
-		SelfieRef:    strings.TrimSpace(request.CaptureRef),
-		BrowserImage: strings.TrimSpace(request.CaptureRef),
-	}
-	body, err := json.Marshal(payload)
+// documented response.
+func (d *Dojah) lookup(ctx context.Context, image string) (*dojahLivenessEntity, error) {
+	body, err := json.Marshal(dojahLivenessRequest{Image: image})
 	if err != nil {
-		return dojahLivenessResponse{}, err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/api/v1/ml/liveness", bytes.NewReader(body))
 	if err != nil {
-		return dojahLivenessResponse{}, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -133,64 +128,89 @@ func (d *Dojah) lookup(ctx context.Context, request ports.LivenessRequest) (doja
 
 	resp, err := d.httpClient.Do(req)
 	if err != nil {
-		return dojahLivenessResponse{}, fmt.Errorf("liveness request failed: %w", err)
+		return nil, fmt.Errorf("liveness request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // 8 MiB cap (images)
 	if err != nil {
-		return dojahLivenessResponse{}, fmt.Errorf("read liveness response: %w", err)
+		return nil, fmt.Errorf("read liveness response: %w", err)
 	}
-
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		// fall through to parse
 	case http.StatusUnauthorized:
-		return dojahLivenessResponse{}, fmt.Errorf("liveness API key rejected (401)")
+		return nil, fmt.Errorf("liveness API key rejected (401)")
+	case http.StatusPaymentRequired:
+		return nil, fmt.Errorf("liveness unavailable: Dojah wallet balance is too low (402)")
 	case http.StatusTooManyRequests:
-		return dojahLivenessResponse{}, fmt.Errorf("liveness rate limit exceeded (429)")
+		return nil, fmt.Errorf("liveness rate limit exceeded (429)")
+	case http.StatusFailedDependency:
+		return nil, fmt.Errorf("liveness unavailable: Dojah upstream source failed (424)")
 	default:
-		var errResp dojahLivenessResponse
-		if json.Unmarshal(respBody, &errResp) == nil && strings.TrimSpace(errResp.Message) != "" {
-			return dojahLivenessResponse{}, fmt.Errorf("liveness error (HTTP %d): %s", resp.StatusCode, errResp.Message)
+		var errResp struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
 		}
-		return dojahLivenessResponse{}, fmt.Errorf("liveness error HTTP %d", resp.StatusCode)
+		if json.Unmarshal(respBody, &errResp) == nil {
+			if msg := firstNonEmpty(errResp.Message, errResp.Error); msg != "" {
+				return nil, fmt.Errorf("liveness error (HTTP %d): %s", resp.StatusCode, msg)
+			}
+		}
+		return nil, fmt.Errorf("liveness error HTTP %d", resp.StatusCode)
 	}
 
 	var parsed dojahLivenessResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return dojahLivenessResponse{}, fmt.Errorf("decode liveness response: %w", err)
+		return nil, fmt.Errorf("decode liveness response: %w", err)
 	}
-	return parsed, nil
+	if parsed.Entity == nil {
+		return nil, fmt.Errorf("Dojah returned no liveness entity")
+	}
+	return parsed.Entity, nil
 }
 
-// dojahLivenessStatus maps a vendor status token (or boolean live/passed flag)
-// onto the shared liveness vocabulary.
-func dojahLivenessStatus(resp dojahLivenessResponse) (string, bool) {
-	for _, token := range []string{resp.Status, resp.Decision} {
-		normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(token)))
-		switch normalized {
-		case "passed", "pass", "live", "genuine", "success", "ok", "cleared":
-			return ports.LivenessPassed, true
-		case "failed", "fail", "rejected", "spoof", "no_liveness", "not_live":
-			return ports.LivenessFailed, true
-		case "review", "manual", "inconclusive", "unknown", "undetermined", "pending":
-			return ports.LivenessReview, true
-		}
+// decodeImage strips a data: URI prefix, removes whitespace, and validates the
+// remainder as Base64. A short reference such as "chat-confirm:<id>" fails the
+// Base64 check and is therefore rejected rather than sent as an image.
+func decodeImage(capture string) (string, bool) {
+	value := strings.TrimSpace(capture)
+	if idx := strings.Index(value, "base64,"); idx >= 0 {
+		value = value[idx+len("base64,"):]
 	}
-	if resp.Live != nil && resp.Status == "" && resp.Decision == "" {
-		if *resp.Live {
-			return ports.LivenessPassed, true
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
 		}
-		return ports.LivenessFailed, true
+		return r
+	}, value)
+	if value == "" {
+		return "", false
 	}
-	if resp.Passed != nil && resp.Status == "" && resp.Decision == "" {
-		if *resp.Passed {
-			return ports.LivenessPassed, true
+	for _, encoding := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if _, err := encoding.DecodeString(value); err == nil {
+			return value, true
 		}
-		return ports.LivenessFailed, true
 	}
 	return "", false
+}
+
+// clampProbability converts Dojah's percentage (0-100) into the port's 0-1
+// confidence scale.
+func clampProbability(probability float64) float64 {
+	value := probability / 100
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func defaultLivenessMessage(status string) string {

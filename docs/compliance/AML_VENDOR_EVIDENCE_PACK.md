@@ -69,7 +69,7 @@ Work items, in order — each tick is literal: the artifact exists in the
 repo. The purchase cutovers remain gated on Gates 1–3.
 
 - [x] **Customer screening adapter** — `internal/providers/screening/dojah.go`
-      wires Dojah's `/api/v1/aml/v2/screening` behind `ports.SanctionsScreener`
+      wires Dojah's `/api/v2/aml/screening` behind `ports.SanctionsScreener`
       (`SCREENING_PROVIDER=dojah`), mapping ranked hits into the port's decision
       vocabulary; httptest suite in `internal/providers/screening/dojah_test.go`.
 - [x] **Payment screening adapter** — `internal/providers/paymentscreening/dojah.go`

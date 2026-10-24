@@ -258,7 +258,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		sanctionsScreener = p
 		screeningProviderName = p.ProviderName()
 	case "dojah":
-		p := screeningprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold)
+		p := screeningprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold, cfg.DojahListVersion)
 		sanctionsScreener = p
 		screeningProviderName = p.ProviderName()
 	default:
@@ -273,6 +273,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	switch strings.ToLower(cfg.CorporateRegistryProvider) {
 	case "", "simulated":
 		corporateRegistry = cacprovider.NewSimulated()
+	case "dojah":
+		corporateRegistry = cacprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.CorporateRegistryTimeout, cfg.DojahCACCompanyType)
 	case "http":
 		if cfg.CorporateRegistryAPIBase == "" {
 			repository.Close()
@@ -281,12 +283,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		corporateRegistry = cacprovider.NewHTTP(cfg.CorporateRegistryAPIBase, cfg.CorporateRegistryAPIKey, cfg.CorporateRegistryTimeout)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported CAC_PROVIDER %q", cfg.CorporateRegistryProvider)
+		return nil, fmt.Errorf("unsupported CAC_PROVIDER %q (only \"simulated\", \"http\" or \"dojah\" exist)", cfg.CorporateRegistryProvider)
 	}
 	var taxIDVerifier ports.TaxIDVerifier
 	switch strings.ToLower(cfg.TaxIDProvider) {
 	case "", "simulated":
 		taxIDVerifier = firsprovider.NewSimulated()
+	case "dojah":
+		taxIDVerifier = firsprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.TaxIDTimeout)
 	case "http":
 		if cfg.TaxIDAPIBase == "" {
 			repository.Close()
@@ -295,7 +299,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		taxIDVerifier = firsprovider.NewHTTP(cfg.TaxIDAPIBase, cfg.TaxIDAPIKey, cfg.TaxIDTimeout)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported FIRS_PROVIDER %q", cfg.TaxIDProvider)
+		return nil, fmt.Errorf("unsupported FIRS_PROVIDER %q (only \"simulated\", \"http\" or \"dojah\" exist)", cfg.TaxIDProvider)
 	}
 	var locationVerifier ports.LocationVerifier
 	switch strings.ToLower(cfg.LocationProvider) {
@@ -494,24 +498,27 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	case "", "simulated":
 		paymentScreener = paymentscreening.NewSimulated()
 	case "dojah":
-		paymentScreener = paymentscreening.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold)
+		paymentScreener = paymentscreening.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold, cfg.DojahListVersion)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" or \"dojah\" exist)", cfg.PaymentScreeningProvider)
 	}
 	// G9: adverse-media screening. The deterministic simulator is the default;
-	// the live Dojah adapter (ADVERSE_MEDIA_PROVIDER=http) is the vendor
-	// purchase named in AML_VENDOR_DECISION_RECORD.md §11.
+	// the live Dojah lane (ADVERSE_MEDIA_PROVIDER=dojah, shared DOJAH_* keys)
+	// and an explicitly configured HTTP endpoint are the vendor purchases named
+	// in AML_VENDOR_DECISION_RECORD.md.
 	var adverseMediaScreener ports.AdverseMediaScreener
 	switch strings.ToLower(cfg.AdverseMediaProvider) {
 	case "", "simulated":
 		adverseMediaScreener = adversemedia.NewSimulated()
+	case "dojah":
+		adverseMediaScreener = adversemedia.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.AdverseMediaTimeout, cfg.AdverseMediaMatchThreshold, cfg.DojahListVersion)
 	case "http":
 		if cfg.AdverseMediaAPIBase == "" || cfg.AdverseMediaAppID == "" || cfg.AdverseMediaSecretKey == "" {
 			repository.Close()
 			return nil, errors.New("ADVERSE_MEDIA_API_BASE, ADVERSE_MEDIA_APP_ID and ADVERSE_MEDIA_SECRET_KEY are required when ADVERSE_MEDIA_PROVIDER=http")
 		}
-		adverseMediaScreener = adversemedia.NewHTTP(cfg.AdverseMediaAPIBase, cfg.AdverseMediaAppID, cfg.AdverseMediaSecretKey, cfg.AdverseMediaTimeout, cfg.AdverseMediaMatchThreshold)
+		adverseMediaScreener = adversemedia.NewHTTP(cfg.AdverseMediaAPIBase, cfg.AdverseMediaAppID, cfg.AdverseMediaSecretKey, cfg.AdverseMediaTimeout, cfg.AdverseMediaMatchThreshold, cfg.DojahListVersion)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported ADVERSE_MEDIA_PROVIDER %q", cfg.AdverseMediaProvider)
@@ -556,15 +563,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			BaseURL:        cfg.BaseURL,
 			LocationTTL:    cfg.BulkLocationTTL,
 		}),
-		programPurses: programPursesService,
+		programPurses:   programPursesService,
 		agentRemittance: service.NewAgentRemittanceService(cfg, repository, sanctionsScreener),
-		bulkSlots:     make(chan struct{}, bulkConcurrency),
-		workerPools:   newWorkerPools(cfg),
-		imageReader:   imageReader,
-		speechToText:  speechToText,
-		chatAI:        chatAI,
-		email:         emailSender,
-		webAuthn:      webAuthn,
+		bulkSlots:       make(chan struct{}, bulkConcurrency),
+		workerPools:     newWorkerPools(cfg),
+		imageReader:     imageReader,
+		speechToText:    speechToText,
+		chatAI:          chatAI,
+		email:           emailSender,
+		webAuthn:        webAuthn,
 	}
 	convo.SetMediaDownloader(app)
 	return app, nil

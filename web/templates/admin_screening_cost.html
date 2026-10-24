@@ -13,7 +13,7 @@
   <article><span>Payment screenings</span><strong>{{.Summary.PaymentScreenings}}</strong></article>
   <article><span>Screening results rows</span><strong>{{.Summary.ScreeningResults}}</strong></article>
   {{if gt .Summary.ScreeningCostNGN 0}}
-  <article><span>Est. cost ({{money .Summary.ScreeningCostNGN}}/check)</span><strong>{{money (add .Summary.ScreeningsTotal .Summary.ScreeningCostNGN)}}</strong></article>
+  <article><span>Est. cost ({{money .Summary.ScreeningCostNGN}}/check)</span><strong>{{money .Summary.EstimatedCostNGN}}</strong><em class="small-text">{{add (add .Summary.ScreeningsTotal .Summary.ScreeningsAM) .Summary.PaymentScreenings}} checks billed</em></article>
   {{end}}
 </section>
 
@@ -21,9 +21,9 @@
   <h2>Onboarding friction</h2>
   <p class="small-text">Block/strong rates correlate with review queue load. "Possible/strong" flags usually require compliance review; "blocked" stops onboarding/payouts.</p>
   <section class="metrics">
-    <article><span>Clear rate</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf .Summary.ScreeningsClear .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
-    <article><span>Review rate (possible+strong)</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf (add .Summary.ScreeningsPossible .Summary.ScreeningsStrong) .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
-    <article><span>Block rate</span><strong>{{if gt .Summary.ScreeningsTotal 0}}{{printf "%.1f%%" (divf (divf .Summary.ScreeningsBlocked .Summary.ScreeningsTotal 100) 1 1)}}{{else}}0%{{end}}</strong></article>
+    <article><span>Clear rate</span><strong>{{percent .Rates.Clear}}</strong></article>
+    <article><span>Review rate (possible+strong)</span><strong>{{percent .Rates.Review}}</strong></article>
+    <article><span>Block rate</span><strong>{{percent .Rates.Block}}</strong></article>
   </section>
 </section>
 

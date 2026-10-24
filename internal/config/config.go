@@ -164,17 +164,30 @@ type Config struct {
 	KYCRescreenPeriod   time.Duration
 
 	// Dojah is the primary screening/biometric vendor named in
-	// AML_VENDOR_DECISION_RECORD.md §11. These credentials are shared by the
-	// four lanes that accept the value "dojah" — onboarding sanctions/PEP
+	// AML_VENDOR_DECISION_RECORD.md section 11. These credentials are shared by the
+	// seven lanes that accept the value "dojah" - onboarding sanctions/PEP
 	// screening (SCREENING_PROVIDER), payment screening
-	// (PAYMENT_SCREENING_PROVIDER), liveness (LIVENESS_PROVIDER) and document
-	// authenticity (DOC_AUTH_PROVIDER) — and are only required when one of
-	// them selects it. DOJAH_BASE_URL defaults to production
-	// (https://api.dojah.io); the sandbox is https://sandbox.dojah.io.
+	// (PAYMENT_SCREENING_PROVIDER), adverse media (ADVERSE_MEDIA_PROVIDER),
+	// liveness (LIVENESS_PROVIDER), document authenticity (DOC_AUTH_PROVIDER),
+	// corporate registry (CAC_PROVIDER) and tax ID (FIRS_PROVIDER) - and are
+	// only required when one of them selects it.
+	// DOJAH_BASE_URL defaults to production (https://api.dojah.io); the
+	// sandbox is https://sandbox.dojah.io.
+	//
+	// Dojah does not publish a list-version identifier. DojahListVersion is an
+	// operator-supplied stamp recorded with each screening decision so the
+	// stale-list re-evaluation fires only when an operator moves it after a
+	// list update.
 	DojahAppID          string
 	DojahSecretKey      string
 	DojahBaseURL        string
 	DojahMatchThreshold float64
+	DojahListVersion    string
+	// DojahCACCompanyType selects the CAC register searched by the Dojah CAC
+	// adapter (DOJAH_CAC_COMPANY_TYPE): BUSINESS_NAME, COMPANY,
+	// INCORPORATED_TRUSTEES, LIMITED_PARTNERSHIP or
+	// LIMITED_LIABILITY_PARTNERSHIP. Defaults to COMPANY.
+	DojahCACCompanyType string
 
 	// G2 payment-time counterparty screening for money-out rails. Defaults
 	// to the deterministic simulator until the screening vendor's payment-
@@ -489,9 +502,9 @@ type Config struct {
 // these; redemption enforces the real per-payout, per-agent and per-customer
 // limits at runtime.
 const (
-	CBNMaxAgentDailyCashOutKobo      int64 = 120_000_000
-	CBNMaxCustomerDailyCashOutKobo   int64 = 10_000_000
-	CBNMaxCustomerWeeklyCashOutKobo  int64 = 50_000_000
+	CBNMaxAgentDailyCashOutKobo     int64 = 120_000_000
+	CBNMaxCustomerDailyCashOutKobo  int64 = 10_000_000
+	CBNMaxCustomerWeeklyCashOutKobo int64 = 50_000_000
 )
 
 // AgentTierDefaults resolves an agent tier's limit and commission defaults from
@@ -628,6 +641,8 @@ func Load() (Config, error) {
 		DojahSecretKey:                  strings.TrimSpace(os.Getenv("DOJAH_SECRET_KEY")),
 		DojahBaseURL:                    strings.TrimRight(env("DOJAH_BASE_URL", "https://api.dojah.io"), "/"),
 		DojahMatchThreshold:             envFloat("DOJAH_MATCH_THRESHOLD", 0.85),
+		DojahListVersion:                strings.TrimSpace(os.Getenv("DOJAH_LIST_VERSION")),
+		DojahCACCompanyType:             strings.ToUpper(env("DOJAH_CAC_COMPANY_TYPE", "COMPANY")),
 
 		BulkLocationTTL:       envDuration("BULK_LOCATION_TTL", 5*time.Minute),
 		BulkRadiusM:           int(EnvInt64("BULK_RADIUS_M", 50)),
@@ -815,7 +830,7 @@ func Load() (Config, error) {
 	switch cfg.PaymentScreeningProvider {
 	case "", "simulated", "dojah":
 	default:
-		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" or \"dojah\" (the live screening-vendor adapter lands with the AML_VENDOR_DECISION_RECORD.md §11 Dojah contract), got %q", cfg.PaymentScreeningProvider)
+		return Config{}, fmt.Errorf("PAYMENT_SCREENING_PROVIDER must be \"simulated\" or \"dojah\" (the live screening-vendor adapter lands with the AML_VENDOR_DECISION_RECORD.md section 11 Dojah contract), got %q", cfg.PaymentScreeningProvider)
 	}
 	switch cfg.LivenessProvider {
 	case "", "simulated", "dojah":
@@ -847,14 +862,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("IDENTITY_PROVIDER must be \"ninbvnportal\", got %q", cfg.IdentityProvider)
 	}
 	switch cfg.CorporateRegistryProvider {
-	case "", "simulated", "http":
+	case "", "simulated", "http", "dojah":
 	default:
-		return Config{}, fmt.Errorf("CAC_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.CorporateRegistryProvider)
+		return Config{}, fmt.Errorf("CAC_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.CorporateRegistryProvider)
 	}
 	switch cfg.TaxIDProvider {
-	case "", "simulated", "http":
+	case "", "simulated", "http", "dojah":
 	default:
-		return Config{}, fmt.Errorf("FIRS_PROVIDER must be \"simulated\" or \"http\", got %q", cfg.TaxIDProvider)
+		return Config{}, fmt.Errorf("FIRS_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.TaxIDProvider)
+	}
+	switch strings.ToUpper(strings.TrimSpace(cfg.DojahCACCompanyType)) {
+	case "", "BUSINESS_NAME", "COMPANY", "INCORPORATED_TRUSTEES", "LIMITED_PARTNERSHIP", "LIMITED_LIABILITY_PARTNERSHIP":
+	default:
+		return Config{}, fmt.Errorf("DOJAH_CAC_COMPANY_TYPE must be BUSINESS_NAME, COMPANY, INCORPORATED_TRUSTEES, LIMITED_PARTNERSHIP or LIMITED_LIABILITY_PARTNERSHIP, got %q", cfg.DojahCACCompanyType)
 	}
 	switch cfg.LocationProvider {
 	case "", "simulated", "http":
@@ -1126,8 +1146,11 @@ func (c Config) UsesDojah() bool {
 	for _, provider := range []string{
 		c.ScreeningProvider,
 		c.PaymentScreeningProvider,
+		c.AdverseMediaProvider,
 		c.LivenessProvider,
 		c.DocAuthenticityProvider,
+		c.CorporateRegistryProvider,
+		c.TaxIDProvider,
 	} {
 		if provider == "dojah" {
 			return true

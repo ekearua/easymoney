@@ -4,9 +4,12 @@
 The workbook is edited in place through raw OOXML (openpyxl segfaults on this
 box): shared strings get the Faya rename, individual cells are rewritten as
 inline strings for the status marks and factual fixes, three missing env rows
-are inserted into the concurrency sheet (with a row renumber), and the
-Deployment Plan's Phase 1 gains backups/PITR + compose-limits truth and a
-repriced storage/total line.
+are inserted into the concurrency sheet (with a row renumber), the
+Deployment Plan's Phase 1 keeps its backups/PITR + compose-limits truth,
+and its Phase 1/2 server rows are right-sized to the Server Requirements
+sheet (3 servers, 8 vCPU / 16 GB / 240 GB at launch; 5 servers,
+16 vCPU / 32 GB / 520 GB at Phase 2, Server 4/5 inserted) with the
+Concurrency Phase-2 column re-derived for 3 app replicas.
 
 Run from the repo root:  python scripts/sync_production_requirements.py
 The script is idempotent: re-running rewrites the same cell values.
@@ -90,6 +93,37 @@ def find_row(root, shared, needles, exact_first=None):
 
 def col_of(cell_ref):
     return re.match(r"([A-Z]+)", cell_ref).group(1)
+
+
+def row_in_band(root, shared, start_needles, end_needles, needles, exact_first=None):
+    """find_row, but restricted to the rows physically between the row that
+    matches start_needles and the row that matches end_needles (both need one
+    unique hit each). Disambiguates repeated labels like 'Server 1' across
+    phases."""
+    rows = rows_of(root)
+    start = find_row(root, shared, start_needles)
+    end = find_row(root, shared, end_needles)
+    lo, hi = rows.index(start), rows.index(end)
+    hits = []
+    for row in rows[lo:hi]:
+        texts = [cell_text(c, shared) for c in row_cells(row)]
+        blob = " | ".join(texts)
+        if all(n in blob for n in needles):
+            if exact_first is not None and (not texts or texts[0] != exact_first):
+                continue
+            hits.append(row)
+    if len(hits) != 1:
+        raise SystemExit("band row match %r -> %d hits (want 1)" % (needles, len(hits)))
+    return hits[0]
+
+
+def set_cell_guarded(row, shared, col, text, note=""):
+    """set_cell, but a re-run whose cell already holds `text` is a no-op."""
+    cells = [c for c in row_cells(row) if c.get("r") and col_of(c.get("r")) == col]
+    if cells and cell_text(cells[0], shared) == text:
+        changed.append("%s%s: already applied" % (col, row.get("r")))
+        return
+    set_cell(row, shared, col, text, note)
 
 
 def set_cell(row, shared, col, text, note=""):
@@ -373,18 +407,77 @@ def main():
          "Token DB (PCI isolated)\n"
          "Backups: WAL archiving + daily base backup, offsite rclone copy (PITR, RPO 1h, 30-day retention)",
          note="Phase 1 server 3 services (backups + Kafka note)")
-    # Row 30 columns: C=vCPUs D=RAM E=Disk F=notes. The needle lives in F, so
-    # write D and E first and the F notes edit last (it consumes the needle).
-    edit(dep, shared, ["2 app replicas, 14 goroutine workers"], "D", "36 GB",
-         note="Phase 1 total RAM (8+12+16)")
-    edit(dep, shared, ["2 app replicas, 14 goroutine workers"], "E", "450 GB (incl. backup staging)",
-         note="Phase 1 total disk")
-    edit(dep, shared, ["2 app replicas, 14 goroutine workers"], "F",
+    # Right-size the Phase 1/2 server rows to match the Server Requirements
+    # sheet. Server labels repeat across phases, so scope each lookup to the
+    # row band between the phase headers.
+    p1_start = ["Phase 1: Monolith + Payment Core (Launch)"]
+    p1_end = ["Phase 2: Extract Core Services (100k users)"]
+    for srv, c, ram, disk in [
+        ("Server 1", "2", "2 GB", "20 GB"),
+        ("Server 2", "2", "4 GB", "40 GB"),
+        ("Server 3", "4", "8 GB", "160 GB NVMe"),
+    ]:
+        row = row_in_band(dep, shared, p1_start, p1_end, [srv], exact_first=srv)
+        set_cell_guarded(row, shared, "C", c, note="Phase 1 %s vCPU" % srv)
+        set_cell_guarded(row, shared, "D", ram, note="Phase 1 %s RAM" % srv)
+        set_cell_guarded(row, shared, "E", disk, note="Phase 1 %s disk" % srv)
+    p1_total = row_in_band(dep, shared, p1_start, p1_end, ["TOTAL"], exact_first="TOTAL")
+    set_cell_guarded(p1_total, shared, "C", "8", note="Phase 1 total vCPU (2+2+4)")
+    set_cell_guarded(p1_total, shared, "D", "16 GB", note="Phase 1 total RAM (4+4+8)")
+    set_cell_guarded(p1_total, shared, "E", "240 GB (incl. 60 GB staging)", note="Phase 1 total disk")
+    set_cell_guarded(p1_total, shared, "F",
          "3 servers. 2 app replicas (deploy.replicas=2), 29 worker pool slots/replica "
          "(10 inbound, 5 outbox, 4 webhook, 4 data, 3 recon, 3 misc - env-tunable WORKER_*_CONCURRENCY), "
          "30 DB pool through PgBouncer, CPU/memory limits on every compose service, PITR backups (WAL + daily base, offsite, 30 days). "
          "Tokenization in PCI-isolated VPC subnet.",
          note="Phase 1 total notes")
+
+    # Phase 2: insert the two servers the in-country plan adds (read replica +
+    # app replica 3), right-size the primary, and fix the totals. Guarded so a
+    # re-run neither duplicates rows nor re-shifts the merge ranges.
+    p2_start = ["Phase 2: Extract Core Services (100k users)"]
+    p2_end = ["Phase 3: Full Platform"]
+    p2_already = any("Read replica + reporting" in [cell_text(c, shared) for c in row_cells(r)]
+                     for r in rows_of(dep) if row_cells(r))
+    if p2_already:
+        changed.append("Phase 2 server insert skipped (already applied)")
+    else:
+        anchor = row_in_band(dep, shared, p2_start, p2_end, ["Data + Events + Tokenization"], exact_first="Server 3")
+        insert_rows_after(dep, shared, anchor, [
+            {"A": "Server 4", "B": "Read replica + reporting", "C": "2", "D": "4 GB", "E": "120 GB NVMe",
+             "F": "In-country streaming replica; admin / reporting reads"},
+            {"A": "Server 5", "B": "App replica 3 + extracted services", "C": "2", "D": "4 GB", "E": "40 GB SSD",
+             "F": "Faya App replica 3\nPayment Orchestrator\nRisk Engine"},
+        ])
+    for srv, c, ram, disk in [
+        ("Server 1", "2", "4 GB", "40 GB SSD"),
+        ("Server 2", "2", "4 GB", "40 GB SSD"),
+    ]:
+        row = row_in_band(dep, shared, p2_start, p2_end, [srv], exact_first=srv)
+        set_cell_guarded(row, shared, "C", c, note="Phase 2 %s vCPU" % srv)
+        set_cell_guarded(row, shared, "D", ram, note="Phase 2 %s RAM" % srv)
+        set_cell_guarded(row, shared, "E", disk, note="Phase 2 %s disk" % srv)
+    p2_primary = row_in_band(dep, shared, p2_start, p2_end, ["Data + Events + Tokenization"], exact_first="Server 3")
+    set_cell_guarded(p2_primary, shared, "C", "8", note="Phase 2 primary vCPU")
+    set_cell_guarded(p2_primary, shared, "D", "16 GB", note="Phase 2 primary RAM")
+    set_cell_guarded(p2_primary, shared, "E", "280 GB NVMe (220 data + 60 staging)", note="Phase 2 primary disk")
+    set_cell_guarded(p2_primary, shared, "F",
+         "PostgreSQL 17 (OLTP)\n"
+         "PgBouncer (pool=40, max_client=500)\n"
+         "Kafka (single broker) - added at ~5k users, when the first external consumer appears\n"
+         "Redis (rate limiting + risk)\n"
+         "Tokenization Service (PCI isolated VPC subnet)\n"
+         "Token DB (PCI isolated)",
+         note="Phase 2 primary services (Kafka single broker)")
+    p2_total = row_in_band(dep, shared, p2_start, p2_end, ["TOTAL"], exact_first="TOTAL")
+    set_cell_guarded(p2_total, shared, "C", "16", note="Phase 2 total vCPU")
+    set_cell_guarded(p2_total, shared, "D", "32 GB", note="Phase 2 total RAM")
+    set_cell_guarded(p2_total, shared, "E", "520 GB (incl. 60 GB staging)", note="Phase 2 total disk")
+    set_cell_guarded(p2_total, shared, "F",
+         "5 servers. 3 app replicas (deploy.replicas=3 at Phase 2), 21 goroutine workers/replica, 40 DB pool, "
+         "in-country read replica on Server 4. All payment services extracted. Tokenization in PCI-isolated VPC subnet.",
+         note="Phase 2 total notes")
+
     edit(dep, shared, ["Phase 1 (3 servers)", "$140-240"], "D", "$25-50 (incl. backup storage)",
          note="Phase 1 storage cost")
     edit(dep, shared, ["Phase 1 (3 servers)", "$140-240"], "F", "$265-490",
@@ -403,6 +496,12 @@ def main():
          note="app port in network topology")
     edit(dep, shared, ["Domain name (xego.com)"], "B",
          "Domain name (Faya-branded; replaces xego.com)", note="prereq domain")
+    # Cost-table phase labels are descriptive only; the Phase 2 fleet is 5
+    # servers after the read-replica + app-replica-3 insert.
+    edit(dep, shared, ["Phase 2 (3 servers)", "$180-300"], "A", "Phase 2 (5 servers)",
+         exact_first="Phase 2 (3 servers)", note="cost table phase-2 label")
+    edit(dep, shared, ["Phase 2 (3 servers)", "$410-760"], "A", "Phase 2 (5 servers)",
+         exact_first="Phase 2 (3 servers)", note="summary phase-2 label")
     # Resilience prerequisites (docs/runbooks/GO_LIVE_RUNBOOK.md §3.7/§4): the four items
     # that separate "configured" from "recoverable". Guarded insert after
     # the last existing prerequisite row (PCI QSA); no merges/formulas
@@ -528,6 +627,17 @@ def main():
     ])
     edit(con, shared, ["Paystack API"], "A", "Interswitch API", exact_first="Paystack API", note="capacity rename")
     edit(con, shared, ["Interswitch API"], "D", "Interswitch sandbox rate limits (verify + requery)", note="capacity limits")
+    # Phase-2 traffic math re-derived for 3 app replicas (was 2): column C.
+    for needle, text in [
+        ("App Replicas", "3"),
+        ("App Servers", "3"),
+        ("Connections per Replica", "1,667"),
+        ("Avg Requests/sec per Replica", "~167"),
+        ("Peak Requests/sec (all replicas)", "~500"),
+        ("DB Reads/sec per Replica", "~133"),
+        ("DB Writes/sec per Replica", "~33"),
+    ]:
+        edit(con, shared, [needle], "C", text, exact_first=needle, note="P2 col C: %s" % needle)
     save("Concurrency & Pool Tuning", con)
 
     # ============== Component Specs: Faya domain + Interswitch ==========

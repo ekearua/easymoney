@@ -170,13 +170,82 @@ jobs:
           cosign sign --yes \
             "${REGISTRY}/${IMAGE_NAME}@${{ steps.build.outputs.digest }}"
 
-  # Opt-in rollout. Unset unless DEPLOY_ENABLED=true, so pushing a tag never
-  # silently deploys; the `production` environment adds an approval gate when
-  # configured. Rollback is automatic and lives in the script, not here.
+  # Opt-in rollout. Unset unless STAGING_DEPLOY_ENABLED/DEPLOY_ENABLED=true.
+  # Staging runs first (if enabled) to validate the release before production.
+  # The production environment adds an approval gate when configured. Rollback
+  # is automatic and lives in the script, not here.
+  deploy_staging:
+    name: Deploy to staging
+    needs: build
+    if: ${{ vars.STAGING_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency:
+      group: staging-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY || secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_DEPLOY_KNOWN_HOSTS || secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          [ -n "$DEPLOY_SSH_KEY" ] || { echo "::error::secret STAGING_DEPLOY_SSH_KEY or DEPLOY_SSH_KEY is empty"; exit 1; }
+          [ -n "$DEPLOY_KNOWN_HOSTS" ] || { echo "::error::secret STAGING_DEPLOY_KNOWN_HOSTS or DEPLOY_KNOWN_HOSTS is empty"; exit 1; }
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Roll out ${{ github.ref_name }} (staging)
+        env:
+          DEPLOY_HOSTS: ${{ vars.STAGING_DEPLOY_HOSTS || vars.DEPLOY_HOSTS }}
+          DEPLOY_USER: ${{ vars.STAGING_DEPLOY_USER || vars.DEPLOY_USER }}
+          DEPLOY_PATH: ${{ vars.STAGING_DEPLOY_PATH || vars.DEPLOY_PATH }}
+          TAG: ${{ github.ref_name }}
+          APP_IMAGE_REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -Eeuo pipefail
+
+          safe_ref() {
+            local name="$1" value="$2"
+            if [[ ! "$value" =~ ^[A-Za-z0-9._:/@-]+$ ]]; then
+              echo "::error::$name '$value' contains characters outside [A-Za-z0-9._:/@-]"; exit 1
+            fi
+          }
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$TAG' is not of the form vX.Y.Z"; exit 1
+          fi
+          [ -n "$DEPLOY_HOSTS" ] || { echo "::error::variable STAGING_DEPLOY_HOSTS or DEPLOY_HOSTS is empty"; exit 1; }
+
+          user="${DEPLOY_USER:-deploy}"
+          path="${DEPLOY_PATH:-/opt/whatsapp-payment}"
+          safe_ref "DEPLOY_USER" "$user"
+          safe_ref "DEPLOY_PATH" "$path"
+          safe_ref "APP_IMAGE_REPO" "$APP_IMAGE_REPO"
+
+          for host in $DEPLOY_HOSTS; do
+            safe_ref "DEPLOY_HOSTS entry" "$host"
+            if [[ ! "$host" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+              echo "::error::host '$host' is not a hostname/IP literal"; exit 1
+            fi
+            echo "::group::deploy $host (staging)"
+            ssh -o BatchMode=yes -o IdentitiesOnly=yes "$user@$host" \
+              "cd '$path' && \
+               git fetch --tags --force --prune origin && \
+               git checkout --detach 'refs/tags/$TAG' && \
+               APP_IMAGE_REPO='$APP_IMAGE_REPO' bash deploy/release.sh '$TAG'"
+            ssh -o BatchMode=yes -o IdentitiesOnly=yes "$user@$host" \
+              "cat '$path/deploy/.release-state' 2>/dev/null || echo 'deploy/.release-state not present on $host'" || true
+            echo "::endgroup::"
+          done
+
   deploy:
     name: Deploy to production
-    needs: build
-    if: ${{ vars.DEPLOY_ENABLED == 'true' }}
+    needs: [build, deploy_staging]
+    if: ${{ always() && needs.build.result == 'success' && (needs.deploy_staging.result == 'success' || needs.deploy_staging.result == 'skipped') && vars.DEPLOY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     environment: production
     concurrency:

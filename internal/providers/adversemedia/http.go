@@ -12,6 +12,7 @@ import (
 
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/ports"
+	"whatsapp-payment-demo/internal/providers/dojahaml"
 )
 
 // Sentinel errors mapped onto user-safe messages by ScreenAdverseMedia.
@@ -20,45 +21,49 @@ var (
 	errRateLimited  = fmt.Errorf("rate limited")
 )
 
-// HTTP calls the Dojah adverse-media endpoint named in the vendor decision
-// record §11.
+// HTTP calls Dojah's adverse-media lane through the shared AML screening
+// endpoint named in the vendor decision record.
 //
-// Request (POST {baseURL}/api/v1/aml/v2/screening, Content-Type: application/json):
+// Request (POST {baseURL}/api/v2/aml/screening, Content-Type: application/json):
 //
 //	{
-//	  "legal_name":      "Ada Obi",
-//	  "phone":           "+2348012345678",
-//	  "match_threshold": 0.85
+//	  "schema": "individual",
+//	  "properties": {"names": "Ada Obi", "id_number": ""},
+//	  "screening_options": {"adverse_media_check": true, "match_threshold": 0.85}
 //	}
 //
 // Headers: "Authorization: <secret key>" (raw, no Bearer prefix) and
-// "AppId: <app id>", per the vendor record §11.1.
+// "AppId: <app id>", per the vendor record.
 //
-// Response:
-//
-//	{
-//	  "decision":     "clear|possible|strong|blocked",
-//	  "hits":         [{"source":"...","title":"...","published_at":"...",
-//	                    "reference":"...","list_version":"..."}],
-//	  "reference":    "vendor-ref-123",
-//	  "list_version": "2026-10",
-//	  "message":      "no adverse-media matches"
-//	}
-//
-// "status" is accepted in place of "decision". Unknown decisions are rejected
-// rather than silently treated as clear, so an unrecognized vendor reply can
-// never auto-clear a customer.
+// Response: the documented AML entity, whose ADVERSE_MEDIA groups carry
+// categorised articles and whose match_status is one of "No Match",
+// "Partially Matched", "Potential Match" or "Confirmed Match". Unknown
+// statuses are rejected rather than silently treated as clear, so an
+// unrecognized vendor reply can never auto-clear a customer.
 type HTTP struct {
 	baseURL        string
 	appID          string
 	secretKey      string
 	httpClient     *http.Client
 	matchThreshold float64
+	listVersion    string
+	provider       string
 }
 
-// NewHTTP creates the Dojah adverse-media adapter. An empty timeout defaults
-// to 30 seconds.
-func NewHTTP(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64) *HTTP {
+// NewHTTP creates the adverse-media adapter for an explicitly configured
+// endpoint. The base URL, app id and secret key are the Dojah credentials; the
+// provider name recorded on the row is "http".
+func NewHTTP(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64, listVersion string) *HTTP {
+	return newHTTP(baseURL, appID, secretKey, timeout, matchThreshold, listVersion, "http")
+}
+
+// NewDojah creates the adverse-media adapter from the shared DOJAH_* settings,
+// recording the vendor name as "dojah".
+func NewDojah(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64, listVersion string) *HTTP {
+	return newHTTP(baseURL, appID, secretKey, timeout, matchThreshold, listVersion, "dojah")
+}
+
+func newHTTP(baseURL, appID, secretKey string, timeout time.Duration, matchThreshold float64, listVersion, provider string) *HTTP {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -68,38 +73,13 @@ func NewHTTP(baseURL, appID, secretKey string, timeout time.Duration, matchThres
 		secretKey:      strings.TrimSpace(secretKey),
 		httpClient:     &http.Client{Timeout: timeout},
 		matchThreshold: matchThreshold,
+		listVersion:    strings.TrimSpace(listVersion),
+		provider:       provider,
 	}
 }
 
 // ProviderName returns the adapter identifier for audit records.
-func (h *HTTP) ProviderName() string { return "http" }
-
-// httpAdverseRequest is the wire body sent to the vendor.
-type httpAdverseRequest struct {
-	LegalName      string  `json:"legal_name"`
-	Phone          string  `json:"phone,omitempty"`
-	MatchThreshold float64 `json:"match_threshold"`
-}
-
-// httpAdverseResponse is the normalized response envelope we accept.
-type httpAdverseResponse struct {
-	Decision    string           `json:"decision"`
-	Status      string           `json:"status"`
-	Hits        []httpAdverseHit `json:"hits"`
-	Reference   string           `json:"reference"`
-	ProviderRef string           `json:"provider_ref"`
-	ListVersion string           `json:"list_version"`
-	Message     string           `json:"message"`
-}
-
-// httpAdverseHit is one hit entry in the vendor envelope.
-type httpAdverseHit struct {
-	Source      string `json:"source"`
-	Title       string `json:"title"`
-	PublishedAt string `json:"published_at"`
-	Reference   string `json:"reference"`
-	ListVersion string `json:"list_version"`
-}
+func (h *HTTP) ProviderName() string { return h.provider }
 
 // ScreenAdverseMedia performs one adverse-media lookup against the configured
 // vendor.
@@ -112,7 +92,7 @@ func (h *HTTP) ScreenAdverseMedia(ctx context.Context, request ports.AdverseMedi
 		return ports.AdverseMediaDecision{}, fmt.Errorf("adverse-media API base URL is not configured")
 	}
 
-	resp, err := h.lookup(ctx, request)
+	entity, err := h.lookup(ctx, name)
 	if err != nil {
 		switch {
 		case err == errUnauthorized:
@@ -124,60 +104,63 @@ func (h *HTTP) ScreenAdverseMedia(ctx context.Context, request ports.AdverseMedi
 		}
 	}
 
-	decision, ok := normalizeAdverseDecision(resp)
+	decision, ok := dojahaml.Decision(entity.MatchStatus)
 	if !ok {
-		return ports.AdverseMediaDecision{}, fmt.Errorf("unrecognized adverse-media decision (decision=%q status=%q)", resp.Decision, resp.Status)
+		return ports.AdverseMediaDecision{}, fmt.Errorf("unrecognized adverse-media match status %q", entity.MatchStatus)
 	}
 
-	hits := make([]ports.AdverseMediaHit, 0, len(resp.Hits))
-	listVersion := strings.TrimSpace(resp.ListVersion)
-	for _, hit := range resp.Hits {
-		hits = append(hits, ports.AdverseMediaHit{
-			Source:      strings.TrimSpace(hit.Source),
-			Title:       strings.TrimSpace(hit.Title),
-			PublishedAt: strings.TrimSpace(hit.PublishedAt),
-			ProviderRef: strings.TrimSpace(hit.Reference),
-			ListVersion: strings.TrimSpace(hit.ListVersion),
-		})
-		if listVersion == "" {
-			listVersion = strings.TrimSpace(hit.ListVersion)
+	hits := make([]ports.AdverseMediaHit, 0, len(entity.Results))
+	for _, result := range entity.Results {
+		if !strings.EqualFold(result.SourceType, "ADVERSE_MEDIA") {
+			continue
+		}
+		for _, article := range result.Articles {
+			hits = append(hits, ports.AdverseMediaHit{
+				Source:      strings.TrimSpace(article.Source),
+				Title:       strings.TrimSpace(article.Headline),
+				PublishedAt: strings.TrimSpace(article.Timestamp),
+				ProviderRef: strings.TrimSpace(entity.EntityID),
+				ListVersion: h.listVersion,
+			})
 		}
 	}
 
-	ref := firstNonEmpty(resp.Reference, resp.ProviderRef)
+	ref := strings.TrimSpace(entity.EntityID)
 	if ref == "" && len(hits) > 0 {
 		ref = hits[0].ProviderRef
 	}
 	if ref == "" {
-		ref = "HTTP-AMS-" + shortHash(name)
-	}
-	message := strings.TrimSpace(resp.Message)
-	if message == "" {
-		message = defaultAdverseMessage(decision)
+		ref = "ADVERSE-" + shortHash(name)
 	}
 	return ports.AdverseMediaDecision{
 		Decision:    decision,
 		MatchedHits: hits,
 		ProviderRef: ref,
-		ListVersion: listVersion,
-		Message:     message,
+		ListVersion: h.listVersion,
+		Message:     defaultAdverseMessage(decision),
 	}, nil
 }
 
-// lookup performs the HTTP POST and decodes the JSON response.
-func (h *HTTP) lookup(ctx context.Context, request ports.AdverseMediaRequest) (httpAdverseResponse, error) {
-	payload := httpAdverseRequest{
-		LegalName:      strings.TrimSpace(request.LegalName),
-		Phone:          strings.TrimSpace(request.PhoneNumber),
-		MatchThreshold: h.matchThreshold,
+// lookup performs the HTTP POST and decodes the documented AML response.
+func (h *HTTP) lookup(ctx context.Context, name string) (*dojahaml.Entity, error) {
+	payload := dojahaml.Request{
+		Schema: "individual",
+		Properties: dojahaml.Properties{
+			Names:    name,
+			IDNumber: "",
+		},
+		ScreeningOptions: dojahaml.Options{
+			AdverseMediaCheck: true,
+			MatchThreshold:    h.matchThreshold,
+		},
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return httpAdverseResponse{}, err
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+"/api/v1/aml/v2/screening", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+dojahaml.Path, bytes.NewReader(body))
 	if err != nil {
-		return httpAdverseResponse{}, err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -190,65 +173,47 @@ func (h *HTTP) lookup(ctx context.Context, request ports.AdverseMediaRequest) (h
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		return httpAdverseResponse{}, fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MiB cap
 	if err != nil {
-		return httpAdverseResponse{}, fmt.Errorf("read response body: %w", err)
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	switch resp.StatusCode {
 	case http.StatusOK, http.StatusCreated:
 		// fall through to parse
 	case http.StatusUnauthorized:
-		return httpAdverseResponse{}, errUnauthorized
+		return nil, errUnauthorized
+	case http.StatusPaymentRequired:
+		return nil, fmt.Errorf("Dojah wallet balance is too low (402)")
 	case http.StatusTooManyRequests:
-		return httpAdverseResponse{}, errRateLimited
+		return nil, errRateLimited
+	case http.StatusFailedDependency:
+		return nil, fmt.Errorf("Dojah upstream source failed (424)")
 	default:
-		var errResp httpAdverseResponse
-		if json.Unmarshal(respBody, &errResp) == nil && strings.TrimSpace(errResp.Message) != "" {
-			return httpAdverseResponse{}, fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, errResp.Message)
+		var errResp struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
 		}
-		return httpAdverseResponse{}, fmt.Errorf("API error HTTP %d", resp.StatusCode)
+		if json.Unmarshal(respBody, &errResp) == nil {
+			if msg := firstNonEmpty(errResp.Message, errResp.Error); msg != "" {
+				return nil, fmt.Errorf("API error (HTTP %d): %s", resp.StatusCode, msg)
+			}
+		}
+		return nil, fmt.Errorf("API error HTTP %d", resp.StatusCode)
 	}
 
-	var parsed httpAdverseResponse
+	var parsed dojahaml.Response
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return httpAdverseResponse{}, fmt.Errorf("decode response: %w", err)
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	return parsed, nil
-}
-
-// normalizeAdverseDecision maps a vendor decision/status token onto the kyc
-// screening vocabulary.
-func normalizeAdverseDecision(resp httpAdverseResponse) (string, bool) {
-	for _, token := range []string{resp.Decision, resp.Status} {
-		if decision, ok := adverseDecisionToken(token); ok {
-			return decision, true
-		}
+	if parsed.Entity == nil {
+		return nil, fmt.Errorf("Dojah returned no adverse-media entity")
 	}
-	return "", false
-}
-
-// adverseDecisionToken maps one token onto the screening vocabulary.
-func adverseDecisionToken(raw string) (string, bool) {
-	token := strings.ToLower(strings.TrimSpace(raw))
-	token = strings.NewReplacer("-", "_", " ", "_").Replace(token)
-	switch token {
-	case "clear", "no_match", "not_matched", "no_hit", "clean", "pass",
-		"no_adverse_media", "no_adverse", "no_alerts":
-		return kyc.ScreenClear, true
-	case "possible", "potential", "potential_match", "pep", "review", "needs_review",
-		"manual_review", "alerts", "alert", "adverse", "adverse_media", "media_match":
-		return kyc.ScreenPossible, true
-	case "strong", "match", "matched", "exact_match", "confirmed_match", "hit", "hits":
-		return kyc.ScreenStrong, true
-	case "blocked", "block", "sanctioned", "prohibited", "confirmed", "interdict":
-		return kyc.ScreenBlocked, true
-	}
-	return "", false
+	return parsed.Entity, nil
 }
 
 // defaultAdverseMessage returns a neutral message when the vendor omits one.
