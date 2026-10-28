@@ -165,7 +165,11 @@ func (a *App) interswitchCheckout(w http.ResponseWriter, r *http.Request) {
 	if gatewayURL, err := url.Parse(page.Action); err == nil && gatewayURL.Scheme != "" && gatewayURL.Host != "" {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: blob:; form-action 'self' "+gatewayURL.Scheme+"://"+gatewayURL.Host)
 	}
-	a.renderStatus(w, "interswitch_checkout.html", map[string]any{
+	templateName := "interswitch_checkout.html"
+	if a.cfg.InterswitchInlineCheckout {
+		templateName = "interswitch_inline_checkout.html"
+	}
+	a.renderStatus(w, templateName, map[string]any{
 		"AppName": a.cfg.AppName, "Payment": payment, "Page": page, "BaseURL": a.cfg.BaseURL,
 		"WhatsAppDeepLink": a.whatsappDeepLink(), "FlowToken": flowToken,
 	}, http.StatusOK)

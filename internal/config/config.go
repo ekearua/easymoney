@@ -59,6 +59,7 @@ type Config struct {
 	InterswitchTokenURL             string // optional; OAuth token issuer (defaults to BaseURL's passport host)
 	InterswitchCheckoutBaseURL      string // optional; hosted payment-page host (defaults per mode)
 	InterswitchCheckoutMode         string
+	InterswitchInlineCheckout       bool
 	InterswitchTransferBaseURL      string // optional; Quickteller Send Money v5 host for payouts/name-enquiry/query
 	InterswitchSenderName           string // optional; name shown as the transfer sender
 	InterswitchSenderPhone          string // optional; sender phone on the transfer
@@ -552,6 +553,7 @@ func Load() (Config, error) {
 		InterswitchTokenURL:             strings.TrimRight(os.Getenv("INTERSWITCH_TOKEN_URL"), "/"),
 		InterswitchCheckoutBaseURL:      strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
 		InterswitchCheckoutMode:         strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
+		InterswitchInlineCheckout:       envBool("INTERSWITCH_INLINE_CHECKOUT", false),
 		InterswitchTransferBaseURL:      strings.TrimRight(os.Getenv("INTERSWITCH_TRANSFER_BASE_URL"), "/"),
 		InterswitchSenderName:           strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_NAME")),
 		InterswitchSenderPhone:          strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_PHONE")),
@@ -857,19 +859,19 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DATA_PROVIDER must be \"vtpass\" or \"interswitch\", got %q", cfg.DataProvider)
 	}
 	switch cfg.IdentityProvider {
-	case "", "ninbvnportal":
+	case "", "ninbvnportal", "interswitch":
 	default:
-		return Config{}, fmt.Errorf("IDENTITY_PROVIDER must be \"ninbvnportal\", got %q", cfg.IdentityProvider)
+		return Config{}, fmt.Errorf("IDENTITY_PROVIDER must be \"ninbvnportal\" or \"interswitch\", got %q", cfg.IdentityProvider)
 	}
 	switch cfg.CorporateRegistryProvider {
-	case "", "simulated", "http", "dojah":
+	case "", "simulated", "http", "dojah", "interswitch":
 	default:
-		return Config{}, fmt.Errorf("CAC_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.CorporateRegistryProvider)
+		return Config{}, fmt.Errorf("CAC_PROVIDER must be \"simulated\", \"http\", \"dojah\" or \"interswitch\", got %q", cfg.CorporateRegistryProvider)
 	}
 	switch cfg.TaxIDProvider {
-	case "", "simulated", "http", "dojah":
+	case "", "simulated", "http", "dojah", "interswitch":
 	default:
-		return Config{}, fmt.Errorf("FIRS_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.TaxIDProvider)
+		return Config{}, fmt.Errorf("FIRS_PROVIDER must be \"simulated\", \"http\", \"dojah\" or \"interswitch\", got %q", cfg.TaxIDProvider)
 	}
 	switch strings.ToUpper(strings.TrimSpace(cfg.DojahCACCompanyType)) {
 	case "", "BUSINESS_NAME", "COMPANY", "INCORPORATED_TRUSTEES", "LIMITED_PARTNERSHIP", "LIMITED_LIABILITY_PARTNERSHIP":
@@ -1099,6 +1101,24 @@ func validateProductionRails(cfg Config) error {
 	}
 	if cfg.IdentityProvider == "ninbvnportal" && cfg.NINBVNPortalKey == "" {
 		return errors.New("NINBVNPORTAL_API_KEY is required when IDENTITY_PROVIDER=ninbvnportal")
+	}
+	if cfg.IdentityProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when IDENTITY_PROVIDER=interswitch")
+	}
+	if cfg.CorporateRegistryProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when CAC_PROVIDER=interswitch")
+	}
+	if cfg.TaxIDProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when FIRS_PROVIDER=interswitch")
+	}
+	if cfg.AdverseMediaProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when ADVERSE_MEDIA_PROVIDER=interswitch")
+	}
+	if cfg.ScreeningProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when SCREENING_PROVIDER=interswitch")
+	}
+	if cfg.PaymentScreeningProvider == "interswitch" && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when PAYMENT_SCREENING_PROVIDER=interswitch")
 	}
 	if cfg.ScreeningProvider == "http" && cfg.ScreeningAPIBase == "" {
 		return errors.New("SCREENING_API_BASE is required when SCREENING_PROVIDER=http")

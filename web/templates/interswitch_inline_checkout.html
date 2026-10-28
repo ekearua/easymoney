@@ -1,0 +1,36 @@
+{{define "interswitch_inline_checkout.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure payment - {{.Payment.MerchantName}}</title>
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://newwebpay-{{if eq .Page.Mode "LIVE"}}{{else}}sandbox-{{end}}interswitchng.com/inline-checkout.js"></script>
+</head>
+<body class="receipt-body"><main class="receipt">
+  <h1>{{.Payment.MerchantName}}</h1>
+  <p class="receipt-amount">{{money .Payment.AmountKobo}}</p>
+  <p class="muted">Complete your payment without leaving this page.</p>
+  <button id="pay-btn" type="button">Pay now</button>
+  <p class="muted">Xego marks a payment completed only after the result is verified on our side.</p>
+  {{if .WhatsAppDeepLink}}<p class="muted">Changed your mind? <a href="{{.WhatsAppDeepLink}}">Back to WhatsApp</a>.</p>{{end}}
+</main>
+<script>
+(function(){
+  var btn = document.getElementById('pay-btn');
+  btn.addEventListener('click', function(){
+    window.webpayCheckout({
+      merchant_code: "{{.Page.MerchantCode}}",
+      pay_item_id: "{{.Page.PayItemID}}",
+      txn_ref: "{{.Page.TxnRef}}",
+      amount: {{.Page.Amount}},
+      currency: {{.Page.Currency}},
+      cust_email: "{{.Page.CustomerEmail}}",
+      mode: "{{.Page.Mode}}",
+      site_redirect_url: "{{.Page.SiteRedirectURL}}",
+      onComplete: function(response){ console.log("Payment complete:", response); window.location.href = "{{.Page.SiteRedirectURL}}?txnref={{.Page.TxnRef}}"; }
+    });
+  });
+})();
+</script>
+</body></html>
+{{end}}
