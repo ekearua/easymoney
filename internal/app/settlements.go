@@ -466,4 +466,9 @@ func (a *App) runSettlementDispatcher(ctx context.Context) {
 	} else if requeued > 0 {
 		a.logger.InfoContext(ctx, "requeued stale payouts", "count", requeued)
 	}
+	if a.walletPayouts != nil {
+		if err := a.walletPayouts.Maintain(ctx); err != nil {
+			a.logger.WarnContext(ctx, "wallet cash-out dispatcher failed", "error", err)
+		}
+	}
 }

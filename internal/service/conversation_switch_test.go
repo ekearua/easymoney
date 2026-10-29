@@ -53,7 +53,16 @@ func TestServiceSwitchIntentCommands(t *testing.T) {
 		{input: "Make Payment", want: "pay"},
 		{input: "buy data", want: "data"},
 		{input: "fund wallet", want: "topup"},
+		{input: "wallet_add_money", want: "topup"},
+		{input: "my wallet", want: "wallet"},
+		{input: "menu_fund_wallet", want: "wallet"},
+		{input: "cash out", want: "withdraw"},
+		{input: "withdraw to bank", want: "withdraw"},
+		{input: "wallet_cash_out", want: "withdraw"},
 		{input: "send money", want: "individual_pay"},
+		{input: "request card", want: "card_request"},
+		{input: "physical card", want: "card_request"},
+		{input: "my card", want: "card_status"},
 		{input: "register merchant", want: "merchant_register"},
 		{input: "create invoice", want: "invoice_create"},
 		{input: "join thrift", want: "thrift_join"},
@@ -91,6 +100,9 @@ func TestServiceSwitchIntentIgnoresProseAndCommands(t *testing.T) {
 	notSwitches := []string{
 		"hello", "5000", "what's my balance", "confirm", "continue",
 		"cancel", "menu", "start", "skip", "NIN 12345678901",
+		// "wallet" is a payment-method reply inside individual-pay and thrift
+		// flows; only the "my wallet" menu phrasing may switch service.
+		"wallet",
 	}
 	for _, input := range notSwitches {
 		if typ, _ := serviceSwitchIntent(input); typ != "" {
@@ -106,6 +118,9 @@ func TestFlowStateLabelCoversDispatchedStates(t *testing.T) {
 		"thrift_name", "invoice_item_name", "invoice_pay_amount", "select_data_network",
 		"confirm_data_order", "kyb_request_confirm", "onboard_name", "onboard_email",
 		"web_flow_active", "ai_assistant", "individual_legal_name", "link_phone", "link_code",
+		"wallet_withdraw_amount", "wallet_withdraw_bank", "wallet_withdraw_account",
+		"wallet_withdraw_confirm", "wallet_topup_amount", "wallet_topup_method",
+		"card_request_name", "card_request_region", "card_request_confirm",
 	}
 	for _, state := range states {
 		if label := flowStateLabel(state); label == "" || label == "in a payment flow" {

@@ -90,11 +90,19 @@ func (s *ConversationService) handleMenu(ctx context.Context, channel, recipient
 		return s.startSendToAgent(ctx, channel, recipient, user, session)
 	case "otp", "get otp", "request otp", "pickup otp":
 		return s.requestRemittanceOTP(ctx, channel, recipient, user, session)
-	case "fund wallet", "menu_fund_wallet", "top up", "wallet top up", "add money":
+	case "request card", "physical card", "debit card", "get card", "new card", "menu_card":
+		return s.startCardRequest(ctx, channel, recipient, user, session)
+	case "my card", "card status", "where is my card", "menu_card_status":
+		return s.sendCardRequestStatus(ctx, channel, recipient, user)
+	case "fund wallet", "top up", "wallet top up", "add money", "wallet_add_money":
 		if s.WebFlowEnabled(channel, WebFlowTopup) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowTopup, "", "", nil)
 		}
 		return s.startWalletTopup(ctx, channel, recipient, user, session)
+	case "my wallet", "wallet", "menu_fund_wallet":
+		return s.sendWalletMenu(ctx, channel, recipient, user)
+	case "cash out", "cashout", "withdraw", "withdraw to bank", "send to bank", "bank withdrawal", "wallet_cash_out", "menu_withdraw":
+		return s.startWalletCashOut(ctx, channel, recipient, user, session)
 	case "data", "menu_buy_data", "buy data":
 		if s.WebFlowEnabled(channel, WebFlowData) {
 			return s.StartWebFlow(ctx, channel, recipient, user, session, WebFlowData, "", "", nil)
@@ -276,7 +284,7 @@ func mainMenuRows() []ports.InteractiveRow {
 	return []ports.InteractiveRow{
 		{ID: "menu_pay", Title: "Make payment", Description: "Pay a merchant securely"},
 		{ID: "menu_pay_individual", Title: "Pay an individual", Description: "Send money to someone's bank"},
-		{ID: "menu_fund_wallet", Title: "Fund wallet", Description: "Add money to your Xego wallet"},
+		{ID: "menu_fund_wallet", Title: "My wallet", Description: "Add money or cash out to a bank"},
 		{ID: "menu_buy_data", Title: "Buy Data", Description: "MTN, Airtel, Glo, 9mobile"},
 		{ID: "menu_merchant_services", Title: "Merchant services", Description: "Register, invoice, dashboard"},
 		{ID: "menu_thrift_services", Title: "Thrift contributions", Description: "Create, join, contribute"},
@@ -321,6 +329,10 @@ func menuRowCovers(id string) bool {
 	case "menu_pay_individual":
 		return true
 	case "menu_fund_wallet":
+		return true
+	case "wallet_add_money":
+		return true
+	case "wallet_cash_out":
 		return true
 	case "menu_buy_data":
 		return true

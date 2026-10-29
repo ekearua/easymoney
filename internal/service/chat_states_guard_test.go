@@ -92,6 +92,7 @@ var exemptChatStates = map[string]string{
 	"invoice_item_quantity":     "amount",
 	"invoice_item_unit_price":   "amount",
 	"wallet_topup_amount":       "amount",
+	"wallet_withdraw_amount":    "amount",
 	"thrift_amount":             "amount",
 	"thrift_edit_amount_value":  "amount",
 	"thrift_edit_members_value": "amount",
@@ -136,6 +137,9 @@ var exemptChatStates = map[string]string{
 	"pay_individual_bank_pick":    "bank pick",
 	"pay_individual_account":      "account number",
 	"pay_individual_confirm":      "confirm",
+	"wallet_withdraw_bank":        "bank pick",
+	"wallet_withdraw_account":     "account number",
+	"wallet_withdraw_confirm":     "confirm",
 	"individual_liveness":         "liveness media capture turn",
 	"thrift_join_code":            "join code",
 	"thrift_frequency":            "frequency token",
@@ -145,6 +149,12 @@ var exemptChatStates = map[string]string{
 	"invoice_edit_field":          "field picker",
 	"invoice_edit_value":          "single picked-field value",
 	"link_phone":                  "phone",
+
+	// Physical card request: the cardholder name, the collection area, and the
+	// review turn are each atomic, mirroring the cash-pickup flow.
+	"card_request_name":    "cardholder name",
+	"card_request_region":  "selection",
+	"card_request_confirm": "confirm",
 
 	// Cash-pickup remittance: single-value turns mirroring individual pay.
 	"send_agent_name":    "recipient name",

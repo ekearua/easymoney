@@ -117,6 +117,7 @@ type App struct {
 	publisher        *service.EventPublisher
 	merchantWebhooks *service.MerchantWebhookDeliverer
 	settlements      *service.SettlementService
+	walletPayouts    *service.WalletPayoutService
 	refunds          *service.RefundService
 	disputes         *service.DisputeService
 	onboardReminders *service.OnboardingReminderService
@@ -242,6 +243,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		p := identityprovider.NewNINBVNPortal(cfg.NINBVNPortalURL, cfg.NINBVNPortalKey, cfg.NINBVNPortalTimeout)
 		identityVerifier = p
 		identityProviderName = p.ProviderName()
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when IDENTITY_PROVIDER=interswitch")
+		}
+		p := interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.IdentityTimeout)
+		identityVerifier = p
+		identityProviderName = "interswitch"
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported IDENTITY_PROVIDER %q", cfg.IdentityProvider)
@@ -261,6 +270,14 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		p := screeningprovider.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold, cfg.DojahListVersion)
 		sanctionsScreener = p
 		screeningProviderName = p.ProviderName()
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when SCREENING_PROVIDER=interswitch")
+		}
+		p := interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.ScreeningTimeout)
+		sanctionsScreener = p
+		screeningProviderName = "interswitch"
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported SCREENING_PROVIDER %q", cfg.ScreeningProvider)
@@ -281,9 +298,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			return nil, errors.New("CAC_API_BASE is required when CAC_PROVIDER=http")
 		}
 		corporateRegistry = cacprovider.NewHTTP(cfg.CorporateRegistryAPIBase, cfg.CorporateRegistryAPIKey, cfg.CorporateRegistryTimeout)
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when CAC_PROVIDER=interswitch")
+		}
+		corporateRegistry = interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.CorporateRegistryTimeout)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported CAC_PROVIDER %q (only \"simulated\", \"http\" or \"dojah\" exist)", cfg.CorporateRegistryProvider)
+		return nil, fmt.Errorf("unsupported CAC_PROVIDER %q (only \"simulated\", \"http\", \"dojah\" or \"interswitch\" exist)", cfg.CorporateRegistryProvider)
 	}
 	var taxIDVerifier ports.TaxIDVerifier
 	switch strings.ToLower(cfg.TaxIDProvider) {
@@ -297,9 +320,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			return nil, errors.New("FIRS_API_BASE is required when FIRS_PROVIDER=http")
 		}
 		taxIDVerifier = firsprovider.NewHTTP(cfg.TaxIDAPIBase, cfg.TaxIDAPIKey, cfg.TaxIDTimeout)
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when FIRS_PROVIDER=interswitch")
+		}
+		taxIDVerifier = interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.TaxIDTimeout)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported FIRS_PROVIDER %q (only \"simulated\", \"http\" or \"dojah\" exist)", cfg.TaxIDProvider)
+		return nil, fmt.Errorf("unsupported FIRS_PROVIDER %q (only \"simulated\", \"http\", \"dojah\" or \"interswitch\" exist)", cfg.TaxIDProvider)
 	}
 	var locationVerifier ports.LocationVerifier
 	switch strings.ToLower(cfg.LocationProvider) {
@@ -499,9 +528,15 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		paymentScreener = paymentscreening.NewSimulated()
 	case "dojah":
 		paymentScreener = paymentscreening.NewDojah(cfg.DojahBaseURL, cfg.DojahAppID, cfg.DojahSecretKey, cfg.ScreeningTimeout, cfg.DojahMatchThreshold, cfg.DojahListVersion)
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when PAYMENT_SCREENING_PROVIDER=interswitch")
+		}
+		paymentScreener = interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.ScreeningTimeout)
 	default:
 		repository.Close()
-		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\" or \"dojah\" exist)", cfg.PaymentScreeningProvider)
+		return nil, fmt.Errorf("unsupported PAYMENT_SCREENING_PROVIDER %q (only \"simulated\", \"dojah\" or \"interswitch\" exist)", cfg.PaymentScreeningProvider)
 	}
 	// G9: adverse-media screening. The deterministic simulator is the default;
 	// the live Dojah lane (ADVERSE_MEDIA_PROVIDER=dojah, shared DOJAH_* keys)
@@ -519,11 +554,23 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			return nil, errors.New("ADVERSE_MEDIA_API_BASE, ADVERSE_MEDIA_APP_ID and ADVERSE_MEDIA_SECRET_KEY are required when ADVERSE_MEDIA_PROVIDER=http")
 		}
 		adverseMediaScreener = adversemedia.NewHTTP(cfg.AdverseMediaAPIBase, cfg.AdverseMediaAppID, cfg.AdverseMediaSecretKey, cfg.AdverseMediaTimeout, cfg.AdverseMediaMatchThreshold, cfg.DojahListVersion)
+	case "interswitch":
+		if cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" {
+			repository.Close()
+			return nil, errors.New("INTERSWITCH_CLIENT_ID and INTERSWITCH_CLIENT_SECRET are required when ADVERSE_MEDIA_PROVIDER=interswitch")
+		}
+		adverseMediaScreener = interswitchprovider.NewKYCClient(cfg.InterswitchBaseURL, cfg.InterswitchClientID, cfg.InterswitchClientSecret, cfg.AdverseMediaTimeout)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported ADVERSE_MEDIA_PROVIDER %q", cfg.AdverseMediaProvider)
 	}
 	convo.Apply(service.WithAdverseMediaScreener(adverseMediaScreener))
+	// Wallet cash-out: Interswitch NIP transfers from a customer's wallet to a
+	// bank account entered per transfer. The Interswitch client also performs
+	// the name enquiry shown before the customer confirms.
+	walletPayoutsService := service.NewWalletPayoutService(cfg, repository, payoutProvider, interswitchClient, logger,
+		service.WithWalletPayoutScreener(paymentScreener))
+	convo.SetWalletPayoutService(walletPayoutsService)
 	bulkConcurrency := cfg.BulkWorkerConcurrency
 	if bulkConcurrency <= 0 {
 		bulkConcurrency = 4
@@ -550,6 +597,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		eventBus:                eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
 		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener)),
+		walletPayouts:    walletPayoutsService,
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
 		onboardReminders: service.NewOnboardingReminderService(cfg, repository, logger),
@@ -876,6 +924,11 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/adverse-media", a.adminAdverseMedia)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/compliance", a.adminCompliance)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/compliance/{id}/record", a.adminComplianceRecord)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/cards", a.adminCardRequests)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/cards/{id}/review", a.adminCardRequestReview)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/cards/{id}/ready", a.adminCardRequestReady)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/cards/{id}/resend", a.adminCardRequestResend)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/cards/gates/{gate}", a.adminCardGateAttest)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/network/cases/{id}/resolve", a.adminResolveNetworkCase)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/kyb", a.adminKYB)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/kyb/{id}/advance", a.adminKYBAdvance)
@@ -1002,6 +1055,8 @@ func (a *App) routes() http.Handler {
 		})
 		agent.Get("/agent/redeem", a.agentRedeemPage)
 		agent.Post("/agent/redeem", a.agentRedeemPost)
+		agent.Get("/agent/cards", a.agentCardRequests)
+		agent.Post("/agent/cards/collect", a.agentCardCollect)
 		agent.Get("/agent/receipt/{id}", a.agentReceiptPage)
 		agent.Post("/agent/logout", a.agentLogout)
 		agent.Get("/agent/security", a.securityPage(store.MFAScopeAgent))

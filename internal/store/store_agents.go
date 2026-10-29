@@ -221,6 +221,32 @@ func (s *Store) AgentRegions(ctx context.Context, activeOnly bool) ([]AgentRegio
 	return regions, rows.Err()
 }
 
+// AgentRegionsWithActiveAgent lists the active regions that currently have at
+// least one active agent, the only areas where a physical card can actually be
+// handed over. It keeps a card request from being accepted for an area with no
+// one to serve it.
+func (s *Store) AgentRegionsWithActiveAgent(ctx context.Context) ([]AgentRegion, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT r.id, r.code, r.name, r.state, r.lga, r.status, r.created_at, r.updated_at
+		FROM agent_regions r
+		JOIN agent_profiles p ON p.region_id = r.id AND p.status = 'active'
+		WHERE r.status = 'active'
+		ORDER BY r.state, r.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var regions []AgentRegion
+	for rows.Next() {
+		var r AgentRegion
+		if err := rows.Scan(&r.ID, &r.Code, &r.Name, &r.State, &r.LGA, &r.Status, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		regions = append(regions, r)
+	}
+	return regions, rows.Err()
+}
+
 // AssignAgentInRegion picks the active agent in a region that currently has the
 // fewest remittances awaiting pickup, balancing fronted-cash load across agents
 // so one agent's float cap is not reached first. It returns ErrAgentNotFound

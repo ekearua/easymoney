@@ -479,6 +479,11 @@ type Config struct {
 	// to a server-side secret.
 	AgentIDHashPepper string
 
+	// CardRequestsEnabled gates new physical-card requests; CardRequestPickupTTL
+	// bounds the one-time handover code (validated in validateCardRequests).
+	CardRequestsEnabled  bool
+	CardRequestPickupTTL time.Duration
+
 	AgentStandardPerPayoutKobo      int64
 	AgentStandardDailyKobo          int64
 	AgentStandardMaxOutstandingKobo int64
@@ -776,6 +781,15 @@ func Load() (Config, error) {
 		AgentMaxMaxOutstandingKobo:      EnvInt64("AGENT_MAX_MAX_OUTSTANDING_KOBO", 250_000_000),
 		AgentMaxCommissionBPS:           int(EnvInt64("AGENT_MAX_COMMISSION_BPS", 30)),
 
+		// Physical card requests (migration 106). CardRequestsEnabled gates
+		// accepting new requests only: compliance review and handover of stock
+		// already issued stay available so a customer holding a pickup code can
+		// still collect. Default false because a physical card needs an issuer
+		// contract, PCI scope and funding model before it can be promised; see
+		// docs/payments/CARD_REQUESTS.md.
+		CardRequestsEnabled:  envBool("CARD_REQUESTS_ENABLED", false),
+		CardRequestPickupTTL: envDuration("CARD_REQUEST_PICKUP_TTL", 30*24*time.Hour),
+
 		AuthSessionTTL: envDuration("AUTH_SESSION_TTL", 12*time.Hour),
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
@@ -961,6 +975,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("RETENTION_PERIOD (%s) cannot exceed AML_RECORD_RETENTION (%s)", cfg.RetentionPeriod, cfg.AMLRecordRetention)
 	}
 	if err := cfg.validateAgentNetwork(); err != nil {
+		return Config{}, err
+	}
+	if err := cfg.validateCardRequests(); err != nil {
 		return Config{}, err
 	}
 	if cfg.WhatsAppGraphVersion == "" && cfg.Environment != "production" {
@@ -1234,6 +1251,25 @@ func (c Config) validateAgentNetwork() error {
 	case "standard", "super", "max":
 	default:
 		return fmt.Errorf("AGENT_DEFAULT_TIER must be \"standard\", \"super\" or \"max\", got %q", c.AgentDefaultTier)
+	}
+	return nil
+}
+
+// validateCardRequests bounds the physical-card knobs. A handover code must
+// live long enough to be useful and short enough that a lost code is not a
+// standing claim on stock, so it is capped at 180 days. Requesting a card is
+// only meaningful when the agent network that hands it over is enabled: a
+// configuration that offers cards with nowhere to collect them is an operator
+// error, not a degraded mode.
+func (c Config) validateCardRequests() error {
+	if c.CardRequestPickupTTL <= 0 {
+		return errors.New("CARD_REQUEST_PICKUP_TTL must be positive")
+	}
+	if c.CardRequestPickupTTL > 180*24*time.Hour {
+		return errors.New("CARD_REQUEST_PICKUP_TTL cannot exceed 180 days")
+	}
+	if c.CardRequestsEnabled && !c.AgentNetworkEnabled {
+		return errors.New("CARD_REQUESTS_ENABLED requires AGENT_NETWORK_ENABLED: cards are handed over at an agent")
 	}
 	return nil
 }

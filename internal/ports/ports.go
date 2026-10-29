@@ -379,6 +379,53 @@ type TaxIDVerifier interface {
 	VerifyTaxID(context.Context, TaxIDRequest) (TaxIDResult, error)
 }
 
+// BusinessKYCRequest carries the facts a business-KYC check evaluates: the
+// corporate registration number, the declared business name, the registered
+// address and the AML screening lane the check may consult.
+type BusinessKYCRequest struct {
+	RegistrationNumber string
+	BusinessName       string
+	Address            string
+	Email              string
+	Phone              string
+}
+
+// BusinessKYCResult is the provider-neutral outcome of a business-KYC check.
+// Status is one of the shared verification statuses (VerifyVerified /
+// VerifyMismatch / VerifyNotFound / VerifyReview); the composite adapter
+// reports one status per lane so a reviewer sees exactly which gate fired.
+type BusinessKYCResult struct {
+	Status         string
+	RegisteredName string
+	RegisteredAt   string
+	ProviderRef    string
+	MatchName      bool
+	AMLDecision    string
+	AMLMatches     []string
+	Message        string
+}
+
+// BusinessKYCVerifier isolates the composite business-KYC check (CAC
+// registration + AML screen) from a specific vendor. It is the KYB entry
+// gate: a verified registration with a clean AML result is what the B0 -> B1
+// ladder's corporate evidence keys are built from.
+type BusinessKYCVerifier interface {
+	VerifyBusinessKYC(context.Context, BusinessKYCRequest) (BusinessKYCResult, error)
+}
+
+// BusinessKYCProviderName reports a business-KYC adapter's own name when it
+// exposes one, so a verification row carries a meaningful provider label
+// instead of a hardcoded string.
+func BusinessKYCProviderName(v BusinessKYCVerifier) string {
+	if v == nil {
+		return "none"
+	}
+	if named, ok := v.(interface{ ProviderName() string }); ok {
+		return named.ProviderName()
+	}
+	return "business-kyc"
+}
+
 // LocationRequest contains the operating address a merchant declared, the
 // reference read from an uploaded proof-of-address document, and the position
 // their browser reported with the visitor's permission.

@@ -1,0 +1,43 @@
+{{define "agent_cards.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "agent_nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Agent</p><h1>Card handover</h1></div></header>
+
+{{if .Error}}<section class="panel"><div class="alert">{{.Error}}</div></section>{{end}}
+{{if .Success}}<section class="panel"><div class="alert alert-success">Card {{.Success}} collected. The customer's code has been retired.</div></section>{{end}}
+
+<section class="panel">
+  <h2>Hand over a card</h2>
+  <p class="muted">Ask the customer for the six-digit pickup code we sent them. Check a government photo ID against the cardholder name, then record the <strong>type</strong> of ID you inspected. Do not type the ID number, and never write it down.</p>
+  <form method="post" action="/agent/cards/collect">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label>Pickup code<input type="text" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" required></label>
+    <label>Government ID inspected
+      <select name="id_type" required>
+        <option value="nin">NIN</option>
+        <option value="bvn">BVN</option>
+        <option value="drivers_licence">Driver's licence</option>
+        <option value="voters_card">Voter's card</option>
+        <option value="passport">Passport</option>
+      </select>
+    </label>
+    <button type="submit">Record handover</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Cards waiting at this agent{{if .AgentName}} · {{.AgentName}}{{end}}</h2>
+  <div class="table-wrap"><table><thead><tr><th>Cardholder</th><th>Area</th><th>Ready</th></tr></thead><tbody>
+  {{range .Cards}}<tr>
+    <td>{{.CardholderName}}</td>
+    <td>{{.RegionName}}</td>
+    <td class="nowrap">{{if .ReadyAt}}{{date .ReadyAt}}{{else}}—{{end}}</td>
+  </tr>{{else}}<tr><td colspan="3">No cards are waiting at this agent.</td></tr>{{end}}
+  </tbody></table></div>
+  <p class="muted">This list is for staffing only. Only the pickup code authorises a handover, and each code can be used once.</p>
+</section>
+
+</main></body></html>
+{{end}}

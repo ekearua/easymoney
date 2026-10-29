@@ -52,6 +52,10 @@ type ConversationService struct {
 	identity   ports.IdentityVerifier
 	screener   ports.SanctionsScreener
 
+	// walletPayouts backs the "Cash out to bank" flow. Nil until wired, in
+	// which case the flow answers honestly that cash-out is unavailable.
+	walletPayouts *WalletPayoutService
+
 	// programPurses backs the beneficiary-facing "Programme funds" listing. Nil
 	// until wired, in which case the command answers honestly that programme
 	// funds are unavailable rather than becoming a dead end.
@@ -467,10 +471,24 @@ func (s *ConversationService) Handle(ctx context.Context, message store.InboundM
 		return s.handleSendAgentRegion(ctx, message.Channel, recipient, user, session, input)
 	case "send_agent_confirm":
 		return s.handleSendAgentConfirm(ctx, message.Channel, recipient, user, session, input)
+	case "card_request_name":
+		return s.handleCardRequestName(ctx, message.Channel, recipient, user, session, input)
+	case "card_request_region":
+		return s.handleCardRequestRegion(ctx, message.Channel, recipient, user, session, input)
+	case "card_request_confirm":
+		return s.handleCardRequestConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_amount":
 		return s.handleWalletTopupAmount(ctx, message.Channel, recipient, user, session, input)
 	case "wallet_topup_method":
 		return s.handleWalletTopupMethod(ctx, message.Channel, recipient, user, session, input)
+	case "wallet_withdraw_amount":
+		return s.handleWalletCashOutAmount(ctx, message.Channel, recipient, user, session, input)
+	case "wallet_withdraw_bank":
+		return s.handleWalletCashOutBank(ctx, message.Channel, recipient, user, session, input)
+	case "wallet_withdraw_account":
+		return s.handleWalletCashOutAccount(ctx, message.Channel, recipient, user, session, input)
+	case "wallet_withdraw_confirm":
+		return s.handleWalletCashOutConfirm(ctx, message.Channel, recipient, user, session, input)
 	case "web_flow_active":
 		// The customer is completing a flow in the browser; acknowledge chat
 		// input without restarting anything. MENU resets the session and

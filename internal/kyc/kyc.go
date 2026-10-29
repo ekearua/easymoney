@@ -31,51 +31,62 @@ const (
 // Evidence keys a transition must satisfy. Recorded in customer_verifications
 // (verification_type) and screening_results (decision).
 const (
-	// EvChannelConfirmed means the WhatsApp/Telegram/Instagram/TikTok channel
-	// and email are confirmed. Satisfies L0 -> L1 together with
-	// EvTier1BasicDetails.
+	// L0->L1: CBN Tier 1 now requires passport/photo ID, phone number, basic
+	// info plus BVN OR NIN (verified). EvGovPhotoID covers the passport/photo
+	// ID; phone and basic details are represented by EvChannelConfirmed +
+	// EvTier1BasicDetails; either EvBVNVerified or EvNINVerified satisfies the
+	// "BVN or NIN" clause.
 	EvChannelConfirmed = "channel_confirmed"
 	// EvTier1BasicDetails means the CBN Tier 1 self-declared data is on file:
 	// legal name, date of birth (>= 18), phone number, gender and residential
 	// address. Satisfies L0 -> L1 together with EvChannelConfirmed.
 	EvTier1BasicDetails = "tier1_basic_details"
 	// EvGovPhotoID means a government-issued photo ID (international passport,
-	// driver's licence, national ID card, or voter's card) is on file.
-	// Satisfies L1 -> L2 together with both a verified BVN and NIN.
+	// driver's licence, national ID card, or voter's card) is on file. Required
+	// at L1 and L2.
 	EvGovPhotoID = "government_photo_id"
 	// EvBVNVerified means the customer's Bank Verification Number was
-	// electronically matched against the NIBSS database. Satisfies L1 -> L2
-	// together with EvGovPhotoID and EvNINVerified.
+	// electronically matched against the NIBSS database. At L1 satisfied
+	// together with EvGovPhotoID/EvChannelConfirmed/EvTier1BasicDetails if used
+	// in place of NIN (or alongside). At L2 required together with EvGovPhotoID
+	// and EvNINVerified.
 	EvBVNVerified = "bvn_verified"
 	// EvNINVerified means the customer's National Identification Number was
-	// electronically matched against the NIMC database. Satisfies L1 -> L2
-	// together with EvGovPhotoID and EvBVNVerified.
+	// electronically matched against the NIMC database. At L1 satisfied together
+	// with EvGovPhotoID/EvChannelConfirmed/EvTier1BasicDetails if used in place
+	// of BVN. At L2 required together with EvGovPhotoID and EvBVNVerified.
 	EvNINVerified = "nin_verified"
 	// EvAddressProof means a structural proof of residential address (utility
 	// bill or digital geocoding verification) is on file. Satisfies L2 -> L3
 	// together with EvEDDCompleted.
 	EvAddressProof = "address_proof"
-	// EvEDDCompleted means enhanced due diligence finished: liveness / facial
-	// biometrics and structural verification of source of funds. Satisfies
-	// L2 -> L3 together with EvAddressProof.
+	// EvEDDCompleted means enhanced due diligence finished: real-time liveness
+	// check / facial biometrics and structural verification of source of funds.
+	// Satisfies L2 -> L3 together with EvAddressProof.
 	EvEDDCompleted = "edd_completed"
 )
 
 // CBN tier correlation ceilings (kobo). These are the maximum single /
-// cumulative daily / cumulative monthly transaction limits the CBN sets for
-// each individual tier. The kyc_tier_limits defaults must never exceed them
-// (they may be lower, i.e. more conservative). Tier 3 is uncapped by the CBN;
-// the platform's own PAYMENT_MIN/MAX_KOBO bounds act as the absolute window.
-const (
-	// CBN Tier 1 (L1): 50,000 / 200,000 / 500,000 naira.
-	CBNTier1MaxSingleKobo  = 5_000_000
-	CBNTier1MaxDailyKobo   = 20_000_000
-	CBNTier1MaxMonthlyKobo = 50_000_000
-	// CBN Tier 2 (L2): 200,000 / 500,000 / 3,000,000 naira.
-	CBNTier2MaxSingleKobo  = 20_000_000
-	CBNTier2MaxDailyKobo   = 50_000_000
-	CBNTier2MaxMonthlyKobo = 300_000_000
-)
+	// cumulative daily / cumulative monthly transaction limits the CBN sets for
+	// each individual tier. The kyc_tier_limits defaults must never exceed them
+	// (they may be lower, i.e. more conservative). Tier 3 is uncapped by the CBN;
+	// the platform's own PAYMENT_MIN/MAX_KOBO bounds act as the absolute window.
+	const (
+		// CBN Tier 1 (L1): 50,000 / 300,000 naira (daily / balance cap).
+		CBNTier1MaxSingleKobo  = 5_000_000
+		CBNTier1MaxDailyKobo   = 5_000_000
+		CBNTier1MaxMonthlyKobo = 30_000_000
+		CBNTier1MaxBalanceKobo = 30_000_000
+		// CBN Tier 2 (L2): 200,000 / 500,000 naira (daily / balance cap).
+		CBNTier2MaxSingleKobo  = 20_000_000
+		CBNTier2MaxDailyKobo   = 20_000_000
+		CBNTier2MaxMonthlyKobo = 50_000_000
+		CBNTier2MaxBalanceKobo = 50_000_000
+		// CBN Tier 3 (L3): 5,000,000 daily, no balance cap.
+		CBNTier3MaxSingleKobo  = 500_000_000
+		CBNTier3MaxDailyKobo   = 500_000_000
+		CBNTier3MaxMonthlyKobo = 0
+	)
 
 // CBNTier returns the CBN tier number ("1", "2", "3") for an internal tier, or
 // "" when the tier has no CBN equivalent (the L0 pre-KYC state).
@@ -354,7 +365,17 @@ func CanAdvance(from, to string, evidence []string) error {
 	}
 	switch to {
 	case TierL1:
-		return requireEvidence(to, evidence, EvChannelConfirmed, EvTier1BasicDetails)
+		if err := requireEvidence(to, evidence, EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID); err != nil {
+			return err
+		}
+		have := make(map[string]bool, len(evidence))
+		for _, e := range evidence {
+			have[e] = true
+		}
+		if !have[EvBVNVerified] && !have[EvNINVerified] {
+			return fmt.Errorf("tier %s requires evidence %q or %q", to, EvBVNVerified, EvNINVerified)
+		}
+		return nil
 	case TierL2:
 		return requireEvidence(to, evidence, EvGovPhotoID, EvBVNVerified, EvNINVerified)
 	case TierL3:

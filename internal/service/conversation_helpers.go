@@ -428,8 +428,16 @@ func serviceSwitchIntent(input string) (string, string) {
 		return "pay", ""
 	case "pay individual", "send money", "menu_pay_individual":
 		return "individual_pay", ""
-	case "fund wallet", "top up", "wallet top up", "add money", "menu_fund_wallet":
+	case "fund wallet", "top up", "wallet top up", "add money", "wallet_add_money":
 		return "topup", ""
+	case "my wallet", "menu_fund_wallet":
+		return "wallet", ""
+	case "cash out", "cashout", "withdraw", "withdraw to bank", "send to bank", "bank withdrawal", "wallet_cash_out", "menu_withdraw":
+		return "withdraw", ""
+	case "request card", "physical card", "debit card", "get card", "new card", "menu_card":
+		return "card_request", ""
+	case "my card", "card status", "where is my card", "menu_card_status":
+		return "card_status", ""
 	case "buy data", "data", "menu_buy_data":
 		return "data", ""
 	case "register merchant", "merchant registration", "menu_register_merchant":
@@ -561,6 +569,12 @@ func flowStateLabel(state string) string {
 		strings.HasPrefix(state, "enter_service"), strings.HasPrefix(state, "collect_custom"),
 		strings.HasPrefix(state, "confirm_service"):
 		return "selecting a merchant and amount to pay"
+	case strings.HasPrefix(state, "wallet_withdraw"):
+		return "cashing out to a bank account"
+	case strings.HasPrefix(state, "card_request"):
+		return "requesting a physical card"
+	case strings.HasPrefix(state, "wallet_topup"):
+		return "adding money to your wallet"
 	case strings.HasPrefix(state, "pay_individual_"):
 		return "sending money to an individual"
 	case strings.HasPrefix(state, "onboard"):
@@ -650,6 +664,33 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 			return s.sendText(ctx, channel, recipient, "That top-up session expired. Please start again.")
 		}
 		return s.sendWalletTopupMethods(ctx, channel, recipient, user, amount)
+	case "wallet_withdraw_amount":
+		balance := int64(0)
+		if wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID); err == nil {
+			balance, _ = s.store.WalletBalance(ctx, wallet.ID)
+		}
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Cash out to a bank account\n\nWallet balance: %s\n\nEnter the amount you want to cash out in Naira (e.g. 5000). The NIP fee is deducted from this amount.", domain.FormatNGN(balance)))
+	case "wallet_withdraw_bank":
+		return s.sendText(ctx, channel, recipient,
+			"Enter the destination bank name (e.g. Access, GTBank, Zenith) or bank code (e.g. 044):")
+	case "wallet_withdraw_account":
+		return s.sendText(ctx, channel, recipient,
+			fmt.Sprintf("Bank: %s\n\nEnter the 10-digit account number you're cashing out to:", sessionBankLabel(session.Data)))
+	case "wallet_withdraw_confirm":
+		amountKobo := parseAmountKobo(session.Data["amount_kobo"])
+		feeKobo := parseAmountKobo(session.Data["fee_kobo"])
+		payoutKobo := parseAmountKobo(session.Data["payout_kobo"])
+		return s.sendInteractive(ctx, channel, ports.InteractiveMessage{
+			To: recipient,
+			Body: fmt.Sprintf("*Confirm cash-out*\n\nTo: %s\nBank: %s\nAccount: %s\n\nAmount debited from wallet: %s\nNIP fee: %s\nAmount sent to bank: %s\n\nCashing out debits your Faya wallet immediately. Cash out now?",
+				session.Data["account_name"], sessionBankLabel(session.Data), session.Data["account_number"],
+				domain.FormatNGN(amountKobo), domain.FormatNGN(feeKobo), domain.FormatNGN(payoutKobo)),
+			Buttons: []ports.InteractiveButton{
+				{ID: "confirm_cashout", Title: "Cash out"},
+				{ID: "cancel_cashout", Title: "Cancel"},
+			},
+		})
 	default:
 		// State not backed by a re-renderable screen: the prompt already told
 		// the customer what they were doing, so just confirm the session is

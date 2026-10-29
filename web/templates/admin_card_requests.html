@@ -1,0 +1,120 @@
+{{define "admin_card_requests.html"}}
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Cards · issuer readiness</p><h1>Card requests</h1></div></header>
+
+{{if .Error}}<section class="panel"><div class="alert">{{.Error}}</div></section>{{end}}
+
+<section class="panel">
+  <h2>Readiness gates
+    {{if .AllReady}}<span class="status ok">all evidenced</span>{{else}}<span class="status warn">blocked</span>{{end}}
+  </h2>
+  <p class="muted">A physical card can only be marked ready when every gate below is evidenced. A gate is a statement that the underlying contract, review or procedure exists outside this platform — the console records who attested it, when, and where the evidence lives. Withdrawing a gate immediately blocks any further stock being marked ready; cards already issued can still be collected.</p>
+  <div class="table-wrap"><table><thead><tr><th>Gate</th><th>Status</th><th>Evidence</th><th>Attested</th><th>Record</th></tr></thead><tbody>
+  {{range .Gates}}<tr>
+    <td><strong>{{.Label}}</strong><br><span class="small-text">{{.Help}}</span></td>
+    <td>{{if .Ready}}<span class="status ok">ready</span>{{else}}<span class="status disabled">not ready</span>{{end}}</td>
+    <td>{{if .EvidenceRef}}<span class="mono">{{.EvidenceRef}}</span>{{else}}—{{end}}{{if .Note}}<br><span class="small-text">{{.Note}}</span>{{end}}</td>
+    <td>{{if .AttestedAt}}{{date .AttestedAt}}<br><span class="small-text">{{.AttestedBy}}</span>{{else}}—{{end}}</td>
+    <td>
+      <form method="post" action="/admin/cards/gates/{{.GateKey}}" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <label class="small-text"><input type="checkbox" name="ready" {{if .Ready}}checked{{end}}> ready</label>
+        <input type="text" name="evidence_ref" value="{{.EvidenceRef}}" placeholder="contract id / sign-off / document" class="input-compact">
+        <input type="text" name="note" value="{{.Note}}" placeholder="note" class="input-compact">
+        <button class="btn btn-small" type="submit">Save gate</button>
+      </form>
+    </td>
+  </tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Awaiting review or handover ({{len .Requests}})</h2>
+  <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Customer</th><th>Cardholder</th><th>Area</th><th>Status</th><th>Requested</th><th>Action</th></tr></thead><tbody>
+  {{range .Requests}}<tr>
+    <td class="mono">{{.Reference}}</td>
+    <td><a class="mono" href="/admin/kyc/{{.UserID}}">{{printf "%.8s…" .UserID}}</a><br><span class="small-text">{{.Channel}}</span></td>
+    <td>{{.CardholderName}}</td>
+    <td>{{if .RegionName}}{{.RegionName}}{{else}}—{{end}}</td>
+    <td><span class="status {{if or (eq .Status "requested") (eq .Status "approved")}}warn{{else if eq .Status "rejected"}}disabled{{else}}ok{{end}}">{{.Status}}</span>{{if .ReviewerEmail}}<br><span class="small-text">{{.ReviewerEmail}}{{if .ReviewedAt}} · {{date .ReviewedAt}}{{end}}</span>{{end}}{{if .ReviewNote}}<br><span class="small-text">{{.ReviewNote}}</span>{{end}}</td>
+    <td class="nowrap">{{date .CreatedAt}}</td>
+    <td>
+      {{if eq .Status "requested"}}
+      <form method="post" action="/admin/cards/{{.ID}}/review" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="approve">
+        <input type="text" name="note" placeholder="review note" class="input-compact">
+        <button class="btn btn-small" type="submit">Approve</button>
+      </form>
+      <form method="post" action="/admin/cards/{{.ID}}/review" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="decision" value="reject">
+        <input type="text" name="note" placeholder="reason shown to customer" class="input-compact" required>
+        <button class="btn btn-small btn-danger" type="submit">Reject</button>
+      </form>
+      {{else if eq .Status "approved"}}
+        {{if not $.AllReady}}
+        <span class="small-text">Evidence every readiness gate before stock can be marked ready.</span>
+        {{else if not .Agents}}
+        <span class="small-text">No active agent can hand over a card in this area yet.</span>
+        {{else}}
+        <form method="post" action="/admin/cards/{{.ID}}/ready" class="inline-block">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <label class="small-text">Issuer reference
+            <input type="text" name="issuer_reference" placeholder="manufacturer / issuer ref" class="input-compact" required>
+          </label>
+          <label class="small-text">Handover agent
+            <select name="agent_merchant_id" required>
+              {{range .Agents}}<option value="{{.MerchantID}}">{{if .Name}}{{.Name}}{{else}}{{.MerchantID}}{{end}}</option>{{end}}
+            </select>
+          </label>
+          <button class="btn btn-small" type="submit">Mark ready &amp; send code</button>
+        </form>
+        {{end}}
+      {{else}}—{{end}}
+    </td>
+  </tr>{{else}}<tr><td colspan="7">No card requests awaiting review or handover.</td></tr>{{end}}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <h2>Issued stock awaiting collection ({{len .Ready}})</h2>
+  <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Cardholder</th><th>Area</th><th>Agent</th><th>Issuer ref</th><th>Ready</th><th>Code</th></tr></thead><tbody>
+  {{range .Ready}}<tr>
+    <td class="mono">{{.Reference}}</td>
+    <td>{{.CardholderName}}</td>
+    <td>{{.RegionName}}</td>
+    <td>{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</td>
+    <td class="mono">{{if .IssuerReference}}{{.IssuerReference}}{{else}}—{{end}}</td>
+    <td class="nowrap">{{if .ReadyAt}}{{date .ReadyAt}}{{else}}—{{end}}</td>
+    <td>
+      <form method="post" action="/admin/cards/{{.ID}}/resend" class="inline-block">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="btn btn-small" type="submit">Resend code</button>
+      </form>
+    </td>
+  </tr>{{else}}<tr><td colspan="7">No issued cards are waiting to be collected.</td></tr>{{end}}
+  </tbody></table></div>
+  <p class="muted">Codes are stored only as salted digests and are delivered to the customer through the encrypted outbox. The customer shows the code to the agent; the agent inspects a government photo ID and records only its type.</p>
+</section>
+
+<section class="panel">
+  <h2>Collected ({{len .Collected}})</h2>
+  <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Cardholder</th><th>Area</th><th>Agent</th><th>ID inspected</th><th>Collected</th></tr></thead><tbody>
+  {{range .Collected}}<tr>
+    <td class="mono">{{.Reference}}</td>
+    <td>{{.CardholderName}}</td>
+    <td>{{.RegionName}}</td>
+    <td>{{if .AgentName}}{{.AgentName}}{{else}}—{{end}}</td>
+    <td>{{if .CollectionIDType}}{{.CollectionIDType}}{{else}}—{{end}}</td>
+    <td class="nowrap">{{if .CollectedAt}}{{date .CollectedAt}}{{else}}—{{end}}</td>
+  </tr>{{else}}<tr><td colspan="6">No cards collected yet.</td></tr>{{end}}
+  </tbody></table></div>
+  <p class="muted">Only the ID type is recorded. Identity-document numbers are never captured, stored or displayed by this workflow.</p>
+</section>
+</main></body></html>
+{{end}}

@@ -30,8 +30,11 @@ func TestCanAdvance(t *testing.T) {
 		evidence []string
 		wantOK   bool
 	}{
-		{"L0 to L1 with channel and tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails}, true},
-		{"L0 to L1 missing tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed}, false},
+	{"L0 to L1 with channel, tier-1 basics, photo and BVN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID, EvBVNVerified}, true},
+	{"L0 to L1 with NIN in place of BVN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID, EvNINVerified}, true},
+	{"L0 to L1 missing tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed, EvGovPhotoID, EvBVNVerified}, false},
+	{"L0 to L1 missing photo ID", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvBVNVerified}, false},
+	{"L0 to L1 missing BVN and NIN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID}, false},
 		{"L1 to L2 with photo ID, BVN and NIN", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified, EvNINVerified}, true},
 		{"L1 to L2 missing both-verified IDs", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified}, false},
 		{"L2 to L3 with address proof and EDD", TierL2, TierL3, []string{EvAddressProof, EvEDDCompleted}, true},
@@ -102,11 +105,14 @@ func TestCBNTierLabel(t *testing.T) {
 }
 
 func TestCBNCorrelationCeilings(t *testing.T) {
-	if CBNTier1MaxSingleKobo != 5_000_000 || CBNTier1MaxDailyKobo != 20_000_000 || CBNTier1MaxMonthlyKobo != 50_000_000 {
-		t.Error("CBN Tier 1 ceilings must be 50k/200k/500k naira")
+	if CBNTier1MaxSingleKobo != 5_000_000 || CBNTier1MaxDailyKobo != 5_000_000 || CBNTier1MaxMonthlyKobo != 30_000_000 || CBNTier1MaxBalanceKobo != 30_000_000 {
+		t.Error("CBN Tier 1 ceilings must be 50k/50k/300k naira with 300k balance cap")
 	}
-	if CBNTier2MaxSingleKobo != 20_000_000 || CBNTier2MaxDailyKobo != 50_000_000 || CBNTier2MaxMonthlyKobo != 300_000_000 {
-		t.Error("CBN Tier 2 ceilings must be 200k/500k/3m naira")
+	if CBNTier2MaxSingleKobo != 20_000_000 || CBNTier2MaxDailyKobo != 20_000_000 || CBNTier2MaxMonthlyKobo != 50_000_000 || CBNTier2MaxBalanceKobo != 50_000_000 {
+		t.Error("CBN Tier 2 ceilings must be 200k/200k/500k naira with 500k balance cap")
+	}
+	if CBNTier3MaxDailyKobo != 500_000_000 || CBNTier3MaxMonthlyKobo != 0 {
+		t.Error("CBN Tier 3 ceilings must be 5m daily with no balance/monthly cap")
 	}
 }
 
