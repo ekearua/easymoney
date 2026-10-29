@@ -284,15 +284,22 @@ func (c *Client) Verify(ctx context.Context, reference string, amountKobo int64)
 	if data.ResponseCode == "" && data.MerchantReference == "" && data.Amount == 0 {
 		return ports.Verification{}, fmt.Errorf("interswitch requery empty response: %s", truncate(string(raw)))
 	}
+	status, message := interswitchStatus(data.ResponseCode)
+	if message == "" {
+		message = strings.TrimSpace(data.ResponseDescription)
+	}
 	return ports.Verification{
 		Reference:  reference,
-		Status:     interswitchStatus(data.ResponseCode),
+		Status:     status,
 		AmountKobo: data.Amount,
 		Currency:   "NGN",
 		Domain:     strings.ToLower(c.mode),
 		Channel:    "card",
-		Metadata:   map[string]string{},
-		Message:    data.ResponseDescription,
+		Metadata: map[string]string{
+			"response_code":        strings.TrimSpace(data.ResponseCode),
+			"response_description": strings.TrimSpace(data.ResponseDescription),
+		},
+		Message: message,
 	}, nil
 }
 
@@ -377,18 +384,102 @@ func (c *Client) Health(ctx context.Context) error {
 }
 
 // interswitchStatus normalizes an Interswitch response code to the
-// provider-neutral status set that mapGatewayStatus understands. Code 00 means
-// approved; a few known decline codes map to failed; everything unresolved maps
-// to pending so it is re-requeried rather than incorrectly marked failed.
-func interswitchStatus(code string) string {
-	switch strings.TrimSpace(code) {
+// provider-neutral status set that mapGatewayStatus understands and a
+// customer-facing message for terminal outcomes (see
+// https://docs.interswitchgroup.com/docs/payment-response-codes).
+//
+// 00, 10 and 11 are approvals (10 is a partial approval). 09, S0 and the
+// 3DS/token intermediates mean the outcome is not yet known, so they - and any
+// code this function does not recognize - stay pending and are re-queried
+// rather than being marked failed on a guess. Customer cancellations map to
+// abandoned; every other known outcome is a decline. Steps 01-99 are declined
+// by the standard except the approvals above, so numeric codes are grouped
+// rather than enumerated.
+func interswitchStatus(code string) (status, message string) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	switch code {
+	case "":
+		return "pending", ""
 	case "00":
-		return "success"
-	case "01", "02", "03", "04", "05", "51", "55", "91", "93":
-		return "failed"
-	default:
-		return "pending"
+		return "success", "Payment approved"
+	case "10":
+		return "success", "Payment approved by your bank for a partial amount"
+	case "11":
+		return "success", "Payment approved"
+	case "09", "S0", "S1", "S2":
+		return "pending", "Your bank is still processing the payment"
+	case "Z61", "Z62", "Z63", "Z64", "Z65", "Z66", "Z67", "Z68",
+		"Z70", "Z71", "Z72", "Z73", "Z74", "Z76", "Z77",
+		"M0", "T0", "T1":
+		return "pending", "Additional card authentication is in progress"
+	case "Z0":
+		return "pending", "Transaction not completed yet"
+	case "17", "Z6", "Z69":
+		return "abandoned", "You cancelled the payment"
 	}
+	if message, ok := interswitchDeclines[code]; ok {
+		return "failed", message
+	}
+	if n, err := strconv.Atoi(code); err == nil && n >= 1 && n <= 99 {
+		return "failed", "Transaction declined by your bank"
+	}
+	return "pending", ""
+}
+
+// interswitchDeclines carries customer-facing copy for the response codes whose
+// description helps the payer fix the problem. Codes not listed here still fail
+// with the generic bank-decline message.
+var interswitchDeclines = map[string]string{
+	"04":  "Card blocked by the issuer, please contact your bank",
+	"14":  "Invalid card number",
+	"33":  "Card expired and blocked, please contact your bank",
+	"34":  "Card blocked after a suspected fraud report",
+	"36":  "Restricted card",
+	"38":  "Incorrect PIN entered too many times, card blocked",
+	"41":  "Card reported lost",
+	"43":  "Card reported stolen",
+	"51":  "Insufficient funds",
+	"54":  "Card has expired",
+	"55":  "Incorrect PIN",
+	"57":  "Transaction not permitted on this card",
+	"58":  "Transaction not permitted on this terminal",
+	"59":  "Suspected fraud, transaction declined",
+	"61":  "Withdrawal limit exceeded",
+	"62":  "Card is restricted",
+	"63":  "Security violation",
+	"65":  "Too many transactions, please try again later",
+	"75":  "Incorrect PIN entered too many times",
+	"91":  "Your bank is unavailable, please try again later",
+	"94":  "Duplicate transaction",
+	"96":  "Bank system error, please try again later",
+	"98":  "Cash limit exceeded",
+	"A0":  "Unexpected error, please try again",
+	"A4":  "Transaction not permitted on this channel",
+	"E21": "Payment could not be processed, please try again",
+	"E42": "Payment could not be processed, please try again",
+	"E53": "Payment could not be processed, please try again",
+	"E60": "Payment could not be processed, please try again",
+	"SK":  "Payment could not be processed, please try again",
+	"S3":  "Transaction declined by the fraud service",
+	"XX":  "Payment could not be processed, please try again",
+	"X03": "Amount exceeds the maximum allowed",
+	"X04": "Amount is below the minimum for this payment item",
+	"X05": "Amount exceeds the limit permitted by your bank",
+	"XS1": "Transaction timed out, please start a new payment",
+	"Z1":  "Payment could not be processed, please try again",
+	"Z2":  "Bank account error",
+	"Z3":  "Bank account error",
+	"Z4":  "Payment could not be processed, please try again",
+	"Z5":  "Duplicate payment reference, please start a new payment",
+	"Z7":  "Payment could not be processed, please try again",
+	"Z8":  "Invalid card number",
+	"Z25": "Transaction not found",
+	"Z80": "Payment could not be processed, please try again",
+	"Z81": "This card type is not supported",
+	"Z82": "This card type is not supported by the merchant",
+	"10400": "Payment request was rejected, please try again",
+	"10403": "Payment request was not permitted",
+	"10500": "Payment service error, please try again later",
 }
 
 func applyInterswitchAuthHeaders(req *http.Request, clientID, clientSecret, method, endpoint string, now int64, nonce string) {

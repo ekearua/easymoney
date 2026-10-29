@@ -167,21 +167,54 @@ func TestValidateWebhookRejectsMissingSecret(t *testing.T) {
 func TestInterswitchStatusNormalization(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		input string
-		want  string
+		input  string
+		status string
 	}{
 		{"00", "success"},
+		{"10", "success"},
+		{"11", "success"},
 		{"01", "failed"},
 		{"05", "failed"},
+		{"06", "failed"},
+		{"51", "failed"},
+		{"54", "failed"},
 		{"91", "failed"},
-		{"06", "pending"},
+		{"z1", "failed"},
+		{"Z5", "failed"},
+		{"X03", "failed"},
+		{"17", "abandoned"},
+		{"Z6", "abandoned"},
+		{"Z69", "abandoned"},
+		{"09", "pending"},
+		{"S0", "pending"},
+		{"Z61", "pending"},
+		{"Z70", "pending"},
+		{"T0", "pending"},
 		{"unknown", "pending"},
 		{"", "pending"},
 	}
 	for _, tc := range tests {
-		if got := interswitchStatus(tc.input); got != tc.want {
-			t.Errorf("interswitchStatus(%q) = %q, want %q", tc.input, got, tc.want)
+		if got, _ := interswitchStatus(tc.input); got != tc.status {
+			t.Errorf("interswitchStatus(%q) status = %q, want %q", tc.input, got, tc.status)
 		}
+	}
+	if _, message := interswitchStatus("51"); message != "Insufficient funds" {
+		t.Errorf("interswitchStatus(51) message = %q, want %q", message, "Insufficient funds")
+	}
+	if _, message := interswitchStatus("54"); message != "Card has expired" {
+		t.Errorf("interswitchStatus(54) message = %q, want %q", message, "Card has expired")
+	}
+	if _, message := interswitchStatus("01"); message == "" {
+		t.Error("interswitchStatus(01) message is empty, want the generic bank decline")
+	}
+	if _, message := interswitchStatus("00"); message != "Payment approved" {
+		t.Errorf("interswitchStatus(00) message = %q, want %q", message, "Payment approved")
+	}
+	if _, message := interswitchStatus("42"); message == "" {
+		t.Error("interswitchStatus(42) message is empty, want the generic bank decline")
+	}
+	if _, message := interswitchStatus("Q99"); message != "" {
+		t.Errorf("interswitchStatus(Q99) message = %q, want empty", message)
 	}
 }
 
