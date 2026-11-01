@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +130,109 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants, "Registrations": registrations})
+}
+
+func (a *App) adminMerchantCreateForm(w http.ResponseWriter, r *http.Request) {
+	users, err := a.store.ListUsers(r.Context(), 200)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "list users for merchant create failed", "error", err)
+	}
+	a.renderAdmin(w, "admin_merchant_create.html", r, "Create Merchant", map[string]any{"Users": users})
+}
+
+func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Error(w, "business name required", http.StatusBadRequest)
+		return
+	}
+
+	var ownerUserID *uuid.UUID
+	if ownerIDStr := strings.TrimSpace(r.FormValue("owner_user_id")); ownerIDStr != "" {
+		if id, err := uuid.Parse(ownerIDStr); err == nil {
+			ownerUserID = &id
+		}
+	}
+
+	allowPartial := r.FormValue("allow_partial_payments") == "on"
+	minInvoiceKobo, _ := strconv.ParseInt(r.FormValue("min_invoice_amount_kobo"), 10, 64)
+	upfrontPct, _ := strconv.Atoi(r.FormValue("upfront_percent"))
+	minInstallPct, _ := strconv.Atoi(r.FormValue("min_installment_percent"))
+	maxInstallments, _ := strconv.Atoi(r.FormValue("max_installments"))
+	allowFullAlways := r.FormValue("allow_full_pay_always") == "on"
+	isSponsor := r.FormValue("is_sponsor") == "on"
+	createScanning := r.FormValue("create_scanning_service") != "off" // default true
+	if r.FormValue("create_scanning_service") == "" {
+		createScanning = true
+	}
+	active := r.FormValue("active") != "off"
+	if r.FormValue("active") == "" {
+		active = true
+	}
+
+	sendReset := r.FormValue("send_password_reset") == "on" || r.FormValue("send_password_reset") == "1"
+	if r.FormValue("send_password_reset") == "" {
+		sendReset = ownerUserID == nil // send reset if creating new owner
+	}
+
+	params := store.CreateMerchantDirectParams{
+		Name:                  name,
+		Slug:                  strings.TrimSpace(r.FormValue("slug")),
+		Category:              strings.TrimSpace(r.FormValue("category")),
+		Description:           strings.TrimSpace(r.FormValue("description")),
+		LogoURL:               strings.TrimSpace(r.FormValue("logo_url")),
+		Active:                active,
+		OwnerUserID:           ownerUserID,
+		OwnerEmail:            strings.TrimSpace(r.FormValue("owner_email")),
+		OwnerName:             strings.TrimSpace(r.FormValue("owner_name")),
+		OwnerPhone:            strings.TrimSpace(r.FormValue("owner_phone")),
+		OwnerPassword:         strings.TrimSpace(r.FormValue("owner_password")),
+		SendResetToken:        sendReset,
+		IsSponsor:             isSponsor,
+		AllowPartialPayments:  allowPartial,
+		MinInvoiceAmountKobo:  minInvoiceKobo,
+		UpfrontPercent:        upfrontPct,
+		MinInstallmentPercent: minInstallPct,
+		MaxInstallments:       maxInstallments,
+		AllowFullPayAlways:    allowFullAlways,
+		CreateScanningService: createScanning,
+	}
+
+	merchant, resetToken, err := a.store.CreateMerchantDirect(r.Context(), params)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "create merchant direct failed", "name", name, "error", err)
+		http.Error(w, "merchant creation failed: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var setPasswordURL string
+	if resetToken != nil && *resetToken != "" {
+		setPasswordURL = a.cfg.BaseURL + "/merchant/set-password?token=" + *resetToken
+		if ownerUserID != nil {
+			owner, err := a.store.UserByID(r.Context(), *ownerUserID)
+			if err == nil {
+				a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
+			}
+		}
+	}
+
+	a.audit(r, "admin.merchants.created_direct", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "slug": merchant.Slug, "is_sponsor": isSponsor})
+	a.logger.InfoContext(r.Context(), "merchant created directly by admin", "merchant_id", merchant.ID.String(), "name", merchant.Name)
+
+	if setPasswordURL != "" {
+		http.Redirect(w, r, "/admin/merchants?merchant_created=1&reset_url="+url.QueryEscape(setPasswordURL), http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/admin/merchants?merchant_created=1", http.StatusSeeOther)
 }
 
 func (a *App) adminAdmins(w http.ResponseWriter, r *http.Request) {

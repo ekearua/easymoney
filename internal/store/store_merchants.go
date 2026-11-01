@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -730,6 +732,213 @@ func (s *Store) UpdateServicePhoneWhitelist(ctx context.Context, serviceID uuid.
 	_, err := s.pool.Exec(ctx, `
 		UPDATE registered_services SET phone_whitelist=$2, updated_at=now() WHERE id=$1`, serviceID, whitelist)
 	return err
+}
+
+// CreateMerchantDirectParams configures direct merchant creation by an admin.
+type CreateMerchantDirectParams struct {
+	Name        string
+	Slug        string
+	Category    string
+	Description string
+	LogoURL     string
+	Active      bool
+
+	// Owner configuration
+	OwnerUserID    *uuid.UUID
+	OwnerEmail     string
+	OwnerName      string
+	OwnerPhone     string
+	OwnerPassword  string
+	SendResetToken bool
+
+	// Features
+	IsSponsor bool
+
+	// Payment terms
+	AllowPartialPayments  bool
+	MinInvoiceAmountKobo  int64
+	UpfrontPercent        int
+	MinInstallmentPercent int
+	MaxInstallments       int
+	AllowFullPayAlways    bool
+
+	// Services
+	CreateScanningService bool
+}
+
+// CreateMerchantDirect creates a merchant directly (admin action), bypassing registration approval.
+// Returns the merchant and optionally a password reset token for the owner.
+func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirectParams) (Merchant, *string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Merchant{}, nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	merchantID := uuid.New()
+	slug := strings.TrimSpace(p.Slug)
+	if slug == "" {
+		allocated, err := allocateMerchantSlug(ctx, tx, p.Name)
+		if err != nil {
+			return Merchant{}, nil, err
+		}
+		slug = allocated
+	} else {
+		slug = slugify(slug)
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM merchants WHERE slug=$1)`, slug).Scan(&exists); err != nil {
+			return Merchant{}, nil, err
+		}
+		if exists {
+			return Merchant{}, nil, errors.New("merchant slug already exists")
+		}
+	}
+
+	name := strings.TrimSpace(p.Name)
+	category := strings.TrimSpace(p.Category)
+	desc := strings.TrimSpace(p.Description)
+	logo := strings.TrimSpace(p.LogoURL)
+	keywords := strings.ToLower(name + " " + category + " " + desc)
+
+	upfront := p.UpfrontPercent
+	minInstallPct := p.MinInstallmentPercent
+	maxInst := p.MaxInstallments
+	if upfront < 0 {
+		upfront = 0
+	}
+	if upfront > 100 {
+		upfront = 100
+	}
+	if minInstallPct < 0 {
+		minInstallPct = 0
+	}
+	if minInstallPct > 100 {
+		minInstallPct = 100
+	}
+	if maxInst < 0 {
+		maxInst = 0
+	}
+
+	var merchant Merchant
+	err = tx.QueryRow(ctx, `
+		INSERT INTO merchants(id, slug, name, category, description, logo_url, active, search_keywords,
+			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+			min_installment_percent, max_installments, allow_full_pay_always, updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,'', $9,$10,$11,$12,$13,$14, now())
+		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
+			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
+			min_installment_percent, max_installments, allow_full_pay_always`,
+		merchantID, slug, name, category, desc, logo, p.Active, keywords,
+		p.AllowPartialPayments, p.MinInvoiceAmountKobo, upfront, minInstallPct, maxInst, p.AllowFullPayAlways,
+	).Scan(
+		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
+		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt,
+		&merchant.PasswordHash, &merchant.AllowPartialPayments,
+		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
+		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
+		&merchant.AllowFullPayAlways,
+	)
+	if err != nil {
+		return Merchant{}, nil, err
+	}
+
+	var ownerID uuid.UUID
+	var ownerCreated bool
+	if p.OwnerUserID != nil {
+		ownerID = *p.OwnerUserID
+	} else {
+		email := strings.ToLower(strings.TrimSpace(p.OwnerEmail))
+		if email == "" {
+			return Merchant{}, nil, errors.New("owner email required")
+		}
+		// Try to find existing user
+		err = tx.QueryRow(ctx, `SELECT id FROM users WHERE lower(email)=$1 LIMIT 1`, email).Scan(&ownerID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Create new user
+				ownerID = uuid.New()
+				displayName := strings.TrimSpace(p.OwnerName)
+				if displayName == "" {
+					displayName = name + " Owner"
+				}
+				phone := strings.TrimSpace(p.OwnerPhone)
+				if phone == "" {
+					phone = "email:" + email + "-" + ownerID.String()[:8]
+				}
+				_, err = tx.Exec(ctx, `
+					INSERT INTO users(id, whatsapp_number, display_name, email, onboarding_complete, account_level, verification_level, updated_at)
+					VALUES($1, $2, $3, $4, true, 'customer', 'unverified', now())
+					ON CONFLICT (whatsapp_number) DO NOTHING`,
+					ownerID, phone, displayName, email,
+				)
+				if err != nil {
+					return Merchant{}, nil, err
+				}
+				ownerCreated = true
+			} else {
+				return Merchant{}, nil, err
+			}
+		}
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO merchant_owners(merchant_id,user_id)
+		VALUES($1,$2)
+		ON CONFLICT DO NOTHING`, merchant.ID, ownerID); err != nil {
+		return Merchant{}, nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET account_level='merchant', updated_at=now()
+		WHERE id=$1`, ownerID); err != nil {
+		return Merchant{}, nil, err
+	}
+
+	if p.CreateScanningService {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO registered_services(name,service_type,merchant_id,accepted_receipt_types,token_ttl_seconds,active)
+			VALUES($1,'merchant',$2,'merchant_payment,invoice',86400,true)
+			ON CONFLICT(service_type, merchant_id) DO UPDATE
+			SET name=EXCLUDED.name,
+				accepted_receipt_types=EXCLUDED.accepted_receipt_types,
+				active=true,
+				updated_at=now()`, merchant.Name, merchant.ID); err != nil {
+			return Merchant{}, nil, err
+		}
+	}
+
+	if p.IsSponsor {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO merchant_sponsors(merchant_id, granted_at)
+			VALUES($1, now())
+			ON CONFLICT DO NOTHING`, merchant.ID); err != nil {
+			return Merchant{}, nil, err
+		}
+	}
+
+	var resetToken *string
+	if p.SendResetToken {
+		// Generate token directly in store
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return Merchant{}, nil, err
+		}
+		token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+		hash := sha256.Sum256([]byte(token))
+		_, err = tx.Exec(ctx, `
+			INSERT INTO merchant_password_reset_tokens(token_hash,merchant_id,user_id,expires_at)
+			VALUES($1,$2,$3,$4)`, hash[:], merchant.ID, ownerID, time.Now().Add(72*time.Hour))
+		if err != nil {
+			return Merchant{}, nil, err
+		}
+		resetToken = &token
+	} else if strings.TrimSpace(p.OwnerPassword) != "" {
+		_ = ownerCreated
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Merchant{}, nil, err
+	}
+	return merchant, resetToken, nil
 }
 
 // CreateMerchantService creates a new service for a merchant.

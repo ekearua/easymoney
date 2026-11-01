@@ -387,6 +387,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			return nil, errors.New("SMS_API_BASE is required when SMS_PROVIDER=http")
 		}
 		smsSender = smsprovider.NewHTTP(cfg.SMSAPIBase, cfg.SMSAPIKey, cfg.SMSSenderID, 0)
+	case "infobip":
+		if cfg.SMSAPIKey == "" {
+			repository.Close()
+			return nil, errors.New("SMS_API_KEY is required when SMS_PROVIDER=infobip")
+		}
+		smsSender = smsprovider.NewInfobip(cfg.SMSAPIBase, cfg.SMSAPIKey, cfg.SMSSenderID, 0)
 	default:
 		repository.Close()
 		return nil, fmt.Errorf("unsupported SMS_PROVIDER %q", cfg.SMSProvider)
@@ -517,6 +523,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// Settlement payouts and refunds ride the Interswitch NIP single transfer /
 	// refund API (the only supported real rails).
 	payoutProvider := ports.PayoutProvider(interswitchClient)
+	// The same client can report the authoritative status of an ambiguous
+	// transfer, so dispatch reconciles before recording a failure.
+	payoutReconciler := ports.PayoutReconciler(interswitchClient)
 	refundProvider := ports.RefundProvider(interswitchClient)
 	// G2: payment-time counterparty screening for money-out rails. The
 	// deterministic simulator is the default so the hold/interdiction
@@ -569,7 +578,8 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// bank account entered per transfer. The Interswitch client also performs
 	// the name enquiry shown before the customer confirms.
 	walletPayoutsService := service.NewWalletPayoutService(cfg, repository, payoutProvider, interswitchClient, logger,
-		service.WithWalletPayoutScreener(paymentScreener))
+		service.WithWalletPayoutScreener(paymentScreener),
+		service.WithWalletPayoutReconciler(payoutReconciler))
 	convo.SetWalletPayoutService(walletPayoutsService)
 	bulkConcurrency := cfg.BulkWorkerConcurrency
 	if bulkConcurrency <= 0 {
@@ -596,7 +606,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		smsSender:               smsSender,
 		eventBus:                eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener)),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener), service.WithPayoutReconciler(payoutReconciler)),
 		walletPayouts:    walletPayoutsService,
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
@@ -859,6 +869,8 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/onboarding-reminders", a.adminOnboardingReminders)
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Get("/admin/merchants/new", a.adminMerchantCreateForm)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/create", a.adminCreateMerchantDirect)
 		admin.Get("/admin/payments", a.adminPayments)
 		admin.Get("/admin/data-orders", a.adminDataOrders)
 		admin.Get("/admin/thrift", a.adminThrift)
@@ -1382,6 +1394,7 @@ func (a *App) renderAdmin(w http.ResponseWriter, name string, r *http.Request, t
 	data["Title"] = title
 	data["CSRF"] = csrfFromContext(r.Context())
 	data["AdminRole"] = adminRoleFromContext(r.Context())
+	data["Path"] = r.URL.Path
 	a.render(w, name, data)
 }
 

@@ -1,0 +1,58 @@
+{{define "admin_merchant_create.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
+<body>{{template "nav" .}}<main>
+<header class="page-header"><div><p class="eyebrow">Merchant operations</p><h1>Create merchant</h1></div><div class="page-actions"><a href="/admin/merchants">Back to merchants</a></div></header>
+
+<section>
+<form method="post" action="/admin/merchants/create" class="panel">
+<input type="hidden" name="csrf_token" value="{{.CSRF}}">
+
+<h2>Business details</h2>
+<div class="form-grid">
+<label>Business name <input type="text" name="name" required></label>
+<label>Slug (optional) <input type="text" name="slug" placeholder="auto-generated if empty"></label>
+<label>Category <input type="text" name="category"></label>
+<label>Logo URL <input type="url" name="logo_url"></label>
+</div>
+<label>Description<br><textarea name="description" rows="3"></textarea></label>
+<label class="checkbox-row"><input type="checkbox" name="active" checked> Active</label>
+
+<h2>Owner details</h2>
+<p class="muted">Link to an existing user or create a new owner account.</p>
+<div class="form-grid">
+<label>Existing user
+<select name="owner_user_id">
+<option value="">-- Create new owner --</option>
+{{range .Users}}<option value="{{.ID}}">{{.DisplayName}} ({{maskPII .Email}} {{maskPII .WhatsAppNumber}})</option>{{end}}
+</select>
+</label>
+<label>Owner email <input type="email" name="owner_email"></label>
+<label>Owner name <input type="text" name="owner_name"></label>
+<label>Owner phone/WhatsApp <input type="text" name="owner_phone"></label>
+<label>Set password (optional) <input type="password" name="owner_password" placeholder="Leave empty to send reset link"></label>
+<label class="checkbox-row"><input type="checkbox" name="send_password_reset" checked> Send password reset link</label>
+</div>
+
+<h2>Payment terms</h2>
+<label class="checkbox-row"><input type="checkbox" name="allow_partial_payments"> Allow partial payments</label>
+<label class="checkbox-row"><input type="checkbox" name="allow_full_pay_always"> Always allow full pay</label>
+<div class="form-grid">
+<label>Min invoice (kobo) <input type="number" name="min_invoice_amount_kobo" value="0" min="0"></label>
+<label>Upfront % <input type="number" name="upfront_percent" value="0" min="0" max="100"></label>
+<label>Min installment % <input type="number" name="min_installment_percent" value="0" min="0" max="100"></label>
+<label>Max installments <input type="number" name="max_installments" value="0" min="0" max="100"></label>
+</div>
+
+<h2>Services & access</h2>
+<label class="checkbox-row"><input type="checkbox" name="create_scanning_service" checked> Create receipt scanning service</label>
+<label class="checkbox-row"><input type="checkbox" name="is_sponsor"> Grant sponsor privileges (programs)</label>
+<p class="muted">Bulk payments are available to all merchants by default.</p>
+
+<div class="mt-16"><button type="submit">Create merchant</button></div>
+</form>
+</section>
+
+</main>{{template "nav_end" .}}</body></html>
+{{end}}
