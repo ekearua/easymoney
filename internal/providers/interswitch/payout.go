@@ -253,6 +253,54 @@ func (e *nameEnquiryError) Error() string {
 	return "interswitch name enquiry failed (code " + e.ResponseCode + ")"
 }
 
+// ReconcilePayout reports what the v5 rail says actually happened to the
+// transfer identified by reference (the payout Request.Reference, sent to the
+// rail as transferCode). It is used after an ambiguous TransferFunds call — a
+// timeout, a dropped connection, or a 5xx — so a transfer that did execute is
+// completed instead of being marked failed and re-attempted.
+func (c *Client) ReconcilePayout(ctx context.Context, reference string) (ports.PayoutReconciliation, error) {
+	transferCode := strings.TrimSpace(reference)
+	if transferCode == "" {
+		return ports.PayoutReconciliation{}, errors.New("interswitch: a transfer reference is required for reconciliation")
+	}
+	status, err := c.QueryTransaction(ctx, transferCode)
+	if err != nil {
+		return ports.PayoutReconciliation{}, err
+	}
+	externalRef := strings.TrimSpace(status.TransactionRef)
+	if externalRef == "" {
+		externalRef = transferCode
+	}
+	message := strings.TrimSpace(status.Status + " " + status.ResponseCode)
+	return ports.PayoutReconciliation{
+		Status:      normalizeTransferStatus(status.Status, status.ResponseCode),
+		ExternalRef: externalRef,
+		Message:     message,
+	}, nil
+}
+
+// normalizeTransferStatus maps the v5 query's free-text status and response
+// code onto one of the three reconciliation outcomes. Anything the rail does not
+// clearly settle is reported as pending rather than failed: marking an
+// unresolved transfer failed is exactly what reconciliation exists to prevent,
+// and a re-attempt of the same transferCode is deduplicated by the rail.
+func normalizeTransferStatus(status, responseCode string) string {
+	s := strings.ToUpper(strings.TrimSpace(status))
+	code := strings.TrimSpace(responseCode)
+	switch {
+	case strings.Contains(s, "COMPLET") || strings.Contains(s, "SUCCESS") || code == "90000":
+		return ports.PayoutReconcileSucceeded
+	case strings.Contains(s, "FAIL") || strings.Contains(s, "DECLIN") ||
+		strings.Contains(s, "REJECT") || strings.Contains(s, "REVERS") ||
+		strings.Contains(s, "CANCEL"):
+		return ports.PayoutReconcileFailed
+	case s == "":
+		return ports.PayoutReconcileUnknown
+	default:
+		return ports.PayoutReconcilePending
+	}
+}
+
 // TransactionStatus is the normalized result of a v5 query.
 type TransactionStatus struct {
 	Reference    string

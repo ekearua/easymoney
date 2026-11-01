@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
-<body>{{template "nav" .}}<main>
+<body>{{template "nav" .}}<main class="admin-main">
 <header class="page-header"><div><p class="eyebrow">Operations</p><h1>Dead-Letter Queue</h1><p>Failed webhook deliveries and business events after exhausting retries (5 attempts). Replay to reprocess.</p></div></header>
 
 <h2>Webhook Deliveries</h2>

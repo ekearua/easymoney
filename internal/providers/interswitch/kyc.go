@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -216,5 +217,34 @@ func (k *KYCClient) VerifyBusinessKYC(ctx context.Context, request ports.Busines
 		AMLDecision:    scr.Decision,
 		AMLMatches:     scr.MatchedNames,
 		Message:        corp.Message,
+	}, nil
+}
+
+// VerifyTaxID is not supported by the Interswitch verification endpoint: it
+// validates BVN, NIN, driver's licence, passport, corporate registration,
+// address, AML and bank account only. A TIN lookup through this rail is
+// rejected as an error so a misconfigured FIRS_PROVIDER=interswitch fails
+// closed instead of silently returning a corporate-registry verdict.
+func (k *KYCClient) VerifyTaxID(_ context.Context, _ ports.TaxIDRequest) (ports.TaxIDResult, error) {
+	return ports.TaxIDResult{}, errors.New("interswitch verification endpoint does not support TIN (FIRS) lookups; use FIRS_PROVIDER=simulated or http")
+}
+
+// ScreenPayment reuses the AML screen for payment-time counterparty checks.
+// The endpoint is the same; the only difference is the caller's expectation
+// (hold vs interdict), which the service layer enforces from the decision.
+func (k *KYCClient) ScreenPayment(ctx context.Context, req ports.PaymentScreenRequest) (ports.PaymentScreenDecision, error) {
+	if strings.TrimSpace(req.CounterpartyName) == "" {
+		return ports.PaymentScreenDecision{}, errors.New("counterparty name is required for payment screening")
+	}
+	scr, err := k.Screen(ctx, ports.ScreeningRequest{LegalName: req.CounterpartyName})
+	if err != nil {
+		return ports.PaymentScreenDecision{}, err
+	}
+	return ports.PaymentScreenDecision{
+		Decision:     scr.Decision,
+		MatchedNames: scr.MatchedNames,
+		ProviderRef:  scr.ProviderRef,
+		ListVersion:  "",
+		Message:      scr.Message,
 	}, nil
 }

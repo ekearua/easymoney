@@ -164,6 +164,12 @@ func (a *App) merchantBulkRecipientUpload(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		added++
+		if a.smsSender != nil {
+			msg := "Welcome to Faya. You have been invited to opt into your Faya account. Reply YES or follow the instructions to activate your account."
+			if _, err := a.smsSender.Send(r.Context(), row.phone, msg); err != nil {
+				a.logger.WarnContext(r.Context(), "bulk recipient opt-in sms failed", "phone", row.phone, "error", err)
+			}
+		}
 	}
 	http.Redirect(w, r, "/merchant/bulk/centers/"+centerID.String()+"?saved="+strconv.Itoa(added), http.StatusSeeOther)
 }
@@ -215,8 +221,8 @@ func (a *App) merchantBulkBatchCreate(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/merchant/bulk/centers/"+centerID.String()+"?error=Enter+a+valid+amount", http.StatusSeeOther)
 		return
 	}
-	operatorID := merchantID
-	batch, err := a.bulkPayments.CreateBatch(r.Context(), merchantID, centerID, amountKobo, operatorID)
+	var batch store.BulkBatch
+	batch, err = a.bulkPayments.CreateBatch(r.Context(), merchantID, centerID, amountKobo, uuid.Nil)
 	if err != nil {
 		http.Redirect(w, r, "/merchant/bulk/centers/"+centerID.String()+"?error="+url.QueryEscape(urlMessage(err)), http.StatusSeeOther)
 		return
@@ -389,6 +395,43 @@ func recipientFromCells(cells []string, first bool) (recipientRow, bool) {
 	if len(cells) == 0 {
 		return recipientRow{}, false
 	}
+	// Try to detect header row
+	if first {
+		// Check if it looks like header row (contains common header names)
+		header := false
+		for _, c := range cells {
+			cl := strings.ToLower(strings.TrimSpace(c))
+			if strings.Contains(cl, "phone") || strings.Contains(cl, "name") || strings.Contains(cl, "bvn") || strings.Contains(cl, "nin") {
+				header = true
+				break
+			}
+		}
+		if header {
+			return recipientRow{}, false
+		}
+		if !looksLikePhone(strings.TrimSpace(cells[0])) {
+			// Try to find phone in other columns (Records Template format)
+			for i := 0; i < len(cells); i++ {
+				if looksLikePhone(strings.TrimSpace(cells[i])) {
+					phone := strings.TrimSpace(cells[i])
+					name := ""
+					// Try to find name in column B if phone is in different column
+					if len(cells) > 1 {
+						// Prefer column B as name if it exists and isn't phone-like
+						cand := strings.TrimSpace(cells[1])
+						if cand != "" && !looksLikePhone(cand) {
+							name = cand
+						}
+						}
+					if phone == "" {
+						continue
+					}
+					return recipientRow{phone: phone, name: name}, true
+				}
+			}
+			return recipientRow{}, false
+		}
+	}
 	phone := strings.TrimSpace(cells[0])
 	name := ""
 	if len(cells) > 1 {
@@ -397,7 +440,24 @@ func recipientFromCells(cells []string, first bool) (recipientRow, bool) {
 	if phone == "" {
 		return recipientRow{}, false
 	}
-	if first && !looksLikePhone(phone) {
+	if !looksLikePhone(phone) {
+		// Try to find phone in other columns (Records Template format)
+		for i := 0; i < len(cells); i++ {
+			if looksLikePhone(strings.TrimSpace(cells[i])) {
+				phone = strings.TrimSpace(cells[i])
+				name = ""
+				if len(cells) > 1 {
+					cand := strings.TrimSpace(cells[1])
+					if cand != "" && !looksLikePhone(cand) {
+						name = cand
+					}
+				}
+				if phone == "" {
+					continue
+				}
+				return recipientRow{phone: phone, name: name}, true
+			}
+		}
 		return recipientRow{}, false
 	}
 	return recipientRow{phone: phone, name: name}, true

@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
-<body>{{template "nav" .}}<main>
+<body>{{template "nav" .}}<main class="admin-main">
 <header class="page-header"><div><p class="eyebrow">Merchant operations</p><h1>Create merchant</h1></div><div class="page-actions"><a href="/admin/merchants">Back to merchants</a></div></header>
 
 <section>
@@ -54,5 +54,5 @@
 </form>
 </section>
 
-</main>{{template "nav_end" .}}</body></html>
+</main></body></html>
 {{end}}

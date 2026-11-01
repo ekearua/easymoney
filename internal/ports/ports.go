@@ -566,6 +566,33 @@ type PayoutProvider interface {
 	Payout(context.Context, PayoutRequest) (PayoutResult, error)
 }
 
+// Payout reconciliation outcomes. A reconciler reports what the rail says
+// actually happened to an earlier attempt.
+const (
+	PayoutReconcileSucceeded = "succeeded"
+	PayoutReconcileFailed    = "failed"
+	PayoutReconcilePending   = "pending"
+	PayoutReconcileUnknown   = "unknown"
+)
+
+// PayoutReconciliation is the provider-neutral result of an authoritative
+// status lookup for a payout attempt whose outcome was ambiguous (a timeout, a
+// dropped connection, or a 5xx from the rail).
+type PayoutReconciliation struct {
+	Status      string // "succeeded", "failed", "pending" or "unknown"
+	ExternalRef string
+	Message     string
+}
+
+// PayoutReconciler is implemented by payout rails that can report the current
+// status of a transfer after an ambiguous attempt. Services call it before
+// recording a payout as failed, so a transfer that already executed is
+// completed instead of being re-attempted. Implementations must be safe for
+// concurrent use.
+type PayoutReconciler interface {
+	ReconcilePayout(ctx context.Context, reference string) (PayoutReconciliation, error)
+}
+
 // RefundRequest contains the neutral refund instruction sent to a payment
 // provider (Interswitch, etc.).
 type RefundRequest struct {

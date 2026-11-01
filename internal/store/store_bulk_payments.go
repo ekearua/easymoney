@@ -441,6 +441,39 @@ func (s *Store) ListBulkBatchItems(ctx context.Context, batchID uuid.UUID, statu
 	return items, rows.Err()
 }
 
+// ListBulkBatchItemsPage returns one keyset page of a batch's items in a
+// status, ordered by phone then id. The (afterPhone, afterID) cursor walks the
+// whole batch without loading every row at once, so a stage that pays ten
+// thousand recipients is not silently truncated by a single row limit. A zero
+// cursor starts at the beginning.
+func (s *Store) ListBulkBatchItemsPage(ctx context.Context, batchID uuid.UUID, status, afterPhone string, afterID uuid.UUID, limit int) ([]BulkBatchItem, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, batch_id, center_user_id, user_id, phone_e164, channel, status,
+			latitude, longitude, accuracy_m, distance_m, location_captured_at, request_sent_at,
+			amount_kobo, credit_ref, failure_code, failure_reason, attempts, created_at, updated_at
+		FROM bulk_batch_items
+		WHERE batch_id=$1 AND status=$2 AND ($3='' OR (phone_e164, id) > ($3, $4))
+		ORDER BY phone_e164 ASC, id ASC LIMIT $5`, batchID, status, afterPhone, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BulkBatchItem
+	for rows.Next() {
+		var it BulkBatchItem
+		if err := rows.Scan(&it.ID, &it.BatchID, &it.CenterUserID, &it.UserID, &it.PhoneE164, &it.Channel, &it.Status,
+			&it.Latitude, &it.Longitude, &it.AccuracyM, &it.DistanceM, &it.LocationCapturedAt, &it.RequestSentAt,
+			&it.AmountKobo, &it.CreditRef, &it.FailureCode, &it.FailureReason, &it.Attempts, &it.CreatedAt, &it.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
 // PendingBulkItems returns a batch's not-yet-requested items.
 func (s *Store) PendingBulkItems(ctx context.Context, batchID uuid.UUID, limit int) ([]BulkBatchItem, error) {
 	return s.ListBulkBatchItems(ctx, batchID, BulkItemPending, limit)
@@ -531,7 +564,7 @@ func (s *Store) FindOpenBulkItemByID(ctx context.Context, itemID uuid.UUID) (Ope
 func (s *Store) MarkBulkBatchStage1(ctx context.Context, batchID uuid.UUID, requested int, stage2Due time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE bulk_batches SET status=$1, stage1_at=now(), requested_count=$2, stage2_due_at=$3, updated_at=now()
-		WHERE id=$4`, BulkBatchStage2, requested, stage2Due, batchID)
+		WHERE id=$4`, BulkBatchStage1, requested, stage2Due, batchID)
 	return err
 }
 

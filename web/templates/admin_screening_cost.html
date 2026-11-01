@@ -3,7 +3,7 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
-<body>{{template "nav" .}}<main>
+<body>{{template "nav" .}}<main class="admin-main">
 <header class="page-header"><div><p class="eyebrow">Operations</p><h1>Onboarding &amp; screening cost</h1>
 <p>Screening activity in the last {{.Summary.WindowDays}} days (since {{.Summary.Since.Format "02 Jan 2006 15:04 UTC"}}). Customer screening results, adverse-media screens, and payment-time counterparty screenings are all rolled up here. The estimated cost is display-only and driven by the configurable per-check estimate.</p></div></header>
 

@@ -3,7 +3,7 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"><meta name="htmx-config" content='{"includeIndicatorStyles":false}'><script src="/static/htmx.min.js" defer></script></head>
-<body>{{template "nav" .}}<main>
+<body>{{template "nav" .}}<main class="admin-main">
 <header class="page-header"><div><p class="eyebrow">Compliance</p><h1>Chat content guard</h1>
 <p class="muted">Inbound chat messages are scanned for card numbers, PINs, CVVs, and OTPs. Xego never requests these in chat, so any match is refused and logged with the credential redacted ({{.Total}} total blocked attempts).</p></div></header>
 

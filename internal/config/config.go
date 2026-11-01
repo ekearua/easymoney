@@ -158,6 +158,7 @@ type Config struct {
 	NINBVNPortalKey     string
 	NINBVNPortalURL     string
 	NINBVNPortalTimeout time.Duration
+	IdentityTimeout      time.Duration
 	ScreeningProvider   string
 	ScreeningAPIBase    string
 	ScreeningAPIKey     string
@@ -623,6 +624,7 @@ func Load() (Config, error) {
 		NINBVNPortalKey:                 os.Getenv("NINBVNPORTAL_API_KEY"),
 		NINBVNPortalURL:                 strings.TrimRight(env("NINBVNPORTAL_BASE_URL", "https://ninbvnportal.com/api"), "/"),
 		NINBVNPortalTimeout:             envDuration("NINBVNPORTAL_TIMEOUT", 30*time.Second),
+		IdentityTimeout:                  envDuration("IDENTITY_TIMEOUT", 30*time.Second),
 		ScreeningProvider:               strings.ToLower(env("SCREENING_PROVIDER", "http")),
 		ScreeningAPIBase:                strings.TrimRight(os.Getenv("SCREENING_API_BASE"), "/"),
 		ScreeningAPIKey:                 os.Getenv("SCREENING_API_KEY"),
@@ -903,12 +905,15 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("DOC_AUTH_PROVIDER must be \"simulated\", \"http\" or \"dojah\", got %q", cfg.DocAuthenticityProvider)
 	}
 	switch cfg.SMSProvider {
-	case "", "webhook", "http":
+	case "", "webhook", "http", "infobip":
 	default:
-		return Config{}, fmt.Errorf("SMS_PROVIDER must be \"webhook\" or \"http\", got %q", cfg.SMSProvider)
+		return Config{}, fmt.Errorf("SMS_PROVIDER must be \"webhook\", \"http\", or \"infobip\", got %q", cfg.SMSProvider)
 	}
 	if strings.EqualFold(cfg.SMSProvider, "http") && cfg.SMSAPIBase == "" {
 		return Config{}, errors.New("SMS_API_BASE is required when SMS_PROVIDER=http")
+	}
+	if strings.EqualFold(cfg.SMSProvider, "infobip") && cfg.SMSAPIKey == "" {
+		return Config{}, errors.New("SMS_API_KEY is required when SMS_PROVIDER=infobip")
 	}
 	switch cfg.AIProvider {
 	case "", "openai":

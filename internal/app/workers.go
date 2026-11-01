@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/ports"
 	"whatsapp-payment-demo/internal/service"
@@ -257,7 +259,19 @@ func inboundGroupKey(message store.InboundMessage) string {
 // side path) and marks it done or schedules its bounded retry.
 func (a *App) handleInboundMessage(ctx context.Context, message store.InboundMessage) {
 	if message.HasLocation && a.bulkPayments != nil {
-		handled, locErr := a.bulkPayments.RecordLocation(ctx, message.Recipient, message.Latitude, message.Longitude, message.Accuracy)
+		locRecipient := message.Recipient
+		if message.Channel == service.ChannelTelegram && locRecipient != "" {
+			if user, err := a.store.FindUserByChannelHandle(ctx, service.ChannelTelegram, locRecipient); err == nil && user.ID != uuid.Nil {
+				if user.WhatsAppNumber != "" {
+					locRecipient = user.WhatsAppNumber
+				} else if user.TelegramChatID.String != "" {
+					// keep chat id as fallback; correlation may still fail
+				} else if user.TelegramChatID.Valid && user.TelegramChatID.String != "" {
+					// no-op
+				}
+			}
+		}
+		handled, locErr := a.bulkPayments.RecordLocation(ctx, locRecipient, message.Latitude, message.Longitude, message.Accuracy)
 		if locErr != nil {
 			a.logger.WarnContext(ctx, "record bulk location", "message_id", message.ID, "channel", message.Channel, "error", locErr)
 		} else if handled {

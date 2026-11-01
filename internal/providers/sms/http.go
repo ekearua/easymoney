@@ -156,3 +156,13 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+
+
+// Infobip is an alias for HTTP-based Infobip integration.
+// It uses the same generic HTTP sender contract.
+type Infobip = HTTP
+
+// NewInfobip creates an Infobip SMS sender using the generic HTTP adapter.
+func NewInfobip(baseURL, apiKey, senderID string, timeout time.Duration) *HTTP {
+	return NewHTTP(baseURL, apiKey, senderID, timeout)
+}

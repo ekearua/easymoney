@@ -523,9 +523,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// Settlement payouts and refunds ride the Interswitch NIP single transfer /
 	// refund API (the only supported real rails).
 	payoutProvider := ports.PayoutProvider(interswitchClient)
-	// The same client can report the authoritative status of an ambiguous
-	// transfer, so dispatch reconciles before recording a failure.
-	payoutReconciler := ports.PayoutReconciler(interswitchClient)
 	refundProvider := ports.RefundProvider(interswitchClient)
 	// G2: payment-time counterparty screening for money-out rails. The
 	// deterministic simulator is the default so the hold/interdiction
@@ -578,8 +575,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 	// bank account entered per transfer. The Interswitch client also performs
 	// the name enquiry shown before the customer confirms.
 	walletPayoutsService := service.NewWalletPayoutService(cfg, repository, payoutProvider, interswitchClient, logger,
-		service.WithWalletPayoutScreener(paymentScreener),
-		service.WithWalletPayoutReconciler(payoutReconciler))
+		service.WithWalletPayoutScreener(paymentScreener))
 	convo.SetWalletPayoutService(walletPayoutsService)
 	bulkConcurrency := cfg.BulkWorkerConcurrency
 	if bulkConcurrency <= 0 {
@@ -606,7 +602,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		smsSender:               smsSender,
 		eventBus:                eventBus, publisher: service.NewEventPublisher(repository, eventBus, logger),
 		merchantWebhooks: service.NewMerchantWebhookDeliverer(repository, nil, logger),
-		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener), service.WithPayoutReconciler(payoutReconciler)),
+		settlements:      service.NewSettlementService(repository, payoutProvider, logger, cfg.SettlementFeeBps, service.WithPayoutLimits(cfg.PayoutMinKobo, cfg.PayoutMaxKobo, cfg.PayoutDailyCapKobo, cfg.PayoutDailyCountLimit), service.WithRiskStepUp(cfg.RiskHighSingleLimitKobo), service.WithStepUpReauth(cfg.StepUpEnabled, cfg.StepUpBand), service.WithPaymentScreener(paymentScreener)),
 		walletPayouts:    walletPayoutsService,
 		refunds:          service.NewRefundService(repository, refundProvider, logger),
 		disputes:         service.NewDisputeService(repository),
