@@ -1,12 +1,87 @@
 {{define "nav"}}
-<nav class="topbar" hx-boost="true">
-  <a class="brand" href="/admin/metrics">{{.AppName}}</a>
-  <div class="navlinks">
-    <a href="/admin/metrics">Metrics</a><a href="/admin/payments">Payments</a><a href="/admin/data-orders">Data orders</a><a href="/admin/thrift">Thrift</a><a href="/admin/users">Users</a>
-    <a href="/admin/merchants">Merchants</a><a href="/admin/security">Security</a>
-    {{if or (eq .AdminRole "admin") (eq .AdminRole "compliance")}}<a href="/admin/accepted-numbers">Accepted numbers</a><a href="/admin/audit">Audit</a><a href="/admin/kyc">KYC</a><a href="/admin/fraud">Fraud</a><a href="/admin/network">Trust network</a><a href="/admin/kyb">KYB &amp; limits</a><a href="/admin/reports">Reports</a><a href="/admin/onboarding-cost">Onboarding cost</a><a href="/admin/ledger">Ledger</a><a href="/admin/reconciliation">Reconcile</a><a href="/admin/settlements">Settlements</a><a href="/admin/refunds">Refunds</a><a href="/admin/disputes">Disputes</a><a href="/admin/analytics">Analytics</a><a href="/admin/siem">SIEM</a><a href="/admin/data-subjects">Data subjects</a><a href="/admin/archive">Archive</a><a href="/admin/legal-holds">Legal holds</a><a href="/admin/chat-guard">Chat guard</a><a href="/admin/messaging">Messaging</a><a href="/admin/media-report">Media report</a><a href="/admin/onboarding-reminders">Reminders</a><a href="/admin/programs">Programs</a><a href="/admin/internal-watchlist">Internal watchlist</a><a href="/admin/payment-screenings">Payment screening</a><a href="/admin/adverse-media">Adverse media</a><a href="/admin/compliance">Attestations</a><a href="/admin/cards">Cards</a>{{end}}
-    {{if eq .AdminRole "admin"}}<a href="/admin/scanning">Scanning</a><a href="/admin/webhooks">Webhooks</a><a href="/admin/dead-letter">Dead-letter</a><a href="/admin/admins">Admins</a>{{end}}
-    <form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="link-button">Sign out</button></form>
+<div class="admin-layout">
+  <aside class="admin-sidebar">
+    <div class="admin-sidebar-header">
+      <a class="admin-sidebar-brand" href="/admin/metrics">{{.AppName}}</a>
+    </div>
+    <nav class="admin-sidebar-nav">
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Overview</div>
+        <a class="sidebar-link{{if or (eq .Path "/admin/metrics") (eq .Path "/admin")}} active{{end}}" href="/admin/metrics">Metrics</a>
+        <a class="sidebar-link{{if eq .Path "/admin/analytics"}} active{{end}}" href="/admin/analytics">Analytics</a>
+        <a class="sidebar-link{{if eq .Path "/admin/messaging"}} active{{end}}" href="/admin/messaging">Messaging</a>
+        <a class="sidebar-link{{if eq .Path "/admin/media-report"}} active{{end}}" href="/admin/media-report">Media report</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Users &amp; Merchants</div>
+        <a class="sidebar-link{{if eq .Path "/admin/users"}} active{{end}}" href="/admin/users">Users</a>
+        <a class="sidebar-link{{if or (eq .Path "/admin/merchants") (eq .Path "/admin/merchants/new")}} active{{end}}" href="/admin/merchants">Merchants</a>
+        <a class="sidebar-link{{if eq .Path "/admin/merchants/new"}} active{{end}}" href="/admin/merchants/new">Create merchant</a>
+        <a class="sidebar-link{{if eq .Path "/admin/accepted-numbers"}} active{{end}}" href="/admin/accepted-numbers">Accepted numbers</a>
+        <a class="sidebar-link{{if eq .Path "/admin/programs"}} active{{end}}" href="/admin/programs">Programs</a>
+        {{if or (eq .AdminRole "admin") (eq .AdminRole "compliance")}}
+        <a class="sidebar-link{{if eq .Path "/admin/cards"}} active{{end}}" href="/admin/cards">Cards</a>
+        {{end}}
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Payments &amp; Finance</div>
+        <a class="sidebar-link{{if eq .Path "/admin/payments"}} active{{end}}" href="/admin/payments">Payments</a>
+        <a class="sidebar-link{{if eq .Path "/admin/data-orders"}} active{{end}}" href="/admin/data-orders">Data orders</a>
+        <a class="sidebar-link{{if eq .Path "/admin/thrift"}} active{{end}}" href="/admin/thrift">Thrift</a>
+        <a class="sidebar-link{{if eq .Path "/admin/settlements"}} active{{end}}" href="/admin/settlements">Settlements</a>
+        <a class="sidebar-link{{if eq .Path "/admin/refunds"}} active{{end}}" href="/admin/refunds">Refunds</a>
+        <a class="sidebar-link{{if eq .Path "/admin/disputes"}} active{{end}}" href="/admin/disputes">Disputes</a>
+        <a class="sidebar-link{{if eq .Path "/admin/ledger"}} active{{end}}" href="/admin/ledger">Ledger</a>
+        <a class="sidebar-link{{if eq .Path "/admin/reconciliation"}} active{{end}}" href="/admin/reconciliation">Reconciliation</a>
+      </div>
+      {{if or (eq .AdminRole "admin") (eq .AdminRole "compliance")}}
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Compliance &amp; KYC</div>
+        <a class="sidebar-link{{if eq .Path "/admin/kyc"}} active{{end}}" href="/admin/kyc">KYC</a>
+        <a class="sidebar-link{{if eq .Path "/admin/kyb"}} active{{end}}" href="/admin/kyb">KYB &amp; limits</a>
+        <a class="sidebar-link{{if eq .Path "/admin/reports"}} active{{end}}" href="/admin/reports">Reports</a>
+        <a class="sidebar-link{{if eq .Path "/admin/compliance"}} active{{end}}" href="/admin/compliance">Attestations</a>
+        <a class="sidebar-link{{if eq .Path "/admin/onboarding-cost"}} active{{end}}" href="/admin/onboarding-cost">Onboarding cost</a>
+        <a class="sidebar-link{{if eq .Path "/admin/onboarding-reminders"}} active{{end}}" href="/admin/onboarding-reminders">Onboarding reminders</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Risk &amp; Fraud</div>
+        <a class="sidebar-link{{if eq .Path "/admin/fraud"}} active{{end}}" href="/admin/fraud">Fraud</a>
+        <a class="sidebar-link{{if eq .Path "/admin/network"}} active{{end}}" href="/admin/network">Trust network</a>
+        <a class="sidebar-link{{if eq .Path "/admin/internal-watchlist"}} active{{end}}" href="/admin/internal-watchlist">Internal watchlist</a>
+        <a class="sidebar-link{{if eq .Path "/admin/payment-screenings"}} active{{end}}" href="/admin/payment-screenings">Payment screening</a>
+        <a class="sidebar-link{{if eq .Path "/admin/adverse-media"}} active{{end}}" href="/admin/adverse-media">Adverse media</a>
+        <a class="sidebar-link{{if eq .Path "/admin/chat-guard"}} active{{end}}" href="/admin/chat-guard">Chat guard</a>
+      </div>
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Operations &amp; Monitoring</div>
+        <a class="sidebar-link{{if eq .Path "/admin/audit"}} active{{end}}" href="/admin/audit">Audit</a>
+        <a class="sidebar-link{{if eq .Path "/admin/siem"}} active{{end}}" href="/admin/siem">SIEM</a>
+        <a class="sidebar-link{{if eq .Path "/admin/data-subjects"}} active{{end}}" href="/admin/data-subjects">Data subjects</a>
+        <a class="sidebar-link{{if eq .Path "/admin/archive"}} active{{end}}" href="/admin/archive">Archive</a>
+        <a class="sidebar-link{{if eq .Path "/admin/legal-holds"}} active{{end}}" href="/admin/legal-holds">Legal holds</a>
+      </div>
+      {{end}}
+      {{if eq .AdminRole "admin"}}
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">System</div>
+        <a class="sidebar-link{{if eq .Path "/admin/scanning"}} active{{end}}" href="/admin/scanning">Scanning</a>
+        <a class="sidebar-link{{if eq .Path "/admin/webhooks"}} active{{end}}" href="/admin/webhooks">Webhooks</a>
+        <a class="sidebar-link{{if eq .Path "/admin/dead-letter"}} active{{end}}" href="/admin/dead-letter">Dead-letter</a>
+        <a class="sidebar-link{{if eq .Path "/admin/admins"}} active{{end}}" href="/admin/admins">Admins</a>
+      </div>
+      {{end}}
+      <div class="sidebar-section">
+        <div class="sidebar-section-header">Account</div>
+        <a class="sidebar-link{{if eq .Path "/admin/security"}} active{{end}}" href="/admin/security">Security</a>
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <form method="post" action="/admin/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="link-button">Sign out</button></form>
+    </div>
+  </aside>
+  <div class="admin-main">
+    {{template "nav_end" .}}
   </div>
-</nav>
+</div>
 {{end}}
