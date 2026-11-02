@@ -290,12 +290,15 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient, merchantName, setPasswordURL string) error {
 	recipient = strings.TrimSpace(recipient)
 	if recipient == "" {
+		a.logger.WarnContext(ctx, "send merchant password reset email skipped: empty recipient", "merchant_name", merchantName)
 		return nil
 	}
 	if a.email == nil {
+		a.logger.WarnContext(ctx, "send merchant password reset email skipped: email delivery not configured", "merchant_name", merchantName)
 		return fmt.Errorf("email delivery is not configured")
 	}
 	if setPasswordURL == "" {
+		a.logger.WarnContext(ctx, "send merchant password reset email skipped: empty reset URL", "merchant_name", merchantName)
 		return fmt.Errorf("password reset URL is empty")
 	}
 
@@ -833,6 +836,53 @@ func (a *App) adminSetMerchantBulkPayments(w http.ResponseWriter, r *http.Reques
 		"enabled": enabled,
 	})
 	http.Redirect(w, r, "/admin/merchants?bulk_set=1", http.StatusSeeOther)
+}
+
+// adminSetMerchantActive toggles the merchant's active flag. Disabling hides
+// the merchant from the catalogue and refuses checkout, but keeps every row —
+// the toggle is reversible and never collides with a foreign-key constraint.
+func (a *App) adminSetMerchantActive(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	active := r.FormValue("active") == "1"
+	if err := a.store.SetMerchantActive(r.Context(), id, active); err != nil {
+		a.logger.WarnContext(r.Context(), "set merchant active failed", "merchant_id", id.String(), "error", err)
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.merchants.active_toggled", "merchant", id.String(), map[string]any{"active": active})
+	http.Redirect(w, r, "/admin/merchants?active_set=1", http.StatusSeeOther)
+}
+
+// adminDeleteMerchant removes a merchant and its cascade-owned rows. Payments
+// and invoices reference merchants(id) without CASCADE, so a merchant with
+// financial history cannot be hard-deleted: the foreign-key constraint
+// surfaces a clear error and the admin must use adminSetMerchantActive(false)
+// instead. Financial records are immutable by design (MLPA).
+func (a *App) adminDeleteMerchant(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	if err := a.store.DeleteMerchant(r.Context(), id); err != nil {
+		a.logger.WarnContext(r.Context(), "delete merchant failed", "merchant_id", id.String(), "error", err)
+		http.Error(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.merchants.deleted", "merchant", id.String(), nil)
+	http.Redirect(w, r, "/admin/merchants?deleted=1", http.StatusSeeOther)
 }
 
 func (a *App) adminSetPhoneWhitelist(w http.ResponseWriter, r *http.Request) {
