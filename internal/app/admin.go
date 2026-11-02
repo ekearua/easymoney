@@ -261,6 +261,9 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 			}
 		}
 	}
+	if ownerEmail := strings.TrimSpace(r.FormValue("owner_email")); ownerEmail != "" {
+		go a.sendMerchantOwnerNotificationEmail(r.Context(), ownerEmail, merchant.Name, setPasswordURL)
+	}
 
 	a.audit(r, "admin.merchants.created_direct", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "slug": merchant.Slug, "is_sponsor": isSponsor})
 	a.logger.InfoContext(r.Context(), "merchant created directly by admin", "merchant_id", merchant.ID.String(), "name", merchant.Name)
