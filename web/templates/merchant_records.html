@@ -1,0 +1,91 @@
+{{define "merchant_records.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Records</p><h1>Recipient records</h1></div></header>
+  {{if .Saved}}<div class="alert success">{{.Saved}} record(s) saved.</div>{{end}}
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  <div class="panel">
+    <h2>Filter</h2>
+    <form method="get" action="/merchant/records" class="form-grid">
+      <label>State <input type="text" name="state" value="{{.Filter.State}}"></label>
+      <label>LGA <input type="text" name="lga" value="{{.Filter.LGA}}"></label>
+      <label>Ward <input type="text" name="ward" value="{{.Filter.Ward}}"></label>
+      <label>Polling unit / booth <input type="text" name="polling_unit" value="{{.Filter.PollingUnit}}"></label>
+      <label>Verification
+        <select name="verification">
+          <option value="">Any</option>
+          <option value="verified" {{if eq .Filter.Verification "verified"}}selected{{end}}>Verified</option>
+          <option value="unverified" {{if eq .Filter.Verification "unverified"}}selected{{end}}>Unverified</option>
+          <option value="rejected" {{if eq .Filter.Verification "rejected"}}selected{{end}}>Rejected</option>
+        </select>
+      </label>
+      <label>Name or phone <input type="text" name="q" value="{{.Filter.Query}}"></label>
+      <button type="submit">Apply</button>
+    </form>
+    <p class="muted">{{.Count}} record(s) match.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Upload the Records Template</h2>
+    <p class="muted">CSV or XLSX with headers: Name, Phone Number, BVN, NIN, VIN, Account Number, Bank Name, Account Name, State, LGA, Ward, Polling Unit/Booth, Source File. Blank cells are allowed.</p>
+    <form method="post" action="/merchant/records/import" enctype="multipart/form-data">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>File <input type="file" name="file" accept=".csv,.xlsx" required></label>
+      {{if .Centers}}<label>Assign to location
+        <select name="center_id">
+          <option value="">No location</option>
+          {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </label>{{end}}
+      <button type="submit">Upload records</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Add one record</h2>
+    <form method="post" action="/merchant/records/save">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="form-grid">
+        <label>Phone <input type="text" name="phone" required placeholder="+2348012345678"></label>
+        <label>Name <input type="text" name="name"></label>
+        <label>BVN <input type="text" name="bvn"></label>
+        <label>NIN <input type="text" name="nin"></label>
+        <label>VIN <input type="text" name="vin"></label>
+        <label>Account number <input type="text" name="account_number"></label>
+        <label>Bank name <input type="text" name="bank_name"></label>
+        <label>Account name <input type="text" name="account_name"></label>
+        <label>State <input type="text" name="state"></label>
+        <label>LGA <input type="text" name="lga"></label>
+        <label>Ward <input type="text" name="ward"></label>
+        <label>Polling unit / booth <input type="text" name="polling_unit"></label>
+      </div>
+      {{if .Centers}}<label>Location
+        <select name="center_id">
+          <option value="">No location</option>
+          {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </label>{{end}}
+      <button type="submit">Save record</button>
+    </form>
+  </div>
+
+  {{if .Rows}}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>State</th><th>LGA</th><th>Ward</th><th>Booth</th><th>Location</th><th>Verified</th><th></th></tr></thead><tbody>
+  {{range .Rows}}<tr>
+    <td>{{if .DisplayName}}{{.DisplayName}}{{else}}—{{end}}</td>
+    <td>{{.PhoneE164}}</td>
+    <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
+    <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
+    <td>{{if .Ward}}{{.Ward}}{{else}}—{{end}}</td>
+    <td>{{if .PollingUnit}}{{.PollingUnit}}{{else}}—{{end}}</td>
+    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    <td>{{.VerificationStatus}}</td>
+    <td><a href="/merchant/records/{{.ID}}">Open</a></td>
+  </tr>{{end}}</tbody></table></div>
+  <p class="muted">Page {{.Page}}{{if .HasNext}} · <a href="/merchant/records?page={{.Page}}&state={{.Filter.State}}&lga={{.Filter.LGA}}&ward={{.Filter.Ward}}&polling_unit={{.Filter.PollingUnit}}&verification={{.Filter.Verification}}&q={{.Filter.Query}}">Next page</a>{{end}}</p>
+  {{else}}<div class="panel"><p class="muted">No records match this filter.</p></div>{{end}}
+</main></body></html>
+{{end}}

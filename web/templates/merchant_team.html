@@ -1,0 +1,56 @@
+{{define "merchant_team.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Team</h1></div></header>
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+  {{if .InviteLink}}<div class="alert success">Invite created. Send this link to the new team member:
+    <br><code>{{.InviteLink}}</code></div>{{end}}
+  <div class="panel">
+    <h2>Bulk payment settings</h2>
+    <p class="muted">Bulk access: {{if .Settings.BulkEnabled}}enabled{{else}}disabled{{end}} ·
+      Location verification: {{if .Settings.LocationRequired}}required{{else}}off{{end}} ·
+      Payout: {{.Settings.PayoutMode}}</p>
+    <p class="muted">These three switches are set by the platform admin.</p>
+  </div>
+  <div class="panel">
+    <h2>Invite a team member</h2>
+    <form method="post" action="/merchant/team/invite">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Email <input type="email" name="email" required></label>
+      <label>Role
+        <select name="role">
+          <option value="records">Records: manages the recipient list and documents</option>
+          <option value="payments">Payments: builds and releases batches</option>
+        </select>
+      </label>
+      <button type="submit">Create invite</button>
+    </form>
+  </div>
+  {{if .Members}}
+  <div class="table-wrap"><table><thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Last sign-in</th><th>Actions</th></tr></thead><tbody>
+  {{range .Members}}<tr>
+    <td>{{.Email}}</td>
+    <td>
+      <form method="post" action="/merchant/team/{{.ID}}/role" class="inline">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <select name="role">
+          <option value="records" {{if eq .Role "records"}}selected{{end}}>records</option>
+          <option value="payments" {{if eq .Role "payments"}}selected{{end}}>payments</option>
+        </select>
+        <button class="link-button">Save</button>
+      </form>
+    </td>
+    <td>{{.Status}}</td>
+    <td>{{if .LastLoginAt}}{{.LastLoginAt.Format "02 Jan 2006 15:04"}}{{else}}—{{end}}</td>
+    <td>
+      <form method="post" action="/merchant/team/{{.ID}}/revoke" class="inline" onsubmit="return confirm('Revoke this member and end their sessions?');">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button class="link-button">Revoke</button>
+      </form>
+    </td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No team members yet.</p></div>{{end}}
+</main></body></html>
+{{end}}

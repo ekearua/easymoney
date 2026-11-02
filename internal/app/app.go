@@ -616,7 +616,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			Stage1Template: cfg.BulkStage1Template,
 			BaseURL:        cfg.BaseURL,
 			LocationTTL:    cfg.BulkLocationTTL,
-		}),
+		}, payoutProvider, interswitchClient),
 		programPurses:   programPursesService,
 		agentRemittance: service.NewAgentRemittanceService(cfg, repository, sanctionsScreener),
 		bulkSlots:       make(chan struct{}, bulkConcurrency),
@@ -875,6 +875,11 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/mfa-reset", a.adminResetMerchantFactors)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/bulk-payments", a.adminSetMerchantBulkPayments)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/bulk-settings", a.adminSetMerchantBulkSettings)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/invite", a.adminInviteMerchantMember)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/{memberID}/role", a.adminSetMerchantMemberRole)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/{memberID}/revoke", a.adminRevokeMerchantMember)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/thrift/payouts/{id}/complete", a.adminCompleteThriftPayout)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/accepted-numbers", a.adminUpdateAcceptedNumbers)
 		admin.With(a.requireRole(store.RoleAdmin)).Get("/admin/scanning", a.adminScanning)
@@ -978,6 +983,8 @@ func (a *App) routes() http.Handler {
 	router.With(a.limitLogin).Post("/merchant/login/2fa/passkey", a.secondFactorPasskey)
 	router.Get("/merchant/set-password", a.merchantSetPasswordPage)
 	router.Post("/merchant/set-password", a.merchantSetPasswordPost)
+	router.Get("/merchant/invite", a.merchantInvitePage)
+	router.Post("/merchant/invite", a.merchantInviteAccept)
 	router.Group(func(m chi.Router) {
 		m.Use(a.requireMerchant)
 		m.Get("/merchant", func(w http.ResponseWriter, r *http.Request) {
@@ -1012,16 +1019,44 @@ func (a *App) routes() http.Handler {
 		m.Post("/merchant/events/{id}/edit", a.merchantEventUpdate)
 		m.Post("/merchant/events/{id}/toggle", a.merchantEventToggle)
 		m.Get("/merchant/events/{id}/tickets", a.merchantEventTickets)
-		m.Get("/merchant/bulk/centers", a.merchantBulkCenters)
-		m.Post("/merchant/bulk/centers", a.merchantBulkCenterCreate)
-		m.Get("/merchant/bulk/centers/{id}", a.merchantBulkCenterDetail)
-		m.Post("/merchant/bulk/centers/{id}/delete", a.merchantBulkCenterDelete)
-		m.Post("/merchant/bulk/centers/{id}/recipients", a.merchantBulkRecipientAdd)
-		m.Post("/merchant/bulk/centers/{id}/recipients/upload", a.merchantBulkRecipientUpload)
-		m.Post("/merchant/bulk/centers/{id}/recipients/{recipientID}/delete", a.merchantBulkRecipientDelete)
-		m.Get("/merchant/bulk/batches", a.merchantBulkBatches)
-		m.Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
-		m.Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
+		m.Group(func(bg chi.Router) {
+			bg.Use(a.requireBulkPayments)
+			// Payment locations stay with the owner (and the platform admin).
+			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/centers", a.merchantBulkCenters)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers", a.merchantBulkCenterCreate)
+			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/centers/{id}", a.merchantBulkCenterDetail)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/delete", a.merchantBulkCenterDelete)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients", a.merchantBulkRecipientAdd)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients/upload", a.merchantBulkRecipientUpload)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients/{recipientID}/delete", a.merchantBulkRecipientDelete)
+			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/batches", a.merchantBulkBatches)
+			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
+			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
+
+			// Records role: the single recipient list and its identity documents.
+			records := a.requireMerchantRole(store.MerchantRoleRecords)
+			bg.With(records).Get("/merchant/records", a.merchantRecords)
+			bg.With(records).Post("/merchant/records/import", a.merchantRecordImport)
+			bg.With(records).Post("/merchant/records/save", a.merchantRecordSave)
+			bg.With(records).Get("/merchant/records/{id}", a.merchantRecordDetail)
+			bg.With(records).Post("/merchant/records/{id}", a.merchantRecordSave)
+			bg.With(records).Post("/merchant/records/{id}/verify", a.merchantRecordVerify)
+			bg.With(records).Post("/merchant/records/{id}/delete", a.merchantRecordDelete)
+
+			// Payments role: payable list, per-recipient history and batch release.
+			payments := a.requireMerchantRole(store.MerchantRolePayments)
+			bg.With(payments).Get("/merchant/payables", a.merchantPayables)
+			bg.With(payments).Post("/merchant/payables/batches", a.merchantPayableBatchCreate)
+			bg.With(payments).Get("/merchant/payables/batches/{id}", a.merchantPayableBatchReview)
+			bg.With(payments).Post("/merchant/payables/batches/{id}/submit", a.merchantPayableBatchSubmit)
+			bg.With(payments).Post("/merchant/payables/batches/{id}/approve", a.merchantPayableBatchApprove)
+			bg.With(payments).Post("/merchant/payables/batches/{id}/reject", a.merchantPayableBatchReject)
+			bg.With(payments).Get("/merchant/payables/{id}", a.merchantPayableDetail)
+		})
+		m.With(a.requireMerchantOwner()).Get("/merchant/team", a.merchantTeam)
+		m.With(a.requireMerchantOwner()).Post("/merchant/team/invite", a.merchantTeamInvite)
+		m.With(a.requireMerchantOwner()).Post("/merchant/team/{id}/role", a.merchantTeamSetRole)
+		m.With(a.requireMerchantOwner()).Post("/merchant/team/{id}/revoke", a.merchantTeamRevoke)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
 		m.Get("/merchant/security", a.securityPage(store.MFAScopeMerchant))
 		m.Post("/merchant/security/totp", a.securityStartTOTP(store.MFAScopeMerchant))
@@ -1110,6 +1145,7 @@ const adminRoleContextKey contextKey = "admin_role"
 const adminEmailContextKey contextKey = "admin_email"
 const merchantIDContextKey contextKey = "merchant_id"
 const merchantCSRFContextKey contextKey = "merchant_csrf"
+const merchantBulkContextKey contextKey = "merchant_bulk_enabled"
 const agentUserIDContextKey contextKey = "agent_user_id"
 const agentMerchantIDContextKey contextKey = "agent_merchant_id"
 const agentCSRFContextKey contextKey = "agent_csrf"
@@ -1147,6 +1183,12 @@ func (a *App) audit(r *http.Request, action, resourceType, resourceID string, de
 	if id := merchantIDFromContext(ctx); id != uuid.Nil {
 		entry.ActorType = "merchant"
 		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
+		if memberID := merchantMemberIDFromContext(ctx); memberID != uuid.Nil {
+			entry.ActorID = uuid.NullUUID{UUID: memberID, Valid: true}
+		}
+		if email := merchantMemberEmailFromContext(ctx); email != "" {
+			entry.ActorEmail = sql.NullString{String: email, Valid: true}
+		}
 	} else if id := agentUserIDFromContext(ctx); id != uuid.Nil {
 		entry.ActorType = "agent"
 		entry.ActorID = uuid.NullUUID{UUID: id, Valid: true}
@@ -1212,6 +1254,11 @@ func merchantCSRFFromContext(ctx context.Context) string {
 	return value
 }
 
+func merchantBulkEnabledFromContext(ctx context.Context) bool {
+	enabled, _ := ctx.Value(merchantBulkContextKey).(bool)
+	return enabled
+}
+
 func agentUserIDFromContext(ctx context.Context) uuid.UUID {
 	id, _ := ctx.Value(agentUserIDContextKey).(uuid.UUID)
 	return id
@@ -1271,14 +1318,36 @@ func (a *App) requireMerchant(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
 			return
 		}
-		merchantID, _, csrf, err := a.store.ValidateMerchantSession(r.Context(), cookie.Value)
+		identity, err := a.store.MerchantSessionFromToken(r.Context(), cookie.Value)
 		if err != nil {
 			http.Redirect(w, r, "/merchant/login", http.StatusSeeOther)
 			return
 		}
+		merchantID := identity.MerchantID
 		ctx := context.WithValue(r.Context(), merchantIDContextKey, merchantID)
-		ctx = context.WithValue(ctx, merchantCSRFContextKey, csrf)
+		ctx = context.WithValue(ctx, merchantCSRFContextKey, identity.CSRF)
+		ctx = context.WithValue(ctx, merchantRoleContextKey, identity.Role)
+		ctx = context.WithValue(ctx, merchantMemberEmailContextKey, identity.Email)
+		if identity.MemberID != nil {
+			ctx = context.WithValue(ctx, merchantMemberIDContextKey, *identity.MemberID)
+		}
+		bulkEnabled, err := a.store.MerchantBulkPaymentsEnabled(ctx, merchantID)
+		if err != nil {
+			http.Error(w, "account unavailable", http.StatusInternalServerError)
+			return
+		}
+		ctx = context.WithValue(ctx, merchantBulkContextKey, bulkEnabled)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (a *App) requireBulkPayments(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !merchantBulkEnabledFromContext(r.Context()) {
+			http.Error(w, "bulk payments are not enabled for this account", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -1302,6 +1371,9 @@ func (a *App) renderMerchant(w http.ResponseWriter, name string, r *http.Request
 	data["Title"] = title
 	data["CSRF"] = merchantCSRFFromContext(r.Context())
 	data["MerchantID"] = merchantIDFromContext(r.Context())
+	data["BulkEnabled"] = merchantBulkEnabledFromContext(r.Context())
+	data["Role"] = merchantRoleFromContext(r.Context())
+	data["MemberEmail"] = merchantMemberEmailFromContext(r.Context())
 	a.render(w, name, data)
 }
 

@@ -1,0 +1,22 @@
+{{define "merchant_invite.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Join {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body><main class="dashboard narrow">
+  <header class="page-header"><div><p class="eyebrow">Merchant team</p><h1>Set your password</h1></div></header>
+  {{if .Invalid}}
+  <div class="panel"><p class="muted">This invite is invalid or has expired. Ask the merchant owner to send a new one.</p></div>
+  {{else}}
+  <div class="panel">
+    <p class="muted">{{.Email}} · {{if eq .Role "records"}}Records{{else}}Payments{{end}} role · {{.MerchantName}}</p>
+    {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+    <form method="post" action="/merchant/invite">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <label>Password <input type="password" name="password" minlength="8" required></label>
+      <label>Confirm password <input type="password" name="password_confirm" minlength="8" required></label>
+      <button type="submit">Activate account</button>
+    </form>
+  </div>
+  {{end}}
+</main></body></html>
+{{end}}

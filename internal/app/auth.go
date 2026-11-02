@@ -267,6 +267,14 @@ func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
 	}
 	email := strings.ToLower(strings.TrimSpace(r.FormValue("email")))
 	password := r.FormValue("password")
+	// Staff accounts are checked first: their role decides the landing page and
+	// every route they may reach.
+	if member, memberErr := a.store.MerchantMemberByEmail(r.Context(), email); memberErr == nil &&
+		member.PasswordHash != "" && member.Status == store.MemberStatusActive &&
+		bcrypt.CompareHashAndPassword([]byte(member.PasswordHash), []byte(password)) == nil {
+		a.completeMerchantMemberLogin(w, r, member)
+		return
+	}
 	merchant, err := a.store.MerchantByEmail(r.Context(), email)
 	if err != nil || merchant.PasswordHash == "" ||
 		bcrypt.CompareHashAndPassword([]byte(merchant.PasswordHash), []byte(password)) != nil {

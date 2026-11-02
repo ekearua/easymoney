@@ -30,7 +30,7 @@ func TestBulkWorkerSkipsWhenIdle(t *testing.T) {
 
 	busy := &App{
 		logger:       slog.Default(),
-		bulkPayments: service.NewBulkPaymentsService(nil, nil, nil, service.BulkPaymentsConfig{}),
+		bulkPayments:		service.NewBulkPaymentsService(nil, nil, nil, service.BulkPaymentsConfig{}, nil, nil),
 		bulkSlots:    make(chan struct{}, 1),
 	}
 	busy.bulkSlots <- struct{}{}
@@ -74,7 +74,7 @@ func TestBulkWorkerRunsBothStages(t *testing.T) {
 	// A one-second TTL keeps the stage-2 wait inside the test.
 	bulk := service.NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{service.ChannelWhatsApp: messenger}, logger,
-		service.BulkPaymentsConfig{BaseURL: "https://xego.test", RadiusM: 50, SendRatePerSec: 1000, LocationTTL: time.Second})
+		service.BulkPaymentsConfig{BaseURL: "https://xego.test", RadiusM: 50, SendRatePerSec: 1000, LocationTTL: time.Second}, nil, nil)
 	a := &App{
 		logger: logger, store: repository, bulkPayments: bulk,
 		bulkSlots: make(chan struct{}, 8),

@@ -185,6 +185,8 @@ func (a *App) handleBulkJob(ctx context.Context, job store.BulkJob) error {
 		return a.bulkPayments.RunStage1(ctx, job.BatchID)
 	case store.BulkJobStage2:
 		return a.bulkPayments.RunStage2(ctx, job.BatchID)
+	case store.BulkJobPay:
+		return a.bulkPayments.RunDirectPayment(ctx, job.BatchID)
 	default:
 		return fmt.Errorf("unknown bulk job kind %q", job.Kind)
 	}

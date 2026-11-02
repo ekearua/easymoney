@@ -1,10 +1,10 @@
-# Faya bulk payments - the location-aware disbursement script
+# Faya bulk payments - the filter-driven, role-based disbursement script
 
 A ready-to-use walk-through of Faya's bulk payment feature, written the way the merchant and the recipient actually experience it: what Musa taps, what Faya sends, what Ada sees, and - the part that matters - exactly when money moves. Every dialogue line and screen below is the real product copy. Use it for merchant onboarding, demos, and support training.
 
-A bulk payment is one action by which a merchant pays many recipients the same amount, but only to the people who are physically at a chosen place when the window closes. It runs in two stages: stage 1 asks each person to share where they are, and stage 2, at the end of a short time window, pays everyone who answered and qualifies. No one is paid on a guess, and the merchant is only debited for the payments that actually land.
+Bulk payments are now built from a verified recipient list filtered by geography (State/LGA/Ward/Polling Unit), then submitted for approval and released by a payments-role holder. Location verification is toggleable per merchant (on by default); when off, eligible verified recipients are paid directly. Payouts can go to the recipient's Faya wallet or (when enabled by the platform admin) to a bank account on file. The merchant is only debited for payments that actually land.
 
-Cast: **Musa**, a merchant; **Faya**, the assistant; **Ada**, a recipient; **[Page]**, a screen seen in a browser.
+Cast: **Musa**, the merchant owner; **Tunde**, a records-role staff member; **Bola**, a payments-role staff member; **Faya**, the assistant; **Ada**, a recipient; **[Page]**, a screen seen in a browser.
 
 ## Scene 1 - Musa marks the place to pay from
 

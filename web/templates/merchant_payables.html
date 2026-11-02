@@ -1,0 +1,53 @@
+{{define "merchant_payables.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow">Payments</p><h1>Payable recipients</h1></div></header>
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  <div class="panel">
+    <p class="muted">Verified records only · payout {{.Settings.PayoutMode}} ·
+      {{if .Settings.LocationRequired}}location verification on{{else}}direct payment{{end}}</p>
+    <form method="get" action="/merchant/payables" class="form-grid">
+      <label>State <input type="text" name="state" value="{{.Filter.State}}"></label>
+      <label>LGA <input type="text" name="lga" value="{{.Filter.LGA}}"></label>
+      <label>Ward <input type="text" name="ward" value="{{.Filter.Ward}}"></label>
+      <label>Polling unit / booth <input type="text" name="polling_unit" value="{{.Filter.PollingUnit}}"></label>
+      <label>Name or phone <input type="text" name="q" value="{{.Filter.Query}}"></label>
+      <button type="submit">Apply</button>
+    </form>
+    <p class="muted">{{.Count}} verified recipient(s) match this filter.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Build a batch from this filter</h2>
+    <p class="muted">Every verified recipient matching the filter above is included — not just this page.</p>
+    <form method="post" action="/merchant/payables/batches">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <input type="hidden" name="state" value="{{.Filter.State}}">
+      <input type="hidden" name="lga" value="{{.Filter.LGA}}">
+      <input type="hidden" name="ward" value="{{.Filter.Ward}}">
+      <input type="hidden" name="polling_unit" value="{{.Filter.PollingUnit}}">
+      <input type="hidden" name="q" value="{{.Filter.Query}}">
+      <label>Amount per recipient (kobo) <input type="number" name="amount_kobo" min="1" required placeholder="50000"></label>
+      <button type="submit">Save draft batch</button>
+    </form>
+  </div>
+
+  {{if .Rows}}
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>State</th><th>LGA</th><th>Ward</th><th>Booth</th><th>Last paid</th><th>Last amount</th><th></th></tr></thead><tbody>
+  {{range .Rows}}<tr>
+    <td>{{if .DisplayName}}{{.DisplayName}}{{else}}—{{end}}</td>
+    <td>{{.PhoneE164}}</td>
+    <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
+    <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
+    <td>{{if .Ward}}{{.Ward}}{{else}}—{{end}}</td>
+    <td>{{if .PollingUnit}}{{.PollingUnit}}{{else}}—{{end}}</td>
+    <td>{{if .LastPaidAt}}{{.LastPaidAt.Format "02 Jan 2006"}}{{else}}—{{end}}</td>
+    <td>{{if .LastPaidAt}}{{money .LastPaidAmountKobo}}{{else}}—{{end}}</td>
+    <td><a href="/merchant/payables/{{.ID}}">History</a></td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No verified recipients match this filter.</p></div>{{end}}
+</main></body></html>
+{{end}}

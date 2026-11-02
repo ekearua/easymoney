@@ -244,7 +244,7 @@ func (s *Store) XegoDataMerchant(ctx context.Context) (Merchant, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled
 		FROM merchants WHERE slug=$1`, "xego-data").Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -252,7 +252,7 @@ func (s *Store) XegoDataMerchant(ctx context.Context) (Merchant, error) {
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	return merchant, err
 }

@@ -1,0 +1,57 @@
+{{define "merchant_payable_batch.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow"><a href="/merchant/payables">Payable recipients</a></p><h1>{{.Batch.BatchNo}}</h1></div></header>
+  {{if .Approved}}<div class="alert success">Batch approved and queued for payment.</div>{{end}}
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  <div class="panel">
+    <p class="muted">{{money .Batch.AmountKobo}} per recipient · {{.Batch.TotalTargets}} recipients ·
+      payout {{.Approval.PayoutMode}} ·
+      {{if .Approval.RequireLocation}}location verification on{{else}}direct payment{{end}} · status {{.Batch.Status}}</p>
+    {{if .Approval.ComplianceFlag}}<div class="alert error">Flagged for compliance review (batch total exceeds the payout ceiling).</div>{{end}}
+    {{if .Approval.RejectedReason}}<div class="alert error">Rejected: {{.Approval.RejectedReason}}</div>{{end}}
+    <dl class="stats">
+      <div><dt>Targets</dt><dd>{{.Batch.TotalTargets}}</dd></div>
+      <div><dt>Paid</dt><dd>{{.Batch.PaidCount}}</dd></div>
+      <div><dt>Failed</dt><dd>{{.Batch.FailedCount}}</dd></div>
+      <div><dt>Expired</dt><dd>{{.Batch.ExpiredCount}}</dd></div>
+      <div><dt>Debited</dt><dd>{{money .Batch.TotalDebitedKobo}}</dd></div>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <h2>Release</h2>
+    {{if or (eq .Batch.Status "draft") (eq .Batch.Status "submitted")}}
+    <p class="muted">Submitting saves the batch for approval; approving starts payment. Releasing re-checks the wallet balance.</p>
+    <form method="post" action="/merchant/payables/batches/{{.Batch.ID}}/submit" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit">Submit for approval</button>
+    </form>
+    <form method="post" action="/merchant/payables/batches/{{.Batch.ID}}/approve" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit">Approve and pay</button>
+    </form>
+    <form method="post" action="/merchant/payables/batches/{{.Batch.ID}}/reject" class="inline">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Reason <input type="text" name="reason"></label>
+      <button class="link-button">Reject</button>
+    </form>
+    {{else}}
+    <p class="muted">This batch is {{.Batch.Status}}; no further action is available here.</p>
+    {{end}}
+  </div>
+
+  {{if .Items}}
+  <div class="table-wrap"><table><thead><tr><th>Recipient</th><th>Status</th><th>Distance</th><th>Reason</th></tr></thead><tbody>
+  {{range .Items}}<tr>
+    <td>{{.Phone}}</td>
+    <td>{{.Status}}</td>
+    <td>{{.Distance}}</td>
+    <td>{{if .Reason}}<span class="muted">{{.Reason}}</span>{{else}}—{{end}}</td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No recipients in this batch.</p></div>{{end}}
+</main></body></html>
+{{end}}

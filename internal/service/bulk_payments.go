@@ -43,10 +43,12 @@ type BulkPaymentsConfig struct {
 
 // BulkPaymentsService orchestrates the two-stage bulk-payment lifecycle.
 type BulkPaymentsService struct {
-	store      *store.Store
-	messengers map[string]ports.Messenger
-	logger     *slog.Logger
-	cfg        BulkPaymentsConfig
+	store        *store.Store
+	messengers   map[string]ports.Messenger
+	logger       *slog.Logger
+	cfg          BulkPaymentsConfig
+	payout       ports.PayoutProvider
+	nameEnquirer AccountNameEnquirer
 }
 
 // ErrBulkInsufficientFunds blocks a batch the merchant cannot cover.
@@ -56,7 +58,7 @@ var ErrBulkInsufficientFunds = errors.New("business wallet balance cannot cover 
 var ErrBulkTooManyTargets = errors.New("bulk batch exceeds the maximum number of recipients")
 
 // NewBulkPaymentsService constructs the orchestrator.
-func NewBulkPaymentsService(repository *store.Store, messengers map[string]ports.Messenger, logger *slog.Logger, cfg BulkPaymentsConfig) *BulkPaymentsService {
+func NewBulkPaymentsService(repository *store.Store, messengers map[string]ports.Messenger, logger *slog.Logger, cfg BulkPaymentsConfig, payout ports.PayoutProvider, nameEnquirer AccountNameEnquirer) *BulkPaymentsService {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -81,7 +83,7 @@ func NewBulkPaymentsService(repository *store.Store, messengers map[string]ports
 	if cfg.InviteMessage == "" {
 		cfg.InviteMessage = "You have a payment waiting. Create or open your Xego account and share your location to receive it."
 	}
-	return &BulkPaymentsService{store: repository, messengers: messengers, logger: logger, cfg: cfg}
+	return &BulkPaymentsService{store: repository, messengers: messengers, logger: logger, cfg: cfg, payout: payout, nameEnquirer: nameEnquirer}
 }
 
 // Config exposes the tuned config (the app uses the rate/worker knobs).

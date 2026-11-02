@@ -316,7 +316,7 @@ func (s *Store) CreateBulkBatch(ctx context.Context, in NewBulkBatch) (BulkBatch
 	err = tx.QueryRow(ctx, `
 		INSERT INTO bulk_batches(batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds, created_by)
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-		RETURNING id, batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds,
+		RETURNING id, batch_no, merchant_id, COALESCE(center_id,'00000000-0000-0000-0000-000000000000'::uuid), amount_kobo, currency, status, ttl_seconds,
 			total_targets, created_at`,
 		batchNo, in.MerchantID, in.CenterID, in.AmountKobo, in.Currency, BulkBatchPending, in.TTLSeconds, createdBy).Scan(
 		&b.ID, &b.BatchNo, &b.MerchantID, &b.CenterID, &b.AmountKobo, &b.Currency, &b.Status, &b.TTLSeconds,
@@ -354,7 +354,7 @@ func (s *Store) CreateBulkBatch(ctx context.Context, in NewBulkBatch) (BulkBatch
 func (s *Store) BulkBatchByID(ctx context.Context, merchantID, id uuid.UUID) (BulkBatch, error) {
 	var b BulkBatch
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds,
+		SELECT id, batch_no, merchant_id, COALESCE(center_id,'00000000-0000-0000-0000-000000000000'::uuid), amount_kobo, currency, status, ttl_seconds,
 			total_targets, requested_count, responded_count, eligible_count, paid_count, failed_count,
 			expired_count, total_debited_kobo, compliance_flag,
 			created_by, created_at, stage1_at, stage2_due_at, completed_at, failure_reason
@@ -370,7 +370,7 @@ func (s *Store) BulkBatchByID(ctx context.Context, merchantID, id uuid.UUID) (Bu
 func (s *Store) BulkBatchByIDAny(ctx context.Context, id uuid.UUID) (BulkBatch, error) {
 	var b BulkBatch
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds,
+		SELECT id, batch_no, merchant_id, COALESCE(center_id,'00000000-0000-0000-0000-000000000000'::uuid), amount_kobo, currency, status, ttl_seconds,
 			total_targets, requested_count, responded_count, eligible_count, paid_count, failed_count,
 			expired_count, total_debited_kobo, compliance_flag,
 			created_by, created_at, stage1_at, stage2_due_at, completed_at, failure_reason
@@ -388,7 +388,7 @@ func (s *Store) ListBulkBatches(ctx context.Context, merchantID uuid.UUID, limit
 		limit = 50
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds,
+		SELECT id, batch_no, merchant_id, COALESCE(center_id,'00000000-0000-0000-0000-000000000000'::uuid), amount_kobo, currency, status, ttl_seconds,
 			total_targets, requested_count, responded_count, eligible_count, paid_count, failed_count,
 			expired_count, total_debited_kobo, compliance_flag,
 			created_by, created_at, stage1_at, stage2_due_at, completed_at, failure_reason
@@ -619,7 +619,7 @@ func (s *Store) FinalizeBulkBatch(ctx context.Context, batchID uuid.UUID, failur
 			paid_count=$5, failed_count=$6, expired_count=$7, total_debited_kobo=$8,
 			completed_at=now(), failure_reason=$9, updated_at=now()
 		WHERE id=$10
-		RETURNING id, batch_no, merchant_id, center_id, amount_kobo, currency, status, ttl_seconds,
+		RETURNING id, batch_no, merchant_id, COALESCE(center_id,'00000000-0000-0000-0000-000000000000'::uuid), amount_kobo, currency, status, ttl_seconds,
 			total_targets, requested_count, responded_count, eligible_count, paid_count, failed_count,
 			expired_count, total_debited_kobo, compliance_flag,
 			created_by, created_at, stage1_at, stage2_due_at, completed_at, failure_reason`,
@@ -642,6 +642,54 @@ func (s *Store) FinalizeBulkBatch(ctx context.Context, batchID uuid.UUID, failur
 func (s *Store) SetBulkBatchComplianceFlag(ctx context.Context, batchID uuid.UUID, flag bool) error {
 	_, err := s.pool.Exec(ctx, `UPDATE bulk_batches SET compliance_flag=$1, updated_at=now() WHERE id=$2`, flag, batchID)
 	return err
+}
+
+// PostBulkPaymentItemBank marks a bank payout as completed for one eligible
+// item. The actual money movement is handled by the payout provider; this
+// records the transfer reference against the item.
+func (s *Store) PostBulkPaymentItemBank(ctx context.Context, itemID uuid.UUID, transferRef string) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		batchID   uuid.UUID
+		batchNo   string
+		merchantID uuid.UUID
+		status    string
+		creditRef string
+		amount    int64
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT i.batch_id, b.batch_no, b.merchant_id, i.status, i.credit_ref, i.amount_kobo
+		FROM bulk_batch_items i
+		JOIN bulk_batches b ON b.id = i.batch_id
+		WHERE i.id=$1 FOR UPDATE OF i`, itemID).Scan(
+		&batchID, &batchNo, &merchantID, &status, &creditRef, &amount)
+	if err != nil {
+		return "", err
+	}
+	if status == BulkItemPaid && creditRef != "" {
+		return creditRef, nil
+	}
+	if status != BulkItemLocationReceived {
+		return "", fmt.Errorf("bulk item %s is %s, not payable", itemID, status)
+	}
+	ref := transferRef
+	if strings.TrimSpace(ref) == "" {
+		ref = fmt.Sprintf("bulk-bank:%s:%s", batchNo, itemID)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE bulk_batch_items SET status=$1, credit_ref=$2, transfer_ref=$3, updated_at=now() WHERE id=$4`,
+		BulkItemPaid, ref, ref, itemID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return ref, nil
 }
 
 // PostBulkPaymentItem debits the merchant's business wallet and credits the

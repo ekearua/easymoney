@@ -1,0 +1,85 @@
+{{define "merchant_record_detail.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow"><a href="/merchant/records">Recipient records</a></p><h1>{{if .Recipient.DisplayName}}{{.Recipient.DisplayName}}{{else}}{{.Recipient.PhoneE164}}{{end}}</h1></div></header>
+  {{if .Saved}}<div class="alert success">Record saved.</div>{{end}}
+  {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  <div class="panel">
+    <p class="muted">{{.Recipient.PhoneE164}} · {{if .Recipient.CenterName}}{{.Recipient.CenterName}}{{else}}No location{{end}} · verification {{.Recipient.VerificationStatus}}{{if .Recipient.VerificationNote}} ({{.Recipient.VerificationNote}}){{end}}</p>
+    <p class="muted">Source: {{.Recipient.Source}}{{if .Recipient.SourceFile}} · {{.Recipient.SourceFile}}{{end}}</p>
+  </div>
+
+  <div class="panel">
+    <h2>Verification</h2>
+    <p class="muted">Only verified records can be paid. Editing a record clears its verification.</p>
+    <form method="post" action="/merchant/records/{{.Recipient.ID}}/verify">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <label>Note <input type="text" name="note" value="{{.Recipient.VerificationNote}}"></label>
+      <button type="submit" name="status" value="verified">Mark verified</button>
+      <button type="submit" name="status" value="rejected" class="link-button">Reject</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Edit record</h2>
+    <form method="post" action="/merchant/records/{{.Recipient.ID}}">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <div class="form-grid">
+        <label>Phone <input type="text" name="phone" value="{{.Recipient.PhoneE164}}" required></label>
+        <label>Name <input type="text" name="name" value="{{.Recipient.DisplayName}}"></label>
+        <label>BVN <input type="text" name="bvn" value="{{.Recipient.BVN}}"></label>
+        <label>NIN <input type="text" name="nin" value="{{.Recipient.NIN}}"></label>
+        <label>VIN <input type="text" name="vin" value="{{.Recipient.VIN}}"></label>
+        <label>Account number <input type="text" name="account_number" value="{{.Recipient.AccountNumber}}"></label>
+        <label>Bank name <input type="text" name="bank_name" value="{{.Recipient.BankName}}"></label>
+        <label>Bank code <input type="text" name="bank_code" value="{{.Recipient.BankCode}}"></label>
+        <label>Account name <input type="text" name="account_name" value="{{.Recipient.AccountName}}"></label>
+        <label>State <input type="text" name="state" value="{{.Recipient.State}}"></label>
+        <label>LGA <input type="text" name="lga" value="{{.Recipient.LGA}}"></label>
+        <label>Ward <input type="text" name="ward" value="{{.Recipient.Ward}}"></label>
+        <label>Polling unit / booth <input type="text" name="polling_unit" value="{{.Recipient.PollingUnit}}"></label>
+      </div>
+      {{if .Centers}}<label>Location
+        <select name="center_id">
+          <option value="">No location</option>
+          {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+        </select>
+      </label>{{end}}
+      <input type="hidden" name="source_file" value="{{.Recipient.SourceFile}}">
+      <button type="submit">Save changes</button>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Payment history</h2>
+    <dl class="stats">
+      <div><dt>Payments</dt><dd>{{.Summary.Count}}</dd></div>
+      <div><dt>Total received</dt><dd>{{money .Summary.TotalKobo}}</dd></div>
+      <div><dt>Last payment</dt><dd>{{if .Summary.LastPaidAt}}{{.Summary.LastPaidAt.Format "02 Jan 2006"}}{{else}}—{{end}}</dd></div>
+    </dl>
+  </div>
+
+  <div class="panel">
+    <form method="post" action="/merchant/records/{{.Recipient.ID}}/delete" onsubmit="return confirm('Remove this record permanently?');">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="link-button">Remove record</button>
+    </form>
+  </div>
+
+  {{if .History}}
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th><th>Location</th><th>When</th></tr></thead><tbody>
+  {{range .History}}<tr>
+    <td class="mono">{{.BatchNo}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Status}}</td>
+    <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
+    <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
+    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+  </tr>{{end}}</tbody></table></div>
+  {{end}}
+</main></body></html>
+{{end}}

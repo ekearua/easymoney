@@ -1,0 +1,33 @@
+{{define "merchant_payable_detail.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "merchant_nav" .}}<main class="dashboard">
+  <header class="page-header"><div><p class="eyebrow"><a href="/merchant/payables">Payable recipients</a></p><h1>{{if .Recipient.DisplayName}}{{.Recipient.DisplayName}}{{else}}{{.Recipient.PhoneE164}}{{end}}</h1></div></header>
+  <div class="panel">
+    <p class="muted">{{.Recipient.PhoneE164}} · {{if .Recipient.State}}{{.Recipient.State}}{{else}}—{{end}} / {{if .Recipient.LGA}}{{.Recipient.LGA}}{{else}}—{{end}} / {{if .Recipient.Ward}}{{.Recipient.Ward}}{{else}}—{{end}}{{if .Recipient.PollingUnit}} · {{.Recipient.PollingUnit}}{{end}}</p>
+    <p class="muted">Account: {{if .Recipient.AccountNumber}}{{.Recipient.AccountNumber}}{{else}}no bank account on file{{end}}{{if .Recipient.BankName}} · {{.Recipient.BankName}}{{end}}</p>
+  </div>
+  <div class="panel">
+    <dl class="stats">
+      <div><dt>Payments</dt><dd>{{.Summary.Count}}</dd></div>
+      <div><dt>Total received</dt><dd>{{money .Summary.TotalKobo}}</dd></div>
+      <div><dt>Last payment</dt><dd>{{if .Summary.LastPaidAt}}{{.Summary.LastPaidAt.Format "02 Jan 2006"}}{{else}}—{{end}}</dd></div>
+      <div><dt>Last amount</dt><dd>{{if .Summary.LastPaidAt}}{{money .Summary.LastAmountKobo}}{{else}}—{{end}}</dd></div>
+    </dl>
+  </div>
+  {{if .History}}
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th><th>Ward</th><th>Location</th><th>When</th></tr></thead><tbody>
+  {{range .History}}<tr>
+    <td class="mono">{{.BatchNo}}</td>
+    <td>{{money .AmountKobo}}</td>
+    <td>{{.Status}}</td>
+    <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
+    <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
+    <td>{{if .Ward}}{{.Ward}}{{else}}—{{end}}</td>
+    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+  </tr>{{end}}</tbody></table></div>
+  {{else}}<div class="panel"><p class="muted">No payments to this recipient yet.</p></div>{{end}}
+</main></body></html>
+{{end}}

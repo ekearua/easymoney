@@ -33,6 +33,9 @@ type Merchant struct {
 	MinInstallmentPercent int
 	MaxInstallments       int
 	AllowFullPayAlways    bool
+	// BulkEnabled gates the location-aware bulk payments feature. Admins turn
+	// it on per merchant; it is off by default.
+	BulkEnabled bool
 }
 
 // MerchantNotificationPrefs holds per-merchant notification opt-in flags.
@@ -131,7 +134,7 @@ func (s *Store) ListMerchants(ctx context.Context) ([]Merchant, error) {
 }
 
 func (s *Store) listMerchants(ctx context.Context, activeOnly bool) ([]Merchant, error) {
-	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always FROM merchants`
+	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled FROM merchants`
 	if activeOnly {
 		query += ` WHERE active=true`
 	}
@@ -158,7 +161,7 @@ func (s *Store) MerchantBySlug(ctx context.Context, slug string) (Merchant, erro
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled
 		FROM merchants WHERE slug=$1 AND active=true`, slug).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -166,7 +169,7 @@ func (s *Store) MerchantBySlug(ctx context.Context, slug string) (Merchant, erro
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	return merchant, err
 }
@@ -196,7 +199,7 @@ func (s *Store) SearchMerchants(ctx context.Context, query string, offset, limit
 	sql := `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled
 		FROM merchants
 		WHERE active=true`
 	if search != "" {
@@ -243,7 +246,7 @@ func (s *Store) SearchMerchantsExcludingUserRecents(ctx context.Context, userID 
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled
 		FROM merchants m
 		WHERE m.active=true
 			AND NOT EXISTS (
@@ -291,7 +294,7 @@ func (s *Store) RecentMerchantsForUser(ctx context.Context, userID uuid.UUID, li
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 			m.search_keywords, m.sort_order, m.created_at,
 			m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-			m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+			m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled
 		FROM user_merchant_recents r
 		JOIN merchants m ON m.id=r.merchant_id
 		WHERE r.user_id=$1 AND m.active=true
@@ -407,7 +410,7 @@ func (s *Store) ApproveMerchantRegistration(ctx context.Context, registrationID 
 			updated_at=now()
 		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		          password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		          min_installment_percent, max_installments, allow_full_pay_always`,
+		          min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled`,
 		slug, request.BusinessName, request.Category, request.Description,
 		strings.ToLower(request.BusinessName+" "+request.Category+" "+request.Description),
 	).Scan(&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
@@ -415,7 +418,7 @@ func (s *Store) ApproveMerchantRegistration(ctx context.Context, registrationID 
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways)
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled)
 	if err != nil {
 		return Merchant{}, err
 	}
@@ -486,7 +489,7 @@ func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) 
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled
 		FROM merchant_owners mo
 		JOIN merchants m ON m.id=mo.merchant_id
 		WHERE mo.user_id=$1 AND m.active=true
@@ -519,7 +522,7 @@ func scanMerchant(rows pgx.Rows) (Merchant, error) {
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	return merchant, err
 }
@@ -530,7 +533,7 @@ func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled
 		FROM merchants WHERE id=$1`, id).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -538,7 +541,7 @@ func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	return merchant, err
 }
@@ -574,7 +577,7 @@ func (s *Store) MerchantByEmail(ctx context.Context, email string) (Merchant, er
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled
 		FROM merchants m
 		JOIN merchant_owners mo ON mo.merchant_id=m.id
 		JOIN users u ON u.id=mo.user_id
@@ -587,7 +590,7 @@ func (s *Store) MerchantByEmail(ctx context.Context, email string) (Merchant, er
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	return merchant, err
 }
@@ -710,6 +713,39 @@ func (s *Store) UpdateMerchantPaymentTerms(ctx context.Context, merchantID uuid.
 	return err
 }
 
+// MerchantBulkPaymentsEnabled reports whether a merchant may use bulk payments.
+func (s *Store) MerchantBulkPaymentsEnabled(ctx context.Context, merchantID uuid.UUID) (bool, error) {
+	var enabled bool
+	err := s.pool.QueryRow(ctx, `SELECT bulk_enabled FROM merchants WHERE id=$1`, merchantID).Scan(&enabled)
+	return enabled, err
+}
+
+// SetMerchantBulkPayments enables or disables bulk payments for a merchant.
+func (s *Store) SetMerchantBulkPayments(ctx context.Context, merchantID uuid.UUID, enabled bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET bulk_enabled=$2, updated_at=now() WHERE id=$1`, merchantID, enabled)
+	return err
+}
+
+// ListMerchantBulkPayments returns each merchant's bulk-payment flag by id.
+func (s *Store) ListMerchantBulkPayments(ctx context.Context) (map[uuid.UUID]bool, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, bulk_enabled FROM merchants`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	flags := make(map[uuid.UUID]bool)
+	for rows.Next() {
+		var id uuid.UUID
+		var enabled bool
+		if err := rows.Scan(&id, &enabled); err != nil {
+			return nil, err
+		}
+		flags[id] = enabled
+	}
+	return flags, rows.Err()
+}
+
 // UpdateMerchantPassword sets the password hash for a merchant.
 func (s *Store) UpdateMerchantPassword(ctx context.Context, merchantID uuid.UUID, passwordHash string) error {
 	_, err := s.pool.Exec(ctx, `
@@ -764,6 +800,7 @@ type CreateMerchantDirectParams struct {
 
 	// Services
 	CreateScanningService bool
+	BulkPaymentsEnabled   bool
 }
 
 // CreateMerchantDirect creates a merchant directly (admin action), bypassing registration approval.
@@ -823,20 +860,20 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 	err = tx.QueryRow(ctx, `
 		INSERT INTO merchants(id, slug, name, category, description, logo_url, active, search_keywords,
 			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-			min_installment_percent, max_installments, allow_full_pay_always, updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,'', $9,$10,$11,$12,$13,$14, now())
+			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, updated_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,'', $9,$10,$11,$12,$13,$14,$15, now())
 		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-			min_installment_percent, max_installments, allow_full_pay_always`,
+			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled`,
 		merchantID, slug, name, category, desc, logo, p.Active, keywords,
-		p.AllowPartialPayments, p.MinInvoiceAmountKobo, upfront, minInstallPct, maxInst, p.AllowFullPayAlways,
+		p.AllowPartialPayments, p.MinInvoiceAmountKobo, upfront, minInstallPct, maxInst, p.AllowFullPayAlways, p.BulkPaymentsEnabled,
 	).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
 		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt,
 		&merchant.PasswordHash, &merchant.AllowPartialPayments,
 		&merchant.MinInvoiceAmountKobo, &merchant.UpfrontPercent,
 		&merchant.MinInstallmentPercent, &merchant.MaxInstallments,
-		&merchant.AllowFullPayAlways,
+		&merchant.AllowFullPayAlways, &merchant.BulkEnabled,
 	)
 	if err != nil {
 		return Merchant{}, nil, err

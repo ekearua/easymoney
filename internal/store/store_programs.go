@@ -340,7 +340,7 @@ func (s *Store) IsSponsor(ctx context.Context, merchantID uuid.UUID) (bool, erro
 // console's sponsor-approval panel.
 func (s *Store) SponsorMerchants(ctx context.Context) ([]Merchant, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always
+		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled
 		FROM merchants WHERE merchant_type='sponsor' ORDER BY sort_order, name`)
 	if err != nil {
 		return nil, err

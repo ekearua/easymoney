@@ -216,7 +216,7 @@ func TestMerchantBulkHandlersScopeToMerchant(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	bulk := service.NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{service.ChannelWhatsApp: &simMessenger{}}, logger,
-		service.BulkPaymentsConfig{BaseURL: cfg.BaseURL, RadiusM: cfg.BulkRadiusM, SendRatePerSec: 1000})
+		service.BulkPaymentsConfig{BaseURL: cfg.BaseURL, RadiusM: cfg.BulkRadiusM, SendRatePerSec: 1000}, nil, nil)
 	a := &App{
 		cfg: cfg, logger: logger, store: repository, templates: bulkMerchantTemplates(t),
 		rateLimiter: ratelimit.NewMemory(), bulkPayments: bulk,

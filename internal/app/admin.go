@@ -129,7 +129,31 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
 		return
 	}
-	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{"Merchants": merchants, "Registrations": registrations})
+	bulkEnabled, err := a.store.ListMerchantBulkPayments(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	members, err := a.store.MerchantMembersByMerchant(r.Context())
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	settings := make(map[uuid.UUID]store.MerchantBulkSettings, len(merchants))
+	for _, merchant := range merchants {
+		if value, serr := a.store.MerchantBulkSettings(r.Context(), merchant.ID); serr == nil {
+			settings[merchant.ID] = value
+		}
+	}
+	inviteLink := ""
+	if token := strings.TrimSpace(r.URL.Query().Get("invite")); token != "" {
+		inviteLink = strings.TrimRight(a.cfg.BaseURL, "/") + "/merchant/invite?token=" + token
+	}
+	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{
+		"Merchants": merchants, "Registrations": registrations, "BulkEnabled": bulkEnabled,
+		"Members": members, "Settings": settings, "InviteLink": inviteLink,
+		"Error": r.URL.Query().Get("error"),
+	})
 }
 
 func (a *App) adminMerchantCreateForm(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +229,7 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 		MaxInstallments:       maxInstallments,
 		AllowFullPayAlways:    allowFullAlways,
 		CreateScanningService: createScanning,
+		BulkPaymentsEnabled:   r.FormValue("bulk_payments_enabled") == "on",
 	}
 
 	merchant, resetToken, err := a.store.CreateMerchantDirect(r.Context(), params)
@@ -212,6 +237,18 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 		a.logger.WarnContext(r.Context(), "create merchant direct failed", "name", name, "error", err)
 		http.Error(w, "merchant creation failed: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Bulk switches live on their own handler; apply the create-form values so a
+	// new merchant starts with the admin's payout and location choices.
+	payoutMode := strings.TrimSpace(r.FormValue("bulk_payout_mode"))
+	if payoutMode != "wallet" && payoutMode != "bank" {
+		payoutMode = "wallet"
+	}
+	if err := a.store.SetMerchantBulkSettings(r.Context(), merchant.ID,
+		r.FormValue("bulk_payments_enabled") == "on",
+		r.FormValue("bulk_location_required") == "on", payoutMode); err != nil {
+		a.logger.WarnContext(r.Context(), "apply merchant bulk settings failed", "merchant_id", merchant.ID.String(), "error", err)
 	}
 
 	var setPasswordURL string
@@ -738,6 +775,27 @@ func (a *App) adminSetMerchantPaymentTerms(w http.ResponseWriter, r *http.Reques
 		"min_installment_percent": minInstallPct, "max_installments": maxInstallments, "allow_full_always": allowFullAlways,
 	})
 	http.Redirect(w, r, "/admin/merchants?terms_set=1", http.StatusSeeOther)
+}
+
+func (a *App) adminSetMerchantBulkPayments(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	enabled := r.FormValue("bulk_payments_enabled") == "on"
+	if err := a.store.SetMerchantBulkPayments(r.Context(), id, enabled); err != nil {
+		http.Error(w, "save failed", http.StatusInternalServerError)
+		return
+	}
+	a.audit(r, "admin.merchants.bulk_payments_updated", "merchant", id.String(), map[string]any{
+		"enabled": enabled,
+	})
+	http.Redirect(w, r, "/admin/merchants?bulk_set=1", http.StatusSeeOther)
 }
 
 func (a *App) adminSetPhoneWhitelist(w http.ResponseWriter, r *http.Request) {

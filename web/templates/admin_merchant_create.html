@@ -48,7 +48,15 @@
 <h2>Services & access</h2>
 <label class="checkbox-row"><input type="checkbox" name="create_scanning_service" checked> Create receipt scanning service</label>
 <label class="checkbox-row"><input type="checkbox" name="is_sponsor"> Grant sponsor privileges (programs)</label>
-<p class="muted">Bulk payments are available to all merchants by default.</p>
+<label class="checkbox-row"><input type="checkbox" name="bulk_payments_enabled"> Enable bulk payments (location-aware disbursements)</label>
+<label class="checkbox-row"><input type="checkbox" name="bulk_location_required" checked> Require location verification (stage 1 / stage 2)</label>
+<label>Bulk payout destination
+  <select name="bulk_payout_mode">
+    <option value="wallet">Recipient wallet</option>
+    <option value="bank">Bank account (from the recipient record)</option>
+  </select>
+</label>
+<p class="muted">Bulk payments are disabled unless enabled here. The location and payout switches can also be changed later under Manage on the Merchants page.</p>
 
 <div class="mt-16"><button type="submit">Create merchant</button></div>
 </form>

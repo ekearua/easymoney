@@ -1,8 +1,16 @@
 {{define "merchant_nav"}}
+{{$role := .Role}}
 <nav class="topbar" hx-boost="true">
-  <a class="brand" href="/merchant/scanner">{{.AppName}}</a>
+  {{if eq $role "records"}}<a class="brand" href="/merchant/records">{{.AppName}}</a>
+  {{else if eq $role "payments"}}<a class="brand" href="/merchant/payables">{{.AppName}}</a>
+  {{else}}<a class="brand" href="/merchant/scanner">{{.AppName}}</a>{{end}}
   <div class="navlinks">
-    <a href="/merchant/scanner">Scanner</a><a href="/merchant/services">Services</a><a href="/merchant/events">Events</a><a href="/merchant/bulk/batches">Bulk</a><a href="/merchant/invoices">Invoices</a><a href="/merchant/payments">Payments</a><a href="/merchant/payouts">Payouts</a><a href="/merchant/programs">Programs</a><a href="/merchant/settings">Settings</a><a href="/merchant/profile">Profile</a><a href="/merchant/security">Security</a>
+    {{if eq $role "owner"}}<a href="/merchant/scanner">Scanner</a><a href="/merchant/services">Services</a><a href="/merchant/events">Events</a>{{end}}
+    {{if or (eq $role "owner") (eq $role "records")}}<a href="/merchant/records">Records</a>{{end}}
+    {{if or (eq $role "owner") (eq $role "payments")}}<a href="/merchant/payables">Payables</a>{{end}}
+    {{if and .BulkEnabled (or (eq $role "owner") (eq $role "payments"))}}<a href="/merchant/bulk/batches">Batches</a>{{end}}
+    {{if eq $role "owner"}}<a href="/merchant/invoices">Invoices</a><a href="/merchant/payments">Payments</a><a href="/merchant/payouts">Payouts</a><a href="/merchant/programs">Programs</a><a href="/merchant/team">Team</a><a href="/merchant/settings">Settings</a><a href="/merchant/profile">Profile</a>{{end}}
+    <a href="/merchant/security">Security</a>
     <form method="post" action="/merchant/logout"><input type="hidden" name="csrf_token" value="{{.CSRF}}"><button class="link-button">Sign out</button></form>
   </div>
 </nav>

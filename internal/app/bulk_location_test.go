@@ -149,7 +149,7 @@ func TestBulkLocationCaptureEndToEnd(t *testing.T) {
 	logger := slog.Default()
 	bulk := service.NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{service.ChannelWhatsApp: &simMessenger{}}, logger,
-		service.BulkPaymentsConfig{BaseURL: cfg.BaseURL, RadiusM: cfg.BulkRadiusM, SendRatePerSec: 1000})
+		service.BulkPaymentsConfig{BaseURL: cfg.BaseURL, RadiusM: cfg.BulkRadiusM, SendRatePerSec: 1000}, nil, nil)
 	templates, err := template.New("").ParseFS(web.Assets, "templates/bulk_location.html")
 	if err != nil {
 		t.Fatal(err)
