@@ -256,8 +256,6 @@ func TestTemplatesParse(t *testing.T) {
 		}
 	}
 	var buf strings.Builder
-
-	var buf strings.Builder
 	exec := map[string]any{
 		"AppName":   "Xego",
 		"Title":     "Regulator reports",

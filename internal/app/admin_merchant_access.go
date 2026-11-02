@@ -39,6 +39,7 @@ func (a *App) adminSetMerchantBulkSettings(w http.ResponseWriter, r *http.Reques
 	http.Redirect(w, r, "/admin/merchants?bulk_set=1", http.StatusSeeOther)
 }
 
+
 // adminInviteMerchantMember creates a staff invite for a merchant.
 func (a *App) adminInviteMerchantMember(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {

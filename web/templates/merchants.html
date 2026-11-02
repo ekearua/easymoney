@@ -30,13 +30,6 @@
 </form>
 {{end}}
 {{if eq $.AdminRole "admin"}}
-<h3>Two-factor reset</h3>
-<form method="post" action="/admin/merchants/{{.ID}}/mfa-reset" class="mt-8">
-<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-<button type="submit">Reset sign-in methods (lost device)</button>
-</form>
-{{end}}
-{{if eq $.AdminRole "admin"}}
 <h3>Payment terms</h3>
 <form method="post" action="/admin/merchants/{{.ID}}/payment-terms">
 <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
@@ -68,37 +61,22 @@
 <button type="submit">Save bulk settings</button>
 </form>
 
-<h3>Team roles</h3>
-{{$merchantID := .ID}}
-{{$memberList := index $.Members .ID}}
-{{if $memberList}}
-<ul class="muted">
-{{range $memberList}}<li>{{.Email}} — {{.Role}} ({{.Status}})
-  <form method="post" action="/admin/merchants/{{$merchantID}}/members/{{.ID}}/role" class="inline">
-    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-    <select name="role">
-      <option value="records" {{if eq .Role "records"}}selected{{end}}>records</option>
-      <option value="payments" {{if eq .Role "payments"}}selected{{end}}>payments</option>
-    </select>
-    <button class="link-button">Save</button>
-  </form>
-  <form method="post" action="/admin/merchants/{{$merchantID}}/members/{{.ID}}/revoke" class="inline">
-    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-    <button class="link-button">Revoke</button>
-  </form>
-</li>{{end}}
-</ul>
-{{else}}<p class="muted">No team members.</p>{{end}}
-<form method="post" action="/admin/merchants/{{$merchantID}}/members/invite">
+{{if eq $.AdminRole "admin"}}
+<h3>Lifecycle</h3>
+
+
+<form method="post" action="/admin/merchants/{{.ID}}/active" class="inline">
 <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-<input type="email" name="email" placeholder="Email" required>
-<select name="role">
-  <option value="records">records</option>
-  <option value="payments">payments</option>
-</select>
-<button type="submit">Invite</button>
+<button class="link-button">{{if .Active}}Disable merchant{{else}}Enable merchant{{end}}</button>
 </form>
+<p class="muted">Disable removes the merchant from the live catalogue and blocks checkout and API-key access. It keeps the merchant row and financial records for the ledger.</p>
+<form method="post" action="/admin/merchants/{{.ID}}/delete" class="mt-8">
+<input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+<button class="link-button danger">Remove merchant</button>
+</form>
+<p class="muted">Removal is final. A merchant with payments or invoices cannot be removed and must be disabled instead.</p>
 {{end}}
+
 </div>
 </details>
 </article>{{end}}</section>

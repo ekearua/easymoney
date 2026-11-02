@@ -85,6 +85,20 @@ type BulkRecipientInput struct {
 	LGA           string
 	Ward          string
 	PollingUnit   string
+	rawRow        []string
+	columns       map[string]int
+}
+
+// RecipientInputRowID returns a stable human-readable label for a parsed
+// import row, so error messages coming from store-level failures can still
+// name the template's row/serial identity.
+func RecipientInputRowID(in BulkRecipientInput) string {
+	if cols := in.columns; cols != nil {
+		if idx, ok := cols["row"]; ok && idx >= 0 && idx < len(in.rawRow) && strings.TrimSpace(in.rawRow[idx]) != "" {
+			return strings.TrimSpace(in.rawRow[idx])
+		}
+	}
+	return ""
 }
 
 // RecipientPaymentSummary is the per-recipient bulk history headline.

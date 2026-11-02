@@ -18,6 +18,7 @@ type recordField int
 
 const (
 	fieldIgnore recordField = iota
+	fieldRow
 	fieldName
 	fieldPhone
 	fieldBVN
@@ -41,6 +42,7 @@ var recordHeaderAliases = map[string]recordField{
 	"sn":               fieldIgnore,
 	"sno":              fieldIgnore,
 	"serial":           fieldIgnore,
+	"row":              fieldRow,
 	"name":             fieldName,
 	"fullname":         fieldName,
 	"recipient":        fieldName,
@@ -118,31 +120,9 @@ func parseRecordsFile(file io.Reader, filename string, centerID *uuid.UUID, sour
 		if rowIsBlank(row) {
 			continue
 		}
-		input := store.BulkRecipientInput{CenterID: centerID, Source: "upload", SourceFile: sourceFile}
-		if len(columns) > 0 {
-			input.PhoneE164 = cell(row, columns[fieldPhone])
-			input.DisplayName = cell(row, columns[fieldName])
-			input.BVN = cell(row, columns[fieldBVN])
-			input.NIN = cell(row, columns[fieldNIN])
-			input.VIN = cell(row, columns[fieldVIN])
-			input.AccountNumber = cell(row, columns[fieldAccountNumber])
-			input.BankName = cell(row, columns[fieldBankName])
-			input.BankCode = cell(row, columns[fieldBankCode])
-			input.AccountName = cell(row, columns[fieldAccountName])
-			input.State = cell(row, columns[fieldState])
-			input.LGA = cell(row, columns[fieldLGA])
-			input.Ward = cell(row, columns[fieldWard])
-			input.PollingUnit = cell(row, columns[fieldPollingUnit])
-			if fromFile := cell(row, columns[fieldSourceFile]); fromFile != "" {
-				input.SourceFile = fromFile
-			}
-		} else {
-			phone, name := legacyPhoneName(row)
-			input.PhoneE164 = phone
-			input.DisplayName = name
-		}
+		input := storeBRI(row, columns, centerID, sourceFile)
 		if strings.TrimSpace(input.PhoneE164) == "" {
-			problems = append(problems, "Row "+strconv.Itoa(i+1)+": no phone number")
+			problems = append(problems, recordDataRowId(i, row, columns)+": no phone number")
 			continue
 		}
 		out = append(out, input)
@@ -176,6 +156,16 @@ func recordHeaderRow(row []string) (map[recordField]int, bool) {
 		return nil, false
 	}
 	return index, true
+}
+
+// recordDataRowId returns a stable human-readable row id when the template
+// carries an explicit serial/number column, otherwise falls back to the
+// one-based file position.
+func recordDataRowId(rowIndex int, row []string, columns map[recordField]int) string {
+	if rid, ok := columns[fieldRow]; ok && rid >= 0 && rid < len(row) && strings.TrimSpace(row[rid]) != "" {
+		return strings.TrimSpace(row[rid])
+	}
+	return strconv.Itoa(rowIndex + 1)
 }
 
 func hasField(index map[recordField]int, field recordField) bool {
@@ -253,4 +243,36 @@ func readXLSXRows(file io.Reader) ([][]string, error) {
 		return nil, errors.New("workbook has no sheets")
 	}
 	return book.GetRows(sheets[0])
+}
+
+// storeBRI mirrors the template row into store.BulkRecipientInput and keeps
+// the parsed header index so post-import error lines can still name the
+// template's row/serial identity.
+func storeBRI(row []string, columns map[recordField]int, centerID *uuid.UUID, sourceFile string) store.BulkRecipientInput {
+	in := store.BulkRecipientInput{
+		CenterID: centerID, Source: "upload", SourceFile: sourceFile,
+	}
+	if len(columns) > 0 {
+		in.PhoneE164 = cell(row, columns[fieldPhone])
+		in.DisplayName = cell(row, columns[fieldName])
+		in.BVN = cell(row, columns[fieldBVN])
+		in.NIN = cell(row, columns[fieldNIN])
+		in.VIN = cell(row, columns[fieldVIN])
+		in.AccountNumber = cell(row, columns[fieldAccountNumber])
+		in.BankName = cell(row, columns[fieldBankName])
+		in.BankCode = cell(row, columns[fieldBankCode])
+		in.AccountName = cell(row, columns[fieldAccountName])
+		in.State = cell(row, columns[fieldState])
+		in.LGA = cell(row, columns[fieldLGA])
+		in.Ward = cell(row, columns[fieldWard])
+		in.PollingUnit = cell(row, columns[fieldPollingUnit])
+		if fromFile := cell(row, columns[fieldSourceFile]); fromFile != "" {
+			in.SourceFile = fromFile
+		}
+	} else {
+		phone, name := legacyPhoneName(row)
+		in.PhoneE164 = phone
+		in.DisplayName = name
+	}
+	return in
 }
