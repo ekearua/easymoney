@@ -877,6 +877,8 @@ func (a *App) routes() http.Handler {
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/bulk-payments", a.adminSetMerchantBulkPayments)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/bulk-settings", a.adminSetMerchantBulkSettings)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/active", a.adminSetMerchantActive)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/delete", a.adminDeleteMerchant)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/invite", a.adminInviteMerchantMember)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/{memberID}/role", a.adminSetMerchantMemberRole)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/members/{memberID}/revoke", a.adminRevokeMerchantMember)

@@ -770,6 +770,29 @@ func (s *Store) UpdateServicePhoneWhitelist(ctx context.Context, serviceID uuid.
 	return err
 }
 
+// SetMerchantActive flips a merchant's active flag. Inactive merchants are
+// invisible to the public catalogue (MerchantBySlug, ListActiveMerchants) and
+// are refused by the checkout and API-key paths, but every row — including
+// their payments and invoices — stays intact, so the toggle is fully
+// reversible and never collides with a foreign-key constraint.
+func (s *Store) SetMerchantActive(ctx context.Context, merchantID uuid.UUID, active bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchants SET active=$2, updated_at=now() WHERE id=$1`, merchantID, active)
+	return err
+}
+
+// DeleteMerchant removes a merchant row and everything the ON DELETE CASCADE
+// clauses already own (members, sessions, services, webhooks, settlements,
+// bulk batches). Payments and invoices reference merchants(id) without
+// CASCADE, so a merchant with financial history cannot be hard-deleted: the
+// constraint surfaces a clear foreign-key error and the admin must fall back
+// to SetMerchantActive(false) instead. That is the intended escape hatch —
+// financial records are immutable by design (MLPA).
+func (s *Store) DeleteMerchant(ctx context.Context, merchantID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM merchants WHERE id=$1`, merchantID)
+	return err
+}
+
 // CreateMerchantDirectParams configures direct merchant creation by an admin.
 type CreateMerchantDirectParams struct {
 	Name        string

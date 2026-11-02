@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"net"
 
 	"whatsapp-payment-demo/internal/kyc"
 	"whatsapp-payment-demo/internal/store"
@@ -150,11 +151,27 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 	if token := strings.TrimSpace(r.URL.Query().Get("invite")); token != "" {
 		inviteLink = strings.TrimRight(a.cfg.BaseURL, "/") + "/merchant/invite?token=" + token
 	}
-	a.renderAdmin(w, "merchants.html", r, "Merchants", map[string]any{
+	data := map[string]any{
 		"Merchants": merchants, "Registrations": registrations, "BulkEnabled": bulkEnabled,
 		"Members": members, "Settings": settings, "InviteLink": inviteLink,
 		"Error": r.URL.Query().Get("error"),
-	})
+	}
+	if merchantCreated := r.URL.Query().Get("merchant_created"); merchantCreated == "1" {
+		data["MerchantCreated"] = true
+		if resetURL := r.URL.Query().Get("reset_url"); resetURL != "" {
+			data["ResetURL"] = resetURL
+		}
+		if emailError := r.URL.Query().Get("email_error"); emailError != "" {
+			data["EmailError"] = emailError
+		}
+	}
+	if passwordSet := r.URL.Query().Get("password_set"); passwordSet == "1" {
+		data["PasswordSet"] = true
+	}
+	if termsSet := r.URL.Query().Get("terms_set"); termsSet == "1" {
+		data["TermsSet"] = true
+	}
+	a.renderAdmin(w, "merchants.html", r, "Merchants", data)
 }
 
 func (a *App) adminMerchantCreateForm(w http.ResponseWriter, r *http.Request) {
@@ -253,6 +270,7 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var setPasswordURL string
+	var emailError string
 	if resetToken != nil && *resetToken != "" {
 		setPasswordURL = a.cfg.BaseURL + "/merchant/set-password?token=" + *resetToken
 
@@ -270,6 +288,7 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 				a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
 				if err := a.sendMerchantOwnerNotificationEmail(r.Context(), owner.Email, merchant.Name, setPasswordURL); err != nil {
 					a.logger.WarnContext(r.Context(), "send merchant password reset email failed", "merchant_id", merchant.ID.String(), "owner_id", owner.ID.String(), "error", err)
+					emailError = err.Error()
 				}
 			}
 		}
@@ -279,7 +298,15 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 	a.logger.InfoContext(r.Context(), "merchant created directly by admin", "merchant_id", merchant.ID.String(), "name", merchant.Name)
 
 	if setPasswordURL != "" {
-		http.Redirect(w, r, "/admin/merchants?merchant_created=1&reset_url="+url.QueryEscape(setPasswordURL), http.StatusSeeOther)
+		redirectURL := "/admin/merchants?merchant_created=1"
+		if emailError != "" {
+			redirectURL += "&email_error=" + url.QueryEscape(emailError)
+		}
+		http.Redirect(w, r, redirectURL+"&reset_url="+url.QueryEscape(setPasswordURL), http.StatusSeeOther)
+		return
+	}
+	if emailError != "" {
+		http.Redirect(w, r, "/admin/merchants?merchant_created=1&email_error="+url.QueryEscape(emailError), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/admin/merchants?merchant_created=1", http.StatusSeeOther)
@@ -297,6 +324,8 @@ func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient,
 		a.logger.WarnContext(ctx, "send merchant password reset email skipped: email delivery not configured", "merchant_name", merchantName)
 		return fmt.Errorf("email delivery is not configured")
 	}
+	addr := net.JoinHostPort(a.cfg.SMTPHost, strconv.Itoa(a.cfg.SMTPPort))
+	a.logger = a.logger.With("smtp_host", addr, "smtp_from", a.cfg.SMTPFrom, "to", recipient)
 	if setPasswordURL == "" {
 		a.logger.WarnContext(ctx, "send merchant password reset email skipped: empty reset URL", "merchant_name", merchantName)
 		return fmt.Errorf("password reset URL is empty")
@@ -309,7 +338,11 @@ func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient,
 		merchantName,
 		setPasswordURL,
 	)
-	return a.email.Send(ctx, recipient, subject, body)
+	if err := a.email.Send(ctx, recipient, subject, body); err != nil {
+		a.logger.ErrorContext(ctx, "send merchant password reset email failed", "merchant_name", merchantName, "to", recipient, "error", err)
+		return fmt.Errorf("send merchant password reset email: %w", err)
+	}
+	return nil
 }
 
 func (a *App) adminAdmins(w http.ResponseWriter, r *http.Request) {
@@ -746,6 +779,7 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 	owner, err := a.store.MerchantOwnerByRegistrationID(r.Context(), id)
 	if err == nil {
 		var setPasswordURL string
+		var emailError string
 		token, err := randomToken(32)
 		if err == nil {
 			if err := a.store.CreateMerchantPasswordResetToken(r.Context(), merchant.ID, owner.ID, token, time.Now().Add(72*time.Hour)); err == nil {
@@ -753,6 +787,18 @@ func (a *App) adminApproveMerchantRegistration(w http.ResponseWriter, r *http.Re
 			}
 		}
 		a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
+		if setPasswordURL != "" {
+			if err := a.sendMerchantOwnerNotificationEmail(r.Context(), owner.Email, merchant.Name, setPasswordURL); err != nil {
+				a.logger.WarnContext(r.Context(), "send merchant password reset email failed", "merchant_id", merchant.ID.String(), "owner_id", owner.ID.String(), "error", err)
+				emailError = err.Error()
+			}
+		}
+		if emailError != "" {
+			http.Redirect(w, r, "/admin/merchants?merchant_created=1&email_error="+url.QueryEscape(emailError), http.StatusSeeOther)
+			return
+		}
+		a.audit(r, "admin.merchants.approved", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "registration_id": id.String()})
+		http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
 	}
 	a.audit(r, "admin.merchants.approved", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "registration_id": id.String()})
 	http.Redirect(w, r, "/admin/merchants", http.StatusSeeOther)
