@@ -254,15 +254,24 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 	var setPasswordURL string
 	if resetToken != nil && *resetToken != "" {
 		setPasswordURL = a.cfg.BaseURL + "/merchant/set-password?token=" + *resetToken
-		if ownerUserID != nil {
-			owner, err := a.store.UserByID(r.Context(), *ownerUserID)
-			if err == nil {
+
+		// Resolve the linked owner after creation. The form email is empty when
+		// an administrator chooses an existing user, so it is not a reliable
+		// delivery address for the password-reset link.
+		ownerID, err := a.store.MerchantOwnerID(r.Context(), merchant.ID)
+		if err != nil {
+			a.logger.WarnContext(r.Context(), "find merchant owner for password reset notification failed", "merchant_id", merchant.ID.String(), "error", err)
+		} else {
+			owner, err := a.store.UserByID(r.Context(), ownerID)
+			if err != nil {
+				a.logger.WarnContext(r.Context(), "find merchant owner for password reset notification failed", "merchant_id", merchant.ID.String(), "owner_id", ownerID.String(), "error", err)
+			} else {
 				a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
+				if err := a.sendMerchantOwnerNotificationEmail(r.Context(), owner.Email, merchant.Name, setPasswordURL); err != nil {
+					a.logger.WarnContext(r.Context(), "send merchant password reset email failed", "merchant_id", merchant.ID.String(), "owner_id", owner.ID.String(), "error", err)
+				}
 			}
 		}
-	}
-	if ownerEmail := strings.TrimSpace(r.FormValue("owner_email")); ownerEmail != "" {
-		go a.sendMerchantOwnerNotificationEmail(r.Context(), ownerEmail, merchant.Name, setPasswordURL)
 	}
 
 	a.audit(r, "admin.merchants.created_direct", "merchant", merchant.ID.String(), map[string]any{"name": merchant.Name, "slug": merchant.Slug, "is_sponsor": isSponsor})
@@ -273,6 +282,30 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	http.Redirect(w, r, "/admin/merchants?merchant_created=1", http.StatusSeeOther)
+}
+
+// sendMerchantOwnerNotificationEmail sends the owner a one-time URL for
+// choosing their merchant password after an administrator creates the account.
+func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient, merchantName, setPasswordURL string) error {
+	recipient = strings.TrimSpace(recipient)
+	if recipient == "" {
+		return nil
+	}
+	if a.email == nil {
+		return fmt.Errorf("email delivery is not configured")
+	}
+	if setPasswordURL == "" {
+		return fmt.Errorf("password reset URL is empty")
+	}
+
+	subject := fmt.Sprintf("Set your %s merchant password", a.cfg.AppName)
+	body := fmt.Sprintf(
+		"Your %s merchant account for %s has been created.\n\nSet your password using this link (it expires in 72 hours):\n%s\n\nIf you were not expecting this email, please contact support.",
+		a.cfg.AppName,
+		merchantName,
+		setPasswordURL,
+	)
+	return a.email.Send(ctx, recipient, subject, body)
 }
 
 func (a *App) adminAdmins(w http.ResponseWriter, r *http.Request) {
