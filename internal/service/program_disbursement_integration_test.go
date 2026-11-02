@@ -182,7 +182,7 @@ func TestBulkProgramDisbursementEndToEnd(t *testing.T) {
 	svc := NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{ChannelWhatsApp: messenger}, slog.Default(), BulkPaymentsConfig{
 			BaseURL: "https://faya.test", LocationTTL: 5 * time.Minute, SendRatePerSec: 1000,
-		})
+		}, nil, nil)
 
 	batch, err := svc.CreateBatch(ctx, sponsor.ID, center.ID, amountKobo, payerID)
 	if err != nil {

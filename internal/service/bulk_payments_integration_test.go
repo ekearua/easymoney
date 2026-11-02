@@ -261,7 +261,7 @@ func TestBulkPaymentsEndToEnd(t *testing.T) {
 	svc := NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{ChannelWhatsApp: messenger}, slog.Default(), BulkPaymentsConfig{
 			BaseURL: "https://xego.test", LocationTTL: 5 * time.Minute, SendRatePerSec: 1000,
-		})
+		}, nil, nil)
 
 	findItem := func(t *testing.T, items []store.BulkBatchItem, phone string) store.BulkBatchItem {
 		t.Helper()
@@ -521,7 +521,7 @@ func TestBulkPaymentsEndToEnd(t *testing.T) {
 	shortSvc := NewBulkPaymentsService(repository,
 		map[string]ports.Messenger{ChannelWhatsApp: messenger}, slog.Default(), BulkPaymentsConfig{
 			BaseURL: "https://xego.test", LocationTTL: 2 * time.Second, SendRatePerSec: 1000,
-		})
+		}, nil, nil)
 	lateBatch, err := shortSvc.CreateBatch(ctx, merchant.ID, lateCenter.ID, amountKobo, payerID)
 	if err != nil {
 		t.Fatalf("late batch: %v", err)
