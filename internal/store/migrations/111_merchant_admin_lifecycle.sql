@@ -1,0 +1,17 @@
+-- Admin controls for disabling and removing merchants.
+--
+-- SetMerchantActive flips the existing `active` flag, which already gates the
+-- public catalogue (MerchantBySlug, ListActiveMerchants) and the checkout and
+-- API-key paths. It is fully reversible and never collides with a foreign
+-- key, so it is the always-available escape hatch.
+--
+-- DeleteMerchant hard-deletes the row. Payments and invoices reference
+-- merchants(id) without ON DELETE CASCADE on purpose (MLPA: financial records
+-- are immutable), so a merchant with financial history cannot be hard-deleted:
+-- the constraint surfaces a clear foreign-key error and the admin must fall
+-- back to SetMerchantActive(false) instead. Every cascade-owned table
+-- (members, sessions, services, webhooks, settlements, bulk batches) drops
+-- automatically.
+--
+-- No schema change is required: both actions reuse the existing `active`
+-- column and the FK graph already in place.
