@@ -191,12 +191,8 @@ func bulkMerchantClient(t *testing.T, baseURL string, repository *store.Store, m
 // batch, and every batch-create failure surfaces as the message the merchant
 // is meant to read rather than a raw error.
 func TestMerchantBulkHandlersScopeToMerchant(t *testing.T) {
-	base := os.Getenv("TEST_DATABASE_URL")
-	if base == "" {
-		t.Skip("set TEST_DATABASE_URL to run the merchant bulk handler test against a real PostgreSQL")
-	}
 	ctx := context.Background()
-	repository, err := store.Open(ctx, bulkTestDBURL(t, base))
+	repository, err := store.Open(ctx, bulkTestDBURL(t, os.Getenv("TEST_DATABASE_URL")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,6 +228,12 @@ func TestMerchantBulkHandlersScopeToMerchant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.SetMerchantBulkPayments(ctx, merchantA.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SetMerchantBulkPayments(ctx, merchantB.ID, true); err != nil {
+		t.Fatal(err)
+	}
 	ownerA, err := repository.MerchantOwnerID(ctx, merchantA.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -242,6 +244,8 @@ func TestMerchantBulkHandlersScopeToMerchant(t *testing.T) {
 		// to its own merchant id, which is all the middleware checks.
 		ownerB = ownerA
 	}
+	// Both clients must run as the merchant owner (the /merchant/bulk/*
+	// routes are requireMerchantOwner-gated), not an owner-less session.
 	clientA, _, csrfA := bulkMerchantClient(t, srv.URL, repository, merchantA, ownerA)
 	clientB, _, csrfB := bulkMerchantClient(t, srv.URL, repository, merchantB, ownerB)
 
