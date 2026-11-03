@@ -71,6 +71,18 @@ func (a *App) requireMerchantOwner() func(http.Handler) http.Handler {
 
 // completeMerchantMemberLogin issues a session that carries the staff role.
 func (a *App) completeMerchantMemberLogin(w http.ResponseWriter, r *http.Request, member store.MerchantMember) {
+	// A disabled merchant disables every staff seat too: the owner account and
+	// its members share one workspace gate.
+	if active, _, err := a.store.MerchantAccess(r.Context(), member.MerchantID); err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	} else if !active {
+		a.renderStatus(w, "merchant_login.html", map[string]any{
+			"AppName": a.cfg.AppName,
+			"Error":   "This merchant account has been disabled. Contact support.",
+		}, http.StatusForbidden)
+		return
+	}
 	ttl := a.cfg.AuthSessionTTL
 	if ttl <= 0 {
 		ttl = 12 * time.Hour

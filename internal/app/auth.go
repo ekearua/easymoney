@@ -149,6 +149,16 @@ func (a *App) completeAdminLogin(w http.ResponseWriter, r *http.Request, adminID
 // completeMerchantLogin issues the merchant session cookie and lands on the
 // scanner.
 func (a *App) completeMerchantLogin(w http.ResponseWriter, r *http.Request, merchantID uuid.UUID) {
+	if active, _, err := a.store.MerchantAccess(r.Context(), merchantID); err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	} else if !active {
+		a.renderStatus(w, "merchant_login.html", map[string]any{
+			"AppName": a.cfg.AppName,
+			"Error":   "This merchant account has been disabled. Contact support.",
+		}, http.StatusForbidden)
+		return
+	}
 	landing, err := a.issueSession(w, r, store.MFAScopeMerchant, merchantID)
 	if err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
@@ -257,7 +267,11 @@ func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) merchantLogin(w http.ResponseWriter, r *http.Request) {
-	a.render(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName})
+	data := map[string]any{"AppName": a.cfg.AppName}
+	if r.URL.Query().Get("disabled") == "1" {
+		data["Error"] = "This merchant account has been disabled. Contact support."
+	}
+	a.render(w, "merchant_login.html", data)
 }
 
 func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +294,16 @@ func (a *App) merchantLoginPost(w http.ResponseWriter, r *http.Request) {
 		bcrypt.CompareHashAndPassword([]byte(merchant.PasswordHash), []byte(password)) != nil {
 		a.limiter.fail(clientIP(r))
 		a.renderStatus(w, "merchant_login.html", map[string]any{"AppName": a.cfg.AppName, "Error": "Invalid email or password."}, http.StatusUnauthorized)
+		return
+	}
+	if active, _, err := a.store.MerchantAccess(r.Context(), merchant.ID); err != nil {
+		http.Error(w, "sign-in failed", http.StatusInternalServerError)
+		return
+	} else if !active {
+		a.renderStatus(w, "merchant_login.html", map[string]any{
+			"AppName": a.cfg.AppName,
+			"Error":   "This merchant account has been disabled. Contact support.",
+		}, http.StatusForbidden)
 		return
 	}
 	if a.secondFactorRequired(r.Context(), store.MFAScopeMerchant, merchant.ID) {

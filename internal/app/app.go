@@ -1333,9 +1333,15 @@ func (a *App) requireMerchant(next http.Handler) http.Handler {
 		if identity.MemberID != nil {
 			ctx = context.WithValue(ctx, merchantMemberIDContextKey, *identity.MemberID)
 		}
-		bulkEnabled, err := a.store.MerchantBulkPaymentsEnabled(ctx, merchantID)
+		active, bulkEnabled, err := a.store.MerchantAccess(ctx, merchantID)
 		if err != nil {
 			http.Error(w, "account unavailable", http.StatusInternalServerError)
+			return
+		}
+		if !active {
+			_ = a.store.DeleteMerchantSession(r.Context(), cookie.Value)
+			http.SetCookie(w, &http.Cookie{Name: merchantCookieName, Path: "/merchant", MaxAge: -1, HttpOnly: true, Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode})
+			http.Redirect(w, r, "/merchant/login?disabled=1", http.StatusSeeOther)
 			return
 		}
 		ctx = context.WithValue(ctx, merchantBulkContextKey, bulkEnabled)

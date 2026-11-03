@@ -714,11 +714,13 @@ func (s *Store) UpdateMerchantPaymentTerms(ctx context.Context, merchantID uuid.
 	return err
 }
 
-// MerchantBulkPaymentsEnabled reports whether a merchant may use bulk payments.
-func (s *Store) MerchantBulkPaymentsEnabled(ctx context.Context, merchantID uuid.UUID) (bool, error) {
-	var enabled bool
-	err := s.pool.QueryRow(ctx, `SELECT bulk_enabled FROM merchants WHERE id=$1`, merchantID).Scan(&enabled)
-	return enabled, err
+// MerchantAccess reports the merchant-level gates the portal enforces on every
+// request: whether the account is active at all and whether it may use bulk
+// payments.
+func (s *Store) MerchantAccess(ctx context.Context, merchantID uuid.UUID) (active, bulkEnabled bool, err error) {
+	err = s.pool.QueryRow(ctx, `SELECT active, bulk_enabled FROM merchants WHERE id=$1`, merchantID).
+		Scan(&active, &bulkEnabled)
+	return active, bulkEnabled, err
 }
 
 // SetMerchantBulkPayments enables or disables bulk payments for a merchant.
