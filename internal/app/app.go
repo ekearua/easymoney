@@ -1404,6 +1404,7 @@ func (a *App) renderMerchant(w http.ResponseWriter, name string, r *http.Request
 	data["BulkEnabled"] = merchantBulkEnabledFromContext(r.Context())
 	data["Role"] = merchantRoleFromContext(r.Context())
 	data["MemberEmail"] = merchantMemberEmailFromContext(r.Context())
+	data["Path"] = r.URL.Path
 	a.render(w, name, data)
 }
 
