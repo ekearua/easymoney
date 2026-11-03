@@ -103,7 +103,7 @@ func TestSendMerchantOwnerNotificationEmail(t *testing.T) {
 		if !strings.Contains(sent.lastBody, "https://xego.test/merchant/set-password?token=abc") {
 			t.Fatalf("unexpected body: %v", sent.lastBody)
 		}
-		if !strings.Contains(sent.lastBody, "Set your password using this link (it expires in 72 hours)") {
+		if !strings.Contains(sent.lastBody, "It expires in 72 hours") || !strings.Contains(sent.lastBody, "Lagos Lunchbox") {
 			t.Fatalf("unexpected body: %v", sent.lastBody)
 		}
 	})

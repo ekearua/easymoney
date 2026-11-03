@@ -873,6 +873,7 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/accepted-numbers", a.adminAcceptedNumbers)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Post("/admin/merchant-registrations/{id}/approve", a.adminApproveMerchantRegistration)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/{id}/password", a.adminSetMerchantPassword)
+		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/{id}/password-link", a.adminSendMerchantPasswordLink)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/mfa-reset", a.adminResetMerchantFactors)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/payment-terms", a.adminSetMerchantPaymentTerms)
 		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/merchants/{id}/bulk-payments", a.adminSetMerchantBulkPayments)

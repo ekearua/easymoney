@@ -699,6 +699,16 @@ func (s *Store) UseMerchantPasswordResetToken(ctx context.Context, token string)
 	return err
 }
 
+// InvalidateMerchantPasswordResetTokens consumes every outstanding
+// set-password token for a merchant. A resend calls this first so only the
+// newest link works.
+func (s *Store) InvalidateMerchantPasswordResetTokens(ctx context.Context, merchantID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE merchant_password_reset_tokens SET used_at=now()
+		WHERE merchant_id=$1 AND used_at IS NULL`, merchantID)
+	return err
+}
+
 // UpdateMerchantPaymentTerms updates a merchant's partial payment settings.
 func (s *Store) UpdateMerchantPaymentTerms(ctx context.Context, merchantID uuid.UUID, allowPartial bool, minInvoiceKobo int64, upfrontPct, minInstallPct, maxInstallments int, allowFullAlways bool) error {
 	_, err := s.pool.Exec(ctx, `

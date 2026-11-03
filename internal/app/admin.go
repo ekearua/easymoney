@@ -161,15 +161,18 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 	}
 	if merchantCreated := r.URL.Query().Get("merchant_created"); merchantCreated == "1" {
 		data["MerchantCreated"] = true
-		if resetURL := r.URL.Query().Get("reset_url"); resetURL != "" {
-			data["ResetURL"] = resetURL
-		}
-		if emailError := r.URL.Query().Get("email_error"); emailError != "" {
-			data["EmailError"] = emailError
-		}
+	}
+	if resetURL := r.URL.Query().Get("reset_url"); resetURL != "" {
+		data["ResetURL"] = resetURL
+	}
+	if emailError := r.URL.Query().Get("email_error"); emailError != "" {
+		data["EmailError"] = emailError
 	}
 	if passwordSet := r.URL.Query().Get("password_set"); passwordSet == "1" {
 		data["PasswordSet"] = true
+	}
+	if linkSent := r.URL.Query().Get("password_link_sent"); linkSent == "1" {
+		data["PasswordLinkSent"] = true
 	}
 	if termsSet := r.URL.Query().Get("terms_set"); termsSet == "1" {
 		data["TermsSet"] = true
@@ -350,8 +353,10 @@ func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient,
 	logger = logger.With("smtp_host", net.JoinHostPort(a.cfg.SMTPHost, strconv.Itoa(a.cfg.SMTPPort)), "smtp_from", a.cfg.SMTPFrom)
 
 	subject := fmt.Sprintf("Set your %s merchant password", a.cfg.AppName)
+	// The same message serves new accounts, approved registrations and admin
+	// resends, so it must not claim the account was just created.
 	body := fmt.Sprintf(
-		"Your %s merchant account for %s has been created.\n\nSet your password using this link (it expires in 72 hours):\n%s\n\nIf you were not expecting this email, please contact support.",
+		"Use this one-time link to set the password for the %s merchant account %q. It expires in 72 hours:\n%s\n\nIf you were not expecting this email, please contact support.",
 		a.cfg.AppName,
 		merchantName,
 		setPasswordURL,
@@ -849,6 +854,64 @@ func (a *App) adminSetMerchantPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "admin.merchants.password_reset", "merchant", id.String(), nil)
 	http.Redirect(w, r, "/admin/merchants?password_set=1", http.StatusSeeOther)
+}
+
+// adminSendMerchantPasswordLink emails the owner a fresh set-password link.
+// When email delivery fails (or the owner has no address on file) the link is
+// handed back to the administrator to pass on manually, because the owner is
+// otherwise locked out of the portal.
+func (a *App) adminSendMerchantPasswordLink(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("csrf_token") != csrfFromContext(r.Context()) {
+		http.Error(w, "invalid CSRF token", http.StatusForbidden)
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "invalid merchant id", http.StatusBadRequest)
+		return
+	}
+	merchant, err := a.store.MerchantByID(r.Context(), id)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link failed: merchant lookup", "merchant_id", id.String(), "error", err)
+		http.Error(w, "merchant not found", http.StatusNotFound)
+		return
+	}
+	ownerID, err := a.store.MerchantOwnerID(r.Context(), id)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link failed: owner lookup", "merchant_id", id.String(), "error", err)
+		http.Error(w, "merchant has no owner account", http.StatusBadRequest)
+		return
+	}
+	owner, err := a.store.UserByID(r.Context(), ownerID)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link failed: owner user lookup", "merchant_id", id.String(), "owner_id", ownerID.String(), "error", err)
+		http.Error(w, "merchant owner not found", http.StatusNotFound)
+		return
+	}
+	if err := a.store.InvalidateMerchantPasswordResetTokens(r.Context(), merchant.ID); err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link failed: invalidate old tokens", "merchant_id", id.String(), "error", err)
+	}
+	token, err := randomToken(32)
+	if err != nil {
+		http.Error(w, "could not create link", http.StatusInternalServerError)
+		return
+	}
+	if err := a.store.CreateMerchantPasswordResetToken(r.Context(), merchant.ID, ownerID, token, time.Now().Add(72*time.Hour)); err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link failed: store token", "merchant_id", id.String(), "owner_id", ownerID.String(), "error", err)
+		http.Error(w, "could not create link", http.StatusInternalServerError)
+		return
+	}
+	setPasswordURL := strings.TrimRight(a.cfg.BaseURL, "/") + "/merchant/set-password?token=" + token
+	a.audit(r, "admin.merchants.password_link_created", "merchant", id.String(), map[string]any{"owner_id": ownerID.String()})
+	if err := a.sendMerchantOwnerNotificationEmail(r.Context(), strings.TrimSpace(owner.Email), merchant.Name, setPasswordURL); err != nil {
+		a.logger.WarnContext(r.Context(), "send merchant password link email failed", "merchant_id", id.String(), "owner_id", ownerID.String(), "error", err)
+		// Surface the failure and the link so the administrator can still
+		// deliver it; the token is single-use by intent but stays valid 72h.
+		http.Redirect(w, r, "/admin/merchants?email_error="+url.QueryEscape(err.Error())+"&reset_url="+url.QueryEscape(setPasswordURL), http.StatusSeeOther)
+		return
+	}
+	a.audit(r, "admin.merchants.password_link_sent", "merchant", id.String(), nil)
+	http.Redirect(w, r, "/admin/merchants?password_link_sent=1", http.StatusSeeOther)
 }
 
 func (a *App) adminSetMerchantPaymentTerms(w http.ResponseWriter, r *http.Request) {
