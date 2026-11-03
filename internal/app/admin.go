@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -221,10 +222,10 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 		active = true
 	}
 
+	// The create form renders this checkbox checked, so an absent value means
+	// the administrator unchecked it. Do not silently re-enable it for new
+	// owners: that made the opt-out impossible.
 	sendReset := r.FormValue("send_password_reset") == "on" || r.FormValue("send_password_reset") == "1"
-	if r.FormValue("send_password_reset") == "" {
-		sendReset = ownerUserID == nil // send reset if creating new owner
-	}
 
 	params := store.CreateMerchantDirectParams{
 		Name:                  name,
@@ -286,7 +287,15 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 				a.logger.WarnContext(r.Context(), "find merchant owner for password reset notification failed", "merchant_id", merchant.ID.String(), "owner_id", ownerID.String(), "error", err)
 			} else {
 				a.conversation.NotifyMerchantApproved(r.Context(), owner, merchant.Name, setPasswordURL)
-				if err := a.sendMerchantOwnerNotificationEmail(r.Context(), owner.Email, merchant.Name, setPasswordURL); err != nil {
+				// An owner picked from the existing-user list may have no email
+				// on file (chat-only accounts). Prefer the address the admin
+				// typed on the create form in that case, rather than skipping
+				// the notification.
+				recipient := strings.TrimSpace(owner.Email)
+				if recipient == "" {
+					recipient = params.OwnerEmail
+				}
+				if err := a.sendMerchantOwnerNotificationEmail(r.Context(), recipient, merchant.Name, setPasswordURL); err != nil {
 					a.logger.WarnContext(r.Context(), "send merchant password reset email failed", "merchant_id", merchant.ID.String(), "owner_id", owner.ID.String(), "error", err)
 					emailError = err.Error()
 				}
@@ -316,20 +325,27 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 // choosing their merchant password after an administrator creates the account.
 func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient, merchantName, setPasswordURL string) error {
 	recipient = strings.TrimSpace(recipient)
+	logger := a.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger = logger.With("merchant_name", merchantName, "to", recipient)
 	if recipient == "" {
-		a.logger.WarnContext(ctx, "send merchant password reset email skipped: empty recipient", "merchant_name", merchantName)
-		return nil
+		// Returning an error (rather than nil) surfaces the failure to the
+		// admin along with the fallback reset link. Silence here looked like a
+		// successful send while nothing left the server.
+		logger.WarnContext(ctx, "send merchant password reset email skipped: empty recipient")
+		return fmt.Errorf("merchant owner has no email address")
 	}
 	if a.email == nil {
-		a.logger.WarnContext(ctx, "send merchant password reset email skipped: email delivery not configured", "merchant_name", merchantName)
+		logger.WarnContext(ctx, "send merchant password reset email skipped: email delivery not configured")
 		return fmt.Errorf("email delivery is not configured")
 	}
-	addr := net.JoinHostPort(a.cfg.SMTPHost, strconv.Itoa(a.cfg.SMTPPort))
-	a.logger = a.logger.With("smtp_host", addr, "smtp_from", a.cfg.SMTPFrom, "to", recipient)
 	if setPasswordURL == "" {
-		a.logger.WarnContext(ctx, "send merchant password reset email skipped: empty reset URL", "merchant_name", merchantName)
+		logger.WarnContext(ctx, "send merchant password reset email skipped: empty reset URL")
 		return fmt.Errorf("password reset URL is empty")
 	}
+	logger = logger.With("smtp_host", net.JoinHostPort(a.cfg.SMTPHost, strconv.Itoa(a.cfg.SMTPPort)), "smtp_from", a.cfg.SMTPFrom)
 
 	subject := fmt.Sprintf("Set your %s merchant password", a.cfg.AppName)
 	body := fmt.Sprintf(
@@ -339,9 +355,10 @@ func (a *App) sendMerchantOwnerNotificationEmail(ctx context.Context, recipient,
 		setPasswordURL,
 	)
 	if err := a.email.Send(ctx, recipient, subject, body); err != nil {
-		a.logger.ErrorContext(ctx, "send merchant password reset email failed", "merchant_name", merchantName, "to", recipient, "error", err)
+		logger.ErrorContext(ctx, "send merchant password reset email failed", "error", err)
 		return fmt.Errorf("send merchant password reset email: %w", err)
 	}
+	logger.InfoContext(ctx, "merchant password reset email sent")
 	return nil
 }
 

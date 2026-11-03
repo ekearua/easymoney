@@ -39,9 +39,9 @@ const (
 // Template headers arrive with spaces and punctuation, so both the header and
 // the lookup are normalized to lowercase letters and digits.
 var recordHeaderAliases = map[string]recordField{
-	"sn":               fieldIgnore,
-	"sno":              fieldIgnore,
-	"serial":           fieldIgnore,
+	"sn":               fieldRow,
+	"sno":              fieldRow,
+	"serial":           fieldRow,
 	"row":              fieldRow,
 	"name":             fieldName,
 	"fullname":         fieldName,
@@ -118,6 +118,12 @@ func parseRecordsFile(file io.Reader, filename string, centerID *uuid.UUID, sour
 	for i := start; i < len(rows); i++ {
 		row := rows[i]
 		if rowIsBlank(row) {
+			continue
+		}
+		// Templates pre-fill unused rows with serial numbers. Those rows carry
+		// no record data, so they are skipped instead of reported as missing a
+		// phone number.
+		if len(columns) > 0 && !rowHasRecordData(row, columns) {
 			continue
 		}
 		input := storeBRI(row, columns, centerID, sourceFile)
@@ -212,6 +218,33 @@ func cell(row []string, index int) string {
 	return strings.TrimSpace(row[index])
 }
 
+// fieldCell reads the column mapped to field. A field that is not present in
+// the header yields "", not column A: map lookups default to 0 otherwise, so an
+// absent Bank Code column would silently import the S/N value.
+func fieldCell(row []string, columns map[recordField]int, field recordField) string {
+	index, ok := columns[field]
+	if !ok {
+		return ""
+	}
+	return cell(row, index)
+}
+
+// rowHasRecordData reports whether the row holds anything in a column that maps
+// to a record field. Ignored columns (S/N, serial) and the row-number column do
+// not count, so a template whose unused rows carry serials is not mistaken for
+// rows with data.
+func rowHasRecordData(row []string, columns map[recordField]int) bool {
+	for field, index := range columns {
+		if field == fieldIgnore || field == fieldRow {
+			continue
+		}
+		if cell(row, index) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func rowIsBlank(row []string) bool {
 	for _, value := range row {
 		if strings.TrimSpace(value) != "" {
@@ -253,20 +286,20 @@ func storeBRI(row []string, columns map[recordField]int, centerID *uuid.UUID, so
 		CenterID: centerID, Source: "upload", SourceFile: sourceFile,
 	}
 	if len(columns) > 0 {
-		in.PhoneE164 = cell(row, columns[fieldPhone])
-		in.DisplayName = cell(row, columns[fieldName])
-		in.BVN = cell(row, columns[fieldBVN])
-		in.NIN = cell(row, columns[fieldNIN])
-		in.VIN = cell(row, columns[fieldVIN])
-		in.AccountNumber = cell(row, columns[fieldAccountNumber])
-		in.BankName = cell(row, columns[fieldBankName])
-		in.BankCode = cell(row, columns[fieldBankCode])
-		in.AccountName = cell(row, columns[fieldAccountName])
-		in.State = cell(row, columns[fieldState])
-		in.LGA = cell(row, columns[fieldLGA])
-		in.Ward = cell(row, columns[fieldWard])
-		in.PollingUnit = cell(row, columns[fieldPollingUnit])
-		if fromFile := cell(row, columns[fieldSourceFile]); fromFile != "" {
+		in.PhoneE164 = fieldCell(row, columns, fieldPhone)
+		in.DisplayName = fieldCell(row, columns, fieldName)
+		in.BVN = fieldCell(row, columns, fieldBVN)
+		in.NIN = fieldCell(row, columns, fieldNIN)
+		in.VIN = fieldCell(row, columns, fieldVIN)
+		in.AccountNumber = fieldCell(row, columns, fieldAccountNumber)
+		in.BankName = fieldCell(row, columns, fieldBankName)
+		in.BankCode = fieldCell(row, columns, fieldBankCode)
+		in.AccountName = fieldCell(row, columns, fieldAccountName)
+		in.State = fieldCell(row, columns, fieldState)
+		in.LGA = fieldCell(row, columns, fieldLGA)
+		in.Ward = fieldCell(row, columns, fieldWard)
+		in.PollingUnit = fieldCell(row, columns, fieldPollingUnit)
+		if fromFile := fieldCell(row, columns, fieldSourceFile); fromFile != "" {
 			in.SourceFile = fromFile
 		}
 	} else {

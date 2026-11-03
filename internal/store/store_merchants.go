@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Merchant is a curated payment recipient.
@@ -879,17 +880,32 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 		maxInst = 0
 	}
 
+	// "Set password (optional)" on the admin create form sets the merchant
+	// portal password directly. It used to be dropped on the floor, so an
+	// administrator who unchecked the reset link left the owner with no way in.
+	passwordHash := ""
+	if !p.SendResetToken {
+		if password := strings.TrimSpace(p.OwnerPassword); password != "" {
+			hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			if err != nil {
+				return Merchant{}, nil, err
+			}
+			passwordHash = string(hash)
+		}
+	}
+
 	var merchant Merchant
 	err = tx.QueryRow(ctx, `
 		INSERT INTO merchants(id, slug, name, category, description, logo_url, active, search_keywords,
 			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
 			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, updated_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,'', $9,$10,$11,$12,$13,$14,$15, now())
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$16, $9,$10,$11,$12,$13,$14,$15, now())
 		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
 			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled`,
 		merchantID, slug, name, category, desc, logo, p.Active, keywords,
 		p.AllowPartialPayments, p.MinInvoiceAmountKobo, upfront, minInstallPct, maxInst, p.AllowFullPayAlways, p.BulkPaymentsEnabled,
+		passwordHash,
 	).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
 		&merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords, &merchant.SortOrder, &merchant.CreatedAt,
@@ -903,7 +919,6 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 	}
 
 	var ownerID uuid.UUID
-	var ownerCreated bool
 	if p.OwnerUserID != nil {
 		ownerID = *p.OwnerUserID
 	} else {
@@ -934,7 +949,6 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 				if err != nil {
 					return Merchant{}, nil, err
 				}
-				ownerCreated = true
 			} else {
 				return Merchant{}, nil, err
 			}
@@ -991,8 +1005,6 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 			return Merchant{}, nil, err
 		}
 		resetToken = &token
-	} else if strings.TrimSpace(p.OwnerPassword) != "" {
-		_ = ownerCreated
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -70,11 +70,17 @@ func TestSendMerchantOwnerNotificationEmail(t *testing.T) {
 		}
 	})
 
-	t.Run("skips send and returns nil when recipient is empty", func(t *testing.T) {
+	t.Run("reports an owner without an address instead of silently skipping", func(t *testing.T) {
 		app.email = &fakeEmailSender{sendCalled: false}
 		err := app.sendMerchantOwnerNotificationEmail(ctx, "   ", "Lagos Lunchbox", "https://xego.test/merchant/set-password?token=abc")
-		if err != nil {
-			t.Fatalf("expected nil error for empty recipient, got %v", err)
+		if err == nil {
+			t.Fatal("expected an error when the owner has no email address")
+		}
+		if err.Error() != "merchant owner has no email address" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if app.email.(*fakeEmailSender).sendCalled {
+			t.Fatal("no email must be attempted without a recipient")
 		}
 	})
 

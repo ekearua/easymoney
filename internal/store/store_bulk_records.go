@@ -224,7 +224,7 @@ func (s *Store) UpsertBulkRecipient(ctx context.Context, merchantID uuid.UUID, i
 		bvnSealed, s.blindIndex("bvn", in.BVN), ninSealed, s.blindIndex("nin", in.NIN),
 		vinSealed, s.blindIndex("vin", in.VIN),
 		in.AccountNumber, in.BankName, in.BankCode, in.AccountName,
-		in.State, in.LGA, in.Ward, in.PollingUnit, RecipientUnverified, RecipientUnverified).Scan(&id)
+		in.State, in.LGA, in.Ward, in.PollingUnit, RecipientUnverified).Scan(&id)
 	if err != nil {
 		switch {
 		case strings.Contains(err.Error(), "center_users_bvn_idx"):
