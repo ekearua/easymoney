@@ -27,5 +27,5 @@
   <td>{{range $i, $v := index $.CustomData .ID}}{{if $i}}, {{end}}{{.FieldName}}: {{.FieldValue}}{{else}}—{{end}}</td>
   <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
 </tr>{{else}}<tr><td colspan="7">No tickets sold yet.</td></tr>{{end}}</tbody></table></div>
-</main></body></html>
+</main></div></body></html>
 {{end}}
