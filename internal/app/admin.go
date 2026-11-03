@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 	"net"
 
@@ -941,6 +943,11 @@ func (a *App) adminDeleteMerchant(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.store.DeleteMerchant(r.Context(), id); err != nil {
 		a.logger.WarnContext(r.Context(), "delete merchant failed", "merchant_id", id.String(), "error", err)
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			http.Error(w, "merchant has payments or invoices and cannot be removed; disable it instead", http.StatusConflict)
+			return
+		}
 		http.Error(w, "delete failed", http.StatusInternalServerError)
 		return
 	}
