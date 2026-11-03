@@ -174,6 +174,22 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 	if linkSent := r.URL.Query().Get("password_link_sent"); linkSent == "1" {
 		data["PasswordLinkSent"] = true
 	}
+	if r.URL.Query().Get("deleted") == "1" {
+		data["MerchantDeleted"] = true
+	}
+	if blocked := r.URL.Query().Get("remove_blocked"); blocked != "" {
+		if blockedID, perr := uuid.Parse(blocked); perr == nil {
+			data["RemovalBlockedID"] = blockedID.String()
+			// Fallback covers a foreign-key error the preflight did not
+			// predict (for example a row added between count and delete).
+			data["Error"] = "This merchant still has linked records and could not be removed. Disable the merchant instead."
+			if merchant, merr := a.store.MerchantByID(r.Context(), blockedID); merr == nil {
+				if counts, cerr := a.store.MerchantFinancialRecordCounts(r.Context(), blockedID); cerr == nil && counts.Total() > 0 {
+					data["Error"] = merchantRemovalBlockedError(merchant.Name, counts)
+				}
+			}
+		}
+	}
 	if termsSet := r.URL.Query().Get("terms_set"); termsSet == "1" {
 		data["TermsSet"] = true
 	}
@@ -1004,11 +1020,22 @@ func (a *App) adminDeleteMerchant(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid merchant id", http.StatusBadRequest)
 		return
 	}
+	counts, err := a.store.MerchantFinancialRecordCounts(r.Context(), id)
+	if err != nil {
+		a.logger.WarnContext(r.Context(), "delete merchant failed: count financial records", "merchant_id", id.String(), "error", err)
+		http.Error(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	if counts.Total() > 0 {
+		http.Redirect(w, r, "/admin/merchants?remove_blocked="+id.String(), http.StatusSeeOther)
+		return
+	}
 	if err := a.store.DeleteMerchant(r.Context(), id); err != nil {
 		a.logger.WarnContext(r.Context(), "delete merchant failed", "merchant_id", id.String(), "error", err)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			http.Error(w, "merchant has payments or invoices and cannot be removed; disable it instead", http.StatusConflict)
+			// A payment landed between the preflight count and the delete.
+			http.Redirect(w, r, "/admin/merchants?remove_blocked="+id.String(), http.StatusSeeOther)
 			return
 		}
 		http.Error(w, "delete failed", http.StatusInternalServerError)
@@ -1016,6 +1043,29 @@ func (a *App) adminDeleteMerchant(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "admin.merchants.deleted", "merchant", id.String(), nil)
 	http.Redirect(w, r, "/admin/merchants?deleted=1", http.StatusSeeOther)
+}
+
+// merchantRemovalBlockedError explains exactly which financial records keep a
+// merchant from being removed. Financial rows are immutable, so the only safe
+// action is to disable the account.
+func merchantRemovalBlockedError(name string, counts store.MerchantFinancialRecordCounts) string {
+	parts := make([]string, 0, 4)
+	add := func(n int, one, many string) {
+		switch {
+		case n == 1:
+			parts = append(parts, "1 "+one)
+		case n > 1:
+			parts = append(parts, fmt.Sprintf("%d %s", n, many))
+		}
+	}
+	add(counts.Payments, "payment", "payments")
+	add(counts.Invoices, "invoice", "invoices")
+	add(counts.Ledger, "ledger entry", "ledger entries")
+	add(counts.Checkouts, "checkout", "checkouts")
+	if name == "" {
+		name = "This merchant"
+	}
+	return fmt.Sprintf("%s has %s and cannot be removed. Disable the merchant instead so the financial record stays intact.", name, strings.Join(parts, ", "))
 }
 
 func (a *App) adminSetPhoneWhitelist(w http.ResponseWriter, r *http.Request) {

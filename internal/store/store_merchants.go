@@ -806,6 +806,35 @@ func (s *Store) DeleteMerchant(ctx context.Context, merchantID uuid.UUID) error 
 	return err
 }
 
+// MerchantFinancialRecordCounts reports the rows that make a merchant
+// undeletable. Payments, invoices, ledger entries and checkouts reference an
+// actual money movement and are kept immutable, so a merchant with any of
+// them can only be disabled.
+type MerchantFinancialRecordCounts struct {
+	Payments  int
+	Invoices  int
+	Ledger    int
+	Checkouts int
+}
+
+// Total reports whether anything blocks a hard delete.
+func (c MerchantFinancialRecordCounts) Total() int {
+	return c.Payments + c.Invoices + c.Ledger + c.Checkouts
+}
+
+// MerchantFinancialRecordCounts counts the financial rows tied to a merchant.
+func (s *Store) MerchantFinancialRecordCounts(ctx context.Context, merchantID uuid.UUID) (MerchantFinancialRecordCounts, error) {
+	var counts MerchantFinancialRecordCounts
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM payments WHERE merchant_id=$1),
+			(SELECT count(*) FROM invoices WHERE merchant_id=$1),
+			(SELECT count(*) FROM ledger_entries WHERE merchant_id=$1),
+			(SELECT count(*) FROM checkouts WHERE payee_merchant_id=$1)`,
+		merchantID).Scan(&counts.Payments, &counts.Invoices, &counts.Ledger, &counts.Checkouts)
+	return counts, err
+}
+
 // CreateMerchantDirectParams configures direct merchant creation by an admin.
 type CreateMerchantDirectParams struct {
 	Name        string
