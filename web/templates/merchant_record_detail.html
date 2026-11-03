@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
-<body>{{template "merchant_nav" .}}<main class="dashboard">
+<body>{{template "merchant_nav" .}}</div><main class="admin-main">
   <header class="page-header"><div><p class="eyebrow"><a href="/merchant/records">Recipient records</a></p><h1>{{if .Recipient.DisplayName}}{{.Recipient.DisplayName}}{{else}}{{.Recipient.PhoneE164}}{{end}}</h1></div></header>
   {{if .Saved}}<div class="alert success">Record saved.</div>{{end}}
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
@@ -83,3 +83,4 @@
   {{end}}
 </main></body></html>
 {{end}}
+

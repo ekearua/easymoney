@@ -286,6 +286,47 @@ func (s *Store) ListAuditLogs(ctx context.Context, limit int) ([]AuditLog, error
 	return logs, rows.Err()
 }
 
+// ListMerchantAuditLogs returns recent audit entries for one merchant, newest
+// first. Entries are matched by actor identity: the merchant's own id (owner
+// actions) and any of its staff member ids.
+func (s *Store) ListMerchantAuditLogs(ctx context.Context, merchantID uuid.UUID, limit int) ([]AuditLog, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, occurred_at, actor_type, COALESCE(actor_id::text,''), COALESCE(actor_email,''),
+			COALESCE(ip::text,''), action, COALESCE(resource_type,''), COALESCE(resource_id,''),
+			details, prev_hash, hash
+		FROM audit_logs
+		WHERE actor_type='merchant' AND (actor_id=$1 OR actor_id IN (SELECT id FROM merchant_members WHERE merchant_id=$1))
+		ORDER BY id DESC LIMIT $2`, merchantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var logs []AuditLog
+	for rows.Next() {
+		var entry AuditLog
+		var details []byte
+		if err := rows.Scan(&entry.ID, &entry.OccurredAt, &entry.ActorType, &entry.ActorID.UUID,
+			&entry.ActorEmail.String, &entry.IP.String, &entry.Action, &entry.ResourceType.String,
+			&entry.ResourceID.String, &details, &entry.PrevHash, &entry.Hash); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal(details, &entry.Details)
+		entry.ActorID.Valid = entry.ActorID.UUID != uuid.Nil
+		entry.ActorEmail.Valid = entry.ActorEmail.String != ""
+		entry.IP.Valid = entry.IP.String != ""
+		entry.ResourceType.Valid = entry.ResourceType.String != ""
+		entry.ResourceID.Valid = entry.ResourceID.String != ""
+		if entry.Details == nil {
+			entry.Details = map[string]any{}
+		}
+		logs = append(logs, entry)
+	}
+	return logs, rows.Err()
+}
+
 // VerifyAuditChain recomputes every hash and checks linkage. It returns the
 // number of entries and the index of the first broken entry (-1 if sound).
 func (s *Store) VerifyAuditChain(ctx context.Context) (int, int, error) {

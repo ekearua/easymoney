@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
-<body>{{template "merchant_nav" .}}<main class="dashboard">
+<body>{{template "merchant_nav" .}}</div><main class="admin-main">
   <header class="page-header"><div><p class="eyebrow">Merchant</p><h1>Events</h1></div>
     <a class="btn-scan" href="/merchant/events/new">+ New event</a>
   </header>
@@ -28,3 +28,4 @@
   {{else}}<div class="panel"><p class="muted">No events yet. Create your first event for customers to buy tickets.</p></div>{{end}}
 </main></body></html>
 {{end}}
+

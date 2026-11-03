@@ -1063,6 +1063,7 @@ func (a *App) routes() http.Handler {
 		m.With(a.requireMerchantOwner()).Post("/merchant/team/{id}/role", a.merchantTeamSetRole)
 		m.With(a.requireMerchantOwner()).Post("/merchant/team/{id}/revoke", a.merchantTeamRevoke)
 		m.Post("/merchant/scanner/services/{id}/whitelist", a.merchantUpdateServiceWhitelist)
+		m.Get("/merchant/audit", a.merchantAudit)
 		m.Get("/merchant/security", a.securityPage(store.MFAScopeMerchant))
 		m.Post("/merchant/security/totp", a.securityStartTOTP(store.MFAScopeMerchant))
 		m.Post("/merchant/security/totp/verify", a.securityVerifyFactor(store.MFAScopeMerchant))

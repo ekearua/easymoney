@@ -15,6 +15,19 @@ import (
 
 // merchantPayables is the payments role's payable list: verified recipients
 // only, with identity documents withheld.
+// merchantAudit renders the merchant's tamper-evident audit trail.
+func (a *App) merchantAudit(w http.ResponseWriter, r *http.Request) {
+	merchantID := merchantIDFromContext(r.Context())
+	entries, err := a.store.ListMerchantAuditLogs(r.Context(), merchantID, 200)
+	if err != nil {
+		http.Error(w, "audit unavailable", http.StatusInternalServerError)
+		return
+	}
+	a.renderMerchant(w, "merchant_audit.html", r, "Audit log", map[string]any{
+		"Entries": entries,
+	})
+}
+
 func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 	merchantID := merchantIDFromContext(r.Context())
 	filter := recipientFilterFromRequest(r)

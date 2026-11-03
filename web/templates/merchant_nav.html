@@ -22,6 +22,7 @@
         {{if or (eq $role "owner") (eq $role "payments")}}<a class="sidebar-link{{if hasPrefix .Path "/merchant/bulk"}} active{{end}}" href="/merchant/bulk/batches">Batches</a>{{end}}
         {{if eq $role "owner"}}<a class="sidebar-link{{if eq .Path "/merchant/team"}} active{{end}}" href="/merchant/team">Team</a>{{end}}
         <a class="sidebar-link{{if eq .Path "/merchant/security"}} active{{end}}" href="/merchant/security">Security</a>
+        <a class="sidebar-link{{if eq .Path "/merchant/audit"}} active{{end}}" href="/merchant/audit">Audit</a>
       </div>
       {{else}}
       {{if eq $role "owner"}}
@@ -51,6 +52,7 @@
         <a class="sidebar-link{{if eq .Path "/merchant/settings"}} active{{end}}" href="/merchant/settings">Settings</a>
         <a class="sidebar-link{{if eq .Path "/merchant/profile"}} active{{end}}" href="/merchant/profile">Profile</a>
         <a class="sidebar-link{{if eq .Path "/merchant/security"}} active{{end}}" href="/merchant/security">Security</a>
+        <a class="sidebar-link{{if eq .Path "/merchant/audit"}} active{{end}}" href="/merchant/audit">Audit</a>
       </div>
       {{else}}
       <div class="sidebar-section">
@@ -76,4 +78,5 @@
       {{if eq $role "records"}}<a class="admin-mobile-brand" href="/merchant/records">{{.AppName}}</a>{{else if eq $role "payments"}}<a class="admin-mobile-brand" href="/merchant/payables">{{.AppName}}</a>{{else}}<a class="admin-mobile-brand" href="/merchant/scanner">{{.AppName}}</a>{{end}}
     {{end}}
   </header>
+</div>
 {{end}}
