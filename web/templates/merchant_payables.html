@@ -6,10 +6,15 @@
   <header class="page-header"><div><p class="eyebrow">Payments</p><h1>Dashboard</h1></div></header>
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
 
-  {{if .Settlement}}
+  {{if or .Settlement .MerchantWalletAccount}}
   <div class="panel">
     <h2>Merchant account number</h2>
+    {{if .Settlement}}
     <p class="muted">{{.Settlement.BankCode}} · {{.Settlement.AccountNumber}} · {{.Settlement.AccountName}}</p>
+    {{end}}
+    {{if .MerchantWalletAccount}}
+    <p class="muted">Wallet account number · {{.MerchantWalletAccount}}</p>
+    {{end}}
   </div>
   {{end}}
 
@@ -20,10 +25,15 @@
     <article class="card"><p class="eyebrow">Pending batches</p><h2>{{.PendingBatches}}</h2><p class="muted">{{money .PendingAmountKobo}} awaiting approval/processing</p></article>
   </section>
 
-  {{if .Settlement}}
+  {{if or .Settlement .MerchantWalletAccount}}
   <div class="panel">
     <h2>Merchant account number</h2>
+    {{if .Settlement}}
     <p class="muted">{{.Settlement.BankCode}} · {{.Settlement.AccountNumber}} · {{.Settlement.AccountName}}</p>
+    {{end}}
+    {{if .MerchantWalletAccount}}
+    <p class="muted">Wallet account number · {{.MerchantWalletAccount}}</p>
+    {{end}}
   </div>
   {{end}}
 

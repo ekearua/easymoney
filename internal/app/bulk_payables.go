@@ -52,6 +52,10 @@ func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 	if acct, err := a.store.DefaultSettlementAccount(r.Context(), merchantID); err == nil {
 		settlement = acct
 	}
+	var merchantWalletAccount any
+	if merchant, err := a.store.MerchantByID(r.Context(), merchantID); err == nil && strings.TrimSpace(merchant.WalletAccountNumber) != "" {
+		merchantWalletAccount = merchant.WalletAccountNumber
+	}
 	a.renderMerchant(w, "merchant_payables.html", r, "Payable recipients", map[string]any{
 		"Rows": rows, "Filter": filter, "Count": count, "Settings": settings,
 		"Error": r.URL.Query().Get("error"), "Role": merchantRoleFromContext(r.Context()),
@@ -61,6 +65,7 @@ func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 		"RecipientsPaid": summary.RecipientsPaid, "PendingAmountKobo": summary.PendingAmountKobo,
 		"LastBatchAt": summary.LastBatchAt,
 		"Settlement": settlement,
+		"MerchantWalletAccount": merchantWalletAccount,
 	})
 }
 

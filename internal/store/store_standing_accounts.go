@@ -37,10 +37,10 @@ const (
 	standingAccountSpan = 1_000_000
 )
 
-// EnsureStandingAccount reserves the deterministic local standing account for
-// the user if one is not already present, and returns the active reservation.
-// Reserved rows are never deleted once provisioned so a webhook credit can
-// always resolve the owning user.
+// EnsureStandingAccount reserves a local standing account for the user if one
+// is not already present, and returns the active reservation. Account numbers
+// are assigned from the 9330000000 pool (shared with merchants) with collision
+// checks against merchants and existing standing accounts.
 func (s *Store) EnsureStandingAccount(ctx context.Context, userID uuid.UUID) (StandingAccount, error) {
 	existing, err := s.StandingAccountByUser(ctx, userID)
 	if err == nil {
@@ -48,6 +48,15 @@ func (s *Store) EnsureStandingAccount(ctx context.Context, userID uuid.UUID) (St
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return StandingAccount{}, err
+	}
+	if s != nil {
+		if num, err := s.NextAvailableWalletAccountNumber(ctx); err == nil {
+			if got, err := s.insertStandingReservation(ctx, userID, num); err == nil {
+				return got, nil
+			} else if !isUniqueViolation(err) {
+				return StandingAccount{}, err
+			}
+		}
 	}
 	prefix := crc32.ChecksumIEEE(userID[:])
 	for step := 0; step < 100; step++ {
