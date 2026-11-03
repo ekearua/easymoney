@@ -8,7 +8,7 @@
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
 
   <div class="panel">
-    <p class="muted">{{.Recipient.PhoneE164}} · {{if .Recipient.CenterName}}{{.Recipient.CenterName}}{{else}}No location{{end}} · verification {{.Recipient.VerificationStatus}}{{if .Recipient.VerificationNote}} ({{.Recipient.VerificationNote}}){{end}}</p>
+    <p class="muted">{{.Recipient.PhoneE164}}{{if .LocationEnabled}} · {{if .Recipient.CenterName}}{{.Recipient.CenterName}}{{else}}No location{{end}}{{end}} · verification {{.Recipient.VerificationStatus}}{{if .Recipient.VerificationNote}} ({{.Recipient.VerificationNote}}){{end}}</p>
     <p class="muted">Source: {{.Recipient.Source}}{{if .Recipient.SourceFile}} · {{.Recipient.SourceFile}}{{end}}</p>
   </div>
 
@@ -42,7 +42,7 @@
         <label>Ward <input type="text" name="ward" value="{{.Recipient.Ward}}"></label>
         <label>Polling unit / booth <input type="text" name="polling_unit" value="{{.Recipient.PollingUnit}}"></label>
       </div>
-      {{if .Centers}}<label>Location
+      {{if and .Centers .LocationEnabled}}<label>Location
         <select name="center_id">
           <option value="">No location</option>
           {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
@@ -70,14 +70,14 @@
   </div>
 
   {{if .History}}
-  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th><th>Location</th><th>When</th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th>{{if $.LocationEnabled}}<th>Location</th>{{end}}<th>When</th></tr></thead><tbody>
   {{range .History}}<tr>
     <td class="mono">{{.BatchNo}}</td>
     <td>{{money .AmountKobo}}</td>
     <td>{{.Status}}</td>
     <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
     <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
-    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    {{if $.LocationEnabled}}<td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>{{end}}
     <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
   </tr>{{end}}</tbody></table></div>
   {{end}}

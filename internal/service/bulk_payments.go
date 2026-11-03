@@ -281,6 +281,57 @@ func (s *BulkPaymentsService) RunStage2(ctx context.Context, batchID uuid.UUID) 
 	} else {
 		isProgramBatch = isProgram
 	}
+	// The batch's payout mode decides the rail here too: a bank batch pays each
+	// verified responder's bank account through the provider, exactly as an
+	// unverified batch does, instead of quietly crediting wallets.
+	approval, err := s.store.BulkBatchApprovalInfo(ctx, batch.MerchantID, batchID)
+	if err != nil {
+		return err
+	}
+	bankPayout := approval.PayoutMode == "bank"
+	var transient error
+	switch {
+	case bankPayout && isProgramBatch:
+		// Approval refuses this combination; a batch that predates the guard
+		// must still not pay a restricted purse through a bank rail.
+		for _, item := range items {
+			_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "bank_payout_unsupported",
+				"program batches pay into restricted purses, not bank accounts")
+		}
+	case bankPayout:
+		for _, item := range items {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := s.payBulkItemBank(ctx, batch, item); err != nil {
+				if errors.Is(err, store.ErrInsufficientWalletBalance) {
+					_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "insufficient_funds", err.Error())
+					continue
+				}
+				transient = err
+			}
+		}
+	default:
+		transient = s.payBulkWalletItems(ctx, items, isProgramBatch)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	finalized, err := s.store.FinalizeBulkBatch(ctx, batchID, "")
+	if err != nil {
+		return err
+	}
+	s.logger.InfoContext(ctx, "bulk batch finalised", "batch", batch.BatchNo, "status", finalized.Status,
+		"payout_mode", approval.PayoutMode, "paid", finalized.PaidCount, "failed", finalized.FailedCount,
+		"expired", finalized.ExpiredCount)
+	return transient
+}
+
+// payBulkWalletItems pays location-verified items into the recipient's Xego
+// wallet (or their program purse), one balanced wallet pair per item. Items
+// whose recipient has no eligible account, or no live purse, are marked and
+// skipped rather than paid somewhere else.
+func (s *BulkPaymentsService) payBulkWalletItems(ctx context.Context, items []store.BulkBatchItem, isProgramBatch bool) error {
 	var transient error
 	for _, item := range items {
 		if ctx.Err() != nil {
@@ -329,12 +380,6 @@ func (s *BulkPaymentsService) RunStage2(ctx context.Context, batchID uuid.UUID) 
 			continue
 		}
 	}
-	finalized, err := s.store.FinalizeBulkBatch(ctx, batchID, "")
-	if err != nil {
-		return err
-	}
-	s.logger.InfoContext(ctx, "bulk batch finalised", "batch", batch.BatchNo, "status", finalized.Status,
-		"paid", finalized.PaidCount, "failed", finalized.FailedCount, "expired", finalized.ExpiredCount)
 	return transient
 }
 

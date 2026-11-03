@@ -644,9 +644,12 @@ func (s *Store) SetBulkBatchComplianceFlag(ctx context.Context, batchID uuid.UUI
 	return err
 }
 
-// PostBulkPaymentItemBank marks a bank payout as completed for one eligible
-// item. The actual money movement is handled by the payout provider; this
-// records the transfer reference against the item.
+// PostBulkPaymentItemBank settles one bank-paid bulk item. The provider has
+// already moved the money, so this records the transfer reference AND charges
+// the merchant for it: the business wallet is debited into the operating bank
+// in the same transaction. Without that debit a bulk bank payout left the
+// platform float paying recipients for free. It is idempotent on the item and
+// on the journal reference, so a replay cannot debit twice.
 func (s *Store) PostBulkPaymentItemBank(ctx context.Context, itemID uuid.UUID, transferRef string) (string, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -655,19 +658,20 @@ func (s *Store) PostBulkPaymentItemBank(ctx context.Context, itemID uuid.UUID, t
 	defer tx.Rollback(ctx)
 
 	var (
-		batchID   uuid.UUID
-		batchNo   string
+		batchID    uuid.UUID
+		batchNo    string
 		merchantID uuid.UUID
-		status    string
-		creditRef string
-		amount    int64
+		status     string
+		creditRef  string
+		phone      string
+		amount     int64
 	)
 	err = tx.QueryRow(ctx, `
-		SELECT i.batch_id, b.batch_no, b.merchant_id, i.status, i.credit_ref, i.amount_kobo
+		SELECT i.batch_id, b.batch_no, b.merchant_id, i.status, i.credit_ref, i.phone_e164, i.amount_kobo
 		FROM bulk_batch_items i
 		JOIN bulk_batches b ON b.id = i.batch_id
 		WHERE i.id=$1 FOR UPDATE OF i`, itemID).Scan(
-		&batchID, &batchNo, &merchantID, &status, &creditRef, &amount)
+		&batchID, &batchNo, &merchantID, &status, &creditRef, &phone, &amount)
 	if err != nil {
 		return "", err
 	}
@@ -677,9 +681,37 @@ func (s *Store) PostBulkPaymentItemBank(ctx context.Context, itemID uuid.UUID, t
 	if status != BulkItemLocationReceived {
 		return "", fmt.Errorf("bulk item %s is %s, not payable", itemID, status)
 	}
-	ref := transferRef
-	if strings.TrimSpace(ref) == "" {
+	ref := strings.TrimSpace(transferRef)
+	if ref == "" {
 		ref = fmt.Sprintf("bulk-bank:%s:%s", batchNo, itemID)
+	}
+	wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive)
+	if err != nil {
+		return "", fmt.Errorf("ensure business wallet for bulk payout: %w", err)
+	}
+	if wallet.Status != WalletStatusActive {
+		return "", fmt.Errorf("%w: business wallet is %s", ErrWalletNotActive, wallet.Status)
+	}
+	// Journal on the item, not on the provider reference: a provider retry that
+	// returns a fresh reference must not be able to debit the merchant twice.
+	journalRef := fmt.Sprintf("bulk-bank:%s:%s", batchNo, itemID)
+	var posted bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM ledger_entries WHERE journal_ref=$1)`, journalRef).Scan(&posted); err != nil {
+		return "", err
+	}
+	if !posted {
+		balance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
+		if err != nil {
+			return "", err
+		}
+		if balance < amount {
+			return "", fmt.Errorf("%w: business wallet has %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amount)
+		}
+		if err := s.postLedgerPair(ctx, tx, journalRef, "bulk_bank", itemID.String(),
+			wallet.AccountCode, LedgerAccountOperatingBank, "NGN",
+			fmt.Sprintf("Bulk payout %s to %s", batchNo, phone), "system", amount, &merchantID); err != nil {
+			return "", err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE bulk_batch_items SET status=$1, credit_ref=$2, transfer_ref=$3, updated_at=now() WHERE id=$4`,
@@ -847,11 +879,6 @@ type AdminBulkBatchRow struct {
 	ApprovedAt     *time.Time
 }
 
-
-
-
-
-
 func truncateBulkText(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) <= 500 {
@@ -860,10 +887,8 @@ func truncateBulkText(value string) string {
 	return value[:500]
 }
 
-
 // SetBulkItemUserID links a center user's resolved Xego account.
 func (s *Store) SetBulkItemUserID(ctx context.Context, itemID, userID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx, `UPDATE bulk_batch_items SET user_id=$1, updated_at=now() WHERE id=$2`, userID, itemID)
 	return err
 }
-

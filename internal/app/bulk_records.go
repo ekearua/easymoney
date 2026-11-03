@@ -45,9 +45,15 @@ func (a *App) merchantRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	centers, _ := a.store.ListMerchantCenters(r.Context(), merchantID)
+	settings, err := a.store.MerchantBulkSettings(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "records unavailable", http.StatusInternalServerError)
+		return
+	}
 	a.renderMerchant(w, "merchant_records.html", r, "Recipient records", map[string]any{
 		"Rows": rows, "Filter": filter, "Count": count, "Centers": centers,
-		"Page": page, "HasNext": page*pageSize < count,
+		"LocationEnabled": settings.LocationRequired,
+		"Page":            page, "HasNext": page*pageSize < count,
 		"Saved": r.URL.Query().Get("saved"), "Error": r.URL.Query().Get("error"),
 	})
 }
@@ -68,9 +74,15 @@ func (a *App) merchantRecordDetail(w http.ResponseWriter, r *http.Request) {
 	summary, _ := a.store.RecipientPaymentSummary(r.Context(), merchantID, id)
 	history, _ := a.store.RecipientPaymentHistory(r.Context(), merchantID, id, 50)
 	centers, _ := a.store.ListMerchantCenters(r.Context(), merchantID)
+	settings, err := a.store.MerchantBulkSettings(r.Context(), merchantID)
+	if err != nil {
+		http.Error(w, "record unavailable", http.StatusInternalServerError)
+		return
+	}
 	a.renderMerchant(w, "merchant_record_detail.html", r, recipient.DisplayName+" · record", map[string]any{
 		"Recipient": recipient, "Summary": summary, "History": history, "Centers": centers,
-		"Saved": r.URL.Query().Get("saved") == "1", "Error": r.URL.Query().Get("error"),
+		"LocationEnabled": settings.LocationRequired,
+		"Saved":           r.URL.Query().Get("saved") == "1", "Error": r.URL.Query().Get("error"),
 	})
 }
 
@@ -98,7 +110,7 @@ func (a *App) merchantRecordSave(w http.ResponseWriter, r *http.Request) {
 		SourceFile:    r.FormValue("source_file"),
 		Source:        "manual",
 	}
-	if centerID := strings.TrimSpace(r.FormValue("center_id")); centerID != "" {
+	if centerID := strings.TrimSpace(r.FormValue("center_id")); centerID != "" && a.recordLocationEnabled(r, merchantID) {
 		if parsed, err := uuid.Parse(centerID); err == nil {
 			input.CenterID = &parsed
 		}
@@ -174,7 +186,7 @@ func (a *App) merchantRecordImport(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	var centerID *uuid.UUID
-	if raw := strings.TrimSpace(r.FormValue("center_id")); raw != "" {
+	if raw := strings.TrimSpace(r.FormValue("center_id")); raw != "" && a.recordLocationEnabled(r, merchantID) {
 		if parsed, err := uuid.Parse(raw); err == nil {
 			centerID = &parsed
 		}
@@ -207,4 +219,15 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// recordLocationEnabled reports whether location assignment belongs in the
+// recipient records at all. A merchant created without the location switch
+// keeps no location columns on its records, so a submitted centre is ignored.
+func (a *App) recordLocationEnabled(r *http.Request, merchantID uuid.UUID) bool {
+	settings, err := a.store.MerchantBulkSettings(r.Context(), merchantID)
+	if err != nil {
+		return false
+	}
+	return settings.LocationRequired
 }

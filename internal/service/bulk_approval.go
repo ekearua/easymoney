@@ -22,12 +22,15 @@ import (
 // ErrBulkNoRecipients blocks a draft whose filter matches nothing payable.
 var ErrBulkNoRecipients = errors.New("no verified recipients match this filter")
 
-// ErrBulkBankPayoutUnsupported blocks release of a bank-mode batch until the
-// bank payout leg is wired for bulk items.
-var ErrBulkBankPayoutUnsupported = errors.New("bank payouts for bulk batches are not available yet; switch the merchant to wallet payout")
+// ErrBulkBankPayoutUnsupported refuses to release a bank-mode batch that can
+// never reach a bank rail: no payout provider is configured, or the batch pays
+// into restricted program purses, which are wallet destinations by definition.
+var ErrBulkBankPayoutUnsupported = errors.New("this batch cannot use bank payout")
 
 // DraftFromFilter validates a filtered selection and snapshots it into a draft
-// batch. Nothing is paid here.
+// batch. Nothing is paid here, and a draft is never refused for lack of funds:
+// the wallet balance is checked at approval and again item by item as money
+// moves, so the payments team can prepare work ahead of funding.
 func (s *BulkPaymentsService) DraftFromFilter(ctx context.Context, merchantID uuid.UUID, filter store.RecipientFilter, amountKobo int64, createdBy *uuid.UUID) (store.BulkBatch, error) {
 	if amountKobo <= 0 {
 		return store.BulkBatch{}, errors.New("amount must be positive")
@@ -48,13 +51,6 @@ func (s *BulkPaymentsService) DraftFromFilter(ctx context.Context, merchantID uu
 		return store.BulkBatch{}, fmt.Errorf("%w: %d > %d", ErrBulkTooManyTargets, targets, s.cfg.MaxTargets)
 	}
 	expected := int64(targets) * amountKobo
-	balance, _, err := s.store.BusinessWalletBalance(ctx, merchantID)
-	if err != nil {
-		return store.BulkBatch{}, err
-	}
-	if balance < expected {
-		return store.BulkBatch{}, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrBulkInsufficientFunds, balance, expected)
-	}
 
 	batch, err := s.store.CreateBulkDraft(ctx, store.NewBulkDraft{
 		MerchantID:      merchantID,
@@ -109,6 +105,18 @@ func (s *BulkPaymentsService) ApproveDraft(ctx context.Context, merchantID, batc
 	if balance < expected {
 		return fmt.Errorf("%w: have %d kobo, need %d kobo", ErrBulkInsufficientFunds, balance, expected)
 	}
+	if approval.PayoutMode == "bank" {
+		// The batch is already locked to a rail it may not be able to use, so
+		// refuse now with a reason instead of paying the wrong destination.
+		if s.payout == nil {
+			return fmt.Errorf("%w: no bank payout provider is configured", ErrBulkBankPayoutUnsupported)
+		}
+		if _, isProgram, perr := s.store.ProgramForBulkBatch(ctx, batchID); perr != nil {
+			return perr
+		} else if isProgram {
+			return fmt.Errorf("%w: program batches pay into restricted purses, not bank accounts", ErrBulkBankPayoutUnsupported)
+		}
+	}
 	if err := s.store.ApproveBulkBatch(ctx, merchantID, batchID, memberID); err != nil {
 		return err
 	}
@@ -151,6 +159,16 @@ func (s *BulkPaymentsService) payBulkItemBank(ctx context.Context, batch store.B
 		_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "missing_bank_details", "recipient missing bank account details")
 		return errors.New("missing bank details")
 	}
+	// Check funding before the transfer: a provider payout that has left cannot
+	// be recalled, so an unfunded merchant must never reach the rail.
+	balance, hasWallet, err := s.store.BusinessWalletBalance(ctx, batch.MerchantID)
+	if err != nil {
+		return err
+	}
+	if !hasWallet || balance < item.AmountKobo {
+		_ = s.store.SetBulkItemStatus(ctx, item.ID, store.BulkItemFailed, "insufficient_funds", "business wallet cannot cover this item")
+		return fmt.Errorf("%w: business wallet has %d kobo, need %d kobo", store.ErrInsufficientWalletBalance, balance, item.AmountKobo)
+	}
 	accountName := strings.TrimSpace(recipient.AccountName)
 	if accountName == "" && s.nameEnquirer != nil {
 		name, nerr := s.nameEnquirer.NameEnquiry(ctx, recipient.AccountNumber, recipient.BankCode)
@@ -179,8 +197,12 @@ func (s *BulkPaymentsService) payBulkItemBank(ctx context.Context, batch store.B
 		return err
 	}
 	if res.Status == "succeeded" {
-		if _, err := s.store.PostBulkPaymentItemBank(ctx, item.ID, res.ExternalRef); err != nil {
-			return err
+		if _, perr := s.store.PostBulkPaymentItemBank(ctx, item.ID, res.ExternalRef); perr != nil {
+			// The money is already gone: record loudly so the transfer is
+			// reconciled against the merchant's wallet rather than retried.
+			s.logger.ErrorContext(ctx, "bulk bank transfer succeeded but settlement failed",
+				"batch", batch.BatchNo, "item", item.ID, "transfer_ref", res.ExternalRef, "error", perr)
+			return perr
 		}
 		return nil
 	}

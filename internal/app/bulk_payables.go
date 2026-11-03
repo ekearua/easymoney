@@ -35,6 +35,10 @@ func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary, _ := a.store.MerchantBulkSpendingSummary(r.Context(), merchantID)
+	var settlement any
+	if acct, err := a.store.DefaultSettlementAccount(r.Context(), merchantID); err == nil {
+		settlement = acct
+	}
 	a.renderMerchant(w, "merchant_payables.html", r, "Payable recipients", map[string]any{
 		"Rows": rows, "Filter": filter, "Count": count, "Settings": settings,
 		"Error": r.URL.Query().Get("error"), "Role": merchantRoleFromContext(r.Context()),
@@ -43,6 +47,7 @@ func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 		"TotalBatches": summary.TotalBatches, "PendingBatches": summary.PendingBatches,
 		"RecipientsPaid": summary.RecipientsPaid, "PendingAmountKobo": summary.PendingAmountKobo,
 		"LastBatchAt": summary.LastBatchAt,
+		"Settlement": settlement,
 	})
 }
 
@@ -65,8 +70,10 @@ func (a *App) merchantPayableDetail(w http.ResponseWriter, r *http.Request) {
 	recipient.AccountName = ""
 	summary, _ := a.store.RecipientPaymentSummary(r.Context(), merchantID, id)
 	history, _ := a.store.RecipientPaymentHistory(r.Context(), merchantID, id, 50)
+	settings, _ := a.store.MerchantBulkSettings(r.Context(), merchantID)
 	a.renderMerchant(w, "merchant_payable_detail.html", r, "Recipient payments", map[string]any{
 		"Recipient": recipient, "Summary": summary, "History": history,
+		"LocationEnabled": settings.LocationRequired,
 	})
 }
 
@@ -225,7 +232,7 @@ func bulkPayableMessage(err error) string {
 	case isServiceError(err, service.ErrBulkTooManyTargets):
 		return "This selection has too many recipients for one batch."
 	case isServiceError(err, service.ErrBulkBankPayoutUnsupported):
-		return "Bank payouts for bulk batches are not available yet. Switch this merchant to wallet payout."
+		return "This batch cannot be paid by bank transfer: program batches pay into restricted purses, and bank payout needs a configured provider. Switch this merchant to wallet payout."
 	default:
 		return err.Error()
 	}

@@ -34,7 +34,7 @@
     <form method="post" action="/merchant/records/import" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <label>File <input type="file" name="file" accept=".csv,.xlsx" required></label>
-      {{if .Centers}}<label>Assign to location
+      {{if and .Centers .LocationEnabled}}<label>Assign to location
         <select name="center_id">
           <option value="">No location</option>
           {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
@@ -62,7 +62,7 @@
         <label>Ward <input type="text" name="ward"></label>
         <label>Polling unit / booth <input type="text" name="polling_unit"></label>
       </div>
-      {{if .Centers}}<label>Location
+      {{if and .Centers .LocationEnabled}}<label>Location
         <select name="center_id">
           <option value="">No location</option>
           {{range .Centers}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
@@ -73,7 +73,7 @@
   </div>
 
   {{if .Rows}}
-  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>State</th><th>LGA</th><th>Ward</th><th>Booth</th><th>Location</th><th>Verified</th><th></th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>State</th><th>LGA</th><th>Ward</th><th>Booth</th>{{if .LocationEnabled}}<th>Location</th>{{end}}<th>Verified</th><th></th></tr></thead><tbody>
   {{range .Rows}}<tr>
     <td>{{if .DisplayName}}{{.DisplayName}}{{else}}—{{end}}</td>
     <td>{{.PhoneE164}}</td>
@@ -81,7 +81,7 @@
     <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
     <td>{{if .Ward}}{{.Ward}}{{else}}—{{end}}</td>
     <td>{{if .PollingUnit}}{{.PollingUnit}}{{else}}—{{end}}</td>
-    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    {{if $.LocationEnabled}}<td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>{{end}}
     <td>{{.VerificationStatus}}</td>
     <td><a href="/merchant/records/{{.ID}}">Open</a></td>
   </tr>{{end}}</tbody></table></div>

@@ -1,0 +1,1 @@
+{"commands": ["sleep 30 && curl -v http://127.0.0.1:8080/health/ready 2>&1 | tail -20"]}

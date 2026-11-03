@@ -17,7 +17,7 @@
     </dl>
   </div>
   {{if .History}}
-  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th><th>Ward</th><th>Location</th><th>When</th></tr></thead><tbody>
+  <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Amount</th><th>Status</th><th>State</th><th>LGA</th><th>Ward</th>{{if $.LocationEnabled}}<th>Location</th>{{end}}<th>When</th></tr></thead><tbody>
   {{range .History}}<tr>
     <td class="mono">{{.BatchNo}}</td>
     <td>{{money .AmountKobo}}</td>
@@ -25,7 +25,7 @@
     <td>{{if .State}}{{.State}}{{else}}—{{end}}</td>
     <td>{{if .LGA}}{{.LGA}}{{else}}—{{end}}</td>
     <td>{{if .Ward}}{{.Ward}}{{else}}—{{end}}</td>
-    <td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>
+    {{if $.LocationEnabled}}<td>{{if .CenterName}}{{.CenterName}}{{else}}—{{end}}</td>{{end}}
     <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
   </tr>{{end}}</tbody></table></div>
   {{else}}<div class="panel"><p class="muted">No payments to this recipient yet.</p></div>{{end}}

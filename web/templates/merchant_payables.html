@@ -13,6 +13,13 @@
     <article class="card"><p class="eyebrow">Pending batches</p><h2>{{.PendingBatches}}</h2><p class="muted">{{money .PendingAmountKobo}} awaiting approval/processing</p></article>
   </section>
 
+  {{if .Settlement}}
+  <div class="panel">
+    <h2>Merchant account number</h2>
+    <p class="muted">{{.Settlement.BankCode}} · {{.Settlement.AccountNumber}} · {{.Settlement.AccountName}}</p>
+  </div>
+  {{end}}
+
   <div class="panel">
     <p class="muted">Verified records only · payout {{.Settings.PayoutMode}} ·
       {{if .Settings.LocationRequired}}location verification on{{else}}direct payment{{end}}</p>
