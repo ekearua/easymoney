@@ -1,0 +1,1 @@
+{"commands": ["cd /opt/whatsapp-payment && git pull --ff-only && sudo DOCKER_BUILDKIT=0 docker build -t xego-app:local . && sudo docker compose -f compose.edge.yaml up -d --no-build && sleep 10 && curl -fsS http://127.0.0.1:8080/health/ready"]}
