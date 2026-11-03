@@ -289,6 +289,7 @@ func (a *App) adminCreateMerchantDirect(w http.ResponseWriter, r *http.Request) 
 		AllowFullPayAlways:    allowFullAlways,
 		CreateScanningService: createScanning,
 		BulkPaymentsEnabled:   r.FormValue("bulk_payments_enabled") == "on",
+		WalletAccountNumber:   strings.TrimSpace(r.FormValue("wallet_account_number")),
 	}
 
 	merchant, resetToken, err := a.store.CreateMerchantDirect(r.Context(), params)
