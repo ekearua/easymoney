@@ -2,7 +2,7 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
-<body>{{template "merchant_nav" .}}</div><main class="admin-main">
+<body>{{template "merchant_nav" .}}<main class="admin-main">
   <header class="page-header"><div><p class="eyebrow">Records</p><h1>Recipient records</h1></div></header>
   {{if .Saved}}<div class="alert success">{{.Saved}} record(s) saved.</div>{{end}}
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
