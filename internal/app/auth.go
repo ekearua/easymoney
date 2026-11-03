@@ -107,6 +107,10 @@ func (a *App) issueSession(w http.ResponseWriter, r *http.Request, scope string,
 			Secure: a.cfg.Environment == "production", SameSite: http.SameSiteStrictMode,
 			MaxAge: int(ttl.Seconds()),
 		})
+		// Route bulk-enabled merchants to the bulk payments dashboard.
+		if active, bulkEnabled, err := a.store.MerchantAccess(r.Context(), subjectID); err == nil && active && bulkEnabled {
+			return "/merchant/payables", nil
+		}
 		return "/merchant/scanner", nil
 	}
 	if scope == store.MFAScopeAgent {

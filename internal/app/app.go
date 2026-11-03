@@ -993,6 +993,24 @@ func (a *App) routes() http.Handler {
 	router.Group(func(m chi.Router) {
 		m.Use(a.requireMerchant)
 		m.Get("/merchant", func(w http.ResponseWriter, r *http.Request) {
+			if merchantBulkEnabledFromContext(r.Context()) {
+				role := merchantRoleFromContext(r.Context())
+				if role == store.MerchantRoleRecords {
+					http.Redirect(w, r, "/merchant/records", http.StatusSeeOther)
+					return
+				}
+				http.Redirect(w, r, "/merchant/payables", http.StatusSeeOther)
+				return
+			}
+			role := merchantRoleFromContext(r.Context())
+			if role == store.MerchantRoleRecords {
+				http.Redirect(w, r, "/merchant/records", http.StatusSeeOther)
+				return
+			}
+			if role == store.MerchantRolePayments {
+				http.Redirect(w, r, "/merchant/payables", http.StatusSeeOther)
+				return
+			}
 			http.Redirect(w, r, "/merchant/scanner", http.StatusSeeOther)
 		})
 		m.Get("/merchant/scanner", a.merchantScanner)
@@ -1034,9 +1052,9 @@ func (a *App) routes() http.Handler {
 			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients", a.merchantBulkRecipientAdd)
 			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients/upload", a.merchantBulkRecipientUpload)
 			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/centers/{id}/recipients/{recipientID}/delete", a.merchantBulkRecipientDelete)
-			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/batches", a.merchantBulkBatches)
-			bg.With(a.requireMerchantOwner()).Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
-			bg.With(a.requireMerchantOwner()).Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
+			bg.With(a.requireMerchantRole(store.MerchantRoleOwner, store.MerchantRolePayments)).Get("/merchant/bulk/batches", a.merchantBulkBatches)
+			bg.With(a.requireMerchantRole(store.MerchantRoleOwner, store.MerchantRolePayments)).Post("/merchant/bulk/batches", a.merchantBulkBatchCreate)
+			bg.With(a.requireMerchantRole(store.MerchantRoleOwner, store.MerchantRolePayments)).Get("/merchant/bulk/batches/{id}", a.merchantBulkBatchDetail)
 
 			// Records role: the single recipient list and its identity documents.
 			records := a.requireMerchantRole(store.MerchantRoleRecords)
