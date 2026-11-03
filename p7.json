@@ -1,0 +1,1 @@
+{"commands": ["cd /opt/whatsapp-payment && git pull --ff-only && docker compose -f compose.edge.yaml up -d --build 2>&1 | tail -40"]}

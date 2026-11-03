@@ -8,7 +8,7 @@
   <div class="navlinks">
     {{if and .BulkEnabled}}
       {{if or (eq $role "owner") (eq $role "payments")}}<a href="/merchant/payables">Dashboard</a>{{end}}
-      {{if or (eq $role "owner") (eq $role "records")}}<a href="/merchant/records">Records</a>{{end}}
+      {{if eq $role "owner"}}<a href="/merchant/records">Records</a>{{end}}
       {{if or (eq $role "owner") (eq $role "payments")}}<a href="/merchant/bulk/batches">Batches</a>{{end}}
       {{if eq $role "owner"}}<a href="/merchant/team">Team</a>{{end}}
       <a href="/merchant/security">Security</a>

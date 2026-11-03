@@ -152,13 +152,18 @@ func (a *App) merchantRecordVerify(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/merchant/records/"+id.String()+"?saved=1", http.StatusSeeOther)
 }
 
-// merchantRecordDelete removes a record.
+// merchantRecordDelete removes a record for non-owner roles; owner keeps records.
 func (a *App) merchantRecordDelete(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("csrf_token") != merchantCSRFFromContext(r.Context()) {
 		http.Error(w, "invalid CSRF token", http.StatusForbidden)
 		return
 	}
 	merchantID := merchantIDFromContext(r.Context())
+	role := merchantRoleFromContext(r.Context())
+	if role == "owner" {
+		http.Redirect(w, r, "/merchant/records", http.StatusSeeOther)
+		return
+	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, "invalid record", http.StatusBadRequest)
