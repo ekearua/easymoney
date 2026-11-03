@@ -393,8 +393,9 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "metrics.html", execMetricsUnpriced); err != nil {
 		t.Fatalf("execute unpriced metrics.html: %v", err)
 	}
+	unpricedRendered := buf.String()
 	buf.Reset()
-	if !strings.Contains(buf.String(), "AI tokens (7d)") || strings.Contains(buf.String(), "AI extraction spend") {
+	if !strings.Contains(unpricedRendered, "AI tokens (7d)") || strings.Contains(unpricedRendered, "AI extraction spend") {
 		t.Fatal("an unpriced week must render the token count without a naira estimate")
 	}
 
