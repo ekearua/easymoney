@@ -3,8 +3,15 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
 <body>{{template "merchant_nav" .}}<main class="dashboard">
-  <header class="page-header"><div><p class="eyebrow">Payments</p><h1>Payable recipients</h1></div></header>
+  <header class="page-header"><div><p class="eyebrow">Payments</p><h1>Dashboard</h1></div></header>
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
+
+  {{if .Settlement}}
+  <div class="panel">
+    <h2>Merchant account number</h2>
+    <p class="muted">{{.Settlement.BankCode}} · {{.Settlement.AccountNumber}} · {{.Settlement.AccountName}}</p>
+  </div>
+  {{end}}
 
   <section class="cards">
     <article class="card"><p class="eyebrow">Wallet balance</p><h2>{{money .WalletBalance}}</h2><p class="muted">{{if .HasWallet}}Business wallet{{else}}No wallet found{{end}}</p></article>

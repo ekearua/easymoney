@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"crypto/tls"
+	"github.com/google/uuid"
 	"html/template"
 
+	"encoding/json"
 	"whatsapp-payment-demo/internal/config"
 	"whatsapp-payment-demo/internal/domain"
 	"whatsapp-payment-demo/internal/kyc"
@@ -17,7 +18,6 @@ import (
 	"whatsapp-payment-demo/internal/providers/interswitch"
 	"whatsapp-payment-demo/internal/store"
 	"whatsapp-payment-demo/web"
-	"encoding/json"
 )
 
 type fakeEmailSender struct {
@@ -37,7 +37,7 @@ func (s *fakeEmailSender) Send(ctx context.Context, to, subject, body string) er
 
 var _ ports.EmailSender = (*fakeEmailSender)(nil)
 
-func (s *fakeEmailSender) Address() string   { return "fake@example.invalid" }
+func (s *fakeEmailSender) Address() string        { return "fake@example.invalid" }
 func (s *fakeEmailSender) TLSConfig() *tls.Config { return nil }
 
 // TestSendMerchantOwnerNotificationEmail guards the password-reset email the
@@ -239,14 +239,19 @@ func TestAdminKYCAlertRailFilter(t *testing.T) {
 // cost page, parses and executes with the shared function map.
 func TestTemplatesParse(t *testing.T) {
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"money":             func(k int64) string { return "NGN" },
-		"maskPII":           func(s string) string { return s },
-		"statusClass":       func(any) string { return "" },
-		"percent":           func(float64) string { return "" },
-		"sub":               func(a, b int64) int64 { return a - b },
-		"add":               func(a, b int64) int64 { return a + b },
-		"mul":               func(a, b int64) int64 { return a * b },
-		"divf":              func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
+		"money":       func(k int64) string { return "NGN" },
+		"maskPII":     func(s string) string { return s },
+		"statusClass": func(any) string { return "" },
+		"percent":     func(float64) string { return "" },
+		"sub":         func(a, b int64) int64 { return a - b },
+		"add":         func(a, b int64) int64 { return a + b },
+		"mul":         func(a, b int64) int64 { return a * b },
+		"divf": func(a, b float64, c float64) float64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b * c
+		},
 		"inc":               func(i int) int { return i + 1 },
 		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
@@ -416,7 +421,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_onboarding_reminders.html", execReminders); err != nil {
 		t.Fatalf("execute admin_onboarding_reminders.html: %v", err)
 	}
-	buf.Reset()
 	remindersRendered := buf.String()
 	if !strings.Contains(remindersRendered, "Deliverability guard") || !strings.Contains(remindersRendered, "kyb") {
 		t.Fatal("admin_onboarding_reminders.html must render the guard panel and the stage table")
@@ -447,7 +451,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMedia); err != nil {
 		t.Fatalf("execute admin_media_report.html: %v", err)
 	}
-	buf.Reset()
 	mediaRendered := buf.String()
 	if !strings.Contains(mediaRendered, "whatsapp") || !strings.Contains(mediaRendered, "50%") {
 		t.Fatal("admin_media_report.html must render the per-channel success rate")
@@ -468,14 +471,13 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_media_report.html", execMediaEmpty); err != nil {
 		t.Fatalf("execute empty admin_media_report.html: %v", err)
 	}
-	buf.Reset()
 	if strings.Contains(buf.String(), "token-trend\" viewBox") {
 		t.Fatal("empty window must not render a trend sparkline")
 	}
 	_ = mediaRendered
 
 	// G8: the attestation checklist executes with one overdue in-progress
-// cycle and renders the record form, and with no cycles at all.
+	// cycle and renders the record form, and with no cycles at all.
 	buf.Reset()
 	execAttest := map[string]any{
 		"AppName": "Faya", "Title": "Compliance attestations", "CSRF": "x", "AdminRole": "compliance",
@@ -489,7 +491,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_compliance.html", execAttest); err != nil {
 		t.Fatalf("execute admin_compliance.html: %v", err)
 	}
-	buf.Reset()
 	attestRendered := buf.String()
 	if !strings.Contains(attestRendered, "OVERDUE") || !strings.Contains(attestRendered, "/admin/compliance/7/record") {
 		t.Fatal("admin_compliance.html must flag overdue cycles and post to the record endpoint")
@@ -505,8 +506,8 @@ func TestTemplatesParse(t *testing.T) {
 	_ = attestRendered
 
 	// G2: the payment-screening queue executes with one open hold (the
-// disposition form posts to the per-row endpoint with the CSRF field)
-// and with an empty queue.
+	// disposition form posts to the per-row endpoint with the CSRF field)
+	// and with an empty queue.
 	buf.Reset()
 	holdAt := time.Now()
 	execScreening := map[string]any{
@@ -523,7 +524,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_payment_screenings.html", execScreening); err != nil {
 		t.Fatalf("execute admin_payment_screenings.html: %v", err)
 	}
-	buf.Reset()
 	screeningRendered := buf.String()
 	if !strings.Contains(screeningRendered, "/admin/payment-screenings/9/dispose") || !strings.Contains(screeningRendered, "csrf_token") {
 		t.Fatal("admin_payment_screenings.html must post dispositions to the per-row endpoint with a CSRF field")
@@ -542,7 +542,7 @@ func TestTemplatesParse(t *testing.T) {
 	_ = screeningRendered
 
 	// G7 residual: the audit page renders the scheduled sweep history and
-// the open alert's disposition form, and executes cleanly without them.
+	// the open alert's disposition form, and executes cleanly without them.
 	buf.Reset()
 	execAudit := map[string]any{
 		"AppName": "Faya", "Title": "Audit log", "CSRF": "x", "AdminRole": "compliance",
@@ -555,7 +555,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "admin_audit.html", execAudit); err != nil {
 		t.Fatalf("execute admin_audit.html (chain panels): %v", err)
 	}
-	buf.Reset()
 	auditRendered := buf.String()
 	if !strings.Contains(auditRendered, "/admin/audit/chain-alerts/9/dispose") {
 		t.Fatal("admin_audit.html must render the open chain alert's disposition form")
@@ -591,7 +590,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", flowPage); err != nil {
 		t.Fatalf("execute webflow.html: %v", err)
 	}
-	buf.Reset()
 	if !strings.Contains(buf.String(), "name=\"method\"") {
 		t.Fatal("webflow.html must render grouped radio inputs with the field name")
 	}
@@ -656,7 +654,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", plainPage); err != nil {
 		t.Fatalf("execute webflow.html (unstepped): %v", err)
 	}
-	buf.Reset()
 	plainHTML := buf.String()
 	if strings.Contains(plainHTML, "receipt wf") || strings.Contains(plainHTML, "wf-stepper") {
 		t.Fatal("webflow.html must not render the stepped shell for a flow without steps")
@@ -678,7 +675,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", barPage); err != nil {
 		t.Fatalf("execute webflow.html (ai bar): %v", err)
 	}
-	buf.Reset()
 	barHTML := buf.String()
 	if !strings.Contains(barHTML, "wf-aibar") || !strings.Contains(barHTML, "id=\"wf-ai-input\"") {
 		t.Fatal("webflow.html must render the AI ask-bar with its input")
@@ -718,7 +714,6 @@ func TestTemplatesParse(t *testing.T) {
 	if err := tmpl.ExecuteTemplate(&buf, "webflow.html", donePage); err != nil {
 		t.Fatalf("execute webflow.html (done): %v", err)
 	}
-	buf.Reset()
 	if strings.Contains(buf.String(), "wf-stepper") {
 		t.Fatal("webflow.html must not render the stepper on done pages")
 	}
