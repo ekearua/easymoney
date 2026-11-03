@@ -13,8 +13,8 @@ import (
 	"whatsapp-payment-demo/internal/domain"
 )
 
-// Bulk payment item/batch statuses. Items progress pending → location_requested
-// → location_received → (paid | a terminal ineligibility/expiry reason).
+// Bulk payment item/batch statuses. Items progress pending â†’ location_requested
+// â†’ location_received â†’ (paid | a terminal ineligibility/expiry reason).
 const (
 	BulkItemPending          = "pending"
 	BulkItemLocationSent     = "location_requested"
@@ -776,108 +776,81 @@ func (s *Store) BusinessWalletBalance(ctx context.Context, merchantID uuid.UUID)
 	return balance, true, nil
 }
 
-// ClaimBulkJobs atomically claims due jobs for one worker.
-func (s *Store) ClaimBulkJobs(ctx context.Context, limit int) ([]BulkJob, error) {
-	if limit <= 0 {
-		limit = 5
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `
-		SELECT id, kind, batch_id, run_after, status, attempts, max_attempts, last_error
-		FROM bulk_jobs
-		WHERE status=$1 AND run_after <= now()
-		ORDER BY run_after ASC
-		FOR UPDATE SKIP LOCKED
-		LIMIT $2`, BulkJobQueued, limit)
-	if err != nil {
-		return nil, err
-	}
-	var jobs []BulkJob
-	for rows.Next() {
-		var j BulkJob
-		if err := rows.Scan(&j.ID, &j.Kind, &j.BatchID, &j.RunAfter, &j.Status, &j.Attempts, &j.MaxAttempts, &j.LastError); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		jobs = append(jobs, j)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range jobs {
-		if _, err := tx.Exec(ctx, `UPDATE bulk_jobs SET status=$1, attempts=attempts+1, updated_at=now() WHERE id=$2`, BulkJobRunning, jobs[i].ID); err != nil {
-			return nil, err
-		}
-		jobs[i].Status = BulkJobRunning
-		jobs[i].Attempts++
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return jobs, nil
+// MerchantBulkSpendingSummary aggregates spend metrics for a bulk-enabled merchant.
+type MerchantBulkSpendingSummary struct {
+	WalletBalance     int64
+	HasWallet         bool
+	TotalSpentKobo    int64
+	CompletedBatches  int
+	PendingBatches    int
+	TotalBatches      int
+	RecipientsPaid    int
+	PendingAmountKobo int64
+	LastBatchAt       *time.Time
 }
 
-// CompleteBulkJob marks a job done.
-func (s *Store) CompleteBulkJob(ctx context.Context, id uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE bulk_jobs SET status=$1, last_error='', updated_at=now() WHERE id=$2`, BulkJobDone, id)
-	return err
-}
-
-// RetryBulkJob requeues a job with an exponential backoff, or marks it failed
-// once it exhausts max_attempts.
-func (s *Store) RetryBulkJob(ctx context.Context, id uuid.UUID, jobErr string) error {
-	tx, err := s.pool.Begin(ctx)
+// MerchantBulkSpendingSummary returns aggregate spending and batch stats for a merchant.
+func (s *Store) MerchantBulkSpendingSummary(ctx context.Context, merchantID uuid.UUID) (MerchantBulkSpendingSummary, error) {
+	var summary MerchantBulkSpendingSummary
+	balance, hasWallet, err := s.BusinessWalletBalance(ctx, merchantID)
 	if err != nil {
-		return err
+		return summary, err
 	}
-	defer tx.Rollback(ctx)
-	var attempts, maxAttempts int
-	if err := tx.QueryRow(ctx, `SELECT attempts, max_attempts FROM bulk_jobs WHERE id=$1 FOR UPDATE`, id).Scan(&attempts, &maxAttempts); err != nil {
-		return err
-	}
-	jobErr = truncateBulkText(jobErr)
-	if attempts >= maxAttempts {
-		if _, err := tx.Exec(ctx, `UPDATE bulk_jobs SET status=$1, last_error=$2, updated_at=now() WHERE id=$3`, BulkJobFailed, jobErr, id); err != nil {
-			return err
-		}
-		return tx.Commit(ctx)
-	}
-	backoff := time.Duration(1<<uint(attempts)) * 15 * time.Second
-	if _, err := tx.Exec(ctx, `
-		UPDATE bulk_jobs SET status=$1, run_after=now()+$2::interval, last_error=$3, updated_at=now() WHERE id=$4`,
-		BulkJobQueued, backoff.String(), jobErr, id); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	summary.WalletBalance = balance
+	summary.HasWallet = hasWallet
+
+	err = s.pool.QueryRow(ctx, `
+		SELECT
+			COALESCE((SELECT COUNT(*) FROM bulk_batches WHERE merchant_id=$1), 0),
+			COALESCE((SELECT COUNT(*) FROM bulk_batches WHERE merchant_id=$1 AND status='completed'), 0),
+			COALESCE((SELECT COUNT(*) FROM bulk_batches WHERE merchant_id=$1 AND status IN ('submitted','approved','processing')), 0),
+			COALESCE((SELECT SUM(amount_kobo * total_targets) FROM bulk_batches WHERE merchant_id=$1 AND status='completed'), 0),
+			COALESCE((SELECT SUM(amount_kobo * total_targets) FROM bulk_batches WHERE merchant_id=$1 AND status IN ('submitted','approved','processing')), 0),
+			COALESCE((SELECT COUNT(*) FROM bulk_batch_items i JOIN bulk_batches b ON b.id=i.batch_id WHERE b.merchant_id=$1 AND i.status='paid'), 0),
+			(SELECT MAX(created_at) FROM bulk_batches WHERE merchant_id=$1)
+	`, merchantID).Scan(&summary.TotalBatches, &summary.CompletedBatches, &summary.PendingBatches,
+		&summary.TotalSpentKobo, &summary.PendingAmountKobo, &summary.RecipientsPaid, &summary.LastBatchAt)
+	return summary, err
 }
 
-// SetBulkItemUserID links a center user's resolved Xego account.
-func (s *Store) SetBulkItemUserID(ctx context.Context, itemID, userID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx, `UPDATE bulk_batch_items SET user_id=$1, updated_at=now() WHERE id=$2`, userID, itemID)
-	return err
+// AdminBulkMerchantRow holds per-merchant bulk metrics for the admin view.
+type AdminBulkMerchantRow struct {
+	MerchantID        uuid.UUID
+	MerchantName      string
+	MerchantSlug      string
+	Active            bool
+	BulkEnabled       bool
+	WalletBalance     int64
+	HasWallet         bool
+	TotalSpentKobo    int64
+	CompletedBatches  int
+	PendingBatches    int
+	TotalBatches      int
+	RecipientsPaid    int
+	PendingAmountKobo int64
+	LastBatchAt       *time.Time
 }
 
-// ResolveCenterUserByPhone returns the center-user row for a phone number
-// scoped to a merchant, if present.
-func (s *Store) ResolveCenterUserByPhone(ctx context.Context, merchantID uuid.UUID, phone string) (CenterUser, bool, error) {
-	var cu CenterUser
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, merchant_id, center_id, phone_e164, display_name, user_id, source, created_at, updated_at
-		FROM center_users WHERE merchant_id=$1 AND phone_e164=$2`, merchantID, phone).Scan(
-		&cu.ID, &cu.MerchantID, &cu.CenterID, &cu.PhoneE164, &cu.DisplayName, &cu.UserID, &cu.Source, &cu.CreatedAt, &cu.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return CenterUser{}, false, nil
-	}
-	if err != nil {
-		return CenterUser{}, false, err
-	}
-	return cu, true, nil
+// AdminBulkBatchRow holds a batch summary for admin tracking.
+type AdminBulkBatchRow struct {
+	BatchID        uuid.UUID
+	BatchNo        string
+	MerchantID     uuid.UUID
+	MerchantName   string
+	Status         string
+	AmountKobo     int64
+	TotalTargets   int
+	CompletedCount int
+	FailedCount    int
+	CreatedAt      time.Time
+	SubmittedAt    *time.Time
+	ApprovedAt     *time.Time
 }
+
+
+
+
+
 
 func truncateBulkText(value string) string {
 	value = strings.TrimSpace(value)
@@ -886,3 +859,11 @@ func truncateBulkText(value string) string {
 	}
 	return value[:500]
 }
+
+
+// SetBulkItemUserID links a center user's resolved Xego account.
+func (s *Store) SetBulkItemUserID(ctx context.Context, itemID, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE bulk_batch_items SET user_id=$1, updated_at=now() WHERE id=$2`, userID, itemID)
+	return err
+}
+

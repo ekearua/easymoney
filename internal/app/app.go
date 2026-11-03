@@ -865,6 +865,8 @@ func (a *App) routes() http.Handler {
 		admin.Get("/admin/onboarding-reminders", a.adminOnboardingReminders)
 		admin.Get("/admin/users", a.adminUsers)
 		admin.Get("/admin/merchants", a.adminMerchants)
+		admin.Get("/admin/bulk-metrics", a.adminBulkMetrics)
+		admin.Get("/admin/bulk-tracking", a.adminBulkMetrics)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Get("/admin/merchants/new", a.adminMerchantCreateForm)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleSupport)).Post("/admin/merchants/create", a.adminCreateMerchantDirect)
 		admin.Get("/admin/payments", a.adminPayments)

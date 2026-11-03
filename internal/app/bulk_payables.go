@@ -34,9 +34,15 @@ func (a *App) merchantPayables(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payables unavailable", http.StatusInternalServerError)
 		return
 	}
+	summary, _ := a.store.MerchantBulkSpendingSummary(r.Context(), merchantID)
 	a.renderMerchant(w, "merchant_payables.html", r, "Payable recipients", map[string]any{
 		"Rows": rows, "Filter": filter, "Count": count, "Settings": settings,
 		"Error": r.URL.Query().Get("error"), "Role": merchantRoleFromContext(r.Context()),
+		"WalletBalance": summary.WalletBalance, "HasWallet": summary.HasWallet,
+		"TotalSpentKobo": summary.TotalSpentKobo, "CompletedBatches": summary.CompletedBatches,
+		"TotalBatches": summary.TotalBatches, "PendingBatches": summary.PendingBatches,
+		"RecipientsPaid": summary.RecipientsPaid, "PendingAmountKobo": summary.PendingAmountKobo,
+		"LastBatchAt": summary.LastBatchAt,
 	})
 }
 

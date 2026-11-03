@@ -6,6 +6,13 @@
   <header class="page-header"><div><p class="eyebrow">Payments</p><h1>Payable recipients</h1></div></header>
   {{if .Error}}<div class="alert error">{{.Error}}</div>{{end}}
 
+  <section class="cards">
+    <article class="card"><p class="eyebrow">Wallet balance</p><h2>{{money .WalletBalance}}</h2><p class="muted">{{if .HasWallet}}Business wallet{{else}}No wallet found{{end}}</p></article>
+    <article class="card"><p class="eyebrow">Total spent</p><h2>{{money .TotalSpentKobo}}</h2><p class="muted">{{.CompletedBatches}} completed batch{{if ne .CompletedBatches 1}}es{{end}}</p></article>
+    <article class="card"><p class="eyebrow">Recipients paid</p><h2>{{.RecipientsPaid}}</h2><p class="muted">Across all completed batches</p></article>
+    <article class="card"><p class="eyebrow">Pending batches</p><h2>{{.PendingBatches}}</h2><p class="muted">{{money .PendingAmountKobo}} awaiting approval/processing</p></article>
+  </section>
+
   <div class="panel">
     <p class="muted">Verified records only · payout {{.Settings.PayoutMode}} ·
       {{if .Settings.LocationRequired}}location verification on{{else}}direct payment{{end}}</p>

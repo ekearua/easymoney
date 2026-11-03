@@ -150,6 +150,22 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 			settings[merchant.ID] = value
 		}
 	}
+	bulkWallet := map[uuid.UUID]int64{}
+	bulkSpent := map[uuid.UUID]int64{}
+	bulkCompleted := map[uuid.UUID]int{}
+	bulkTotal := map[uuid.UUID]int{}
+	bulkPaid := map[uuid.UUID]int{}
+	for _, merchant := range merchants {
+		if merchant.BulkEnabled {
+			if summary, err := a.store.MerchantBulkSpendingSummary(r.Context(), merchant.ID); err == nil {
+				bulkWallet[merchant.ID] = summary.WalletBalance
+				bulkSpent[merchant.ID] = summary.TotalSpentKobo
+				bulkCompleted[merchant.ID] = summary.CompletedBatches
+				bulkTotal[merchant.ID] = summary.TotalBatches
+				bulkPaid[merchant.ID] = summary.RecipientsPaid
+			}
+		}
+	}
 	inviteLink := ""
 	if token := strings.TrimSpace(r.URL.Query().Get("invite")); token != "" {
 		inviteLink = strings.TrimRight(a.cfg.BaseURL, "/") + "/merchant/invite?token=" + token
@@ -158,6 +174,9 @@ func (a *App) adminMerchants(w http.ResponseWriter, r *http.Request) {
 		"Merchants": merchants, "Registrations": registrations, "BulkEnabled": bulkEnabled,
 		"Members": members, "Settings": settings, "InviteLink": inviteLink,
 		"Error": r.URL.Query().Get("error"),
+		"BulkWalletBalance": bulkWallet, "BulkTotalSpent": bulkSpent,
+		"BulkCompletedBatches": bulkCompleted, "BulkTotalBatches": bulkTotal,
+		"BulkRecipientsPaid": bulkPaid,
 	}
 	if merchantCreated := r.URL.Query().Get("merchant_created"); merchantCreated == "1" {
 		data["MerchantCreated"] = true

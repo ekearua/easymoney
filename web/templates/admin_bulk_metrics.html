@@ -1,0 +1,53 @@
+{{define "admin_bulk_metrics.html"}}
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · {{.AppName}}</title><link rel="stylesheet" href="/static/styles.css"></head>
+<body>{{template "nav" .}}<main class="admin-main">
+  <header class="page-header"><div><p class="eyebrow">Bulk Payments</p><h1>Metrics &amp; Tracking</h1></div><div class="page-actions"><a class="button" href="/admin/merchants">View merchants</a></div></header>
+
+  <section class="cards">
+    <article class="card"><p class="eyebrow">Total disbursed</p><h2>{{money .Overview.TotalDisbursedKobo}}</h2><p class="muted">{{.Overview.CompletedBatches}} completed batch{{if ne .Overview.CompletedBatches 1}}es{{end}}</p></article>
+    <article class="card"><p class="eyebrow">Pending / in progress</p><h2>{{money .Overview.PendingAmountKobo}}</h2><p class="muted">{{.Overview.PendingBatches}} batch{{if ne .Overview.PendingBatches 1}}es{{end}}</p></article>
+    <article class="card"><p class="eyebrow">Recipients paid</p><h2>{{.Overview.TotalRecipientsPaid}}</h2><p class="muted">{{.Overview.FailedBatches}} failed batch{{if ne .Overview.FailedBatches 1}}es{{end}}</p></article>
+    <article class="card"><p class="eyebrow">Bulk merchants</p><h2>{{.Overview.MerchantsWithBulk}}</h2><p class="muted">{{.Overview.ActiveMerchants}} with batch activity</p></article>
+    <article class="card"><p class="eyebrow">Total batches</p><h2>{{.Overview.TotalBatches}}</h2><p class="muted">Across all bulk merchants</p></article>
+  </section>
+
+  <section class="panel">
+    <header class="panel-header"><div><h2>Merchants with bulk payments</h2><p class="muted">Wallet balance, money spent, batches &amp; recipients</p></div></header>
+    {{if .Merchants}}
+    <div class="table-wrap"><table><thead><tr><th>Merchant</th><th>Status</th><th>Wallet balance</th><th>Total spent</th><th>Completed batches</th><th>Pending batches</th><th>Recipients paid</th><th>Pending amount</th><th>Last batch</th></tr></thead><tbody>
+    {{range .Merchants}}<tr>
+      <td><strong>{{.MerchantName}}</strong><br><span class="muted">{{.MerchantSlug}}</span></td>
+      <td>{{if .Active}}Active{{else}}Disabled{{end}}</td>
+      <td>{{money .WalletBalance}}</td>
+      <td>{{money .TotalSpentKobo}}</td>
+      <td>{{.CompletedBatches}}</td>
+      <td>{{.PendingBatches}}</td>
+      <td>{{.RecipientsPaid}}</td>
+      <td>{{money .PendingAmountKobo}}</td>
+      <td>{{if .LastBatchAt}}{{.LastBatchAt.Format "02 Jan 2006 15:04"}}{{else}}—{{end}}</td>
+    </tr>{{end}}</tbody></table></div>
+    {{else}}<p class="muted">No bulk-enabled merchants yet.</p>{{end}}
+  </section>
+
+  <section class="panel">
+    <header class="panel-header"><div><h2>Recent batches (tracking)</h2><p class="muted">Money spent by batch, status, and recipients</p></div></header>
+    {{if .Batches}}
+    <div class="table-wrap"><table><thead><tr><th>Batch</th><th>Merchant</th><th>Status</th><th>Amount per target</th><th>Targets</th><th>Paid</th><th>Failed</th><th>Total batch value</th><th>Created</th><th>Submitted/Approved</th></tr></thead><tbody>
+    {{range .Batches}}<tr>
+      <td class="mono">{{.BatchNo}}</td>
+      <td>{{.MerchantName}}</td>
+      <td><span class="status {{.Status}}">{{.Status}}</span></td>
+      <td>{{money .AmountKobo}}</td>
+      <td>{{.TotalTargets}}</td>
+      <td>{{.CompletedCount}}</td>
+      <td>{{.FailedCount}}</td>
+      <td><strong>{{money (mul .AmountKobo .TotalTargets)}}</strong></td>
+      <td>{{.CreatedAt.Format "02 Jan 2006 15:04"}}</td>
+      <td>{{if .ApprovedAt}}{{.ApprovedAt.Format "02 Jan 2006 15:04"}}{{else if .SubmittedAt}}{{.SubmittedAt.Format "02 Jan 2006 15:04"}}{{else}}—{{end}}</td>
+    </tr>{{end}}</tbody></table></div>
+    {{else}}<p class="muted">No batches yet.</p>{{end}}
+  </section>
+</main></body></html>
+{{end}}

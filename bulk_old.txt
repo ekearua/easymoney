@@ -1,0 +1,200 @@
+﻿	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
+
+// PostBulkPaymentItem debits the merchant's business wallet and credits the
+// recipient's wallet for one eligible item, in a single transaction. It is
+// idempotent on the item: a replay returns the original credit reference.
+func (s *Store) PostBulkPaymentItem(ctx context.Context, itemID uuid.UUID) (string, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		batchID    uuid.UUID
+		batchNo    string
+		merchantID uuid.UUID
+		status     string
+		creditRef  string
+		amount     int64
+		userID     *uuid.UUID
+		phone      string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT i.batch_id, b.batch_no, b.merchant_id, i.status, i.credit_ref, i.amount_kobo, i.user_id, i.phone_e164
+		FROM bulk_batch_items i
+		JOIN bulk_batches b ON b.id = i.batch_id
+		WHERE i.id=$1 FOR UPDATE OF i`, itemID).Scan(
+		&batchID, &batchNo, &merchantID, &status, &creditRef, &amount, &userID, &phone)
+	if err != nil {
+		return "", err
+	}
+	if status == BulkItemPaid && creditRef != "" {
+		return creditRef, nil
+	}
+	if status != BulkItemLocationReceived {
+		return "", fmt.Errorf("bulk item %s is %s, not payable", itemID, status)
+	}
+	if userID == nil {
+		return "", errors.New("bulk item has no resolved recipient account")
+	}
+
+	wallet, err := s.ensureWalletTx(ctx, tx, WalletOwnerBusiness, merchantID, "", WalletStatusActive)
+	if err != nil {
+		return "", err
+	}
+	balance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
+	if err != nil {
+		return "", err
+	}
+	if balance < amount {
+		return "", fmt.Errorf("%w: business wallet has %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amount)
+	}
+
+	ref := fmt.Sprintf("bulk:%s:%s", batchNo, itemID)
+	description := fmt.Sprintf("Bulk payment %s to %s", batchNo, phone)
+	if err := s.creditWalletTx(ctx, tx, *userID, wallet.AccountCode, amount, ref, description); err != nil {
+		return "", err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE bulk_batch_items SET status=$1, credit_ref=$2, updated_at=now() WHERE id=$3`,
+		BulkItemPaid, ref, itemID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return ref, nil
+}
+
+// BusinessWalletBalance returns the merchant's spendable business wallet
+// balance, and whether a wallet row exists.
+func (s *Store) BusinessWalletBalance(ctx context.Context, merchantID uuid.UUID) (int64, bool, error) {
+	wallet, err := s.WalletByOwner(ctx, WalletOwnerBusiness, merchantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	balance, err := s.WalletBalance(ctx, wallet.ID)
+	if err != nil {
+		return 0, false, err
+	}
+	return balance, true, nil
+}
+
+// ClaimBulkJobs atomically claims due jobs for one worker.
+func (s *Store) ClaimBulkJobs(ctx context.Context, limit int) ([]BulkJob, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `
+		SELECT id, kind, batch_id, run_after, status, attempts, max_attempts, last_error
+		FROM bulk_jobs
+		WHERE status=$1 AND run_after <= now()
+		ORDER BY run_after ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT $2`, BulkJobQueued, limit)
+	if err != nil {
+		return nil, err
+	}
+	var jobs []BulkJob
+	for rows.Next() {
+		var j BulkJob
+		if err := rows.Scan(&j.ID, &j.Kind, &j.BatchID, &j.RunAfter, &j.Status, &j.Attempts, &j.MaxAttempts, &j.LastError); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		jobs = append(jobs, j)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range jobs {
+		if _, err := tx.Exec(ctx, `UPDATE bulk_jobs SET status=$1, attempts=attempts+1, updated_at=now() WHERE id=$2`, BulkJobRunning, jobs[i].ID); err != nil {
+			return nil, err
+		}
+		jobs[i].Status = BulkJobRunning
+		jobs[i].Attempts++
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+// CompleteBulkJob marks a job done.
+func (s *Store) CompleteBulkJob(ctx context.Context, id uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE bulk_jobs SET status=$1, last_error='', updated_at=now() WHERE id=$2`, BulkJobDone, id)
+	return err
+}
+
+// RetryBulkJob requeues a job with an exponential backoff, or marks it failed
+// once it exhausts max_attempts.
+func (s *Store) RetryBulkJob(ctx context.Context, id uuid.UUID, jobErr string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var attempts, maxAttempts int
+	if err := tx.QueryRow(ctx, `SELECT attempts, max_attempts FROM bulk_jobs WHERE id=$1 FOR UPDATE`, id).Scan(&attempts, &maxAttempts); err != nil {
+		return err
+	}
+	jobErr = truncateBulkText(jobErr)
+	if attempts >= maxAttempts {
+		if _, err := tx.Exec(ctx, `UPDATE bulk_jobs SET status=$1, last_error=$2, updated_at=now() WHERE id=$3`, BulkJobFailed, jobErr, id); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	backoff := time.Duration(1<<uint(attempts)) * 15 * time.Second
+	if _, err := tx.Exec(ctx, `
+		UPDATE bulk_jobs SET status=$1, run_after=now()+$2::interval, last_error=$3, updated_at=now() WHERE id=$4`,
+		BulkJobQueued, backoff.String(), jobErr, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SetBulkItemUserID links a center user's resolved Xego account.
+func (s *Store) SetBulkItemUserID(ctx context.Context, itemID, userID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx, `UPDATE bulk_batch_items SET user_id=$1, updated_at=now() WHERE id=$2`, userID, itemID)
+	return err
+}
+
+// ResolveCenterUserByPhone returns the center-user row for a phone number
+// scoped to a merchant, if present.
+func (s *Store) ResolveCenterUserByPhone(ctx context.Context, merchantID uuid.UUID, phone string) (CenterUser, bool, error) {
+	var cu CenterUser
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, merchant_id, center_id, phone_e164, display_name, user_id, source, created_at, updated_at
+		FROM center_users WHERE merchant_id=$1 AND phone_e164=$2`, merchantID, phone).Scan(
+		&cu.ID, &cu.MerchantID, &cu.CenterID, &cu.PhoneE164, &cu.DisplayName, &cu.UserID, &cu.Source, &cu.CreatedAt, &cu.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return CenterUser{}, false, nil
+	}
+	if err != nil {
+		return CenterUser{}, false, err
+	}
+	return cu, true, nil
+}
+
+func truncateBulkText(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 500 {
+		return value
+	}
+	return value[:500]
+}
