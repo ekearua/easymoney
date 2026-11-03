@@ -582,7 +582,7 @@ func (s *Store) MerchantByEmail(ctx context.Context, email string) (Merchant, er
 		FROM merchants m
 		JOIN merchant_owners mo ON mo.merchant_id=m.id
 		JOIN users u ON u.id=mo.user_id
-		WHERE LOWER(u.email)=LOWER($1) AND m.active=true
+		WHERE LOWER(u.email)=LOWER($1)
 		ORDER BY mo.created_at ASC
 		LIMIT 1`, email).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
@@ -606,17 +606,17 @@ func (s *Store) MerchantOwnerID(ctx context.Context, merchantID uuid.UUID) (uuid
 	return userID, err
 }
 
-// MerchantsIDsWithOwnerEmail lists the active merchants whose owner account
-// carries an email address. Several seeded merchants can share one owner, and
-// sign-in resolves that email to the oldest match, so callers that set up a
-// shared owner (tests, operator resets) must touch every row the lookup can
-// land on.
+// MerchantsIDsWithOwnerEmail lists every merchant whose owner account carries
+// an email address, including disabled ones, to match MerchantByEmail. Several
+// seeded merchants can share one owner, and sign-in resolves that email to the
+// oldest match, so callers that set up a shared owner (tests, operator resets)
+// must touch every row the lookup can land on.
 func (s *Store) MerchantsIDsWithOwnerEmail(ctx context.Context, email string) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT m.id FROM merchants m
 		JOIN merchant_owners mo ON mo.merchant_id=m.id
 		JOIN users u ON u.id=mo.user_id
-		WHERE LOWER(u.email)=LOWER($1) AND m.active=true
+		WHERE LOWER(u.email)=LOWER($1)
 		ORDER BY mo.created_at ASC`, email)
 	if err != nil {
 		return nil, err
