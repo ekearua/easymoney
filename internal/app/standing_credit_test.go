@@ -144,8 +144,10 @@ func TestStandingAccountCreditWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(account.AccountNumber, "9029") {
-		t.Fatalf("standing account should be a 9029-* reservation, got %q", account.AccountNumber)
+	// Standing accounts are reserved from the shared 9330000000 wallet-account
+	// pool, with the local 9029-* range as the fallback when the pool is spent.
+	if !strings.HasPrefix(account.AccountNumber, "933") && !strings.HasPrefix(account.AccountNumber, "9029") {
+		t.Fatalf("standing account should be reserved from the 9330000000 pool, got %q", account.AccountNumber)
 	}
 	wallet, err := repository.EnsureUserWallet(ctx, user.ID, "Standing credit payer")
 	if err != nil {

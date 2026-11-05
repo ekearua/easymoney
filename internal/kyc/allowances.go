@@ -43,6 +43,27 @@ const (
 	// EvBusinessEDD means enhanced due diligence (beneficial owners, source of
 	// funds) completed. Satisfies B2 -> B3.
 	EvBusinessEDD = "business_edd_completed"
+
+	// New entity-aware evidence keys
+	EvBusinessRegistrationVerified = "business_registration_verified"
+	EvMemartVerified               = "memart_verified"
+	EvCACStatusReportVerified      = "cac_status_report_verified"
+	EvBusinessInfoVerified         = "business_info_verified"
+	EvDirectorsKYCVerified         = "directors_kyc_verified"
+	EvShareholdersKYCVerified      = "shareholders_kyc_verified"
+	EvOwnerKYCVerified             = "owner_kyc_verified"
+	EvBusinessAddressVerified      = "business_address_verified"
+)
+
+// Entity types
+const (
+	EntityTypeSoleProprietor      = "sole_proprietor"
+	EntityTypeBusinessName        = "business_name"
+	EntityTypePartnership         = "partnership"
+	EntityTypeLimitedCompanyPrivate = "limited_company_private"
+	EntityTypeLimitedCompanyPublic  = "limited_company_public"
+	EntityTypeNGO                  = "ngo"
+	EntityTypeOther                = "other"
 )
 
 // EvBusinessDocs is the legacy B0 -> B1 evidence key. It is retained for
@@ -77,7 +98,7 @@ func BusinessOrder(t string) int {
 }
 
 // CanAdvanceBusiness reports whether the B0-B3 ladder permits moving from -> to.
-// Advancement must be to exactly the next tier with the required evidence.
+// Advancement must to be exactly the next tier with the required evidence.
 func CanAdvanceBusiness(from, to string, evidence []string) error {
 	if !ValidBusinessTier(from) || !ValidBusinessTier(to) {
 		return fmt.Errorf("unknown business tier: %q -> %q", from, to)
@@ -87,6 +108,34 @@ func CanAdvanceBusiness(from, to string, evidence []string) error {
 	}
 	switch to {
 	case TierB1:
+		// Support both old and new evidence key sets for backward compatibility
+		// New flow: business_info_verified, business_registration_verified, owner/directors/shareholders kyc as applicable
+		// Old flow: cac_verified, tin_verified, ubo_cleared, location_verified, scuml_submitted
+		if hasAnyEvidence(evidence, EvBusinessInfoVerified, EvBusinessRegistrationVerified, EvOwnerKYCVerified, EvDirectorsKYCVerified) {
+			// New entity-aware requirements - be flexible
+			required := []string{EvBusinessInfoVerified, EvBusinessRegistrationVerified}
+			// Add owner/directors/shareholders based on what's present
+			if hasAnyEvidence(evidence, EvOwnerKYCVerified) {
+				required = append(required, EvOwnerKYCVerified)
+			} else if hasAnyEvidence(evidence, EvDirectorsKYCVerified) {
+				required = append(required, EvDirectorsKYCVerified)
+			}
+			if hasAnyEvidence(evidence, EvShareholdersKYCVerified) {
+				required = append(required, EvShareholdersKYCVerified)
+			}
+			if hasAnyEvidence(evidence, EvBusinessAddressVerified) {
+				required = append(required, EvBusinessAddressVerified)
+			} else if hasAnyEvidence(evidence, EvLocationVerified) {
+				required = append(required, EvLocationVerified)
+			}
+			if hasAnyEvidence(evidence, EvTINVerified) {
+				required = append(required, EvTINVerified)
+			}
+			if hasAnyEvidence(evidence, EvSCUMLSubmitted) {
+				required = append(required, EvSCUMLSubmitted)
+			}
+			return requireEvidence(to, evidence, required...)
+		}
 		return requireEvidence(to, evidence, EvCACVerified, EvTINVerified, EvUBOCleared, EvLocationVerified, EvSCUMLSubmitted)
 	case TierB2:
 		return requireEvidence(to, evidence, EvBusinessBank)
@@ -94,6 +143,19 @@ func CanAdvanceBusiness(from, to string, evidence []string) error {
 		return requireEvidence(to, evidence, EvBusinessEDD)
 	}
 	return nil
+}
+
+func hasAnyEvidence(evidence []string, keys ...string) bool {
+	evidenceSet := map[string]bool{}
+	for _, e := range evidence {
+		evidenceSet[e] = true
+	}
+	for _, k := range keys {
+		if evidenceSet[k] {
+			return true
+		}
+	}
+	return false
 }
 
 // CanDowngradeBusiness reports whether moving from -> to is an allowed KYB

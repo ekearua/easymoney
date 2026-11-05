@@ -138,7 +138,7 @@ func (s *Store) ListMerchants(ctx context.Context) ([]Merchant, error) {
 }
 
 func (s *Store) listMerchants(ctx context.Context, activeOnly bool) ([]Merchant, error) {
-	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number, wallet_account_number FROM merchants`
+	query := `SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at, password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent, min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'') FROM merchants`
 	if activeOnly {
 		query += ` WHERE active=true`
 	}
@@ -165,7 +165,7 @@ func (s *Store) MerchantBySlug(ctx context.Context, slug string) (Merchant, erro
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'')
 		FROM merchants WHERE slug=$1 AND active=true`, slug).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -204,7 +204,7 @@ func (s *Store) SearchMerchants(ctx context.Context, query string, offset, limit
 	sql := `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'')
 		FROM merchants
 		WHERE active=true`
 	if search != "" {
@@ -251,7 +251,7 @@ func (s *Store) SearchMerchantsExcludingUserRecents(ctx context.Context, userID 
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, m.wallet_account_number
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, COALESCE(m.wallet_account_number,'')
 		FROM merchants m
 		WHERE m.active=true
 			AND NOT EXISTS (
@@ -299,7 +299,7 @@ func (s *Store) RecentMerchantsForUser(ctx context.Context, userID uuid.UUID, li
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 			m.search_keywords, m.sort_order, m.created_at,
 			m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-			m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, m.wallet_account_number
+			m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, COALESCE(m.wallet_account_number,'')
 		FROM user_merchant_recents r
 		JOIN merchants m ON m.id=r.merchant_id
 		WHERE r.user_id=$1 AND m.active=true
@@ -415,7 +415,7 @@ func (s *Store) ApproveMerchantRegistration(ctx context.Context, registrationID 
 			updated_at=now()
 		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		          password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		          min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number`,
+		          min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'')`,
 		slug, request.BusinessName, request.Category, request.Description,
 		strings.ToLower(request.BusinessName+" "+request.Category+" "+request.Description),
 	).Scan(&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category, &merchant.Description,
@@ -495,7 +495,7 @@ func (s *Store) ApprovedMerchantsForUser(ctx context.Context, userID uuid.UUID) 
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, m.wallet_account_number
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, COALESCE(m.wallet_account_number,'')
 		FROM merchant_owners mo
 		JOIN merchants m ON m.id=mo.merchant_id
 		WHERE mo.user_id=$1 AND m.active=true
@@ -540,7 +540,7 @@ func (s *Store) MerchantByID(ctx context.Context, id uuid.UUID) (Merchant, error
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 		       password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number
+		       min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'')
 		FROM merchants WHERE id=$1`, id).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -585,12 +585,12 @@ func (s *Store) MerchantByEmail(ctx context.Context, email string) (Merchant, er
 		SELECT m.id, m.slug, m.name, m.category, m.description, m.logo_url, m.active,
 		       m.search_keywords, m.sort_order, m.created_at,
 		       m.password_hash, m.allow_partial_payments, m.min_invoice_amount_kobo, m.upfront_percent,
-		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, m.wallet_account_number
+		       m.min_installment_percent, m.max_installments, m.allow_full_pay_always, m.bulk_enabled, COALESCE(m.wallet_account_number,'')
 		FROM merchants m
 		JOIN merchant_owners mo ON mo.merchant_id=m.id
 		JOIN users u ON u.id=mo.user_id
 		WHERE LOWER(u.email)=LOWER($1)
-		ORDER BY mo.created_at ASC
+		ORDER BY m.active DESC, mo.created_at ASC
 		LIMIT 1`, email).Scan(
 		&merchant.ID, &merchant.Slug, &merchant.Name, &merchant.Category,
 		&merchant.Description, &merchant.LogoURL, &merchant.Active, &merchant.SearchKeywords,
@@ -986,7 +986,7 @@ func (s *Store) CreateMerchantDirect(ctx context.Context, p CreateMerchantDirect
 		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$16, $9,$10,$11,$12,$13,$14,$15,$17, now())
 		RETURNING id, slug, name, category, description, logo_url, active, search_keywords, sort_order, created_at,
 			password_hash, allow_partial_payments, min_invoice_amount_kobo, upfront_percent,
-			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, wallet_account_number`,
+			min_installment_percent, max_installments, allow_full_pay_always, bulk_enabled, COALESCE(wallet_account_number,'')`,
 		merchantID, slug, name, category, desc, logo, p.Active, keywords,
 		p.AllowPartialPayments, p.MinInvoiceAmountKobo, upfront, minInstallPct, maxInst, p.AllowFullPayAlways, p.BulkPaymentsEnabled,
 		passwordHash, p.WalletAccountNumber,

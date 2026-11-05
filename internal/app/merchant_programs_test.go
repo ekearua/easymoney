@@ -38,6 +38,7 @@ func TestMerchantProgramTemplateRenders(t *testing.T) {
 	templates, err := template.New("").Funcs(template.FuncMap{
 		"money":       domain.FormatNGN,
 		"statusClass": func(status any) string { return strings.ReplaceAll(fmt.Sprint(status), "_", "-") },
+		"hasPrefix":   func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"date": func(v any) string {
 			if value, ok := v.(time.Time); ok {
 				return value.Local().Format("Jan 2, 2006 3:04 PM")

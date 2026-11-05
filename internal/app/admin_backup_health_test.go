@@ -284,16 +284,22 @@ func ptrTime(t time.Time) *time.Time { return &t }
 func parseTOTPTestTemplates(t *testing.T) *template.Template {
 	t.Helper()
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"money":             func(k int64) string { return "NGN" },
-		"maskPII":           func(s string) string { return s },
-		"statusClass":       func(any) string { return "" },
-		"percent":           func(float64) string { return "" },
-		"sub":               func(a, b int64) int64 { return a - b },
-		"add":               func(a, b int64) int64 { return a + b },
-		"mul":               func(a, b int64) int64 { return a * b },
-		"divf":              func(a, b float64, c float64) float64 { if b == 0 { return 0 } ; return a / b * c },
+		"money":       func(k int64) string { return "NGN" },
+		"maskPII":     func(s string) string { return s },
+		"statusClass": func(any) string { return "" },
+		"percent":     func(float64) string { return "" },
+		"sub":         func(a, b int64) int64 { return a - b },
+		"add":         func(a, b int64) int64 { return a + b },
+		"mul":         func(a, b int64) int64 { return a * b },
+		"divf": func(a, b float64, c float64) float64 {
+			if b == 0 {
+				return 0
+			}
+			return a / b * c
+		},
 		"inc":               func(i int) int { return i + 1 },
 		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix":         func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
 		"date":              func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/*.html")

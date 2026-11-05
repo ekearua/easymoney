@@ -49,8 +49,9 @@ func TestUserWithdrawalScreening(t *testing.T) {
 		_, _ = repository.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, user.ID)
 	})
 	// The refusal path keeps the reservation, so the wallet must actually
-	// hold the balance the movement would need. L1's ₦50k single ceiling
-	// comfortably covers the ₦20k withdrawal below.
+	// hold the balance the movement would need. Three ₦10k withdrawals stay
+	// inside L1's ₦50k single and daily ceilings, so the screening assertions
+	// below are reached instead of being pre-empted by the allowance gate.
 	if _, err := repository.AdvanceKYCTier(ctx, user.ID, kyc.TierL1,
 		[]string{kyc.EvChannelConfirmed, kyc.EvTier1BasicDetails}, nil); err != nil {
 		t.Fatal(err)
@@ -71,11 +72,11 @@ func TestUserWithdrawalScreening(t *testing.T) {
 	refClear := "wallet-withdraw:" + uuid.New().String()
 	if err := repository.ReserveAllowance(ctx, AllowanceReservation{
 		AccountType: AccountIndividual, SubjectID: user.ID, Direction: kyc.DirOut,
-		Tier: kyc.TierL1, AmountKobo: 2_000_000, Ref: refClear,
+		Tier: kyc.TierL1, AmountKobo: 1_000_000, Ref: refClear,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	decision, err := repository.ScreenUserWithdrawal(ctx, user.ID, refClear, 2_000_000, "Screened Tester", decisions[kyc.ScreenClear])
+	decision, err := repository.ScreenUserWithdrawal(ctx, user.ID, refClear, 1_000_000, "Screened Tester", decisions[kyc.ScreenClear])
 	if err != nil || decision != kyc.ScreenClear {
 		t.Fatalf("clear screen = %q err=%v, want clear", decision, err)
 	}
@@ -84,11 +85,11 @@ func TestUserWithdrawalScreening(t *testing.T) {
 	refHold := "wallet-withdraw:" + uuid.New().String()
 	if err := repository.ReserveAllowance(ctx, AllowanceReservation{
 		AccountType: AccountIndividual, SubjectID: user.ID, Direction: kyc.DirOut,
-		Tier: kyc.TierL1, AmountKobo: 2_000_000, Ref: refHold,
+		Tier: kyc.TierL1, AmountKobo: 1_000_000, Ref: refHold,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refHold, 2_000_000, "Similar Sanctioned",
+	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refHold, 1_000_000, "Similar Sanctioned",
 		func(context.Context) (string, string, string, string, string, []string, error) {
 			return kyc.ScreenStrong, "simulated", "sim-w-hold", "sim-1", "fuzzy hit", []string{"Similar Sanctioned"}, nil
 		})
@@ -111,11 +112,11 @@ func TestUserWithdrawalScreening(t *testing.T) {
 	refBlock := "wallet-withdraw:" + uuid.New().String()
 	if err := repository.ReserveAllowance(ctx, AllowanceReservation{
 		AccountType: AccountIndividual, SubjectID: user.ID, Direction: kyc.DirOut,
-		Tier: kyc.TierL1, AmountKobo: 2_000_000, Ref: refBlock,
+		Tier: kyc.TierL1, AmountKobo: 1_000_000, Ref: refBlock,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refBlock, 2_000_000, "Watchlisted Corp",
+	decision, err = repository.ScreenUserWithdrawal(ctx, user.ID, refBlock, 1_000_000, "Watchlisted Corp",
 		func(context.Context) (string, string, string, string, string, []string, error) {
 			return kyc.ScreenBlocked, "simulated", "sim-w-block", "sim-1", "list hit", []string{"Watchlisted Corp"}, nil
 		})
@@ -144,7 +145,7 @@ func TestUserWithdrawalScreening(t *testing.T) {
 	}
 
 	// A re-attempt of the same reservation ref reuses the recorded decision.
-	replay, err := repository.ScreenUserWithdrawal(ctx, user.ID, refHold, 2_000_000, "Similar Sanctioned", decisions[kyc.ScreenClear])
+	replay, err := repository.ScreenUserWithdrawal(ctx, user.ID, refHold, 1_000_000, "Similar Sanctioned", decisions[kyc.ScreenClear])
 	if err != nil || replay != kyc.ScreenStrong {
 		t.Fatalf("replay = %q err=%v, want the recorded strong verdict", replay, err)
 	}

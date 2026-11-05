@@ -49,7 +49,8 @@ func cardPageTemplates(t *testing.T) *template.Template {
 			}
 			return meta.CollectionFeeKobo
 		},
-		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+		"join":      func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix": func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"date": func(t any) string {
 			switch v := t.(type) {
 			case time.Time:

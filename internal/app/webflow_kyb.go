@@ -123,6 +123,22 @@ func kybEvidenceLabel(key string) string {
 		return "operating address"
 	case kyc.EvSCUMLSubmitted:
 		return "SCUML number"
+	case kyc.EvBusinessInfoVerified:
+		return "business details"
+	case kyc.EvBusinessRegistrationVerified:
+		return "business registration"
+	case kyc.EvMemartVerified:
+		return "MEMART"
+	case kyc.EvCACStatusReportVerified:
+		return "CAC status report"
+	case kyc.EvDirectorsKYCVerified:
+		return "directors' KYC"
+	case kyc.EvShareholdersKYCVerified:
+		return "shareholders' KYC"
+	case kyc.EvOwnerKYCVerified:
+		return "owner KYC"
+	case kyc.EvBusinessAddressVerified:
+		return "business address"
 	}
 	return key
 }

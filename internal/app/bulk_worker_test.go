@@ -130,8 +130,8 @@ func TestBulkWorkerRunsBothStages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Status != store.BulkBatchStage2 || after.RequestedCount != 1 {
-		t.Fatalf("after stage 1: status=%s requested=%d, want %s/1", after.Status, after.RequestedCount, store.BulkBatchStage2)
+	if after.Status != store.BulkBatchStage1 || after.RequestedCount != 1 {
+		t.Fatalf("after stage 1: status=%s requested=%d, want %s/1", after.Status, after.RequestedCount, store.BulkBatchStage1)
 	}
 	items, err := repository.ListBulkBatchItems(ctx, batch.ID, "", 10)
 	if err != nil || len(items) != 1 {

@@ -45,7 +45,8 @@ func TestSecondFactorPageRendersScannableQR(t *testing.T) {
 		totpKey: key,
 	}
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"date": func(any) string { return "" },
+		"date":      func(any) string { return "" },
+		"hasPrefix": func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 	}).ParseFS(web.Assets,
 		"templates/mfa_step.html", "templates/security_panel.html",
 		"templates/nav.html", "templates/merchant_nav.html")

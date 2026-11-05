@@ -57,6 +57,18 @@ type KYBProfile struct {
 	// ExpectedVolumeBand is the business's declared expected monthly activity
 	// volume (G14): low|medium|high|very_high, or "" when not declared.
 	ExpectedVolumeBand string
+	// Entity classification
+	EntityType          string
+	RegistrationNumber  string
+	BusinessName        string
+	BusinessPhone       string
+	BusinessEmail       string
+	DateOfIncorporation *time.Time
+	RegisteredAddress   string
+	IsDNFBP             bool
+	DNFBPCategory       string
+	TIN                 string
+	RoutingPath         string
 }
 
 // KYBAdvancementRequest is the self-service record a merchant holds of which
@@ -346,6 +358,17 @@ func (s *Store) EnsureKYBProfile(ctx context.Context, merchantID uuid.UUID) (KYB
 	return s.KYBProfileByMerchant(ctx, merchantID)
 }
 
+// EnsureKYBProfileForBusiness creates profile starting at B1 for formal businesses
+func (s *Store) EnsureKYBProfileForBusiness(ctx context.Context, merchantID uuid.UUID) (KYBProfile, error) {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_profiles(merchant_id, tier)
+		VALUES($1, 'B1')
+		ON CONFLICT (merchant_id) DO NOTHING`, merchantID); err != nil {
+		return KYBProfile{}, fmt.Errorf("ensure kyb profile for business: %w", err)
+	}
+	return s.KYBProfileByMerchant(ctx, merchantID)
+}
+
 // KYBProfileByMerchant resolves a merchant's KYB ladder position.
 func (s *Store) KYBProfileByMerchant(ctx context.Context, merchantID uuid.UUID) (KYBProfile, error) {
 	var p KYBProfile
@@ -357,13 +380,21 @@ func (s *Store) KYBProfileByMerchant(ctx context.Context, merchantID uuid.UUID) 
 		       review_status, reviewed_by, reviewed_at,
 		       COALESCE(advancement_request::text,''), advancement_requested_at,
 		       created_at, updated_at,
-		       COALESCE(country_iso,''), COALESCE(expected_volume_band,'')
+		       COALESCE(country_iso,''), COALESCE(expected_volume_band,''),
+		       COALESCE(entity_type,''), COALESCE(registration_number,''), COALESCE(business_name,''),
+		       COALESCE(business_phone,''), COALESCE(business_email,''), date_of_incorporation,
+		       COALESCE(registered_address,''), COALESCE(is_dnfbp,false), COALESCE(dnfbp_category,''),
+		       COALESCE(tin,''), COALESCE(routing_path,'business')
 		FROM business_kyb_profiles WHERE merchant_id=$1`, merchantID).Scan(
 		&p.MerchantID, &p.Tier, &p.TierUpdatedAt, &evidence,
 		&p.LastScreeningDecision, &p.LastScreenAt, &p.RescreenDue,
 		&p.ReviewStatus, &p.ReviewedBy, &p.ReviewedAt,
 		&advancement, &p.AdvancementRequestedAt,
-		&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand)
+		&p.CreatedAt, &p.UpdatedAt, &p.CountryISO, &p.ExpectedVolumeBand,
+		&p.EntityType, &p.RegistrationNumber, &p.BusinessName,
+		&p.BusinessPhone, &p.BusinessEmail, &p.DateOfIncorporation,
+		&p.RegisteredAddress, &p.IsDNFBP, &p.DNFBPCategory,
+		&p.TIN, &p.RoutingPath)
 	if err != nil {
 		return KYBProfile{}, err
 	}
@@ -397,6 +428,34 @@ func (s *Store) SetBusinessGeography(ctx context.Context, merchantID uuid.UUID, 
 		merchantID, strings.TrimSpace(countryISO), strings.TrimSpace(expectedVolumeBand)); err != nil {
 		return fmt.Errorf("save kyb geography: %w", err)
 	}
+	return nil
+}
+
+// UpdateKYBEntityInfo updates entity classification and business details
+func (s *Store) UpdateKYBEntityInfo(ctx context.Context, merchantID uuid.UUID, entityType, registrationNumber, businessName, businessPhone, businessEmail, registeredAddress, tin, routingPath string, isDNFBP bool, dnfbpCategory string, dateOfIncorporation *time.Time) error {
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO business_kyb_profiles(merchant_id) VALUES($1)
+		ON CONFLICT (merchant_id) DO NOTHING`, merchantID); err != nil {
+		return fmt.Errorf("ensure kyb profile for entity info: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE business_kyb_profiles
+		SET entity_type=$2, registration_number=$3, business_name=$4, business_phone=$5, business_email=$6,
+		    registered_address=$7, tin=$8, routing_path=$9, is_dnfbp=$10, dnfbp_category=$11,
+		    date_of_incorporation=$12, updated_at=now()
+		WHERE merchant_id=$1`,
+		merchantID, strings.TrimSpace(entityType), strings.TrimSpace(registrationNumber),
+		strings.TrimSpace(businessName), strings.TrimSpace(businessPhone), strings.TrimSpace(businessEmail),
+		strings.TrimSpace(registeredAddress), strings.TrimSpace(tin), strings.TrimSpace(routingPath),
+		isDNFBP, strings.TrimSpace(dnfbpCategory), dateOfIncorporation); err != nil {
+		return fmt.Errorf("save kyb entity info: %w", err)
+	}
+	// Also update merchant if it exists
+	_, _ = s.pool.Exec(ctx, `
+		UPDATE merchants
+		SET entity_type=$2, has_cac_registration=$3, routing_path=$4
+		WHERE id=$1`,
+		merchantID, strings.TrimSpace(entityType), strings.TrimSpace(registrationNumber) != "", strings.TrimSpace(routingPath))
 	return nil
 }
 
@@ -848,7 +907,41 @@ func firstNonBlank(values ...string) string {
 func BusinessEvidenceRequiredFor(to string) []string {
 	switch to {
 	case kyc.TierB1:
+		// The corporate hard gate keeps its five established keys. The
+		// entity-aware set lives in BusinessEvidenceRequiredForEntity and is
+		// additive: it never replaces the keys the reviewer panel, the
+		// document derivation, and the gate all share.
 		return []string{kyc.EvCACVerified, kyc.EvTINVerified, kyc.EvUBOCleared, kyc.EvLocationVerified, kyc.EvSCUMLSubmitted}
+	case kyc.TierB2:
+		return []string{kyc.EvBusinessBank}
+	case kyc.TierB3:
+		return []string{kyc.EvBusinessEDD}
+	}
+	return nil
+}
+
+// BusinessEvidenceRequiredForEntity returns evidence requirements based on entity type
+func BusinessEvidenceRequiredForEntity(to string, entityType string, isDNFBP bool) []string {
+	switch to {
+	case kyc.TierB1:
+		required := []string{kyc.EvBusinessInfoVerified, kyc.EvBusinessRegistrationVerified}
+		// Add entity-specific requirements
+		switch entityType {
+		case kyc.EntityTypeLimitedCompanyPrivate, kyc.EntityTypeLimitedCompanyPublic:
+			required = append(required, kyc.EvMemartVerified, kyc.EvCACStatusReportVerified)
+			required = append(required, kyc.EvDirectorsKYCVerified, kyc.EvShareholdersKYCVerified)
+		case kyc.EntityTypeBusinessName, kyc.EntityTypePartnership, kyc.EntityTypeNGO:
+			required = append(required, kyc.EvOwnerKYCVerified)
+		case kyc.EntityTypeSoleProprietor:
+			required = append(required, kyc.EvOwnerKYCVerified)
+		default:
+			required = append(required, kyc.EvOwnerKYCVerified)
+		}
+		required = append(required, kyc.EvTINVerified, kyc.EvBusinessAddressVerified)
+		if isDNFBP {
+			required = append(required, kyc.EvSCUMLSubmitted)
+		}
+		return required
 	case kyc.TierB2:
 		return []string{kyc.EvBusinessBank}
 	case kyc.TierB3:

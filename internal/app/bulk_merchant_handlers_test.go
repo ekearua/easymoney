@@ -140,8 +140,9 @@ func bulkMerchantTemplates(t *testing.T) *template.Template {
 			}
 			return a / b * c
 		},
-		"inc":  func(i int64) int64 { return i + 1 },
-		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+		"inc":       func(i int64) int64 { return i + 1 },
+		"join":      func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix": func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"date": func(v any) string {
 			if value, ok := v.(time.Time); ok {
 				return value.Local().Format("Jan 2, 2006 3:04 PM")

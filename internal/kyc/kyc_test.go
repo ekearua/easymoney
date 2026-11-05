@@ -30,11 +30,10 @@ func TestCanAdvance(t *testing.T) {
 		evidence []string
 		wantOK   bool
 	}{
-	{"L0 to L1 with channel, tier-1 basics, photo and BVN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID, EvBVNVerified}, true},
-	{"L0 to L1 with NIN in place of BVN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID, EvNINVerified}, true},
-	{"L0 to L1 missing tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed, EvGovPhotoID, EvBVNVerified}, false},
-	{"L0 to L1 missing photo ID", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvBVNVerified}, false},
-	{"L0 to L1 missing BVN and NIN", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID}, false},
+		{"L0 to L1 with channel and tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails}, true},
+		{"L0 to L1 with the identity pack also present", TierL0, TierL1, []string{EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID, EvBVNVerified}, true},
+		{"L0 to L1 missing tier-1 basics", TierL0, TierL1, []string{EvChannelConfirmed}, false},
+		{"L0 to L1 missing the channel confirmation", TierL0, TierL1, []string{EvTier1BasicDetails}, false},
 		{"L1 to L2 with photo ID, BVN and NIN", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified, EvNINVerified}, true},
 		{"L1 to L2 missing both-verified IDs", TierL1, TierL2, []string{EvGovPhotoID, EvBVNVerified}, false},
 		{"L2 to L3 with address proof and EDD", TierL2, TierL3, []string{EvAddressProof, EvEDDCompleted}, true},

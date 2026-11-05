@@ -365,17 +365,7 @@ func CanAdvance(from, to string, evidence []string) error {
 	}
 	switch to {
 	case TierL1:
-		if err := requireEvidence(to, evidence, EvChannelConfirmed, EvTier1BasicDetails, EvGovPhotoID); err != nil {
-			return err
-		}
-		have := make(map[string]bool, len(evidence))
-		for _, e := range evidence {
-			have[e] = true
-		}
-		if !have[EvBVNVerified] && !have[EvNINVerified] {
-			return fmt.Errorf("tier %s requires evidence %q or %q", to, EvBVNVerified, EvNINVerified)
-		}
-		return nil
+		return requireEvidence(to, evidence, EvChannelConfirmed, EvTier1BasicDetails)
 	case TierL2:
 		return requireEvidence(to, evidence, EvGovPhotoID, EvBVNVerified, EvNINVerified)
 	case TierL3:

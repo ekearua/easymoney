@@ -191,6 +191,7 @@ func TestAdminKYCAlertRailFilter(t *testing.T) {
 		"add":               func(a, b int64) int64 { return a + b },
 		"inc":               func(i int) int { return i + 1 },
 		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix":         func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
 		"date":              func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/admin_kyc.html", "templates/nav.html")
@@ -254,6 +255,7 @@ func TestTemplatesParse(t *testing.T) {
 		},
 		"inc":               func(i int) int { return i + 1 },
 		"join":              func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix":         func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"collectionFeeKobo": func(p store.PaymentView) int64 { return 0 },
 		"date":              func(any) string { return "" },
 	}).ParseFS(web.Assets, "templates/*.html")

@@ -106,7 +106,9 @@ func TestAutoRefundSupersededWebFlowAttempt(t *testing.T) {
 			}
 			return meta.CollectionFeeKobo
 		},
-		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+		"join":      func(items []string, sep string) string { return strings.Join(items, sep) },
+		"mul":       func(a, b int64) int64 { return a * b },
+		"hasPrefix": func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"date": func(v any) string {
 			if t, ok := v.(time.Time); ok {
 				return t.Local().Format("Jan 2, 2006 3:04 PM")
