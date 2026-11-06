@@ -721,3 +721,106 @@ func TestTemplatesParse(t *testing.T) {
 	}
 	_ = donePage
 }
+
+// TestSendTestEmail guards the admin SMTP probe: it sends to the address it is
+// given, names the live relay in the message, and fails explicitly when the
+// relay is unconfigured instead of reporting a silent success.
+func TestSendTestEmail(t *testing.T) {
+	t.Run("explicit error when no relay is configured", func(t *testing.T) {
+		app := &App{cfg: config.Config{AppName: "Xego"}}
+		err := app.sendTestEmail(context.Background(), "ops@xego.ng")
+		if err == nil || !strings.Contains(err.Error(), "not configured") {
+			t.Fatalf("expected a not-configured error, got %v", err)
+		}
+	})
+
+	t.Run("rejects an admin account with no address", func(t *testing.T) {
+		app := &App{cfg: config.Config{AppName: "Xego"}, email: &fakeEmailSender{}}
+		if err := app.sendTestEmail(context.Background(), "  "); err == nil {
+			t.Fatal("expected an error for an empty recipient")
+		}
+	})
+
+	t.Run("sends through the configured relay", func(t *testing.T) {
+		sender := &fakeEmailSender{}
+		app := &App{cfg: config.Config{
+			AppName:      "Xego",
+			SMTPProvider: "infobip",
+			SMTPHost:     "smtp-api.infobip.com",
+			SMTPPort:     587,
+			SMTPFrom:     "no-reply@xego.ng",
+			SMTPUsername: "infobip-app",
+		}, email: sender}
+		if err := app.sendTestEmail(context.Background(), "ops@xego.ng"); err != nil {
+			t.Fatalf("send test email: %v", err)
+		}
+		if !sender.sendCalled || sender.lastTo != "ops@xego.ng" {
+			t.Fatalf("expected a send to ops@xego.ng, got called=%v to=%q", sender.sendCalled, sender.lastTo)
+		}
+		if !strings.Contains(sender.lastSubject, "SMTP test") {
+			t.Fatalf("subject %q should mark the message as a test", sender.lastSubject)
+		}
+		for _, want := range []string{"smtp-api.infobip.com:587", "STARTTLS", "no-reply@xego.ng", "infobip-app"} {
+			if !strings.Contains(sender.lastBody, want) {
+				t.Fatalf("body is missing %q: %s", want, sender.lastBody)
+			}
+		}
+	})
+}
+
+// TestAdminMessagingEmailProbe keeps the console probe wired to the endpoint:
+// a configured relay renders the CSRF-protected form and the live endpoint,
+// while an unconfigured one shows the problem and no dead button.
+func TestAdminMessagingEmailProbe(t *testing.T) {
+	t.Parallel()
+	tmpl, err := template.New("admin_messaging.html").Funcs(template.FuncMap{
+		"money":       func(k int64) string { return "NGN" },
+		"maskPII":     func(s string) string { return s },
+		"statusClass": func(any) string { return "" },
+		"percent":     func(float64) string { return "" },
+		"sub":         func(a, b int64) int64 { return a - b },
+		"add":         func(a, b int64) int64 { return a + b },
+		"inc":         func(i int) int { return i + 1 },
+		"join":        func(items []string, sep string) string { return strings.Join(items, sep) },
+		"hasPrefix":   func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
+		"date":        func(any) string { return "" },
+	}).ParseFS(web.Assets, "templates/admin_messaging.html", "templates/nav.html")
+	if err != nil {
+		t.Fatalf("parse admin messaging template: %v", err)
+	}
+	base := func(delivery emailDeliveryView) map[string]any {
+		return map[string]any{
+			"AppName": "Xego", "Title": "Messaging cost", "CSRF": "csrf-1", "AdminRole": "admin", "Path": "/admin/messaging",
+			"Summary": store.MessageLogSummary{},
+			"Email":   delivery,
+		}
+	}
+
+	var buf strings.Builder
+	configured := emailDeliveryView{
+		Provider: "infobip", Configured: true, Host: "smtp-api.infobip.com", Port: 587,
+		From: "no-reply@xego.ng", Auth: true, ConfirmationEnabled: true, Recipient: "ops@xego.ng",
+	}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_messaging.html", base(configured)); err != nil {
+		t.Fatalf("execute configured admin_messaging.html: %v", err)
+	}
+	rendered := buf.String()
+	for _, want := range []string{`action="/admin/email/test"`, `name="csrf_token" value="csrf-1"`, "smtp-api.infobip.com:587", "STARTTLS required", "ops@xego.ng"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("configured messaging page is missing %q", want)
+		}
+	}
+
+	buf.Reset()
+	unconfigured := emailDeliveryView{Provider: "smtp", Recipient: "ops@xego.ng", Problem: "No relay is configured"}
+	if err := tmpl.ExecuteTemplate(&buf, "admin_messaging.html", base(unconfigured)); err != nil {
+		t.Fatalf("execute unconfigured admin_messaging.html: %v", err)
+	}
+	rendered = buf.String()
+	if !strings.Contains(rendered, "No relay is configured") {
+		t.Fatal("unconfigured messaging page must state the problem")
+	}
+	if strings.Contains(rendered, `action="/admin/email/test"`) {
+		t.Fatal("unconfigured messaging page must not offer a probe the relay cannot answer")
+	}
+}

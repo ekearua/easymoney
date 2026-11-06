@@ -6,6 +6,24 @@
 <body>{{template "nav" .}}<main class="admin-main">
 <header class="page-header"><div><p class="eyebrow">Operations</p><h1>Messaging cost</h1>
 <p>Outbound customer messages since {{.Summary.Since.Format "02 Jan 2006 15:04"}}, priced with the configurable per-message estimates (service ₦{{.Summary.MessageCostService}}/message). The 2-message-per-transaction model moves flow details to the browser: one link message in, one confirmation out. Channels: WhatsApp and Instagram bill per message; Telegram and TikTok are currently free to send.</p></div></header>
+{{if .EmailSent}}<div class="alert success">{{.EmailSent}}</div>{{end}}
+{{if .EmailError}}<div class="alert">{{.EmailError}}</div>{{end}}
+<section class="panel">
+  <h2>Transactional email (SMTP)</h2>
+  <p>Verification codes, password links and receipts leave through this relay. Probe it here before a customer meets it: the test message is addressed to your own admin email and the endpoint accepts no recipient from the form.</p>
+  <div class="table-wrap"><table><tbody>
+    <tr><th>Provider</th><td>{{.Email.Provider}}</td></tr>
+    <tr><th>Relay</th><td>{{if .Email.Configured}}<span class="mono">{{.Email.Host}}:{{.Email.Port}}</span> ({{if .Email.ImplicitTLS}}implicit TLS{{else}}STARTTLS required{{end}}){{else}}<span class="status failed">not configured</span>{{end}}</td></tr>
+    <tr><th>Envelope sender</th><td>{{if .Email.From}}<span class="mono">{{.Email.From}}</span>{{else}}<span class="status warn">unset</span>{{end}}</td></tr>
+    <tr><th>Authentication</th><td>{{if .Email.Auth}}PLAIN with SMTP_USERNAME{{else}}none — the relay is used unauthenticated{{end}}</td></tr>
+    <tr><th>Email confirmation</th><td>{{if .Email.ConfirmationEnabled}}on — sign-in requires a code{{else}}off — codes are not requested{{end}}</td></tr>
+  </tbody></table></div>
+  {{if .Email.Problem}}<div class="alert">{{.Email.Problem}}.</div>{{end}}
+  {{if .Email.Configured}}{{if eq .AdminRole "admin"}}<form method="post" action="/admin/email/test" class="inline">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button type="submit">Send test email{{if .Email.Recipient}} to {{.Email.Recipient}}{{end}}</button>
+  </form>{{else}}<p class="muted">Only the admin role can probe the relay; support and compliance can read the configuration above.</p>{{end}}{{else}}<p class="muted">Set SMTP_HOST (or SMTP_PROVIDER=infobip with SMTP_USERNAME and SMTP_PASSWORD) and restart to enable the probe.</p>{{end}}
+</section>
 <section class="metrics">
   <article><span>Messages</span><strong>{{.Summary.TotalMessages}}</strong></article>
   <article><span>Service messages</span><strong>{{.Summary.ServiceMessages}}</strong></article>

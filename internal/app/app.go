@@ -741,6 +741,7 @@ func (a *App) RunServer(ctx context.Context) error {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
+	a.logEmailDeliveryState(ctx)
 	a.logger.InfoContext(ctx, "server listening", "addr", a.cfg.HTTPAddr, "base_url", a.cfg.BaseURL)
 	err := server.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -758,6 +759,43 @@ func (a *App) RunServer(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+// logEmailDeliveryState records at startup whether transactional email can be
+// delivered and through which relay. A missing host or sender used to stay
+// silent until a customer could not receive a verification code; one line here
+// makes the same misconfiguration visible in the boot log and in the admin
+// console's SMTP probe.
+func (a *App) logEmailDeliveryState(ctx context.Context) {
+	provider := a.cfg.SMTPProvider
+	if provider == "" {
+		provider = "smtp"
+	}
+	transport := "starttls"
+	if a.cfg.SMTPPort == smtpImplicitTLSPort {
+		transport = "implicit_tls"
+	}
+	switch {
+	case a.email == nil && a.cfg.EmailConfirmationEnabled:
+		a.logger.WarnContext(ctx, "email delivery is not configured but EMAIL_CONFIRMATION_ENABLED is on; verification codes cannot be sent",
+			"provider", provider,
+			"hint", "set SMTP_HOST, or SMTP_PROVIDER=infobip with SMTP_USERNAME and SMTP_PASSWORD")
+	case a.email == nil:
+		a.logger.InfoContext(ctx, "email delivery disabled", "provider", provider, "reason", "SMTP_HOST is empty")
+	case a.cfg.SMTPFrom == "":
+		a.logger.WarnContext(ctx, "email relay is configured but no sender address is set; sends will fail",
+			"provider", provider,
+			"relay", a.smtpRelay(),
+			"hint", "set SMTP_FROM or ADMIN_EMAIL")
+	default:
+		a.logger.InfoContext(ctx, "email delivery configured",
+			"provider", provider,
+			"relay", a.smtpRelay(),
+			"from", a.cfg.SMTPFrom,
+			"auth", a.cfg.SMTPUsername != "",
+			"tls", transport,
+			"email_confirmation", a.cfg.EmailConfirmationEnabled)
+	}
 }
 
 // newHTTPServer builds the hardened HTTP server (C19). The timeout and size
@@ -861,6 +899,7 @@ func (a *App) routes() http.Handler {
 		})
 		admin.Get("/admin/metrics", a.adminMetrics)
 		admin.Get("/admin/messaging", a.adminMessaging)
+		admin.With(a.requireRole(store.RoleAdmin)).Post("/admin/email/test", a.adminSendTestEmail)
 		admin.With(a.requireRole(store.RoleAdmin, store.RoleCompliance)).Get("/admin/onboarding-cost", a.adminScreeningCost)
 		admin.Get("/admin/media-report", a.adminMediaReport)
 		admin.Get("/admin/onboarding-reminders", a.adminOnboardingReminders)
