@@ -444,6 +444,72 @@ func TestSMSProviderValidation(t *testing.T) {
 	})
 }
 
+func TestSMTPProviderValidation(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("SMTP_PORT", "")
+	t.Setenv("SMTP_HOST", "")
+
+	t.Run("rejects_unknown_provider", func(t *testing.T) {
+		t.Setenv("SMTP_PROVIDER", "sendgrid")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "SMTP_PROVIDER") {
+			t.Fatalf("expected SMTP_PROVIDER rejection, got %v", err)
+		}
+	})
+
+	t.Run("infobip_fills_relay_endpoint", func(t *testing.T) {
+		t.Setenv("SMTP_PROVIDER", "infobip")
+		t.Setenv("SMTP_USERNAME", "App")
+		t.Setenv("SMTP_PASSWORD", "api-key")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.SMTPHost != "smtp-api.infobip.com" || cfg.SMTPPort != 587 {
+			t.Fatalf("unexpected relay endpoint: %s:%d", cfg.SMTPHost, cfg.SMTPPort)
+		}
+	})
+
+	t.Run("infobip_keeps_explicit_regional_host", func(t *testing.T) {
+		t.Setenv("SMTP_PROVIDER", "infobip")
+		t.Setenv("SMTP_HOST", "smtp-api-us.infobip.com")
+		t.Setenv("SMTP_PORT", "465")
+		t.Setenv("SMTP_USERNAME", "App")
+		t.Setenv("SMTP_PASSWORD", "api-key")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.SMTPHost != "smtp-api-us.infobip.com" || cfg.SMTPPort != 465 {
+			t.Fatalf("explicit endpoint not respected: %s:%d", cfg.SMTPHost, cfg.SMTPPort)
+		}
+	})
+
+	t.Run("infobip_requires_credentials", func(t *testing.T) {
+		t.Setenv("SMTP_PROVIDER", "infobip")
+		t.Setenv("SMTP_USERNAME", "")
+		t.Setenv("SMTP_PASSWORD", "")
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error(), "SMTP_USERNAME") {
+			t.Fatalf("expected credential rejection, got %v", err)
+		}
+	})
+
+	t.Run("generic_smtp_needs_no_credentials", func(t *testing.T) {
+		t.Setenv("SMTP_PROVIDER", "")
+		t.Setenv("SMTP_HOST", "smtp.example.test")
+		t.Setenv("SMTP_USERNAME", "")
+		t.Setenv("SMTP_PASSWORD", "")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.SMTPHost != "smtp.example.test" {
+			t.Fatalf("unexpected host: %s", cfg.SMTPHost)
+		}
+	})
+}
+
 func TestAIProviderValidation(t *testing.T) {
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("AI_PROVIDER", "bogus")

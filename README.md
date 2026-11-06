@@ -109,6 +109,18 @@ SMTP_PASSWORD=replace-me
 SMTP_FROM=hello@example.com
 ```
 
+To deliver through **Infobip**, set `SMTP_PROVIDER=infobip`. The relay endpoint defaults to `smtp-api.infobip.com` on port 587 (STARTTLS), so only credentials and a verified sender are needed:
+
+```env
+SMTP_PROVIDER=infobip
+# Your Infobip account username, or App when SMTP_PASSWORD holds an API key.
+SMTP_USERNAME=App
+SMTP_PASSWORD=replace-with-api-key
+SMTP_FROM=hello@your-verified-domain.com
+```
+
+Infobip authenticates with either your account username and password or `App` paired with an API key, over PLAIN or LOGIN; the sender uses PLAIN, which Infobip supports. Port 465 uses implicit TLS instead of STARTTLS, and a server that does not offer TLS is refused on any port. `SMTP_HOST` overrides the default endpoint when your account lives in another region: `smtp-api-gb1` (Great Britain), `smtp-api-us`, `smtp-api-mx1` (Mexico), or `smtp-api-eu` for Schrems II data residency, all on `smtp-api...infobip.com`; `smtp-api-mum` (Mumbai), `smtp-api-id` (Indonesia), `smtp-api-ae2` (MENA), `smtp-api-pk2`, `smtp-api-qa1`, `smtp-api-sa3` and `smtp-api-tr1` serve port 587 only. The `From` domain must be registered and verified in the Infobip account before mail is accepted for delivery, and only addresses given in `RCPT` receive the message. A missing username or password fails startup rather than the first sign-in code.
+
 For a local or investor-demo rehearsal before SMTP is ready, set `EMAIL_DEMO_CODE_IN_CHAT=true`. Do not use the chat fallback for production-like testing because it proves the flow, not email ownership. The service refuses to start with `EMAIL_DEMO_CODE_IN_CHAT=true` when `APP_ENV=production`.
 
 ### Two-factor authentication (admin & merchant login)

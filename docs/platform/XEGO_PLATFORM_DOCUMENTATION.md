@@ -768,7 +768,7 @@ Implemented. The analysis notes reconciliation is best-effort — it detects and
 ### 14.3 Email
 
 - **Triggering events:** standard-user and merchant-registration email confirmation (6-digit OTP, required on every track). Evidence: README:90-92.
-- **Delivery:** SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`); chat-delivered demo code option for rehearsal; refused in production. Evidence: `.env.example:20-27`; README:107.
+- **Delivery:** SMTP (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`); `SMTP_PROVIDER=infobip` presets Infobip's relay endpoint (`smtp-api.infobip.com:587`) and requires SMTP credentials; chat-delivered demo code option for rehearsal; refused in production. Evidence: `.env.example:20-27`; README:107.
 - **Status:** Implemented; SMTP is Configured Only (empty defaults) and delivery is optional in practice.
 
 ### 14.4 SMS

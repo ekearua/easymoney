@@ -45,6 +45,7 @@ type Config struct {
 	LinkAccountsEnabled bool
 	LinkDemoCodeInChat  bool
 	LinkCodeTTL         time.Duration
+	SMTPProvider        string // "" (explicit host) or "infobip"
 	SMTPHost            string
 	SMTPPort            int
 	SMTPUsername        string
@@ -158,7 +159,7 @@ type Config struct {
 	NINBVNPortalKey     string
 	NINBVNPortalURL     string
 	NINBVNPortalTimeout time.Duration
-	IdentityTimeout      time.Duration
+	IdentityTimeout     time.Duration
 	ScreeningProvider   string
 	ScreeningAPIBase    string
 	ScreeningAPIKey     string
@@ -514,6 +515,11 @@ const (
 	CBNMaxCustomerWeeklyCashOutKobo int64 = 50_000_000
 )
 
+// defaultInfobipSMTPHost is Infobip's SMTP relay for the Europe region. Other
+// regions use their own host (smtp-api-us.infobip.com, smtp-api-gb1.infobip.com,
+// ...), which an explicit SMTP_HOST overrides.
+const defaultInfobipSMTPHost = "smtp-api.infobip.com"
+
 // AgentTierDefaults resolves an agent tier's limit and commission defaults from
 // configuration. An unknown tier falls back to standard.
 func (c Config) AgentTierDefaults(tier string) (maxOutstandingKobo, perPayoutKobo, dailyKobo int64, commissionBps int) {
@@ -546,6 +552,7 @@ func Load() (Config, error) {
 		LinkAccountsEnabled:             envBool("LINK_ACCOUNTS_ENABLED", false),
 		LinkDemoCodeInChat:              envBool("LINK_DEMO_CODE_IN_CHAT", false),
 		LinkCodeTTL:                     envDuration("LINK_CODE_TTL", 10*time.Minute),
+		SMTPProvider:                    strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_PROVIDER"))),
 		SMTPHost:                        strings.TrimSpace(os.Getenv("SMTP_HOST")),
 		SMTPPort:                        int(EnvInt64("SMTP_PORT", 587)),
 		SMTPUsername:                    os.Getenv("SMTP_USERNAME"),
@@ -624,7 +631,7 @@ func Load() (Config, error) {
 		NINBVNPortalKey:                 os.Getenv("NINBVNPORTAL_API_KEY"),
 		NINBVNPortalURL:                 strings.TrimRight(env("NINBVNPORTAL_BASE_URL", "https://ninbvnportal.com/api"), "/"),
 		NINBVNPortalTimeout:             envDuration("NINBVNPORTAL_TIMEOUT", 30*time.Second),
-		IdentityTimeout:                  envDuration("IDENTITY_TIMEOUT", 30*time.Second),
+		IdentityTimeout:                 envDuration("IDENTITY_TIMEOUT", 30*time.Second),
 		ScreeningProvider:               strings.ToLower(env("SCREENING_PROVIDER", "http")),
 		ScreeningAPIBase:                strings.TrimRight(os.Getenv("SCREENING_API_BASE"), "/"),
 		ScreeningAPIKey:                 os.Getenv("SCREENING_API_KEY"),
@@ -915,6 +922,19 @@ func Load() (Config, error) {
 	if strings.EqualFold(cfg.SMSProvider, "infobip") && cfg.SMSAPIKey == "" {
 		return Config{}, errors.New("SMS_API_KEY is required when SMS_PROVIDER=infobip")
 	}
+	switch cfg.SMTPProvider {
+	case "", "smtp", "infobip":
+	default:
+		return Config{}, fmt.Errorf("SMTP_PROVIDER must be \"smtp\" or \"infobip\", got %q", cfg.SMTPProvider)
+	}
+	if cfg.SMTPProvider == "infobip" {
+		// Infobip's relay always requires SMTP AUTH (PLAIN/LOGIN); there is no
+		// unauthenticated submission, so a half-configured relay would only fail
+		// at the first sign-in code instead of at boot.
+		if cfg.SMTPUsername == "" || cfg.SMTPPassword == "" {
+			return Config{}, errors.New("SMTP_USERNAME and SMTP_PASSWORD are required when SMTP_PROVIDER=infobip")
+		}
+	}
 	switch cfg.AIProvider {
 	case "", "openai":
 	default:
@@ -957,6 +977,9 @@ func Load() (Config, error) {
 	}
 	if cfg.SMTPFrom == "" {
 		cfg.SMTPFrom = cfg.AdminEmail
+	}
+	if cfg.SMTPProvider == "infobip" && cfg.SMTPHost == "" {
+		cfg.SMTPHost = defaultInfobipSMTPHost
 	}
 	if cfg.SMTPPort <= 0 {
 		cfg.SMTPPort = 587
