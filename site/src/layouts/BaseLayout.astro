@@ -1,7 +1,9 @@
 ---
 import { SITE } from '../config';
-import Head from '../components/Head.astro';
-import '../styles/site.css';
+import LandingLayout from './LandingLayout.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import '../styles/legal.css';
 
 interface Props {
   title: string;
@@ -10,77 +12,19 @@ interface Props {
 
 const { title, description } = Astro.props;
 const pageTitle = `${title} · ${SITE.brand} by Xego`;
-const navItems = [
-  { href: '/', label: 'Home' },
-  { href: '/privacy', label: 'Privacy' },
-  { href: '/terms', label: 'Terms' },
-  { href: '/data-deletion', label: 'Data Deletion' },
-  { href: '/contact', label: 'Contact' },
+
+const navLinks = [
+  { href: '/#how-it-works', label: 'How it works' },
+  { href: '/#business', label: 'For business' },
+  { href: '/#why-faya', label: 'Why FAYA' },
+  { href: '/#faqs', label: 'FAQs' },
 ];
-const current = Astro.url.pathname.replace(/\/$/, '') || '/';
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <Head title={pageTitle} description={description} />
-  </head>
-  <body>
-    <header class="site-header">
-      <div class="wrap">
-        <a class="brand" href="/" aria-label={`${SITE.brand} by Xego home`}>
-          <svg viewBox="0 0 128 128" aria-hidden="true">
-            <rect width="128" height="128" rx="38" fill="#ff6237" />
-            <path d="M38 30h56v16H56v18h32v16H56v30H38z" fill="#fcfaf5" />
-            <path d="M6 120l26 8-8-26z" fill="#ff6237" />
-          </svg>
-          <span>
-            <span class="brand-name">FAYA</span>
-            <span class="brand-sub">{SITE.brandLine}</span>
-          </span>
-        </a>
-        <nav class="nav" aria-label="Primary">
-          {navItems.map((item) => (
-            <a href={item.href} aria-current={current === item.href ? 'page' : undefined}>
-              {item.label}
-            </a>
-          ))}
-        </nav>
-      </div>
-    </header>
-
-    <main>
-      <slot />
-    </main>
-
-    <footer class="site-footer">
-      <div class="wrap">
-        <div>
-          <strong>{SITE.brand} by Xego</strong>
-          <p style="margin:8px 0 0; max-width:280px;">From a conversation to a complete transaction.</p>
-        </div>
-        <div class="cols">
-          <div>
-            <h3>Legal</h3>
-            <ul>
-              <li><a href="/privacy">Privacy Policy</a></li>
-              <li><a href="/terms">Terms of Service</a></li>
-              <li><a href="/data-deletion">Data Deletion</a></li>
-              <li><a href="/contact">Contact</a></li>
-            </ul>
-          </div>
-          <div>
-            <h3>Contact</h3>
-            <ul>
-              <li><a href={`mailto:${SITE.supportEmail}`}>{SITE.supportEmail}</a></li>
-              <li><a href={`mailto:${SITE.privacyEmail}`}>{SITE.privacyEmail}</a></li>
-            </ul>
-          </div>
-        </div>
-        <p class="legal-line">
-          © {new Date().getFullYear()} {SITE.legalEntity}. {SITE.address}. All rights reserved.
-        </p>
-      </div>
-    </footer>
-  </body>
-</html>
+<LandingLayout title={pageTitle} description={description}>
+  <SiteHeader links={navLinks} help="link" />
+  <main>
+    <slot />
+  </main>
+  <SiteFooter help="link" />
+</LandingLayout>

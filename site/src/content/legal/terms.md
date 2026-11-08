@@ -103,7 +103,7 @@ We may suspend or terminate your access if you breach these Terms, if we are req
 
 ## 17. Governing law and disputes
 
-These Terms are governed by the laws of the **Federal Republic of Nigeria**. The courts of **Lagos State** have jurisdiction, and we will try to resolve disputes with you in good faith before either of us starts proceedings.
+These Terms are governed by the laws of the **Federal Republic of Nigeria**. The courts of the **Federal Capital Territory, Abuja** have jurisdiction, and we will try to resolve disputes with you in good faith before either of us starts proceedings.
 
 ## 18. General
 

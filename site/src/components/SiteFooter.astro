@@ -1,0 +1,50 @@
+---
+import { SITE } from '../config';
+
+interface Props {
+  help?: 'dialog' | 'link';
+  helpHref?: string;
+}
+
+const { help = 'dialog', helpHref = '/contact' } = Astro.props;
+---
+
+<footer>
+  <div class="wrap">
+    <div class="footer-top">
+      <div>
+        <a href="/" class="brand footbrand" aria-label={`${SITE.brand} by Xego home`}>
+          <svg class="symbol" viewBox="0 0 1600 1600" aria-hidden="true" focusable="false">
+            <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
+          </svg>
+          <span>FAYA<small>BY XEGO</small></span>
+        </a>
+        <p>Where conversations lead to more.</p>
+        <p class="legal-line">
+          FAYA is a product of <strong>{SITE.legalEntity}</strong> (RC 9933966), {SITE.address}.
+        </p>
+      </div>
+      <div class="footer-links">
+        <a href="/#how-it-works">How it works</a>
+        <a href="/#business">For business</a>
+        <a href="/#faqs">FAQs</a>
+      </div>
+    </div>
+    <div class="info-links">
+      <a href="/#about">About FAYA</a>
+      {help === 'dialog' ? (
+        <button data-info="help">Help centre</button>
+      ) : (
+        <a href={helpHref}>Help centre</a>
+      )}
+      <a href="/privacy">Privacy</a>
+      <a href="/terms">Terms</a>
+      <a href="/data-deletion">Data deletion</a>
+      <a href="/contact">Contact</a>
+    </div>
+    <div class="footer-bottom">
+      <span>© {new Date().getFullYear()} Xego Technologies Limited. All rights reserved.</span>
+      <span>Xego Technologies Limited · RC 9933966</span>
+    </div>
+  </div>
+</footer>

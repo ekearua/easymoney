@@ -1,32 +1,14 @@
 ---
 import LandingLayout from '../layouts/LandingLayout.astro';
-import { SITE } from '../config';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
 ---
 
 <LandingLayout
   title="FAYA by Xego — Let's talk money."
   description="Meet FAYA by Xego. From a conversation to a complete transaction. Explore the buyer and business experience."
 >
-  <header>
-    <div class="wrap nav">
-      <a class="brand" href="#" aria-label="FAYA by Xego home">
-        <svg class="symbol" viewBox="0 0 1600 1600" aria-hidden="true" focusable="false">
-          <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
-        </svg>
-        <span>
-          FAYA<small>BY XEGO</small>
-        </span>
-      </a>
-      <button class="menu" aria-label="Open navigation" aria-expanded="false">☰</button>
-      <nav class="navlinks" aria-label="Main navigation">
-        <a href="#how-it-works">How it works</a>
-        <a href="#business">For business</a>
-        <a href="#why-faya">Why FAYA</a>
-        <a href="#faqs">FAQs</a>
-        <button class="help-nav" data-info="help">Help</button>
-      </nav>
-    </div>
-  </header>
+  <SiteHeader />
   <main>
     <section class="hero">
       <div class="wrap hero-grid">
@@ -324,43 +306,7 @@ import { SITE } from '../config';
       </div>
     </section>
   </main>
-  <footer>
-    <div class="wrap">
-      <div class="footer-top">
-        <div>
-          <a href="#" class="brand footbrand">
-            <svg class="symbol" viewBox="0 0 1600 1600" aria-hidden="true" focusable="false">
-              <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
-            </svg>
-            <span>
-              FAYA<small>BY XEGO</small>
-            </span>
-          </a>
-          <p>Where conversations lead to more.</p>
-          <p class="legal-line">
-            FAYA is a product of <strong>{SITE.legalEntity}</strong> (RC 9933966), {SITE.address}.
-          </p>
-        </div>
-        <div class="footer-links">
-          <a href="#how-it-works">How it works</a>
-          <a href="#business">For business</a>
-          <a href="#faqs">FAQs</a>
-        </div>
-      </div>
-      <div class="info-links">
-        <a href="#about">About FAYA</a>
-        <button data-info="help">Help centre</button>
-        <a href="/privacy">Privacy</a>
-        <a href="/terms">Terms</a>
-        <a href="/data-deletion">Data deletion</a>
-        <a href="/contact">Contact</a>
-      </div>
-      <div class="footer-bottom">
-        <span>© 2026 Xego Technologies Limited. All rights reserved.</span>
-        <span>Xego Technologies Limited · RC 9933966</span>
-      </div>
-    </div>
-  </footer>
+  <SiteFooter />
   <button class="help-float" data-info="help" aria-label="Open FAYA help centre">? &nbsp; Help</button>
   <dialog id="info">
     <div class="dialog-top">
@@ -423,21 +369,6 @@ import { SITE } from '../config';
       };
     });
     renderJourney('buyer');
-
-    const menu = document.querySelector('.menu');
-    const nav = document.querySelector('.navlinks');
-    menu.onclick = () => {
-      const open = nav.classList.toggle('open');
-      menu.setAttribute('aria-expanded', open);
-      menu.textContent = open ? '×' : '☰';
-    };
-    nav.querySelectorAll('a,button').forEach((a) =>
-      a.addEventListener('click', () => {
-        nav.classList.remove('open');
-        menu.setAttribute('aria-expanded', 'false');
-        menu.textContent = '☰';
-      })
-    );
 
     const dialog = document.querySelector('#demo');
     let demoType = 'buyer';

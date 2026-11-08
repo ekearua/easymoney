@@ -1,0 +1,69 @@
+---
+interface NavLink {
+  href: string;
+  label: string;
+  current?: boolean;
+}
+
+interface Props {
+  links?: NavLink[];
+  help?: 'dialog' | 'link';
+  helpHref?: string;
+  helpLabel?: string;
+}
+
+const defaultLinks: NavLink[] = [
+  { href: '/#how-it-works', label: 'How it works' },
+  { href: '/#business', label: 'For business' },
+  { href: '/#why-faya', label: 'Why FAYA' },
+  { href: '/#faqs', label: 'FAQs' },
+];
+
+const {
+  links = defaultLinks,
+  help = 'dialog',
+  helpHref = '/contact',
+  helpLabel = 'Contact',
+} = Astro.props;
+---
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="/" aria-label="FAYA by Xego home">
+      <svg class="symbol" viewBox="0 0 1600 1600" aria-hidden="true" focusable="false">
+        <image href="/assets/faya-approved-icon.png" width="1600" height="1600" />
+      </svg>
+      <span>FAYA<small>BY XEGO</small></span>
+    </a>
+    <button class="menu" aria-label="Open navigation" aria-expanded="false">☰</button>
+    <nav class="navlinks" aria-label="Main navigation">
+      {links.map((link) => (
+        <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>
+      ))}
+      {help === 'dialog' ? (
+        <button class="help-nav" data-info="help">Help</button>
+      ) : (
+        <a href={helpHref}>{helpLabel}</a>
+      )}
+    </nav>
+  </div>
+</header>
+
+<script>
+  const menu = document.querySelector('.menu');
+  const nav = document.querySelector('.navlinks');
+  if (menu && nav) {
+    menu.addEventListener('click', () => {
+      const open = nav.classList.toggle('open');
+      menu.setAttribute('aria-expanded', String(open));
+      menu.textContent = open ? '×' : '☰';
+    });
+    nav.querySelectorAll('a, button').forEach((el) => {
+      el.addEventListener('click', () => {
+        nav.classList.remove('open');
+        menu.setAttribute('aria-expanded', 'false');
+        menu.textContent = '☰';
+      });
+    });
+  }
+</script>
