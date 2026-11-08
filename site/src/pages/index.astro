@@ -1,5 +1,6 @@
 ---
 import LandingLayout from '../layouts/LandingLayout.astro';
+import { SITE } from '../config';
 ---
 
 <LandingLayout
@@ -337,8 +338,7 @@ import LandingLayout from '../layouts/LandingLayout.astro';
           </a>
           <p>Where conversations lead to more.</p>
           <p class="legal-line">
-            FAYA is a product of <strong>Xego Technologies Limited</strong> (RC 9933966),
-            221b Ikorodu Crescent, Dolphin Estate, Ikoyi, Lagos, Nigeria.
+            FAYA is a product of <strong>{SITE.legalEntity}</strong> (RC 9933966), {SITE.address}.
           </p>
         </div>
         <div class="footer-links">

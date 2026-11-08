@@ -9,7 +9,7 @@ order: 1
 
 We process personal data in line with the **Nigeria Data Protection Act 2023 (NDPA)** and its predecessor the **Nigeria Data Protection Regulation 2019 (NDPR)**, and we meet our record-keeping and due-diligence duties under the **Money Laundering (Prevention and Prohibition) Act 2022 (MLPPA)**, the **Money Laundering (Prohibition) Act 2004** and the **Central Bank of Nigeria (CBN) AML/CFT Regulations**.
 
-**Data controller:** Xego Technologies Limited, RC 9933966, trading as "Faya" — 221b Ikorodu Crescent, Dolphin Estate, Ikoyi, Lagos, Nigeria.
+**Data controller:** Xego Technologies Limited, RC 9933966, trading as "Faya" — 1 Katukoma Plaza, Opposite Prince and Princess Estate Junction, Games Village-Gudu Road (Oladipo Diya Way), Abuja, FCT, Nigeria.
 **Data Protection Officer (DPO):** Bisi Oladiran — **privacy@myfayago.com**
 **General support:** **support@myfayago.com**
 
@@ -146,5 +146,5 @@ Questions, requests or complaints:
 
 - **Data Protection Officer:** privacy@myfayago.com
 - **Support:** support@myfayago.com
-- **Post:** Xego Technologies Limited (Faya), 221b Ikorodu Crescent, Dolphin Estate, Ikoyi, Lagos, Nigeria
+- **Post:** Xego Technologies Limited (Faya), 1 Katukoma Plaza, Opposite Prince and Princess Estate Junction, Games Village-Gudu Road (Oladipo Diya Way), Abuja, FCT, Nigeria
 - **Regulator:** Nigeria Data Protection Commission (NDPC)

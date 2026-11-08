@@ -9,7 +9,7 @@ export const SITE = {
   privacyEmail: import.meta.env.PUBLIC_PRIVACY_EMAIL ?? 'privacy@myfayago.com',
   address:
     import.meta.env.PUBLIC_COMPANY_ADDRESS ??
-    '221b Ikorodu Crescent, Dolphin Estate, Ikoyi, Lagos, Nigeria',
+    '1 Katukoma Plaza, Opposite Prince and Princess Estate Junction, Games Village-Gudu Road (Oladipo Diya Way), Abuja, FCT, Nigeria',
   whatsapp: import.meta.env.PUBLIC_WHATSAPP_LINK ?? '',
   metaDomainVerification: import.meta.env.PUBLIC_META_DOMAIN_VERIFICATION ?? '',
   tiktokVerification: import.meta.env.PUBLIC_TIKTOK_VERIFICATION ?? '',

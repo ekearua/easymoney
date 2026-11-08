@@ -113,4 +113,4 @@ If a provision is found unenforceable, the rest stays in force. These Terms, tog
 
 - **Support:** support@myfayago.com
 - **Privacy / DPO:** privacy@myfayago.com
-- **Post:** Xego Technologies Limited (Faya), 221b Ikorodu Crescent, Dolphin Estate, Ikoyi, Lagos, Nigeria
+- **Post:** Xego Technologies Limited (Faya), 1 Katukoma Plaza, Opposite Prince and Princess Estate Junction, Games Village-Gudu Road (Oladipo Diya Way), Abuja, FCT, Nigeria
