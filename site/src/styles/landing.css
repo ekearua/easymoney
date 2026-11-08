@@ -90,7 +90,7 @@ summary:focus-visible {
   color: var(--blue)
 }
 
-header {
+body > header {
   background: var(--cream);
   position: sticky;
   top: 0;
@@ -871,7 +871,7 @@ details p {
   min-width: 175px
 }
 
-footer {
+body > footer {
   background: #102a63;
   color: white;
   padding: 40px 0 24px
