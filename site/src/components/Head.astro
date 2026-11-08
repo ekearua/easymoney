@@ -47,8 +47,12 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? SITE.url).href;
   '@context': 'https://schema.org',
   '@type': 'Organization',
   name: SITE.legalEntity,
+  legalName: SITE.legalEntity,
+  alternateName: 'FAYA by Xego',
+  identifier: 'RC 9933966',
   url: SITE.url,
   email: SITE.supportEmail,
+  brand: { '@type': 'Brand', name: 'FAYA' },
   address: {
     '@type': 'PostalAddress',
     streetAddress: SITE.address,

@@ -889,6 +889,17 @@ footer {
   color: #c4d0ea
 }
 
+.footer-top .legal-line {
+  margin-top: 10px;
+  max-width: 430px;
+  line-height: 1.6;
+  color: #c4d0ea
+}
+
+.footer-top .legal-line strong {
+  color: #fff
+}
+
 .footer-bottom {
   border-top: 1px solid #ffffff25;
   margin-top: 28px;
@@ -1288,6 +1299,15 @@ dialog::backdrop {
   color: var(--muted);
   font-size: 14px;
   line-height: 1.8
+}
+
+.about-line .entity-line {
+  margin-top: 14px;
+  font-size: 13px
+}
+
+.about-line .entity-line strong {
+  color: var(--ink)
 }
 
 .info-links {
