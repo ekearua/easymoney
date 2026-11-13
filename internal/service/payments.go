@@ -29,6 +29,8 @@ type PaymentService struct {
 	gateways map[string]ports.PaymentGateway
 	router   *ProviderRouter
 	logger   *slog.Logger
+
+	customerWallets ports.CustomerWalletProvider
 }
 
 const (
@@ -47,6 +49,12 @@ const (
 // NewPaymentService creates the provider-neutral payment coordinator.
 func NewPaymentService(cfg config.Config, repository *store.Store, gateways map[string]ports.PaymentGateway, router *ProviderRouter, logger *slog.Logger) *PaymentService {
 	return &PaymentService{cfg: cfg, store: repository, gateways: gateways, router: router, logger: logger}
+}
+
+// SetCustomerWalletProvider wires the authoritative customer-wallet provider
+// used when INTERSWITCH_WALLETS_ENABLED is true.
+func (s *PaymentService) SetCustomerWalletProvider(provider ports.CustomerWalletProvider) {
+	s.customerWallets = provider
 }
 
 // CreateDraft creates a plain merchant collection payment (collection fee added
@@ -403,12 +411,116 @@ func (s *PaymentService) ConfirmWalletPayment(ctx context.Context, payment store
 	return updated, changed, nil
 }
 
+// ConfirmProviderWalletPayment confirms a wallet-funded payment by debiting the
+// Interswitch customer wallet (balance authority) with a one-time PIN, then
+// mirrors the confirmed movement into the local ledger. PIN is never stored.
+func (s *PaymentService) ConfirmProviderWalletPayment(ctx context.Context, payment store.PaymentView, pin string) (store.PaymentView, bool, error) {
+	if !s.cfg.InterswitchWalletsEnabled || s.customerWallets == nil {
+		return s.ConfirmWalletPayment(ctx, payment)
+	}
+	if payment.Provider != ProviderWallet {
+		return payment, false, fmt.Errorf("payment provider %q is not a wallet payment", payment.Provider)
+	}
+	if payment.Status == domain.StatusSucceeded {
+		return payment, false, nil
+	}
+	if payment.Status != domain.StatusAwaitingConfirmation {
+		return payment, false, fmt.Errorf("payment is not awaiting confirmation (status %s)", payment.Status)
+	}
+	pin = strings.TrimSpace(pin)
+	walletPortion := payment.AmountKobo - payment.PurseAmountKobo
+	if walletPortion < 0 {
+		walletPortion = payment.AmountKobo
+	}
+	if walletPortion <= 0 {
+		return s.ConfirmWalletPayment(ctx, payment)
+	}
+	if len(pin) != 4 {
+		return payment, false, errors.New("enter your 4-digit wallet PIN")
+	}
+	if walletPortion > 0 {
+		profile, err := s.store.KYCProfileByUser(ctx, payment.UserID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			profile, err = s.store.EnsureKYCProfile(ctx, payment.UserID)
+		}
+		if err != nil {
+			return payment, false, err
+		}
+		if err := s.store.ReserveAllowance(ctx, store.AllowanceReservation{
+			AccountType:             store.AccountIndividual,
+			SubjectID:               payment.UserID,
+			Direction:               kyc.DirOut,
+			Tier:                    profile.Tier,
+			AmountKobo:              walletPortion,
+			Ref:                     payment.ProviderReference,
+			RiskBand:                profile.RiskBand,
+			RiskHighSingleLimitKobo: s.cfg.RiskHighSingleLimitKobo,
+		}); err != nil {
+			return payment, false, err
+		}
+		account, err := s.store.StandingAccountByUser(ctx, payment.UserID)
+		if err != nil || strings.TrimSpace(account.ProviderWalletID) == "" || account.ProvisioningStatus != "provisioned" {
+			_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
+			return payment, false, errors.New("your wallet is not ready for payments yet")
+		}
+		ref := strings.TrimSpace(payment.ProviderReference)
+		if ref == "" {
+			ref = "pay-" + payment.ID.String()
+		}
+		op, started, err := s.store.BeginInterswitchWalletOperation(ctx, store.InterswitchWalletOperation{
+			UserID: payment.UserID, WalletID: account.ProviderWalletID, OperationType: store.InterswitchWalletOperationDebit,
+			Reference: ref, AmountKobo: walletPortion, CurrencyCode: "566",
+		})
+		if err != nil {
+			_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
+			return payment, false, err
+		}
+		if started {
+			txRes, debitErr := s.customerWallets.DebitCustomerWallet(ctx, ports.CustomerWalletDebitRequest{
+				WalletID: account.ProviderWalletID, AmountKobo: walletPortion, PIN: pin, Reference: ref, Narration: "Xego payment",
+			})
+			switch {
+			case debitErr != nil:
+				_ = s.store.SetInterswitchWalletOperationOutcome(ctx, ref, store.InterswitchWalletOperationUnknown, "", "debit outcome unknown")
+				return payment, false, errors.New("your wallet payment could not be confirmed yet. Please wait a moment and try again; do not retry if money may have left your wallet")
+			case txRes.ResponseCode != "" && txRes.ResponseCode != "00":
+				_ = s.store.SetInterswitchWalletOperationOutcome(ctx, ref, store.InterswitchWalletOperationFailed, txRes.ResponseCode, "wallet debit declined")
+				_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
+				return payment, false, errors.New("your wallet payment was not completed")
+			default:
+				_ = s.store.SetInterswitchWalletOperationOutcome(ctx, ref, store.InterswitchWalletOperationSucceeded, txRes.ResponseCode, "")
+			}
+		} else if op.Status == store.InterswitchWalletOperationFailed {
+			_ = s.store.ReleaseAllowance(ctx, payment.ProviderReference)
+			return payment, false, errors.New("your wallet payment was not completed")
+		} else if op.Status == store.InterswitchWalletOperationUnknown || op.Status == store.InterswitchWalletOperationDispatching {
+			return payment, false, errors.New("your wallet payment is still being confirmed. Please wait a moment and try again")
+		}
+	}
+	changed, err := s.store.TransitionPaymentWithOutbox(ctx, payment.ID, domain.StatusSucceeded, "wallet",
+		map[string]any{"wallet_payment": true, "provider_wallet_debit_confirmed": true}, s.resultOutbox(payment, domain.StatusSucceeded))
+	if err != nil {
+		return payment, false, err
+	}
+	updated, err := s.store.PaymentByID(ctx, payment.ID)
+	if err != nil {
+		return payment, changed, err
+	}
+	if changed {
+		s.onPaymentSucceeded(ctx, updated)
+	}
+	return updated, changed, nil
+}
+
 // CreateWalletTopupDraft creates the payer's wallet top-up payment against the
 // Xego system merchant, charged exactly the given amount and routed through
-// the gateway like any other checkout. The wallet_topup metadata routes the
-// post-success hook to credit the payer's wallet from the customer float, so
-// the wallet lands the full amount once the gateway verifies the payment.
+// the gateway like any other checkout. In Interswitch wallet mode, wallet
+// funding is authority-backed via the linked virtual account (3A), so gateway
+// top-up drafts are not created.
 func (s *PaymentService) CreateWalletTopupDraft(ctx context.Context, user store.User, channel, recipient string, amountKobo int64, provider string) (store.PaymentView, error) {
+	if s.cfg.InterswitchWalletsEnabled {
+		return store.PaymentView{}, errors.New("wallet top-ups are funded via your linked virtual account")
+	}
 	merchant, err := s.store.WalletTopupSystemMerchant(ctx)
 	if err != nil {
 		return store.PaymentView{}, err
@@ -637,6 +749,11 @@ func (s *PaymentService) VerifyAndApply(ctx context.Context, reference, source s
 // VerifyAndApply and the in-platform ConfirmWalletPayment — call this, so a rail
 // is remembered whatever rail it was. A failed or abandoned attempt changes
 // nothing; only success is evidence of what the payer wanted.
+// OnPaymentSucceeded runs the post-success work for a confirmed payment.
+func (s *PaymentService) OnPaymentSucceeded(ctx context.Context, payment store.PaymentView) {
+	s.onPaymentSucceeded(ctx, payment)
+}
+
 func (s *PaymentService) onPaymentSucceeded(ctx context.Context, payment store.PaymentView) {
 	if s.rememberRailOnSuccess(payment) {
 		s.rememberPaymentRail(ctx, payment)
@@ -715,6 +832,11 @@ func (s *PaymentService) runPaymentHook(ctx context.Context, payment store.Payme
 	case store.PaymentHookRemittance:
 		return s.applyRemittanceSettlement(ctx, payment)
 	case store.PaymentHookWalletTopup:
+		if s.cfg.InterswitchWalletsEnabled {
+			// Interswitch wallet mode (3A/8B): wallet funding is mirrored only from
+			// provider-confirmed linked-account credits, never from gateway hooks.
+			return nil
+		}
 		return s.store.ApplyWalletTopup(ctx, payment.ID, payment.UserID, payment.AmountKobo)
 	default:
 		return fmt.Errorf("unknown payment hook %q", hook)
@@ -1194,6 +1316,11 @@ func mapGatewayStatus(status string) domain.PaymentStatus {
 func isTerminal(status domain.PaymentStatus) bool {
 	return status == domain.StatusSucceeded || status == domain.StatusFailed ||
 		status == domain.StatusAbandoned || status == domain.StatusExpired
+}
+
+// ResultOutbox builds the customer notification outbox spec for a payment result.
+func (s *PaymentService) ResultOutbox(payment store.PaymentView, statusValue domain.PaymentStatus) store.OutboxSpec {
+	return s.resultOutbox(payment, statusValue)
 }
 
 func (s *PaymentService) resultOutbox(payment store.PaymentView, statusValue domain.PaymentStatus) store.OutboxSpec {

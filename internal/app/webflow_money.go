@@ -16,6 +16,9 @@ import (
 
 // wfRenderStep builds the current step page for a web flow (GET).
 func (a *App) wfRenderStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
+	if flow.Step == "wallet_pin" {
+		return a.wfWalletPINStepPage(r, flow)
+	}
 	switch flow.FlowType {
 	case service.WebFlowPay:
 		return a.wfPayStep(r, flow, user)
@@ -52,6 +55,9 @@ func (a *App) wfRenderStep(r *http.Request, flow store.WebFlow, user store.User)
 // wfHandleStep advances a web flow (POST). A nil page means the handler
 // already wrote a redirect.
 func (a *App) wfHandleStep(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
+	if flow.Step == "wallet_pin" {
+		return a.wfWalletPINSubmit(w, r, flow, user, action)
+	}
 	switch flow.FlowType {
 	case service.WebFlowPay:
 		return a.wfPaySubmit(w, r, flow, user, action)
@@ -103,8 +109,21 @@ func (a *App) wfRoutePayment(w http.ResponseWriter, r *http.Request, flow store.
 	payload["payment_id"] = payment.ID.String()
 	payload["provider"] = provider
 	if provider == service.ProviderWallet {
-		// Complete inline: confirm debits the wallet atomically; on success
-		// send message 2 and render the done page in the caller.
+		walletPortion := payment.AmountKobo - payment.PurseAmountKobo
+		if walletPortion < 0 {
+			walletPortion = payment.AmountKobo
+		}
+		if a.cfg.InterswitchWalletsEnabled && walletPortion > 0 {
+			// Interswitch wallet debits require the customer's one-time wallet PIN
+			// in a secure browser form. The flow parks on wallet_pin so the submit
+			// handler can confirm the provider debit with durable reconciliation.
+			if err := a.store.SaveWebFlowProgress(r.Context(), flow.Token, "wallet_pin", payload); err != nil {
+				return err
+			}
+			http.Redirect(w, r, "/w/"+flow.Token, http.StatusSeeOther)
+			return nil
+		}
+		// Purse-only (6A) or non-Interswitch wallet mode: confirm without provider PIN.
 		updated, changed, err := a.payments.ConfirmWalletPayment(r.Context(), payment)
 		if err != nil {
 			return err
@@ -583,6 +602,8 @@ func (a *App) wfPayStep(r *http.Request, flow store.WebFlow, user store.User) (w
 		return page, nil
 	case "review":
 		return a.wfPayReview(r, flow, page)
+	case "wallet_pin":
+		return a.wfPayWalletPINStep(r, flow, page)
 	case "checkout", "done":
 		return a.wfCheckoutPage(r, flow), nil
 	}
@@ -630,6 +651,91 @@ func (a *App) wfPayReview(r *http.Request, flow store.WebFlow, page webFlowPage)
 		{Name: "back", Label: "Back"},
 	}
 	return page, nil
+}
+
+func (a *App) wfPayWalletPINStep(r *http.Request, flow store.WebFlow, page webFlowPage) (webFlowPage, error) {
+	return a.wfWalletPINStepPage(r, flow)
+}
+
+func (a *App) wfWalletPINStepPage(r *http.Request, flow store.WebFlow) (webFlowPage, error) {
+	page := a.wfPage(flow)
+	page.Title = "Enter your wallet PIN"
+	page.Intro = "Confirm this payment with your 4-digit wallet PIN. Your PIN is used only for this transaction and is never stored."
+	var payment store.PaymentView
+	if paymentID := strings.TrimSpace(flow.Payload["payment_id"]); paymentID != "" {
+		if pid, err := uuid.Parse(paymentID); err == nil {
+			if p, err := a.store.PaymentByID(r.Context(), pid); err == nil {
+				payment = p
+				label := strings.TrimSpace(payment.MerchantName)
+				if label == "" {
+					label = "Payment"
+				}
+				page.Review = []webFlowLine{
+					{Term: "Payment", Desc: label},
+					{Term: "Amount", Desc: domain.FormatNGN(payment.AmountKobo)},
+				}
+				if payment.Status == domain.StatusSucceeded {
+					page.Title = "Payment completed"
+					page.Intro = "This payment has already been completed."
+					page.Actions = []webFlowAction{{Kind: "link", Label: "View receipt", URL: a.cfg.BaseURL + "/receipts/" + payment.ReceiptToken}}
+					return page, nil
+				}
+				if ref := strings.TrimSpace(payment.ProviderReference); ref != "" {
+					if op, err := a.store.InterswitchWalletOperationByReference(r.Context(), ref); err == nil {
+						if op.Status == store.InterswitchWalletOperationUnknown || op.Status == store.InterswitchWalletOperationDispatching {
+							page.Title = "Payment is being confirmed"
+							page.Intro = "Your wallet payment could not be confirmed yet. Please wait while we confirm the outcome with your wallet provider. Do not retry this payment."
+							page.Actions = nil
+							return page, nil
+						}
+					}
+				}
+			}
+		}
+	}
+	page.Fields = []webFlowField{{Name: "wallet_pin", Label: "4-digit wallet PIN", Type: "pin", Required: true}}
+	page.Actions = []webFlowAction{{Name: "confirm", Label: "Confirm payment"}}
+	return page, nil
+}
+
+func (a *App) wfWalletPINSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
+	_ = action
+	_ = user
+	paymentID := strings.TrimSpace(flow.Payload["payment_id"])
+	pid, err := uuid.Parse(paymentID)
+	if err != nil {
+		page, _ := a.wfWalletPINStepPage(r, flow)
+		return a.wfPageWithError(flow, page, "That payment could not be found. Please start again."), nil
+	}
+	payment, err := a.store.PaymentByID(r.Context(), pid)
+	if err != nil {
+		page, _ := a.wfWalletPINStepPage(r, flow)
+		return a.wfPageWithError(flow, page, "That payment could not be found. Please start again."), nil
+	}
+	if ref := strings.TrimSpace(payment.ProviderReference); ref != "" {
+		if op, err := a.store.InterswitchWalletOperationByReference(r.Context(), ref); err == nil {
+			if op.Status == store.InterswitchWalletOperationUnknown || op.Status == store.InterswitchWalletOperationDispatching {
+				page, _ := a.wfWalletPINStepPage(r, flow)
+				return &page, nil
+			}
+		}
+	}
+	pin := strings.TrimSpace(r.FormValue("wallet_pin"))
+	if len(pin) != 4 {
+		page, _ := a.wfWalletPINStepPage(r, flow)
+		return a.wfPageWithError(flow, page, "Enter your 4-digit wallet PIN."), nil
+	}
+	updated, _, err := a.payments.ConfirmProviderWalletPayment(r.Context(), payment, pin)
+	if err != nil {
+		page, _ := a.wfWalletPINStepPage(r, flow)
+		return a.wfPageWithError(flow, page, friendlyWebPaymentError(err)), nil
+	}
+	_ = a.store.SaveWebFlowProgress(r.Context(), flow.Token, "done", flow.Payload)
+	link := a.cfg.BaseURL + "/receipts/" + updated.ReceiptToken
+	msg := fmt.Sprintf("Paid from your Xego wallet.\n\n%s\nAmount: %s\n\nReceipt: %s\n\nSend MENU anytime for more options.",
+		updated.MerchantName, domain.FormatNGN(updated.AmountKobo), link)
+	_ = a.wfFinish(r.Context(), flow, msg)
+	return nil, nil
 }
 
 func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
@@ -907,6 +1013,9 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			return a.wfRoutePaymentFailed(r, flow, user, err)
 		}
 		if method == service.ProviderWallet {
+			if a.cfg.InterswitchWalletsEnabled {
+				return nil, nil
+			}
 			done := a.wfPage(flow)
 			done.Done = true
 			done.DoneTitle = "Payment sent"
@@ -924,6 +1033,32 @@ func (a *App) wfPaySubmit(w http.ResponseWriter, r *http.Request, flow store.Web
 			done.Actions = []webFlowAction{{Kind: "link", Label: "Back to WhatsApp", URL: a.whatsappDeepLink()}}
 			return &done, nil
 		}
+		return nil, nil
+	case "wallet_pin":
+		pin := strings.TrimSpace(r.FormValue("wallet_pin"))
+		if len(pin) != 4 {
+			stepPage, _ := a.wfPayWalletPINStep(r, flow, page)
+			return a.wfPageWithError(flow, stepPage, "Enter your 4-digit wallet PIN."), nil
+		}
+		paymentID := strings.TrimSpace(flow.Payload["payment_id"])
+		pid, err := uuid.Parse(paymentID)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "That payment could not be found. Please start again."), nil
+		}
+		payment, err := a.store.PaymentByID(r.Context(), pid)
+		if err != nil {
+			return a.wfPageWithError(flow, page, "That payment could not be found. Please start again."), nil
+		}
+		updated, _, err := a.payments.ConfirmProviderWalletPayment(r.Context(), payment, pin)
+		if err != nil {
+			stepPage, _ := a.wfPayWalletPINStep(r, flow, page)
+			return a.wfPageWithError(flow, stepPage, friendlyWebPaymentError(err)), nil
+		}
+		_ = a.store.SaveWebFlowProgress(r.Context(), flow.Token, "done", flow.Payload)
+		link := a.cfg.BaseURL + "/receipts/" + updated.ReceiptToken
+		msg := fmt.Sprintf("Paid from your Xego wallet.\n\nMerchant: %s\nAmount: %s\n\nReceipt: %s\n\nSend MENU anytime for more options.",
+			updated.MerchantName, domain.FormatNGN(updated.AmountKobo), link)
+		_ = a.wfFinish(r.Context(), flow, msg)
 		return nil, nil
 	case "checkout", "done":
 		if action == "change_method" {
@@ -1036,6 +1171,9 @@ func (a *App) wfPayOnePageSubmit(w http.ResponseWriter, r *http.Request, flow st
 		return a.wfRoutePaymentFailed(r, flow, user, err)
 	}
 	if method == service.ProviderWallet {
+		if a.cfg.InterswitchWalletsEnabled {
+			return nil, nil
+		}
 		done := a.wfPage(flow)
 		done.Done = true
 		done.DoneTitle = "Payment sent"

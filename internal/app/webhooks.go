@@ -545,67 +545,101 @@ func (a *App) handleInterswitchStandingCredit(ctx context.Context, event ports.G
 	if !a.payments.IsGatewaySuccessEvent(service.ProviderInterswitch, event.Event) {
 		return false
 	}
+	credit, ok, err := parseInterswitchStandingCredit(body, event.Reference)
+	if err != nil {
+		return false
+	}
+	if !ok {
+		return false
+	}
+	// Only a number that resolves to a standing reservation is a standing
+	// credit: a payment-scoped DVA number is not in the table, so such a
+	// notification keeps its normal payment requery.
+	account, err := a.store.StandingAccountByNumber(ctx, credit.AccountNumber)
+	if err != nil {
+		return false
+	}
+	if credit.AmountKobo <= 0 {
+		return true
+	}
+	applied, err := a.applyStandingCreditMirror(ctx, account, credit)
+	if err != nil {
+		a.logger.WarnContext(ctx, "standing credit record/apply failed", "reference", credit.Reference, "error", err)
+		return true
+	}
+	if applied {
+		a.logger.InfoContext(ctx, "standing account credit applied", "reference", credit.Reference, "user", account.UserID, "amount_kobo", credit.AmountKobo)
+		// Bank credits run through the same transaction-monitoring rules as
+		// card payments, so a structuring or velocity pattern cannot hide by
+		// switching rail to a reusable account number.
+		a.monitorStandingCredit(ctx, account.UserID, credit.Reference, credit.AmountKobo)
+	}
+	return true
+}
+
+type interswitchStandingCredit struct {
+	AccountNumber string
+	Reference     string
+	AmountKobo    int64
+}
+
+// parseInterswitchStandingCredit accepts the documented nested transaction
+// webhook shape and the legacy flat shape used by older provider adapters.
+func parseInterswitchStandingCredit(body []byte, eventReference string) (interswitchStandingCredit, bool, error) {
 	var payload struct {
 		ResolverReference string `json:"resolverReference"`
 		AccountNumber     string `json:"accountNumber"`
 		Amount            string `json:"amount"`
 		TransactionAmount int64  `json:"transactionAmount"`
 		Reference         string `json:"reference"`
+		Data              struct {
+			RetrievalReferenceNumber string `json:"retrievalReferenceNumber"`
+			AccountNumber            string `json:"accountNumber"`
+			Amount                   int64  `json:"amount"`
+			MerchantReference        string `json:"merchantReference"`
+			PaymentReference         string `json:"paymentReference"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return false
+		return interswitchStandingCredit{}, false, err
 	}
-	accountNumber := strings.TrimSpace(payload.ResolverReference)
-	if accountNumber == "" {
-		accountNumber = strings.TrimSpace(payload.AccountNumber)
-	}
-	if len(accountNumber) < 8 {
-		return false
-	}
-	// The credit's idempotency key is the transaction reference: prefer the
-	// notification's own reference and fall back to the event's merchant
-	// reference. Without one the credit cannot be deduplicated.
-	creditReference := strings.TrimSpace(payload.Reference)
-	if creditReference == "" {
-		creditReference = strings.TrimSpace(event.Reference)
-	}
-	if creditReference == "" {
-		return false
-	}
+
+	accountNumber := firstNonEmpty(
+		payload.ResolverReference,
+		payload.AccountNumber,
+		payload.Data.RetrievalReferenceNumber,
+		payload.Data.AccountNumber,
+	)
+	reference := firstNonEmpty(
+		payload.Reference,
+		payload.Data.MerchantReference,
+		payload.Data.PaymentReference,
+		eventReference,
+	)
 	amountKobo := payload.TransactionAmount
 	if amountKobo == 0 {
-		parsed, err := strconv.ParseInt(strings.TrimSpace(payload.Amount), 10, 64)
-		if err == nil {
-			amountKobo = parsed
+		amountKobo = payload.Data.Amount
+	}
+	if amountKobo == 0 {
+		amountKobo, _ = strconv.ParseInt(strings.TrimSpace(payload.Amount), 10, 64)
+	}
+	if len(accountNumber) < 8 || reference == "" {
+		return interswitchStandingCredit{}, false, nil
+	}
+	return interswitchStandingCredit{
+		AccountNumber: accountNumber,
+		Reference:     reference,
+		AmountKobo:    amountKobo,
+	}, true, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
 		}
 	}
-	// Only a number that resolves to a standing reservation is a standing
-	// credit: a payment-scoped DVA number is not in the table, so such a
-	// notification keeps its normal payment requery.
-	account, err := a.store.StandingAccountByNumber(ctx, accountNumber)
-	if err != nil {
-		return false
-	}
-	if amountKobo <= 0 {
-		return true
-	}
-	if _, err := a.store.RecordStandingCredit(ctx, account.UserID, account.AccountNumber, creditReference, amountKobo); err != nil {
-		a.logger.WarnContext(ctx, "standing credit record failed", "reference", creditReference, "error", err)
-		return true
-	}
-	applied, err := a.store.ApplyStandingCredit(ctx, account.UserID, creditReference, amountKobo, "Standing account bank transfer credit")
-	if err != nil {
-		a.logger.WarnContext(ctx, "standing credit apply failed", "reference", creditReference, "error", err)
-		return true
-	}
-	if applied {
-		a.logger.InfoContext(ctx, "standing account credit applied", "reference", creditReference, "user", account.UserID, "amount_kobo", amountKobo)
-		// Bank credits run through the same transaction-monitoring rules as
-		// card payments, so a structuring or velocity pattern cannot hide by
-		// switching rail to a reusable account number.
-		a.monitorStandingCredit(ctx, account.UserID, creditReference, amountKobo)
-	}
-	return true
+	return ""
 }
 
 // monitorStandingCredit feeds one applied bank-transfer credit through the

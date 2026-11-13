@@ -89,8 +89,10 @@ func TestProductionRejectsDemoCodeInChat(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
 	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_SECRET", "cs_test_ok")
 	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
 	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
+	t.Setenv("INTERSWITCH_WALLETS_ENABLED", "true")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
 	t.Setenv("WHATSAPP_APP_SECRET", "app")
 	t.Setenv("WHATSAPP_ACCESS_TOKEN", "access")
@@ -110,6 +112,7 @@ func TestProductionRequiresTOTPKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://example")
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
 	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_SECRET", "cs_test_ok")
 	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
 	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
 	t.Setenv("WHATSAPP_VERIFY_TOKEN", "verify")
@@ -231,8 +234,10 @@ func setProductionBaseEnv(t *testing.T) {
 	t.Setenv("ADMIN_PASSWORD_HASH", "hash")
 	t.Setenv("PAYMENT_PROVIDER", "interswitch")
 	t.Setenv("INTERSWITCH_CLIENT_ID", "cid_test_ok")
+	t.Setenv("INTERSWITCH_CLIENT_SECRET", "cs_test_ok")
 	t.Setenv("INTERSWITCH_MERCHANT_CODE", "M1000")
 	t.Setenv("INTERSWITCH_WEBHOOK_SECRET", "wh_test_ok")
+	t.Setenv("INTERSWITCH_WALLETS_ENABLED", "true")
 	t.Setenv("INTERSWITCH_CHECKOUT_MODE", "LIVE")
 	t.Setenv("INTERSWITCH_TRANSFER_BASE_URL", "https://live.transfer.example.com")
 	t.Setenv("INTERSWITCH_SOURCE_ACCOUNT", "1234567890")
@@ -290,6 +295,7 @@ func TestProductionRequiresLiveRails(t *testing.T) {
 		want       string
 	}{
 		{"INTERSWITCH_CHECKOUT_MODE", "TEST", "INTERSWITCH_CHECKOUT_MODE"},
+		{"INTERSWITCH_WALLETS_ENABLED", "false", "INTERSWITCH_WALLETS_ENABLED"},
 		{"INTERSWITCH_TRANSFER_BASE_URL", "", "INTERSWITCH_TRANSFER_BASE_URL"},
 		{"INTERSWITCH_SOURCE_ACCOUNT", "", "INTERSWITCH_SOURCE_ACCOUNT"},
 		{"NINBVNPORTAL_API_KEY", "", "NINBVNPORTAL_API_KEY"},
@@ -311,6 +317,11 @@ func TestValidateProductionRails(t *testing.T) {
 	live := Config{
 		PaymentProvider:            "interswitch",
 		InterswitchCheckoutMode:    "LIVE",
+		InterswitchWalletsEnabled:  true,
+		InterswitchClientID:        "client-id",
+		InterswitchClientSecret:    "client-secret",
+		InterswitchMerchantCode:    "merchant-code",
+		InterswitchWebhookSecret:   "webhook-secret",
 		BankTransferMode:           "interswitch",
 		PayoutProvider:             "interswitch",
 		RefundProvider:             "interswitch",
@@ -697,6 +708,11 @@ func TestValidateProductionDojahRails(t *testing.T) {
 	live := Config{
 		PaymentProvider:            "interswitch",
 		InterswitchCheckoutMode:    "LIVE",
+		InterswitchWalletsEnabled:  true,
+		InterswitchClientID:        "client-id",
+		InterswitchClientSecret:    "client-secret",
+		InterswitchMerchantCode:    "merchant-code",
+		InterswitchWebhookSecret:   "webhook-secret",
 		InterswitchTransferBaseURL: "https://live.transfer.example.com",
 		InterswitchSourceAccount:   "1234567890",
 		DataProvider:               "vtpass",

@@ -643,6 +643,30 @@ func (a *App) wfDataSubmit(w http.ResponseWriter, r *http.Request, flow store.We
 
 func (a *App) wfTopupStep(r *http.Request, flow store.WebFlow, user store.User) (webFlowPage, error) {
 	page := a.wfPage(flow)
+	if a.cfg.InterswitchWalletsEnabled {
+		page.Title = "Fund your Xego wallet"
+		account, err := a.store.StandingAccountByUser(r.Context(), user.ID)
+		if err != nil || strings.TrimSpace(account.AccountNumber) == "" || account.ProvisioningStatus != "provisioned" {
+			page.Intro = "Your Interswitch wallet and linked account are still being provisioned. You’ll receive an account number to fund as soon as setup is complete."
+			return page, nil
+		}
+		bank := strings.TrimSpace(account.BankName)
+		if bank == "" {
+			bank = "Interswitch"
+		}
+		name := strings.TrimSpace(account.AccountName)
+		if name == "" {
+			name = strings.TrimSpace(user.DisplayName)
+		}
+		page.Intro = "Send money to this linked account. Your wallet balance updates after Interswitch confirms the transfer."
+		page.Review = []webFlowLine{
+			{Term: "Account name", Desc: name},
+			{Term: "Account number", Desc: account.AccountNumber},
+			{Term: "Bank", Desc: bank},
+		}
+		page.Actions = []webFlowAction{{Name: "close", Label: "Done"}}
+		return page, nil
+	}
 	switch flow.Step {
 	case "", "amount":
 		if flow.Step == "" {
@@ -688,6 +712,11 @@ func (a *App) wfTopupOnePage(r *http.Request, flow store.WebFlow) webFlowPage {
 
 func (a *App) wfTopupSubmit(w http.ResponseWriter, r *http.Request, flow store.WebFlow, user store.User, action string) (*webFlowPage, error) {
 	page := a.wfPage(flow)
+	if a.cfg.InterswitchWalletsEnabled {
+		_, _, _ = a.store.CompleteWebFlow(r.Context(), flow.Token)
+		http.Redirect(w, r, "/w/"+flow.Token+"/complete", http.StatusSeeOther)
+		return nil, nil
+	}
 	switch flow.Step {
 	case "", "amount":
 		amount, err := domain.ParseNGNAmount(strings.TrimSpace(r.FormValue("amount_kobo")), a.cfg.PaymentMinKobo, a.cfg.PaymentMaxKobo)

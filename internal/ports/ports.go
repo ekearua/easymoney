@@ -566,6 +566,53 @@ type PayoutProvider interface {
 	Payout(context.Context, PayoutRequest) (PayoutResult, error)
 }
 
+// CustomerWalletBalance is the provider's authoritative NGN balance snapshot.
+type CustomerWalletBalance struct {
+	AvailableKobo int64
+	LedgerKobo    int64
+	CurrencyCode  string
+}
+
+// CustomerWalletTransaction is a provider-confirmed wallet movement used to
+// reconcile a durable local operation before updating the mirrored ledger.
+type CustomerWalletTransaction struct {
+	Reference       string
+	ResponseCode    string
+	Direction       string
+	AmountKobo      int64
+	CurrencyCode    string
+	WalletRecordID  int64
+	Reversed        bool
+}
+
+// CustomerWalletDebitRequest carries the one-time wallet PIN only across the
+// provider call; callers must never persist or log PIN.
+type CustomerWalletDebitRequest struct {
+	WalletID        string
+	AmountKobo      int64
+	PIN             string
+	Reference       string
+	TransactionCode string
+	Narration       string
+}
+
+// CustomerWalletReversalRequest identifies the prior debit and a stable,
+// unique reference for its compensating movement.
+type CustomerWalletReversalRequest struct {
+	WalletID          string
+	Reference         string
+	ReversalReference string
+}
+
+// CustomerWalletProvider exposes the documented Interswitch customer-wallet
+// operations without coupling services to the provider package.
+type CustomerWalletProvider interface {
+	CustomerWalletBalance(context.Context, string, string) (CustomerWalletBalance, error)
+	CustomerWalletTransaction(context.Context, string, string) (CustomerWalletTransaction, error)
+	DebitCustomerWallet(context.Context, CustomerWalletDebitRequest) (CustomerWalletTransaction, error)
+	ReverseCustomerWallet(context.Context, CustomerWalletReversalRequest) error
+}
+
 // Payout reconciliation outcomes. A reconciler reports what the rail says
 // actually happened to an earlier attempt.
 const (
@@ -582,6 +629,8 @@ type PayoutReconciliation struct {
 	Status      string // "succeeded", "failed", "pending" or "unknown"
 	ExternalRef string
 	Message     string
+	AmountKobo  int64
+	Currency    string
 }
 
 // PayoutReconciler is implemented by payout rails that can report the current

@@ -77,6 +77,8 @@ func (a *App) runWorkers(ctx context.Context) {
 				if err := a.payments.Reconcile(ctx); err != nil {
 					a.logger.WarnContext(ctx, "scheduled reconciliation failed", "error", err)
 				}
+				a.reconcilePendingStandingCredits(ctx)
+				a.reconcilePendingWalletOperations(ctx)
 			})
 		case <-recon3Ticker.C:
 			a.dispatch(ctx, a.workerPools.recon, "recon3", func(ctx context.Context) {

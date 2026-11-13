@@ -431,6 +431,7 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 			return s.postLedgerPair(ctx, tx, paymentID.String(), "payment", paymentID.String(),
 				account, LedgerAccountCustomerFloat, currency, desc, "system", amount, tag)
 		}
+		externalWalletDebitConfirmed, _ := detail["provider_wallet_debit_confirmed"].(bool)
 		switch {
 		case purseID != nil:
 			// P1: this movement is funded by a restricted program purse. The
@@ -465,14 +466,14 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 				if err != nil {
 					return false, err
 				}
-				if wallet.Status != WalletStatusActive {
+				if !externalWalletDebitConfirmed && wallet.Status != WalletStatusActive {
 					return false, fmt.Errorf("%w: wallet is %s (reach L1 to pay from wallet)", ErrWalletNotActive, wallet.Status)
 				}
 				wbalance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
 				if err != nil {
 					return false, err
 				}
-				if wbalance < walletPortion {
+				if !externalWalletDebitConfirmed && wbalance < walletPortion {
 					return false, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrInsufficientWalletBalance, wbalance, walletPortion)
 				}
 				if err := postDebit(wallet.AccountCode, "Payment from wallet", walletPortion); err != nil {
@@ -484,14 +485,14 @@ func (s *Store) transitionPayment(ctx context.Context, paymentID uuid.UUID, to d
 			if err != nil {
 				return false, err
 			}
-			if wallet.Status != WalletStatusActive {
+			if !externalWalletDebitConfirmed && wallet.Status != WalletStatusActive {
 				return false, fmt.Errorf("%w: wallet is %s (reach L1 to pay from wallet)", ErrWalletNotActive, wallet.Status)
 			}
 			balance, err := walletBalanceQ(ctx, tx, wallet.AccountCode)
 			if err != nil {
 				return false, err
 			}
-			if balance < amountKobo {
+			if !externalWalletDebitConfirmed && balance < amountKobo {
 				return false, fmt.Errorf("%w: have %d kobo, need %d kobo", ErrInsufficientWalletBalance, balance, amountKobo)
 			}
 			if err := postDebit(wallet.AccountCode, "Payment from wallet", amountKobo); err != nil {

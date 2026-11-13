@@ -52,25 +52,27 @@ type Config struct {
 	SMTPPassword        string
 	SMTPFrom            string
 
-	InterswitchClientID             string
-	InterswitchClientSecret         string
-	InterswitchMerchantCode         string
-	InterswitchPayItemID            string
-	InterswitchBaseURL              string // API/requery host (gettransaction.json)
-	InterswitchTokenURL             string // optional; OAuth token issuer (defaults to BaseURL's passport host)
-	InterswitchCheckoutBaseURL      string // optional; hosted payment-page host (defaults per mode)
-	InterswitchCheckoutMode         string
-	InterswitchInlineCheckout       bool
-	InterswitchTransferBaseURL      string // optional; Quickteller Send Money v5 host for payouts/name-enquiry/query
-	InterswitchSenderName           string // optional; name shown as the transfer sender
-	InterswitchSenderPhone          string // optional; sender phone on the transfer
-	InterswitchSenderEmail          string // optional; sender email on the transfer
-	InterswitchInitiatingEntityCode string // optional; initiatingEntityCode on v5 TransferFunds (defaults to "PBL")
-	InterswitchHostedFieldsSDKURL   string // optional; SDK script override for the Hosted Fields card page
-	InterswitchWebhookSecret        string
-	InterswitchTerminalID           string // fallback TerminalId for quickteller v5 calls
-	InterswitchSourceAccount        string // funding account for NIP transfers and VTU
-	InterswitchCheckoutRender       string // "hosted_fields" (default) or "legacy" redirect form
+	InterswitchClientID              string
+	InterswitchClientSecret          string
+	InterswitchMerchantCode          string
+	InterswitchPayItemID             string
+	InterswitchBaseURL               string // API/requery host (gettransaction.json)
+	InterswitchMerchantWalletBaseURL string // Merchant Wallet API base URL
+	InterswitchWalletsEnabled        bool   // provisions Interswitch customer wallets during browser onboarding
+	InterswitchTokenURL              string // optional; OAuth token issuer (defaults to BaseURL's passport host)
+	InterswitchCheckoutBaseURL       string // optional; hosted payment-page host (defaults per mode)
+	InterswitchCheckoutMode          string
+	InterswitchInlineCheckout        bool
+	InterswitchTransferBaseURL       string // optional; Quickteller Send Money v5 host for payouts/name-enquiry/query
+	InterswitchSenderName            string // optional; name shown as the transfer sender
+	InterswitchSenderPhone           string // optional; sender phone on the transfer
+	InterswitchSenderEmail           string // optional; sender email on the transfer
+	InterswitchInitiatingEntityCode  string // optional; initiatingEntityCode on v5 TransferFunds (defaults to "PBL")
+	InterswitchHostedFieldsSDKURL    string // optional; SDK script override for the Hosted Fields card page
+	InterswitchWebhookSecret         string
+	InterswitchTerminalID            string // fallback TerminalId for quickteller v5 calls
+	InterswitchSourceAccount         string // funding account for NIP transfers and VTU
+	InterswitchCheckoutRender        string // "hosted_fields" (default) or "legacy" redirect form
 
 	// BankTransferMode selects how bank-transfer payments are collected:
 	// "interswitch" (dynamic virtual accounts through the virtual accounts API).
@@ -536,129 +538,131 @@ func (c Config) AgentTierDefaults(tier string) (maxOutstandingKobo, perPayoutKob
 // Load reads settings from the process environment and applies safe local defaults.
 func Load() (Config, error) {
 	cfg := Config{
-		Environment:                     env("APP_ENV", "development"),
-		AppName:                         env("APP_NAME", "Xego"),
-		BaseURL:                         strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
-		HTTPAddr:                        env("HTTP_ADDR", ":8080"),
-		DatabaseURL:                     os.Getenv("DATABASE_URL"),
-		PaymentProvider:                 env("PAYMENT_PROVIDER", "interswitch"),
-		AdminEmail:                      strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
-		AdminPasswordHash:               os.Getenv("ADMIN_PASSWORD_HASH"),
-		TOTPEnabled:                     envBool("TOTP_ENABLED", env("APP_ENV", "development") == "production"),
-		TOTPEncryptionKey:               strings.TrimSpace(os.Getenv("TOTP_ENCRYPTION_KEY")),
-		EmailConfirmationEnabled:        envBool("EMAIL_CONFIRMATION_ENABLED", true),
-		EmailDemoCodeInChat:             envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
-		EmailVerificationTTL:            envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
-		LinkAccountsEnabled:             envBool("LINK_ACCOUNTS_ENABLED", false),
-		LinkDemoCodeInChat:              envBool("LINK_DEMO_CODE_IN_CHAT", false),
-		LinkCodeTTL:                     envDuration("LINK_CODE_TTL", 10*time.Minute),
-		SMTPProvider:                    strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_PROVIDER"))),
-		SMTPHost:                        strings.TrimSpace(os.Getenv("SMTP_HOST")),
-		SMTPPort:                        int(EnvInt64("SMTP_PORT", 587)),
-		SMTPUsername:                    os.Getenv("SMTP_USERNAME"),
-		SMTPPassword:                    os.Getenv("SMTP_PASSWORD"),
-		SMTPFrom:                        strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		InterswitchClientID:             strings.TrimSpace(os.Getenv("INTERSWITCH_CLIENT_ID")),
-		InterswitchClientSecret:         os.Getenv("INTERSWITCH_CLIENT_SECRET"),
-		InterswitchMerchantCode:         strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE")),
-		InterswitchPayItemID:            strings.TrimSpace(os.Getenv("INTERSWITCH_PAY_ITEM_ID")),
-		InterswitchBaseURL:              strings.TrimRight(env("INTERSWITCH_BASE_URL", "https://sandbox.interswitchng.com"), "/"),
-		InterswitchTokenURL:             strings.TrimRight(os.Getenv("INTERSWITCH_TOKEN_URL"), "/"),
-		InterswitchCheckoutBaseURL:      strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
-		InterswitchCheckoutMode:         strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
-		InterswitchInlineCheckout:       envBool("INTERSWITCH_INLINE_CHECKOUT", false),
-		InterswitchTransferBaseURL:      strings.TrimRight(os.Getenv("INTERSWITCH_TRANSFER_BASE_URL"), "/"),
-		InterswitchSenderName:           strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_NAME")),
-		InterswitchSenderPhone:          strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_PHONE")),
-		InterswitchSenderEmail:          strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_EMAIL")),
-		InterswitchInitiatingEntityCode: strings.TrimSpace(os.Getenv("INTERSWITCH_INITIATING_ENTITY_CODE")),
-		InterswitchHostedFieldsSDKURL:   strings.TrimSpace(os.Getenv("INTERSWITCH_HOSTED_FIELDS_SDK_URL")),
-		InterswitchWebhookSecret:        os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
-		InterswitchTerminalID:           strings.TrimSpace(os.Getenv("INTERSWITCH_TERMINAL_ID")),
-		InterswitchSourceAccount:        strings.TrimSpace(os.Getenv("INTERSWITCH_SOURCE_ACCOUNT")),
-		InterswitchCheckoutRender:       strings.ToLower(env("INTERSWITCH_CHECKOUT_RENDER", "hosted_fields")),
-		BankTransferMode:                strings.ToLower(env("BANK_TRANSFER_MODE", "interswitch")),
-		PayoutProvider:                  strings.ToLower(env("PAYOUT_PROVIDER", "interswitch")),
-		RefundProvider:                  strings.ToLower(env("REFUND_PROVIDER", "interswitch")),
-		FeeCardBPS:                      EnvInt64("XEGO_FEE_CARD_BPS", 200),
-		FeeCardFixedKobo:                EnvInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
-		FeeCardCapKobo:                  EnvInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
-		FeeDVABPS:                       EnvInt64("XEGO_FEE_DVA_BPS", 150),
-		FeeDVAFixedKobo:                 EnvInt64("XEGO_FEE_DVA_FIXED_KOBO", 0),
-		FeeDVACapKobo:                   EnvInt64("XEGO_FEE_DVA_CAP_KOBO", 150000),
-		FeeTransferBPS:                  EnvInt64("XEGO_FEE_TRANSFER_BPS", 180),
-		FeeTransferFixedKobo:            EnvInt64("XEGO_FEE_TRANSFER_FIXED_KOBO", 0),
-		FeeTransferCapKobo:              EnvInt64("XEGO_FEE_TRANSFER_CAP_KOBO", 250000),
-		FeeNIPPayoutFlatKobo:            EnvInt64("XEGO_FEE_NIP_PAYOUT_FLAT_KOBO", 10000),
-		WhatsAppVerifyToken:             os.Getenv("WHATSAPP_VERIFY_TOKEN"),
-		WhatsAppAppSecret:               os.Getenv("WHATSAPP_APP_SECRET"),
-		WhatsAppAccessToken:             os.Getenv("WHATSAPP_ACCESS_TOKEN"),
-		WhatsAppPhoneNumberID:           os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
-		WhatsAppPhoneNumber:             normalizeE164(os.Getenv("WHATSAPP_PHONE_NUMBER")),
-		WhatsAppGraphVersion:            strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
-		WhatsAppTemplateName:            env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
-		WhatsAppTemplateLocale:          env("WHATSAPP_TEMPLATE_LOCALE", "en"),
-		TelegramEnabled:                 envBool("TELEGRAM_ENABLED", false),
-		TelegramBotToken:                os.Getenv("TELEGRAM_BOT_TOKEN"),
-		TelegramWebhookSecret:           os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
-		TelegramAPIBase:                 strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
-		InstagramEnabled:                envBool("INSTAGRAM_ENABLED", false),
-		InstagramAppSecret:              os.Getenv("INSTAGRAM_APP_SECRET"),
-		InstagramAccessToken:            os.Getenv("INSTAGRAM_ACCESS_TOKEN"),
-		InstagramIGID:                   strings.TrimSpace(os.Getenv("INSTAGRAM_IG_ID")),
-		InstagramPageID:                 strings.TrimSpace(os.Getenv("INSTAGRAM_PAGE_ID")),
-		InstagramVerifyToken:            os.Getenv("INSTAGRAM_VERIFY_TOKEN"),
-		InstagramGraphVersion:           strings.TrimSpace(os.Getenv("INSTAGRAM_GRAPH_VERSION")),
-		FacebookMessengerEnabled:        envBool("FACEBOOK_MESSENGER_ENABLED", false),
-		FacebookMessengerAppSecret:      os.Getenv("FACEBOOK_MESSENGER_APP_SECRET"),
-		FacebookMessengerAccessToken:    os.Getenv("FACEBOOK_MESSENGER_ACCESS_TOKEN"),
-		FacebookMessengerPageID:         strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_PAGE_ID")),
-		FacebookMessengerVerifyToken:    os.Getenv("FACEBOOK_MESSENGER_VERIFY_TOKEN"),
-		FacebookMessengerGraphVersion:   strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_GRAPH_VERSION")),
-		TikTokEnabled:                   envBool("TIKTOK_ENABLED", false),
-		TikTokAppSecret:                 os.Getenv("TIKTOK_APP_SECRET"),
-		TikTokAccessToken:               os.Getenv("TIKTOK_ACCESS_TOKEN"),
-		TikTokAPIBase:                   strings.TrimRight(env("TIKTOK_API_BASE", "https://open.tiktokapis.com"), "/"),
-		WebhookBodyLogEnabled:           envBool("WEBHOOK_BODY_LOG_ENABLED", false),
-		SMSEnabled:                      envBool("SMS_ENABLED", false),
-		SMSProvider:                     env("SMS_PROVIDER", "webhook"),
-		SMSWebhookSecret:                os.Getenv("SMS_WEBHOOK_SECRET"),
-		SMSSenderID:                     env("SMS_SENDER_ID", "Xego"),
-		SMSAPIBase:                      strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
-		SMSAPIKey:                       os.Getenv("SMS_API_KEY"),
-		DataProvider:                    strings.ToLower(env("DATA_PROVIDER", "vtpass")),
-		IdentityProvider:                strings.ToLower(env("IDENTITY_PROVIDER", "ninbvnportal")),
-		NINBVNPortalKey:                 os.Getenv("NINBVNPORTAL_API_KEY"),
-		NINBVNPortalURL:                 strings.TrimRight(env("NINBVNPORTAL_BASE_URL", "https://ninbvnportal.com/api"), "/"),
-		NINBVNPortalTimeout:             envDuration("NINBVNPORTAL_TIMEOUT", 30*time.Second),
-		IdentityTimeout:                 envDuration("IDENTITY_TIMEOUT", 30*time.Second),
-		ScreeningProvider:               strings.ToLower(env("SCREENING_PROVIDER", "http")),
-		ScreeningAPIBase:                strings.TrimRight(os.Getenv("SCREENING_API_BASE"), "/"),
-		ScreeningAPIKey:                 os.Getenv("SCREENING_API_KEY"),
-		ScreeningTimeout:                envDuration("SCREENING_TIMEOUT", 30*time.Second),
-		CorporateRegistryProvider:       strings.ToLower(env("CAC_PROVIDER", "simulated")),
-		CorporateRegistryAPIBase:        strings.TrimRight(os.Getenv("CAC_API_BASE"), "/"),
-		CorporateRegistryAPIKey:         os.Getenv("CAC_API_KEY"),
-		CorporateRegistryTimeout:        envDuration("CAC_TIMEOUT", 30*time.Second),
-		TaxIDProvider:                   strings.ToLower(env("FIRS_PROVIDER", "simulated")),
-		TaxIDAPIBase:                    strings.TrimRight(os.Getenv("FIRS_API_BASE"), "/"),
-		TaxIDAPIKey:                     os.Getenv("FIRS_API_KEY"),
-		TaxIDTimeout:                    envDuration("FIRS_TIMEOUT", 30*time.Second),
-		LocationProvider:                strings.ToLower(env("LOCATION_PROVIDER", "simulated")),
-		LocationAPIBase:                 strings.TrimRight(os.Getenv("LOCATION_API_BASE"), "/"),
-		LocationAPIKey:                  os.Getenv("LOCATION_API_KEY"),
-		LocationTimeout:                 envDuration("LOCATION_TIMEOUT", 30*time.Second),
-		LocationMaxDistanceM:            float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
-		DocAuthenticityProvider:         strings.ToLower(env("DOC_AUTH_PROVIDER", "simulated")),
-		DocAuthenticityAPIBase:          strings.TrimRight(os.Getenv("DOC_AUTH_API_BASE"), "/"),
-		DocAuthenticityAPIKey:           os.Getenv("DOC_AUTH_API_KEY"),
-		DocAuthenticityTimeout:          envDuration("DOC_AUTH_TIMEOUT", 30*time.Second),
-		DojahAppID:                      strings.TrimSpace(os.Getenv("DOJAH_APP_ID")),
-		DojahSecretKey:                  strings.TrimSpace(os.Getenv("DOJAH_SECRET_KEY")),
-		DojahBaseURL:                    strings.TrimRight(env("DOJAH_BASE_URL", "https://api.dojah.io"), "/"),
-		DojahMatchThreshold:             envFloat("DOJAH_MATCH_THRESHOLD", 0.85),
-		DojahListVersion:                strings.TrimSpace(os.Getenv("DOJAH_LIST_VERSION")),
-		DojahCACCompanyType:             strings.ToUpper(env("DOJAH_CAC_COMPANY_TYPE", "COMPANY")),
+		Environment:                      env("APP_ENV", "development"),
+		AppName:                          env("APP_NAME", "Xego"),
+		BaseURL:                          strings.TrimRight(env("BASE_URL", "http://localhost:8080"), "/"),
+		HTTPAddr:                         env("HTTP_ADDR", ":8080"),
+		DatabaseURL:                      os.Getenv("DATABASE_URL"),
+		PaymentProvider:                  env("PAYMENT_PROVIDER", "interswitch"),
+		AdminEmail:                       strings.ToLower(strings.TrimSpace(env("ADMIN_EMAIL", "admin@example.com"))),
+		AdminPasswordHash:                os.Getenv("ADMIN_PASSWORD_HASH"),
+		TOTPEnabled:                      envBool("TOTP_ENABLED", env("APP_ENV", "development") == "production"),
+		TOTPEncryptionKey:                strings.TrimSpace(os.Getenv("TOTP_ENCRYPTION_KEY")),
+		EmailConfirmationEnabled:         envBool("EMAIL_CONFIRMATION_ENABLED", true),
+		EmailDemoCodeInChat:              envBool("EMAIL_DEMO_CODE_IN_CHAT", false),
+		EmailVerificationTTL:             envDuration("EMAIL_VERIFICATION_TTL", 10*time.Minute),
+		LinkAccountsEnabled:              envBool("LINK_ACCOUNTS_ENABLED", false),
+		LinkDemoCodeInChat:               envBool("LINK_DEMO_CODE_IN_CHAT", false),
+		LinkCodeTTL:                      envDuration("LINK_CODE_TTL", 10*time.Minute),
+		SMTPProvider:                     strings.ToLower(strings.TrimSpace(os.Getenv("SMTP_PROVIDER"))),
+		SMTPHost:                         strings.TrimSpace(os.Getenv("SMTP_HOST")),
+		SMTPPort:                         int(EnvInt64("SMTP_PORT", 587)),
+		SMTPUsername:                     os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:                     os.Getenv("SMTP_PASSWORD"),
+		SMTPFrom:                         strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		InterswitchClientID:              strings.TrimSpace(os.Getenv("INTERSWITCH_CLIENT_ID")),
+		InterswitchClientSecret:          os.Getenv("INTERSWITCH_CLIENT_SECRET"),
+		InterswitchMerchantCode:          strings.TrimSpace(os.Getenv("INTERSWITCH_MERCHANT_CODE")),
+		InterswitchPayItemID:             strings.TrimSpace(os.Getenv("INTERSWITCH_PAY_ITEM_ID")),
+		InterswitchBaseURL:               strings.TrimRight(env("INTERSWITCH_BASE_URL", "https://sandbox.interswitchng.com"), "/"),
+		InterswitchMerchantWalletBaseURL: strings.TrimRight(env("INTERSWITCH_MERCHANT_WALLET_BASE_URL", "https://merchant-wallet.k8.isw.la/merchant-wallet"), "/"),
+		InterswitchWalletsEnabled:        envBool("INTERSWITCH_WALLETS_ENABLED", false),
+		InterswitchTokenURL:              strings.TrimRight(os.Getenv("INTERSWITCH_TOKEN_URL"), "/"),
+		InterswitchCheckoutBaseURL:       strings.TrimRight(os.Getenv("INTERSWITCH_CHECKOUT_BASE_URL"), "/"),
+		InterswitchCheckoutMode:          strings.ToUpper(strings.TrimSpace(os.Getenv("INTERSWITCH_CHECKOUT_MODE"))),
+		InterswitchInlineCheckout:        envBool("INTERSWITCH_INLINE_CHECKOUT", false),
+		InterswitchTransferBaseURL:       strings.TrimRight(os.Getenv("INTERSWITCH_TRANSFER_BASE_URL"), "/"),
+		InterswitchSenderName:            strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_NAME")),
+		InterswitchSenderPhone:           strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_PHONE")),
+		InterswitchSenderEmail:           strings.TrimSpace(os.Getenv("INTERSWITCH_SENDER_EMAIL")),
+		InterswitchInitiatingEntityCode:  strings.TrimSpace(os.Getenv("INTERSWITCH_INITIATING_ENTITY_CODE")),
+		InterswitchHostedFieldsSDKURL:    strings.TrimSpace(os.Getenv("INTERSWITCH_HOSTED_FIELDS_SDK_URL")),
+		InterswitchWebhookSecret:         os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
+		InterswitchTerminalID:            strings.TrimSpace(os.Getenv("INTERSWITCH_TERMINAL_ID")),
+		InterswitchSourceAccount:         strings.TrimSpace(os.Getenv("INTERSWITCH_SOURCE_ACCOUNT")),
+		InterswitchCheckoutRender:        strings.ToLower(env("INTERSWITCH_CHECKOUT_RENDER", "hosted_fields")),
+		BankTransferMode:                 strings.ToLower(env("BANK_TRANSFER_MODE", "interswitch")),
+		PayoutProvider:                   strings.ToLower(env("PAYOUT_PROVIDER", "interswitch")),
+		RefundProvider:                   strings.ToLower(env("REFUND_PROVIDER", "interswitch")),
+		FeeCardBPS:                       EnvInt64("XEGO_FEE_CARD_BPS", 200),
+		FeeCardFixedKobo:                 EnvInt64("XEGO_FEE_CARD_FIXED_KOBO", 10000),
+		FeeCardCapKobo:                   EnvInt64("XEGO_FEE_CARD_CAP_KOBO", 350000),
+		FeeDVABPS:                        EnvInt64("XEGO_FEE_DVA_BPS", 150),
+		FeeDVAFixedKobo:                  EnvInt64("XEGO_FEE_DVA_FIXED_KOBO", 0),
+		FeeDVACapKobo:                    EnvInt64("XEGO_FEE_DVA_CAP_KOBO", 150000),
+		FeeTransferBPS:                   EnvInt64("XEGO_FEE_TRANSFER_BPS", 180),
+		FeeTransferFixedKobo:             EnvInt64("XEGO_FEE_TRANSFER_FIXED_KOBO", 0),
+		FeeTransferCapKobo:               EnvInt64("XEGO_FEE_TRANSFER_CAP_KOBO", 250000),
+		FeeNIPPayoutFlatKobo:             EnvInt64("XEGO_FEE_NIP_PAYOUT_FLAT_KOBO", 10000),
+		WhatsAppVerifyToken:              os.Getenv("WHATSAPP_VERIFY_TOKEN"),
+		WhatsAppAppSecret:                os.Getenv("WHATSAPP_APP_SECRET"),
+		WhatsAppAccessToken:              os.Getenv("WHATSAPP_ACCESS_TOKEN"),
+		WhatsAppPhoneNumberID:            os.Getenv("WHATSAPP_PHONE_NUMBER_ID"),
+		WhatsAppPhoneNumber:              normalizeE164(os.Getenv("WHATSAPP_PHONE_NUMBER")),
+		WhatsAppGraphVersion:             strings.TrimSpace(os.Getenv("WHATSAPP_GRAPH_VERSION")),
+		WhatsAppTemplateName:             env("WHATSAPP_STATUS_TEMPLATE", "payment_status_update"),
+		WhatsAppTemplateLocale:           env("WHATSAPP_TEMPLATE_LOCALE", "en"),
+		TelegramEnabled:                  envBool("TELEGRAM_ENABLED", false),
+		TelegramBotToken:                 os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramWebhookSecret:            os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
+		TelegramAPIBase:                  strings.TrimRight(env("TELEGRAM_API_BASE", "https://api.telegram.org"), "/"),
+		InstagramEnabled:                 envBool("INSTAGRAM_ENABLED", false),
+		InstagramAppSecret:               os.Getenv("INSTAGRAM_APP_SECRET"),
+		InstagramAccessToken:             os.Getenv("INSTAGRAM_ACCESS_TOKEN"),
+		InstagramIGID:                    strings.TrimSpace(os.Getenv("INSTAGRAM_IG_ID")),
+		InstagramPageID:                  strings.TrimSpace(os.Getenv("INSTAGRAM_PAGE_ID")),
+		InstagramVerifyToken:             os.Getenv("INSTAGRAM_VERIFY_TOKEN"),
+		InstagramGraphVersion:            strings.TrimSpace(os.Getenv("INSTAGRAM_GRAPH_VERSION")),
+		FacebookMessengerEnabled:         envBool("FACEBOOK_MESSENGER_ENABLED", false),
+		FacebookMessengerAppSecret:       os.Getenv("FACEBOOK_MESSENGER_APP_SECRET"),
+		FacebookMessengerAccessToken:     os.Getenv("FACEBOOK_MESSENGER_ACCESS_TOKEN"),
+		FacebookMessengerPageID:          strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_PAGE_ID")),
+		FacebookMessengerVerifyToken:     os.Getenv("FACEBOOK_MESSENGER_VERIFY_TOKEN"),
+		FacebookMessengerGraphVersion:    strings.TrimSpace(os.Getenv("FACEBOOK_MESSENGER_GRAPH_VERSION")),
+		TikTokEnabled:                    envBool("TIKTOK_ENABLED", false),
+		TikTokAppSecret:                  os.Getenv("TIKTOK_APP_SECRET"),
+		TikTokAccessToken:                os.Getenv("TIKTOK_ACCESS_TOKEN"),
+		TikTokAPIBase:                    strings.TrimRight(env("TIKTOK_API_BASE", "https://open.tiktokapis.com"), "/"),
+		WebhookBodyLogEnabled:            envBool("WEBHOOK_BODY_LOG_ENABLED", false),
+		SMSEnabled:                       envBool("SMS_ENABLED", false),
+		SMSProvider:                      env("SMS_PROVIDER", "webhook"),
+		SMSWebhookSecret:                 os.Getenv("SMS_WEBHOOK_SECRET"),
+		SMSSenderID:                      env("SMS_SENDER_ID", "Xego"),
+		SMSAPIBase:                       strings.TrimRight(os.Getenv("SMS_API_BASE"), "/"),
+		SMSAPIKey:                        os.Getenv("SMS_API_KEY"),
+		DataProvider:                     strings.ToLower(env("DATA_PROVIDER", "vtpass")),
+		IdentityProvider:                 strings.ToLower(env("IDENTITY_PROVIDER", "ninbvnportal")),
+		NINBVNPortalKey:                  os.Getenv("NINBVNPORTAL_API_KEY"),
+		NINBVNPortalURL:                  strings.TrimRight(env("NINBVNPORTAL_BASE_URL", "https://ninbvnportal.com/api"), "/"),
+		NINBVNPortalTimeout:              envDuration("NINBVNPORTAL_TIMEOUT", 30*time.Second),
+		IdentityTimeout:                  envDuration("IDENTITY_TIMEOUT", 30*time.Second),
+		ScreeningProvider:                strings.ToLower(env("SCREENING_PROVIDER", "http")),
+		ScreeningAPIBase:                 strings.TrimRight(os.Getenv("SCREENING_API_BASE"), "/"),
+		ScreeningAPIKey:                  os.Getenv("SCREENING_API_KEY"),
+		ScreeningTimeout:                 envDuration("SCREENING_TIMEOUT", 30*time.Second),
+		CorporateRegistryProvider:        strings.ToLower(env("CAC_PROVIDER", "simulated")),
+		CorporateRegistryAPIBase:         strings.TrimRight(os.Getenv("CAC_API_BASE"), "/"),
+		CorporateRegistryAPIKey:          os.Getenv("CAC_API_KEY"),
+		CorporateRegistryTimeout:         envDuration("CAC_TIMEOUT", 30*time.Second),
+		TaxIDProvider:                    strings.ToLower(env("FIRS_PROVIDER", "simulated")),
+		TaxIDAPIBase:                     strings.TrimRight(os.Getenv("FIRS_API_BASE"), "/"),
+		TaxIDAPIKey:                      os.Getenv("FIRS_API_KEY"),
+		TaxIDTimeout:                     envDuration("FIRS_TIMEOUT", 30*time.Second),
+		LocationProvider:                 strings.ToLower(env("LOCATION_PROVIDER", "simulated")),
+		LocationAPIBase:                  strings.TrimRight(os.Getenv("LOCATION_API_BASE"), "/"),
+		LocationAPIKey:                   os.Getenv("LOCATION_API_KEY"),
+		LocationTimeout:                  envDuration("LOCATION_TIMEOUT", 30*time.Second),
+		LocationMaxDistanceM:             float64(EnvInt64("LOCATION_MAX_DISTANCE_M", 5000)),
+		DocAuthenticityProvider:          strings.ToLower(env("DOC_AUTH_PROVIDER", "simulated")),
+		DocAuthenticityAPIBase:           strings.TrimRight(os.Getenv("DOC_AUTH_API_BASE"), "/"),
+		DocAuthenticityAPIKey:            os.Getenv("DOC_AUTH_API_KEY"),
+		DocAuthenticityTimeout:           envDuration("DOC_AUTH_TIMEOUT", 30*time.Second),
+		DojahAppID:                       strings.TrimSpace(os.Getenv("DOJAH_APP_ID")),
+		DojahSecretKey:                   strings.TrimSpace(os.Getenv("DOJAH_SECRET_KEY")),
+		DojahBaseURL:                     strings.TrimRight(env("DOJAH_BASE_URL", "https://api.dojah.io"), "/"),
+		DojahMatchThreshold:              envFloat("DOJAH_MATCH_THRESHOLD", 0.85),
+		DojahListVersion:                 strings.TrimSpace(os.Getenv("DOJAH_LIST_VERSION")),
+		DojahCACCompanyType:              strings.ToUpper(env("DOJAH_CAC_COMPANY_TYPE", "COMPANY")),
 
 		BulkLocationTTL:       envDuration("BULK_LOCATION_TTL", 5*time.Minute),
 		BulkRadiusM:           int(EnvInt64("BULK_RADIUS_M", 50)),
@@ -1033,7 +1037,7 @@ func Load() (Config, error) {
 		}
 		// Require keys for configured payment providers.
 		hasAnyProvider := false
-		if strings.EqualFold(cfg.PaymentProvider, "interswitch") || cfg.InterswitchClientSecret != "" {
+		if strings.EqualFold(cfg.PaymentProvider, "interswitch") || cfg.InterswitchClientSecret != "" || cfg.InterswitchWalletsEnabled {
 			if cfg.InterswitchClientID == "" {
 				return Config{}, errors.New("INTERSWITCH_CLIENT_ID is required in production when interswitch is enabled")
 			}
@@ -1042,6 +1046,9 @@ func Load() (Config, error) {
 			}
 			if cfg.InterswitchWebhookSecret == "" {
 				return Config{}, errors.New("INTERSWITCH_WEBHOOK_SECRET is required in production when interswitch is enabled")
+			}
+			if cfg.InterswitchWalletsEnabled && cfg.InterswitchClientSecret == "" {
+				return Config{}, errors.New("INTERSWITCH_CLIENT_SECRET is required in production when Interswitch wallets are enabled")
 			}
 			hasAnyProvider = true
 		}
@@ -1143,6 +1150,12 @@ func Load() (Config, error) {
 func validateProductionRails(cfg Config) error {
 	if strings.EqualFold(cfg.PaymentProvider, "interswitch") && cfg.InterswitchCheckoutMode != "LIVE" {
 		return errors.New("INTERSWITCH_CHECKOUT_MODE=LIVE is required in production")
+	}
+	if strings.EqualFold(cfg.PaymentProvider, "interswitch") && !cfg.InterswitchWalletsEnabled {
+		return errors.New("INTERSWITCH_WALLETS_ENABLED=true is required in production")
+	}
+	if cfg.InterswitchWalletsEnabled && (cfg.InterswitchClientID == "" || cfg.InterswitchClientSecret == "" || cfg.InterswitchMerchantCode == "" || cfg.InterswitchWebhookSecret == "") {
+		return errors.New("INTERSWITCH_CLIENT_ID, INTERSWITCH_CLIENT_SECRET, INTERSWITCH_MERCHANT_CODE, and INTERSWITCH_WEBHOOK_SECRET are required when Interswitch wallets are enabled")
 	}
 	if cfg.IdentityProvider == "ninbvnportal" && cfg.NINBVNPortalKey == "" {
 		return errors.New("NINBVNPORTAL_API_KEY is required when IDENTITY_PROVIDER=ninbvnportal")

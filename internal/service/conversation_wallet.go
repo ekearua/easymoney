@@ -13,13 +13,36 @@ import (
 	"whatsapp-payment-demo/internal/store"
 )
 
-// startWalletTopup begins the "fund wallet" flow. The customer pays an amount
-// through the gateway (card or bank transfer, both on the secure checkout);
-// once the payment is verified the wallet is credited with the full amount.
+// startWalletTopup begins the "fund wallet" flow. When Interswitch wallet mode
+// is enabled, funding happens by paying into the customer's linked virtual
+// account so the provider wallet (the balance authority) is credited directly;
+// Xego mirrors that confirmed credit into the local ledger. Otherwise the
+// customer pays through the gateway and the wallet is credited on verification.
 func (s *ConversationService) startWalletTopup(ctx context.Context, channel, recipient string, user store.User, session store.Session) error {
 	balance := int64(0)
 	if wallet, err := s.store.WalletByOwner(ctx, store.WalletOwnerUser, user.ID); err == nil {
 		balance, _ = s.store.WalletBalance(ctx, wallet.ID)
+	}
+	if s.cfg.InterswitchWalletsEnabled {
+		session.State, session.Data = "menu", map[string]string{}
+		if err := s.saveSession(ctx, session); err != nil {
+			return err
+		}
+		account, err := s.store.StandingAccountByUser(ctx, user.ID)
+		if err != nil || strings.TrimSpace(account.AccountNumber) == "" || account.ProvisioningStatus != "provisioned" {
+			return s.sendText(ctx, channel, recipient,
+				fmt.Sprintf("Fund your Xego wallet\n\nCurrent balance: %s\n\nYour Interswitch wallet and linked account are still being provisioned. You’ll receive an account number to fund as soon as setup is complete.", domain.FormatNGN(balance)))
+		}
+		bank := strings.TrimSpace(account.BankName)
+		if bank == "" {
+			bank = "Interswitch"
+		}
+		name := strings.TrimSpace(account.AccountName)
+		if name == "" {
+			name = strings.TrimSpace(user.DisplayName)
+		}
+		message := fmt.Sprintf("Fund your Xego wallet\n\nCurrent balance: %s\n\nSend any amount to this linked account and your wallet will be credited after Interswitch confirms the transfer:\n\nAccount name: %s\nAccount number: %s\nBank: %s\n\nThis account is linked to your wallet, so credits go straight to your balance.", domain.FormatNGN(balance), name, account.AccountNumber, bank)
+		return s.sendText(ctx, channel, recipient, message)
 	}
 	session.State = "wallet_topup_amount"
 	session.Data = map[string]string{}

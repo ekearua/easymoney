@@ -92,8 +92,16 @@ func (s *ConversationService) handleConfirmation(ctx context.Context, channel, r
 	// W1: wallet-funded payments are confirmed inline — the wallet is debited
 	// and the payment succeeds immediately, with no hosted checkout. On a
 	// failure the session is kept so the customer can retry or choose another
-	// method from the menu.
+	// method from the menu. In Interswitch wallet mode, the debit requires a
+	// one-time PIN entered in a secure browser flow, never in chat.
 	if payment.Provider == ProviderWallet {
+		if s.cfg.InterswitchWalletsEnabled {
+			link, err := s.ensureWalletPaymentPINWebFlow(ctx, channel, recipient, user, session, payment)
+			if err != nil {
+				return s.sendText(ctx, channel, recipient, "Your wallet payment needs to be confirmed in a secure browser page, but that page could not be opened right now. Please try again from the payment flow.")
+			}
+			return s.sendCheckout(ctx, channel, recipient, "Confirm your wallet payment securely.\n\nEnter your 4-digit wallet PIN on the secure page to complete this payment. Your PIN is never asked for in chat.", link)
+		}
 		_, changed, err := s.payments.ConfirmWalletPayment(ctx, payment)
 		if err != nil {
 			if errors.Is(err, store.ErrInsufficientWalletBalance) {
@@ -697,4 +705,26 @@ func (s *ConversationService) redispatchToState(ctx context.Context, channel, re
 		// still active rather than falsely reporting it expired.
 		return s.sendText(ctx, channel, recipient, "OK, staying on what you were doing. Type MENU to cancel it anytime.")
 	}
+}
+
+func (s *ConversationService) ensureWalletPaymentPINWebFlow(ctx context.Context, channel, recipient string, user store.User, session store.Session, payment store.PaymentView) (string, error) {
+	payload := map[string]string{
+		"payment_id":    payment.ID.String(),
+		"merchant_slug": payment.MerchantSlug,
+		"amount_kobo":   strconv.FormatInt(payment.AmountKobo, 10),
+		"provider":      ProviderWallet,
+	}
+	flow, err := s.store.MintWebFlow(ctx, user.ID, channel, WebFlowPay, payload, "wallet_pin", s.cfg.SessionTTL)
+	if err != nil {
+		return "", err
+	}
+	session.State = "web_flow_active"
+	if session.Data == nil {
+		session.Data = map[string]string{}
+	}
+	session.Data["web_flow_token"] = flow.Token
+	if err := s.saveSession(ctx, session); err != nil {
+		return "", err
+	}
+	return s.cfg.BaseURL + "/w/" + flow.Token, nil
 }

@@ -172,6 +172,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		MerchantCode:         cfg.InterswitchMerchantCode,
 		PayItemID:            cfg.InterswitchPayItemID,
 		BaseURL:              cfg.InterswitchBaseURL,
+		WalletBaseURL:        cfg.InterswitchMerchantWalletBaseURL,
 		TokenURL:             cfg.InterswitchTokenURL,
 		CheckoutBaseURL:      cfg.InterswitchCheckoutBaseURL,
 		Mode:                 cfg.InterswitchCheckoutMode,
@@ -221,6 +222,9 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		messengers[service.ChannelTikTok] = tiktokClient
 	}
 	paymentService := service.NewPaymentService(cfg, repository, gateways, router, logger)
+	if cfg.InterswitchWalletsEnabled {
+		paymentService.SetCustomerWalletProvider(interswitchClient)
+	}
 	var dataProvider ports.DataProvider
 	switch strings.ToLower(cfg.DataProvider) {
 	case "", "vtpass":
