@@ -145,3 +145,8 @@ input.dp-orig{display:none}
   .admin-main { padding: 20px 12px 50px; }
 }
 
+
+/* hosted fields OTP resend */
+.hf-resend{margin:8px 0 0;font-size:13px;text-align:center}
+.hf-resend-btn{background:none;border:0;padding:0;margin:0;font:inherit;color:var(--green);font-weight:700;cursor:pointer;text-decoration:underline}
+.hf-resend-btn:disabled{color:var(--muted);cursor:not-allowed;text-decoration:none;opacity:.8}

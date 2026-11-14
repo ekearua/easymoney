@@ -35,17 +35,26 @@
   // Codes the gateway returns for an approved charge. Anything else after
   // makePayment means the customer still has to finish the OTP hop.
   var approvedCodes = ['00', '90000', '10'];
+  var otpResendSeconds = 30;
   var instance = null;
   var currentStep = 'details';
+  var otpCountdownTimer = null;
+  var otpCountdownRemaining = 0;
+  var resendInFlight = false;
   var payButton = document.getElementById('pay-button');
   var continueButton = document.getElementById('continue-button');
   var validateButton = document.getElementById('validate-button');
+  var resendOtpButton = document.getElementById('resend-otp-button');
+  var otpCountdownEl = document.getElementById('otp-countdown');
 
   // Horizontal sub-step dots: details → pin → otp inside one page. The dots
   // track the step the customer is ON; a step ahead of the furthest reached
   // stays dimmed so progress only ever moves forward visually.
   function showStep(name) {
     currentStep = name;
+    if (name !== 'otp') {
+      clearOtpCountdown();
+    }
     var order = ['details', 'pin', 'otp'];
     var reached = order.indexOf(name);
     order.forEach(function (step, index) {
@@ -75,6 +84,122 @@
     if (payButton) {
       payButton.disabled = busy;
     }
+  }
+
+  function updateOtpResendUI() {
+    if (!resendOtpButton) {
+      return;
+    }
+    var canResend = currentStep === 'otp' && !resendInFlight && otpCountdownRemaining <= 0;
+    resendOtpButton.disabled = !canResend;
+    if (otpCountdownEl) {
+      if (currentStep !== 'otp') {
+        otpCountdownEl.textContent = '';
+      } else if (otpCountdownRemaining > 0) {
+        otpCountdownEl.textContent = 'Resend in ' + otpCountdownRemaining + 's. ';
+      } else if (resendInFlight) {
+        otpCountdownEl.textContent = 'Sending... ';
+      } else {
+        otpCountdownEl.textContent = 'You can resend now. ';
+      }
+    }
+  }
+
+  function clearOtpCountdown() {
+    if (otpCountdownTimer) {
+      clearInterval(otpCountdownTimer);
+      otpCountdownTimer = null;
+    }
+    otpCountdownRemaining = 0;
+    resendInFlight = false;
+    updateOtpResendUI();
+  }
+
+  function startOtpCountdown() {
+    if (otpCountdownTimer) {
+      clearInterval(otpCountdownTimer);
+      otpCountdownTimer = null;
+    }
+    otpCountdownRemaining = otpResendSeconds;
+    resendInFlight = false;
+    updateOtpResendUI();
+    otpCountdownTimer = setInterval(function () {
+      if (otpCountdownRemaining > 0) {
+        otpCountdownRemaining -= 1;
+      }
+      if (otpCountdownRemaining <= 0) {
+        otpCountdownRemaining = 0;
+        if (otpCountdownTimer) {
+          clearInterval(otpCountdownTimer);
+          otpCountdownTimer = null;
+        }
+      }
+      updateOtpResendUI();
+    }, 1000);
+  }
+
+  function showOtpStep(message) {
+    setMessage(message || 'Enter the OTP sent to your phone, then validate.');
+    showStep('otp');
+    startOtpCountdown();
+  }
+
+  function updateOtpResendUI() {
+    if (!resendOtpButton) {
+      return;
+    }
+    var canResend = currentStep === 'otp' && !resendInFlight && otpCountdownRemaining <= 0;
+    resendOtpButton.disabled = !canResend;
+    if (otpCountdownEl) {
+      if (currentStep !== 'otp') {
+        otpCountdownEl.textContent = '';
+      } else if (otpCountdownRemaining > 0) {
+        otpCountdownEl.textContent = 'Resend in ' + otpCountdownRemaining + 's. ';
+      } else if (resendInFlight) {
+        otpCountdownEl.textContent = '';
+      } else {
+        otpCountdownEl.textContent = 'You can resend now. ';
+      }
+    }
+  }
+
+  function clearOtpCountdown() {
+    if (otpCountdownTimer) {
+      clearInterval(otpCountdownTimer);
+      otpCountdownTimer = null;
+    }
+    otpCountdownRemaining = 0;
+    resendInFlight = false;
+    updateOtpResendUI();
+  }
+
+  function startOtpCountdown() {
+    if (otpCountdownTimer) {
+      clearInterval(otpCountdownTimer);
+      otpCountdownTimer = null;
+    }
+    otpCountdownRemaining = otpResendSeconds;
+    resendInFlight = false;
+    updateOtpResendUI();
+    otpCountdownTimer = setInterval(function () {
+      if (otpCountdownRemaining > 0) {
+        otpCountdownRemaining -= 1;
+      }
+      if (otpCountdownRemaining <= 0) {
+        otpCountdownRemaining = 0;
+        if (otpCountdownTimer) {
+          clearInterval(otpCountdownTimer);
+          otpCountdownTimer = null;
+        }
+      }
+      updateOtpResendUI();
+    }, 1000);
+  }
+
+  function showOtpStep(message) {
+    setMessage(message || 'Enter the OTP sent to your phone, then validate.');
+    showStep('otp');
+    startOtpCountdown();
   }
 
   function approved(response) {
@@ -198,16 +323,14 @@
       return;
     }
     if (response && String(response.responseCode) === 'T0') {
-      setMessage('Enter the OTP sent to your phone, then validate.');
-      showStep('otp');
+      showOtpStep('Enter the OTP sent to your phone, then validate.');
       return;
     }
     if (response && (response.responseCode || response.resp)) {
       backToDetails('Payment was not completed (code ' + (response.responseCode || response.resp) + '). You can try again.');
       return;
     }
-    setMessage('Enter the OTP sent to your phone, then validate.');
-    showStep('otp');
+    showOtpStep('Enter the OTP sent to your phone, then validate.');
   }
 
   function onCreated(createError, hostedFieldsInstance) {
@@ -271,6 +394,23 @@
           instance.validatePayment(finish);
         } catch (err) {
           backToDetails('The payment could not be completed. Please try again.');
+        }
+      });
+    }
+    if (resendOtpButton) {
+      resendOtpButton.addEventListener('click', function () {
+        if (!instance || resendInFlight || otpCountdownRemaining > 0 || currentStep !== 'otp') {
+          return;
+        }
+        resendInFlight = true;
+        updateOtpResendUI();
+        setMessage('Resending OTP to your phone…');
+        try {
+          instance.makePayment(onPayment);
+        } catch (err) {
+          resendInFlight = false;
+          updateOtpResendUI();
+          setMessage(describeServiceError(err, 'Could not resend OTP. Please try again.'));
         }
       });
     }
