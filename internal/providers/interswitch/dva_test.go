@@ -29,13 +29,12 @@ func TestTransferCreatesVirtualAccount(t *testing.T) {
 	})
 
 	client := New(Options{
-		ClientID:        "cid",
-		ClientSecret:    "secret",
-		MerchantCode:    "M1000",
-		PayItemID:       "pi",
-		BaseURL:         srv.URL,
-		TerminalID:      "TD",
-		SourceAccount:   "3012345678",
+		ClientID:     "cid",
+		ClientSecret: "secret",
+		MerchantCode: "M1000",
+		PayItemID:    "pi",
+		BaseURL:      srv.URL,
+		TerminalID:   "TD",
 	})
 	instruction, err := client.Transfer(context.Background(), InitializePaymentFixture())
 	if err != nil {

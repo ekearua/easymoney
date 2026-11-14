@@ -17,7 +17,7 @@
   into the containers below; they must exist before create() runs. */}}
   <div id="details-page">
     <div class="hf-field"><label>Card number</label><div id="cardNumber-container"></div></div>
-    <div class="hf-field"><label>Expiry</label><div id="expiry-container"></div></div>
+    <div class="hf-field"><label>EXP</label><div id="expirationDate-container" class="payment-field"></div></div>
     <div class="hf-field"><label>CVV</label><div id="cvv-container"></div></div>
     <button id="pay-button" type="button">Pay securely</button>
   </div>
@@ -44,7 +44,7 @@
   not double-encode it. Amount must be plain digits: the SDK rejects anything
   else. */}}
   <div id="xego-payment-config" data-config="{{.Page.ConfigJSON}}" hidden></div>
-  <div id="cardinal-container"></div>
+  <div class="cardinal-container" id="cardinal-container"></div>
   <script src="{{.Page.SDKURL}}"></script>
   <script src="/static/hosted_fields.js" defer></script>
   {{if .FlowToken}}<p class="muted">Changed your mind? <a href="/w/{{.FlowToken}}">Change payment method</a>.</p>{{end}}

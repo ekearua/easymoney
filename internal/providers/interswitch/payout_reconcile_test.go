@@ -61,4 +61,10 @@ func TestReconcilePayoutReportsRailVerdict(t *testing.T) {
 	if got.ExternalRef != "PBL|LOC|CA|ABP|AC|260918000000|U4AN48D7" {
 		t.Fatalf("external ref = %q", got.ExternalRef)
 	}
+	if got.AmountKobo != 250000 {
+		t.Fatalf("amount = %d, want %d", got.AmountKobo, 250000)
+	}
+	if got.Currency != "566" {
+		t.Fatalf("currency = %q, want %q", got.Currency, "566")
+	}
 }

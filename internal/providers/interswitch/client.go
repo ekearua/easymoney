@@ -49,13 +49,13 @@ const (
 	liveCheckoutHost = "https://newwebpay.interswitchng.com"
 )
 
-// Transfer (Quickteller Send Money v5) hosts. The v5 transfer, name-enquiry,
-// and query APIs live on their own host (qa.* for the sandbox), distinct from
-// the BaseURL requery host and the checkout host. The docs list only the QA
-// host; LIVE uses the production quicktellerservice host, which lives behind
-// Options.TransferBaseURL when a deployment needs a proxy.
+// Quickteller Service v5 hosts (transfers, name-enquiry, airtime/data recharge,
+// and related transactions) live on their own host, distinct from the API/requery
+// and checkout hosts. TEST uses the QA host; LIVE defaults to the documented
+// production host unless overridden via Options.TransferBaseURL.
 const (
 	testTransferHost = "https://qa.interswitchng.com/quicktellerservice/api/v5"
+	liveTransferHost = "https://interswitchng.com/quicktellerservice/api/v5"
 )
 
 // OAuth token (Passport) hosts. The legacy sandbox API host refuses Basic
@@ -65,8 +65,9 @@ const (
 // separate passport host, and any non-sandbox BaseURL (proxies, test
 // servers) keeps deriving the token URL from its own host.
 const (
-	testTokenHost   = "https://passport-sandbox.interswitchng.com"
-	sandboxAPIHost  = "https://sandbox.interswitchng.com"
+	testTokenHost      = "https://passport-sandbox.interswitchng.com"
+	sandboxAPIHost     = "https://sandbox.interswitchng.com"
+	merchantWalletHost = "https://merchant-wallet.k8.isw.la/merchant-wallet"
 )
 
 // Client integrates with Interswitch Web Checkout hosted checkout, server
@@ -74,45 +75,45 @@ const (
 // an OAuth TokenManager so direct API endpoints (virtual accounts, transfer,
 // refunds, VTU) can use a Bearer token.
 type Client struct {
-	clientID        string
-	clientSecret    string
-	webhookSecret   string
-	merchantCode    string
-	payItemID       string
-	baseURL         string
-	checkoutBaseURL string
-	transferBaseURL string
-	mode            string
+	clientID             string
+	clientSecret         string
+	webhookSecret        string
+	merchantCode         string
+	payItemID            string
+	baseURL              string
+	walletBaseURL        string
+	checkoutBaseURL      string
+	transferBaseURL      string
+	mode                 string
 	configuredTerminalID string
-	sourceAccount   string
-	hostedFieldsSDKURL string
-	senderLastname  string
-	senderOthernames string
-	senderPhone     string
-	senderEmail     string
+	hostedFieldsSDKURL   string
+	senderLastname       string
+	senderOthernames     string
+	senderPhone          string
+	senderEmail          string
 	initiatingEntityCode string
-	token           *TokenManager
-	http            *http.Client
+	token                *TokenManager
+	http                 *http.Client
 }
 
 // Options configures an Interswitch Web Checkout client.
 type Options struct {
-	ClientID        string
-	ClientSecret    string
-	WebhookSecret   string
-	MerchantCode    string
-	PayItemID       string
-	BaseURL         string // API/requery host (gettransaction.json)
-	CheckoutBaseURL string // optional; host that renders the payment page
-	TransferBaseURL string // optional; Quickteller Send Money v5 host (payout/name-enquiry/query)
-	Mode            string // "TEST" or "LIVE"
-	TokenURL        string // optional; defaults to BaseURL + /passport/oauth/token
-	TerminalID      string // optional; terminal id used when the token response omits one
-	SourceAccount   string // optional; funding account for NIP transfers
-	HostedFieldsSDKURL string // optional; overrides the SDK script loaded by the Hosted Fields page
-	SenderName      string // optional; transfer sender name (defaults to "Xego")
-	SenderPhone     string // optional; transfer sender phone
-	SenderEmail     string // optional; transfer sender email
+	ClientID             string
+	ClientSecret         string
+	WebhookSecret        string
+	MerchantCode         string
+	PayItemID            string
+	BaseURL              string // API/requery host (gettransaction.json)
+	WalletBaseURL        string // Merchant Wallet API base URL
+	CheckoutBaseURL      string // optional; host that renders the payment page
+	TransferBaseURL      string // optional; Quickteller Send Money v5 host (payout/name-enquiry/query)
+	Mode                 string // "TEST" or "LIVE"
+	TokenURL             string // optional; defaults to BaseURL + /passport/oauth/token
+	TerminalID           string // optional; terminal id used when the token response omits one
+	HostedFieldsSDKURL   string // optional; overrides the SDK script loaded by the Hosted Fields page
+	SenderName           string // optional; transfer sender name (defaults to "Xego")
+	SenderPhone          string // optional; transfer sender phone
+	SenderEmail          string // optional; transfer sender email
 	InitiatingEntityCode string // optional; v5 TransferFunds initiatingEntityCode (defaults to "PBL")
 }
 
@@ -135,12 +136,17 @@ func New(o Options) *Client {
 	}
 	transferBase := strings.TrimRight(o.TransferBaseURL, "/")
 	if transferBase == "" {
-		// Pays out through the documented Quickteller Send Money v5 sandbox
-		// host in TEST. LIVE has no documented default that can be trusted:
-		// point Options.TransferBaseURL at the provisioned production host.
-		transferBase = testTransferHost
+		if mode == "LIVE" {
+			transferBase = liveTransferHost
+		} else {
+			transferBase = testTransferHost
+		}
 	}
 	baseURL := strings.TrimRight(o.BaseURL, "/")
+	walletBaseURL := strings.TrimRight(strings.TrimSpace(o.WalletBaseURL), "/")
+	if walletBaseURL == "" {
+		walletBaseURL = merchantWalletHost
+	}
 	tokenURL := strings.TrimRight(o.TokenURL, "/")
 	if tokenURL == "" {
 		// The sandbox API host cannot mint tokens; redirect to passport-sandbox.
@@ -152,19 +158,19 @@ func New(o Options) *Client {
 		}
 	}
 	c := &Client{
-		clientID:        o.ClientID,
-		clientSecret:    o.ClientSecret,
-		webhookSecret:   o.WebhookSecret,
-		merchantCode:    o.MerchantCode,
-		payItemID:       o.PayItemID,
-		baseURL:         baseURL,
-		checkoutBaseURL: checkoutBase,
-		transferBaseURL: transferBase,
-		mode:            mode,
+		clientID:             o.ClientID,
+		clientSecret:         o.ClientSecret,
+		webhookSecret:        o.WebhookSecret,
+		merchantCode:         o.MerchantCode,
+		payItemID:            o.PayItemID,
+		baseURL:              baseURL,
+		walletBaseURL:        walletBaseURL,
+		checkoutBaseURL:      checkoutBase,
+		transferBaseURL:      transferBase,
+		mode:                 mode,
 		configuredTerminalID: strings.TrimSpace(o.TerminalID),
-		sourceAccount:   strings.TrimSpace(o.SourceAccount),
-		hostedFieldsSDKURL: strings.TrimSpace(o.HostedFieldsSDKURL),
-		http:            &http.Client{Timeout: 15 * time.Second},
+		hostedFieldsSDKURL:   strings.TrimSpace(o.HostedFieldsSDKURL),
+		http:                 &http.Client{Timeout: 15 * time.Second},
 	}
 	senderLast, senderOther := splitName(strings.TrimSpace(o.SenderName))
 	if senderLast == "" {
@@ -185,15 +191,15 @@ func New(o Options) *Client {
 // PayPage carries the data needed to render the Interswitch Web Checkout
 // redirect form on a platform-hosted page.
 type PayPage struct {
-	Action        string
-	MerchantCode  string
-	PayItemID     string
-	TxnRef        string
-	Amount        int64
-	Currency      string
-	CustomerEmail string
+	Action          string
+	MerchantCode    string
+	PayItemID       string
+	TxnRef          string
+	Amount          int64
+	Currency        string
+	CustomerEmail   string
 	SiteRedirectURL string
-	Mode          string
+	Mode            string
 }
 
 // PayPageURL returns the platform-hosted page that renders and submits the
@@ -239,15 +245,15 @@ func (c *Client) Initialize(ctx context.Context, input ports.InitializePayment) 
 // RequeryResponse is the normalized payload returned by the Interswitch
 // gettransaction requery endpoint.
 type requeryResponse struct {
-	Amount                    int64  `json:"Amount"`
-	CardNumber                string `json:"CardNumber"`
-	MerchantReference         string `json:"MerchantReference"`
-	PaymentReference          string `json:"PaymentReference"`
-	RetrievalReferenceNumber  string `json:"RetrievalReferenceNumber"`
-	TransactionDate           string `json:"TransactionDate"`
-	ResponseCode              string `json:"ResponseCode"`
-	ResponseDescription       string `json:"ResponseDescription"`
-	AccountNumber             string `json:"AccountNumber"`
+	Amount                   int64  `json:"Amount"`
+	CardNumber               string `json:"CardNumber"`
+	MerchantReference        string `json:"MerchantReference"`
+	PaymentReference         string `json:"PaymentReference"`
+	RetrievalReferenceNumber string `json:"RetrievalReferenceNumber"`
+	TransactionDate          string `json:"TransactionDate"`
+	ResponseCode             string `json:"ResponseCode"`
+	ResponseDescription      string `json:"ResponseDescription"`
+	AccountNumber            string `json:"AccountNumber"`
 }
 
 // Verify confirms the status of a transaction using the Interswitch
@@ -430,53 +436,53 @@ func interswitchStatus(code string) (status, message string) {
 // description helps the payer fix the problem. Codes not listed here still fail
 // with the generic bank-decline message.
 var interswitchDeclines = map[string]string{
-	"04":  "Card blocked by the issuer, please contact your bank",
-	"14":  "Invalid card number",
-	"33":  "Card expired and blocked, please contact your bank",
-	"34":  "Card blocked after a suspected fraud report",
-	"36":  "Restricted card",
-	"38":  "Incorrect PIN entered too many times, card blocked",
-	"41":  "Card reported lost",
-	"43":  "Card reported stolen",
-	"51":  "Insufficient funds",
-	"54":  "Card has expired",
-	"55":  "Incorrect PIN",
-	"57":  "Transaction not permitted on this card",
-	"58":  "Transaction not permitted on this terminal",
-	"59":  "Suspected fraud, transaction declined",
-	"61":  "Withdrawal limit exceeded",
-	"62":  "Card is restricted",
-	"63":  "Security violation",
-	"65":  "Too many transactions, please try again later",
-	"75":  "Incorrect PIN entered too many times",
-	"91":  "Your bank is unavailable, please try again later",
-	"94":  "Duplicate transaction",
-	"96":  "Bank system error, please try again later",
-	"98":  "Cash limit exceeded",
-	"A0":  "Unexpected error, please try again",
-	"A4":  "Transaction not permitted on this channel",
-	"E21": "Payment could not be processed, please try again",
-	"E42": "Payment could not be processed, please try again",
-	"E53": "Payment could not be processed, please try again",
-	"E60": "Payment could not be processed, please try again",
-	"SK":  "Payment could not be processed, please try again",
-	"S3":  "Transaction declined by the fraud service",
-	"XX":  "Payment could not be processed, please try again",
-	"X03": "Amount exceeds the maximum allowed",
-	"X04": "Amount is below the minimum for this payment item",
-	"X05": "Amount exceeds the limit permitted by your bank",
-	"XS1": "Transaction timed out, please start a new payment",
-	"Z1":  "Payment could not be processed, please try again",
-	"Z2":  "Bank account error",
-	"Z3":  "Bank account error",
-	"Z4":  "Payment could not be processed, please try again",
-	"Z5":  "Duplicate payment reference, please start a new payment",
-	"Z7":  "Payment could not be processed, please try again",
-	"Z8":  "Invalid card number",
-	"Z25": "Transaction not found",
-	"Z80": "Payment could not be processed, please try again",
-	"Z81": "This card type is not supported",
-	"Z82": "This card type is not supported by the merchant",
+	"04":    "Card blocked by the issuer, please contact your bank",
+	"14":    "Invalid card number",
+	"33":    "Card expired and blocked, please contact your bank",
+	"34":    "Card blocked after a suspected fraud report",
+	"36":    "Restricted card",
+	"38":    "Incorrect PIN entered too many times, card blocked",
+	"41":    "Card reported lost",
+	"43":    "Card reported stolen",
+	"51":    "Insufficient funds",
+	"54":    "Card has expired",
+	"55":    "Incorrect PIN",
+	"57":    "Transaction not permitted on this card",
+	"58":    "Transaction not permitted on this terminal",
+	"59":    "Suspected fraud, transaction declined",
+	"61":    "Withdrawal limit exceeded",
+	"62":    "Card is restricted",
+	"63":    "Security violation",
+	"65":    "Too many transactions, please try again later",
+	"75":    "Incorrect PIN entered too many times",
+	"91":    "Your bank is unavailable, please try again later",
+	"94":    "Duplicate transaction",
+	"96":    "Bank system error, please try again later",
+	"98":    "Cash limit exceeded",
+	"A0":    "Unexpected error, please try again",
+	"A4":    "Transaction not permitted on this channel",
+	"E21":   "Payment could not be processed, please try again",
+	"E42":   "Payment could not be processed, please try again",
+	"E53":   "Payment could not be processed, please try again",
+	"E60":   "Payment could not be processed, please try again",
+	"SK":    "Payment could not be processed, please try again",
+	"S3":    "Transaction declined by the fraud service",
+	"XX":    "Payment could not be processed, please try again",
+	"X03":   "Amount exceeds the maximum allowed",
+	"X04":   "Amount is below the minimum for this payment item",
+	"X05":   "Amount exceeds the limit permitted by your bank",
+	"XS1":   "Transaction timed out, please start a new payment",
+	"Z1":    "Payment could not be processed, please try again",
+	"Z2":    "Bank account error",
+	"Z3":    "Bank account error",
+	"Z4":    "Payment could not be processed, please try again",
+	"Z5":    "Duplicate payment reference, please start a new payment",
+	"Z7":    "Payment could not be processed, please try again",
+	"Z8":    "Invalid card number",
+	"Z25":   "Transaction not found",
+	"Z80":   "Payment could not be processed, please try again",
+	"Z81":   "This card type is not supported",
+	"Z82":   "This card type is not supported by the merchant",
 	"10400": "Payment request was rejected, please try again",
 	"10403": "Payment request was not permitted",
 	"10500": "Payment service error, please try again later",

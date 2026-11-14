@@ -30,24 +30,18 @@ type HostedFieldsPage struct {
 
 // HostedFieldsSDKURL is the URL of the Interswitch Hosted Fields SDK loaded
 // by the card page. An explicit Options.HostedFieldsSDKURL (the
-// INTERSWITCH_HOSTED_FIELDS_SDK_URL env var) always wins so operators can
-// point at a working sandbox SDK origin without rebuilding; otherwise both
-// modes load the live URL. The SDK's field iframes always mount from
-// hostedfields.interswitchng.com — the documented QA SDK host
-// (hostedifelds.qa…) neither resolves in DNS nor completes a TLS handshake
-// from any network we tested, and the QA origin never served the SDK, which
-// left the payment page without any secure fields. Loading the LIVE SDK URL
-// for both modes keeps the frame origin consistent (and therefore the CSP
-// simple); the mode only governs the payment parameters sent to the charge
-// endpoint.
+// INTERSWITCH_HOSTED_FIELDS_SDK_URL env var) always wins. Otherwise the URL
+// follows the documented per-mode hosts: test uses the QA SDK URL and live uses
+// the production SDK URL.
 func (c *Client) HostedFieldsSDKURL() string {
 	if c.hostedFieldsSDKURL != "" {
 		return c.hostedFieldsSDKURL
 	}
-	return "https://hostedfields.interswitchng.com/sdk.js"
-}
-
-// NewHostedFieldsPage builds the configuration for one credit/debit card
+	if strings.EqualFold(c.mode, "LIVE") {
+		return "https://hostedfields.interswitchng.com/sdk.js"
+	}
+	return "https://hostedifelds.qa.interswitchng.com/sdk.js"
+} // NewHostedFieldsPage builds the configuration for one credit/debit card
 // checkout rendered through the Hosted Fields SDK. redirectURL is where the
 // SDK sends the browser after the payment attempt.
 func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, redirectURL string) HostedFieldsPage {
@@ -62,27 +56,26 @@ func (c *Client) NewHostedFieldsPage(reference, email string, amountKobo int64, 
 	// cardNumber/expirationDate/cvv/pin/otp, each pointing at an existing node.
 	config := map[string]any{
 		"paymentParameters": map[string]any{
-			"amount":               amountKobo, // plain digits; the SDK rejects other forms
+			"amount":               amountKobo, // amount in minor
 			"currencyCode":         NGN,
 			"merchantCode":         c.merchantCode,
 			"payableCode":          c.payItemID,
 			"transactionReference": reference,
 			"merchantCustomerId":   reference,
 			"merchantCustomerName": customerName,
-			// The SDK documents dateOfPayment as YYYY-MM-DDTHH:mm:ss; a space
-			// separator makes the gateway reject the signed parameters before
-			// any PIN is collected (response code Z1, "Transaction Error").
-			"dateOfPayment": time.Now().Format("2006-01-02T15:04:05"),
-			"redirectURL":   redirectURL + "?reference=" + reference,
+			"dateOfPayment":        time.Now().Format("2006-01-02T15:04:05"),
+			"redirectURL":          redirectURL + "?reference=" + reference,
 		},
 		"cardinal": map[string]any{
-			"containerSelector": "#cardinal-container",
-		}, "fields": map[string]any{
-			"cardNumber":     hostedField("#cardNumber-container", "0000 0000 0000 0000"),
-			"expirationDate": hostedField("#expiry-container", "MM/YY"),
-			"cvv":            hostedField("#cvv-container", "CVV"),
-			"pin":            hostedField("#pin-container", "PIN"),
-			"otp":            hostedField("#otp-container", "OTP"),
+			"containerSelector": ".cardinal-container",
+			"activeClass":       "show",
+		},
+		"fields": map[string]any{
+			"cardNumber":     hostedField("#cardNumber-container", "****  ****  ****  ****"),
+			"expirationDate": hostedField("#expirationDate-container", "MM / YY"),
+			"cvv":            hostedField("#cvv-container", "***"),
+			"pin":            hostedField("#pin-container", "* * * *"),
+			"otp":            hostedField("#otp-container", "* * * * * *"),
 		},
 	}
 	raw, err := json.Marshal(config)

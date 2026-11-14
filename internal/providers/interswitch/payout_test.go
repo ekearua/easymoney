@@ -163,14 +163,17 @@ func TestPayoutMissingDestinationAccount(t *testing.T) {
 func TestNameEnquirySuccess(t *testing.T) {
 	t.Parallel()
 	srv := newAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != nameEnquiryPath || r.Method != http.MethodGet {
+		if r.URL.Path != nameEnquiryPath || r.Method != http.MethodPost {
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		if got := r.Header.Get("bankCode"); got != "044" {
-			t.Fatalf("bankCode header = %q", got)
+		if got := r.Header.Get("bankcode"); got != "044" {
+			t.Fatalf("bankcode header = %q", got)
 		}
-		if got := r.Header.Get("accountId"); got != "0730804844" {
-			t.Fatalf("accountId header = %q", got)
+		if got := r.Header.Get("accountid"); got != "0730804844" {
+			t.Fatalf("accountid header = %q", got)
+		}
+		if got := r.Header.Get("TerminalID"); got == "" {
+			t.Fatal("TerminalID header is required")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"AccountName":"VICTOR ADEKUNLE ODEBODE","ResponseCode":"90000","ResponseCodeGrouping":"SUCCESSFUL"}`))
@@ -226,6 +229,12 @@ func TestGetBankCodes(t *testing.T) {
 	srv := newAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != bankCodesPath || r.Method != http.MethodGet {
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "InterswitchAuth ") {
+			t.Fatalf("Authorization = %q, want InterswitchAuth", got)
+		}
+		if r.Header.Get("Signature") == "" || r.Header.Get("Timestamp") == "" || r.Header.Get("Nonce") == "" || r.Header.Get("SignatureMethod") != "SHA1" {
+			t.Fatalf("missing legacy auth headers: %+v", r.Header)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"banks":[{"id":"31","cbnCode":"044","bankName":"Access Bank Nigeria Plc","bankCode":"ABP"},{"id":"10","cbnCode":"058","bankName":"Guaranty Trust Bank Plc","bankCode":"GTB"}]}`))

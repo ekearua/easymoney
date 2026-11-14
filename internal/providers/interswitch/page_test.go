@@ -45,6 +45,7 @@ func TestHostedFieldsPageFieldConfigIsMountable(t *testing.T) {
 		PaymentParameters map[string]any `json:"paymentParameters"`
 		Cardinal          struct {
 			ContainerSelector string `json:"containerSelector"`
+			ActiveClass       string `json:"activeClass"`
 		} `json:"cardinal"`
 		Fields map[string]struct {
 			Selector    string         `json:"selector"`
@@ -74,8 +75,11 @@ func TestHostedFieldsPageFieldConfigIsMountable(t *testing.T) {
 		}
 	}
 
-	if config.Cardinal.ContainerSelector != "#cardinal-container" {
-		t.Fatalf("cardinal containerSelector = %q, want #cardinal-container", config.Cardinal.ContainerSelector)
+	if config.Cardinal.ContainerSelector != ".cardinal-container" {
+		t.Fatalf("cardinal containerSelector = %q, want .cardinal-container", config.Cardinal.ContainerSelector)
+	}
+	if config.Cardinal.ActiveClass != "show" {
+		t.Fatalf("cardinal activeClass = %q, want show", config.Cardinal.ActiveClass)
 	}
 	for _, key := range []string{"amount", "currencyCode", "merchantCode", "payableCode", "transactionReference", "redirectURL"} {
 		if _, ok := config.PaymentParameters[key]; !ok {
@@ -86,16 +90,13 @@ func TestHostedFieldsPageFieldConfigIsMountable(t *testing.T) {
 
 func TestHostedFieldsSDKURL(t *testing.T) {
 	t.Parallel()
-	// Both modes load the SDK from hostedfields.interswitchng.com: the SDK's
-	// field iframes always mount from that origin, while the documented QA
-	// SDK host neither resolves nor completes a TLS handshake (see
-	// HostedFieldsSDKURL). The mode only changes the payment parameters, and
-	// an explicit Options.HostedFieldsSDKURL override always wins.
-	for _, mode := range []string{"TEST", "LIVE"} {
-		client := New(Options{BaseURL: "http://localhost", Mode: mode})
-		if url := client.HostedFieldsSDKURL(); url != "https://hostedfields.interswitchng.com/sdk.js" {
-			t.Fatalf("%s SDK URL = %q, want https://hostedfields.interswitchng.com/sdk.js", mode, url)
-		}
+	testClient := New(Options{BaseURL: "http://localhost", Mode: "TEST"})
+	if url := testClient.HostedFieldsSDKURL(); url != "https://hostedifelds.qa.interswitchng.com/sdk.js" {
+		t.Fatalf("TEST SDK URL = %q, want https://hostedifelds.qa.interswitchng.com/sdk.js", url)
+	}
+	liveClient := New(Options{BaseURL: "http://localhost", Mode: "LIVE"})
+	if url := liveClient.HostedFieldsSDKURL(); url != "https://hostedfields.interswitchng.com/sdk.js" {
+		t.Fatalf("LIVE SDK URL = %q, want https://hostedfields.interswitchng.com/sdk.js", url)
 	}
 	override := New(Options{BaseURL: "http://localhost", Mode: "TEST", HostedFieldsSDKURL: "https://sdk.example.test/sdk.js"})
 	if url := override.HostedFieldsSDKURL(); url != "https://sdk.example.test/sdk.js" {

@@ -23,6 +23,30 @@ func (c *Client) doAuthorized(ctx context.Context, method, path string, payload,
 	return c.doAuthorizedOn(ctx, c.baseURL, method, path, payload, target)
 }
 
+// doAuthorizedRaw performs one authorized request against the API baseURL and
+// returns the raw response body.
+func (c *Client) doAuthorizedRaw(ctx context.Context, method, path string, payload any) ([]byte, error) {
+	token, err := c.token.AccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; ; attempt++ {
+		raw, err := c.doWithTokenOn(ctx, c.baseURL, method, path, payload, token)
+		if err == nil {
+			return raw, nil
+		}
+		if errors.Is(err, errUnauthorized) && attempt == 0 {
+			c.token.Invalidate()
+			token, err = c.token.AccessToken(ctx)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		return nil, err
+	}
+}
+
 // doAuthorizedOn is doAuthorized against an explicit API host (e.g. the
 // Quickteller Send Money v5 host that backs transfers, distinct from the
 // requery base URL).

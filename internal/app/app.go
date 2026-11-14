@@ -177,7 +177,6 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 		CheckoutBaseURL:      cfg.InterswitchCheckoutBaseURL,
 		Mode:                 cfg.InterswitchCheckoutMode,
 		TerminalID:           cfg.InterswitchTerminalID,
-		SourceAccount:        cfg.InterswitchSourceAccount,
 		HostedFieldsSDKURL:   cfg.InterswitchHostedFieldsSDKURL,
 		TransferBaseURL:      cfg.InterswitchTransferBaseURL,
 		SenderName:           cfg.InterswitchSenderName,
@@ -449,7 +448,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*App, err
 			}
 			return meta.CollectionFeeKobo
 		},
-		"join": func(items []string, sep string) string { return strings.Join(items, sep) },
+		"join":      func(items []string, sep string) string { return strings.Join(items, sep) },
 		"hasPrefix": func(s, prefix string) bool { return strings.HasPrefix(s, prefix) },
 		"date": func(t any) string {
 			switch v := t.(type) {

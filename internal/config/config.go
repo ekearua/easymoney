@@ -57,21 +57,20 @@ type Config struct {
 	InterswitchMerchantCode          string
 	InterswitchPayItemID             string
 	InterswitchBaseURL               string // API/requery host (gettransaction.json)
-	InterswitchMerchantWalletBaseURL string // Merchant Wallet API base URL
+	InterswitchMerchantWalletBaseURL string // Merchant Wallet API base URL (defaults to the hosted merchant-wallet service)
 	InterswitchWalletsEnabled        bool   // provisions Interswitch customer wallets during browser onboarding
-	InterswitchTokenURL              string // optional; OAuth token issuer (defaults to BaseURL's passport host)
-	InterswitchCheckoutBaseURL       string // optional; hosted payment-page host (defaults per mode)
-	InterswitchCheckoutMode          string
+	InterswitchTokenURL              string // optional; OAuth token issuer (derived from BaseURL/passport host by default)
+	InterswitchCheckoutBaseURL       string // optional; hosted payment-page host (defaults per checkout mode)
+	InterswitchCheckoutMode          string // "TEST" or "LIVE"; defaults to LIVE in production, TEST otherwise
 	InterswitchInlineCheckout        bool
-	InterswitchTransferBaseURL       string // optional; Quickteller Send Money v5 host for payouts/name-enquiry/query
+	InterswitchTransferBaseURL       string // optional; Quickteller Service v5 host for transfers/payouts/name-enquiry and VTU (defaults per mode)
 	InterswitchSenderName            string // optional; name shown as the transfer sender
 	InterswitchSenderPhone           string // optional; sender phone on the transfer
 	InterswitchSenderEmail           string // optional; sender email on the transfer
 	InterswitchInitiatingEntityCode  string // optional; initiatingEntityCode on v5 TransferFunds (defaults to "PBL")
-	InterswitchHostedFieldsSDKURL    string // optional; SDK script override for the Hosted Fields card page
+	InterswitchHostedFieldsSDKURL    string // optional; SDK script override for the Hosted Fields card page (defaults per mode)
 	InterswitchWebhookSecret         string
-	InterswitchTerminalID            string // fallback TerminalId for quickteller v5 calls
-	InterswitchSourceAccount         string // funding account for NIP transfers and VTU
+	InterswitchTerminalID            string // fallback TerminalId for Quickteller v5 calls
 	InterswitchCheckoutRender        string // "hosted_fields" (default) or "legacy" redirect form
 
 	// BankTransferMode selects how bank-transfer payments are collected:
@@ -579,7 +578,6 @@ func Load() (Config, error) {
 		InterswitchHostedFieldsSDKURL:    strings.TrimSpace(os.Getenv("INTERSWITCH_HOSTED_FIELDS_SDK_URL")),
 		InterswitchWebhookSecret:         os.Getenv("INTERSWITCH_WEBHOOK_SECRET"),
 		InterswitchTerminalID:            strings.TrimSpace(os.Getenv("INTERSWITCH_TERMINAL_ID")),
-		InterswitchSourceAccount:         strings.TrimSpace(os.Getenv("INTERSWITCH_SOURCE_ACCOUNT")),
 		InterswitchCheckoutRender:        strings.ToLower(env("INTERSWITCH_CHECKOUT_RENDER", "hosted_fields")),
 		BankTransferMode:                 strings.ToLower(env("BANK_TRANSFER_MODE", "interswitch")),
 		PayoutProvider:                   strings.ToLower(env("PAYOUT_PROVIDER", "interswitch")),
@@ -804,6 +802,13 @@ func Load() (Config, error) {
 		CardRequestPickupTTL: envDuration("CARD_REQUEST_PICKUP_TTL", 30*24*time.Hour),
 
 		AuthSessionTTL: envDuration("AUTH_SESSION_TTL", 12*time.Hour),
+	}
+	if cfg.InterswitchCheckoutMode == "" {
+		if strings.EqualFold(cfg.Environment, "production") {
+			cfg.InterswitchCheckoutMode = "LIVE"
+		} else {
+			cfg.InterswitchCheckoutMode = "TEST"
+		}
 	}
 	if raw := os.Getenv("INVOICE_ACCEPTED_NUMBERS"); raw != "" {
 		for _, s := range strings.Split(raw, ",") {
@@ -1207,14 +1212,8 @@ func validateProductionRails(cfg Config) error {
 	if cfg.DojahMatchThreshold < 0 || cfg.DojahMatchThreshold > 1 {
 		return fmt.Errorf("DOJAH_MATCH_THRESHOLD must be between 0 and 1, got %g", cfg.DojahMatchThreshold)
 	}
-	if strings.EqualFold(cfg.PayoutProvider, "interswitch") || strings.EqualFold(cfg.RefundProvider, "interswitch") {
-		if cfg.InterswitchTransferBaseURL == "" {
-			return errors.New("INTERSWITCH_TRANSFER_BASE_URL is required when payout or refund uses interswitch in production")
-		}
-		if cfg.InterswitchSourceAccount == "" {
-			return errors.New("INTERSWITCH_SOURCE_ACCOUNT is required when payout or refund uses interswitch in production")
-		}
-	}
+	// Payout/refund rails use the configured Quickteller/Interswitch credentials
+	// and per-mode defaults; no additional source-account env var is required here.
 	return nil
 }
 

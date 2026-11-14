@@ -24,7 +24,7 @@ func TestRefundSuccess(t *testing.T) {
 		})
 	})
 
-	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD", SourceAccount: "301"})
+	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD"})
 	result, err := client.Refund(context.Background(), ports.RefundRequest{
 		PaymentID:         "parent-ref",
 		PaymentAmountKobo: 50_000,
@@ -50,7 +50,7 @@ func TestRefundPartialAmountUsesPartType(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(refundResponse{ResponseCode: "Z0", RefundReference: "R"})
 	})
 
-	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD", SourceAccount: "301"})
+	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD"})
 	_, err := client.Refund(context.Background(), ports.RefundRequest{
 		PaymentID:         "p1",
 		PaymentAmountKobo: 100_000,
@@ -75,7 +75,7 @@ func TestRefundDeclined(t *testing.T) {
 		})
 	})
 
-	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD", SourceAccount: "301"})
+	client := New(Options{ClientID: "c", ClientSecret: "s", BaseURL: srv.URL, TerminalID: "TD"})
 	result, err := client.Refund(context.Background(), ports.RefundRequest{PaymentID: "p", AmountKobo: 5000, Currency: "NGN"})
 	if err != nil {
 		t.Fatal(err)

@@ -6,22 +6,26 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"whatsapp-payment-demo/internal/ports"
 )
 
-// Quickteller Send Money v5 rail paths, all relative to the transfer host.
+// Quickteller Send Money v5 rail paths, relative to the Quickteller/transfer host.
 const (
 	transferPath    = "/transactions/TransferFunds"
-	nameEnquiryPath = "/transactions/DoAccountNameInquiry"
+	nameEnquiryPath = "/Transactions/DoAccountNameInquiry"
 	queryPath       = "/Transactions"
-	bankCodesPath   = "/configuration/fundstransferbanks"
 )
+
+// Bank-codes directory path on the API host (legacy InterswitchAuth endpoint).
+const bankCodesPath = "/api/v2/quickteller/configuration/fundstransferbanks"
 
 // Payment method codes used by the v5 Send Money wire. The initiator pays with
 // method "CA" (card/account) and the beneficiary is credited with "AC"
@@ -41,11 +45,6 @@ const defaultSenderName = "Xego"
 // sendMoneyMAC computes the message authentication code the v5 TransferFunds
 // rail requires: the SHA-512 digest of the seven concatenated initiation +
 // termination fields, hex-encoded.
-//
-//	mac = sha512(initiatingAmount + initiatingCurrencyCode +
-//	             initiatingPaymentMethodCode + terminatingAmount +
-//	             terminatingCurrencyCode + terminatingPaymentMethodCode +
-//	             terminatingCountryCode)
 func sendMoneyMAC(amountKobo int64) string {
 	amount := strconv.FormatInt(amountKobo, 10)
 	canonical := amount + NGN + initiationPaymentMethod +
@@ -65,12 +64,12 @@ type transferRequest struct {
 }
 
 type termination struct {
-	Amount            string   `json:"amount"`
+	Amount            string     `json:"amount"`
 	AccountReceivable receivable `json:"accountReceivable"`
-	EntityCode        string   `json:"entityCode"`
-	CurrencyCode      string   `json:"currencyCode"`
-	PaymentMethodCode string   `json:"paymentMethodCode"`
-	CountryCode       string   `json:"countryCode"`
+	EntityCode        string     `json:"entityCode"`
+	CurrencyCode      string     `json:"currencyCode"`
+	PaymentMethodCode string     `json:"paymentMethodCode"`
+	CountryCode       string     `json:"countryCode"`
 }
 
 type receivable struct {
@@ -97,8 +96,6 @@ type beneficiary struct {
 	Othernames string `json:"othernames"`
 }
 
-// transferResponse matches the v5 TransferFunds response. ResponseCode 90000
-// (grouping "SUCCESSFUL") means the transfer was accepted by the NIP rail.
 type transferResponse struct {
 	MAC                  string `json:"MAC"`
 	TransactionDate      string `json:"TransactionDate"`
@@ -110,10 +107,7 @@ type transferResponse struct {
 }
 
 // Payout pushes funds out through the Quickteller Send Money v5 single
-// transfer (NIP) rail. Request.TransferCode is the idempotency key; Interswitch
-// processes a given transfer code exactly once, matching the settlement
-// dispatch contract. A 90000/SUCCESSFUL response means the transfer was
-// accepted by the NIP rail.
+// transfer (NIP) rail. Request.Reference is the idempotency key (transferCode).
 func (c *Client) Payout(ctx context.Context, request ports.PayoutRequest) (ports.PayoutResult, error) {
 	accountNumber := strings.TrimSpace(request.AccountNumber)
 	bankCode := strings.TrimSpace(request.BankCode)
@@ -162,8 +156,6 @@ func (c *Client) Payout(ctx context.Context, request ports.PayoutRequest) (ports
 	}
 	code := strings.TrimSpace(resp.ResponseCode)
 	if code != "90000" {
-		// The circuit-breaker code means the beneficiary bank is down; the
-		// payout should be re-attempted later, not marked failed.
 		if code == "70120" {
 			return ports.PayoutResult{}, ports.ErrPayoutPending
 		}
@@ -187,23 +179,23 @@ func (c *Client) Payout(ctx context.Context, request ports.PayoutRequest) (ports
 	}, nil
 }
 
-// NameEnquiry validates the destination account and returns the account name
-// Interswitch holds for it. accountNumber is the NUBAN account, bankCode its
-// CBN bank code.
+// NameEnquiry validates the destination account and returns the account name.
+// Uses Quickteller v5 DoAccountNameInquiry (POST) with TerminalID/accountid/bankcode.
 func (c *Client) NameEnquiry(ctx context.Context, accountNumber, bankCode string) (string, error) {
 	token, err := c.token.AccessToken(ctx)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.transferBaseURL+nameEnquiryPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.transferBaseURL+nameEnquiryPath, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("TerminalId", c.terminalID())
-	req.Header.Set("bankCode", strings.TrimSpace(bankCode))
-	req.Header.Set("accountId", strings.TrimSpace(accountNumber))
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("TerminalID", c.terminalID())
+	req.Header.Set("accountid", strings.TrimSpace(accountNumber))
+	req.Header.Set("bankcode", strings.TrimSpace(bankCode))
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return "", err
@@ -213,12 +205,12 @@ func (c *Client) NameEnquiry(ctx context.Context, accountNumber, bankCode string
 	if err != nil {
 		return "", err
 	}
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", &nameEnquiryError{StatusCode: resp.StatusCode, Body: truncate(string(raw))}
 	}
 	var data struct {
-		AccountName         string `json:"AccountName"`
-		ResponseCode        string `json:"ResponseCode"`
+		AccountName          string `json:"AccountName"`
+		ResponseCode         string `json:"ResponseCode"`
 		ResponseCodeGrouping string `json:"ResponseCodeGrouping"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
@@ -234,8 +226,6 @@ func (c *Client) NameEnquiry(ctx context.Context, accountNumber, bankCode string
 	return accountName, nil
 }
 
-// nameEnquiryError reports a failed account validation distinctly from a
-// network failure so callers can surface "account not found" to the customer.
 type nameEnquiryError struct {
 	StatusCode   int
 	ResponseCode string
@@ -254,10 +244,7 @@ func (e *nameEnquiryError) Error() string {
 }
 
 // ReconcilePayout reports what the v5 rail says actually happened to the
-// transfer identified by reference (the payout Request.Reference, sent to the
-// rail as transferCode). It is used after an ambiguous TransferFunds call — a
-// timeout, a dropped connection, or a 5xx — so a transfer that did execute is
-// completed instead of being marked failed and re-attempted.
+// transfer identified by reference (requestRef/transferCode).
 func (c *Client) ReconcilePayout(ctx context.Context, reference string) (ports.PayoutReconciliation, error) {
 	transferCode := strings.TrimSpace(reference)
 	if transferCode == "" {
@@ -276,14 +263,11 @@ func (c *Client) ReconcilePayout(ctx context.Context, reference string) (ports.P
 		Status:      normalizeTransferStatus(status.Status, status.ResponseCode),
 		ExternalRef: externalRef,
 		Message:     message,
+		AmountKobo:  status.AmountKobo,
+		Currency:    status.Currency,
 	}, nil
 }
 
-// normalizeTransferStatus maps the v5 query's free-text status and response
-// code onto one of the three reconciliation outcomes. Anything the rail does not
-// clearly settle is reported as pending rather than failed: marking an
-// unresolved transfer failed is exactly what reconciliation exists to prevent,
-// and a re-attempt of the same transferCode is deduplicated by the rail.
 func normalizeTransferStatus(status, responseCode string) string {
 	s := strings.ToUpper(strings.TrimSpace(status))
 	code := strings.TrimSpace(responseCode)
@@ -303,17 +287,16 @@ func normalizeTransferStatus(status, responseCode string) string {
 
 // TransactionStatus is the normalized result of a v5 query.
 type TransactionStatus struct {
-	Reference    string
-	Status       string
+	Reference      string
+	Status         string
 	TransactionRef string
-	ResponseCode string
-	AmountKobo   int64
-	Currency     string
+	ResponseCode   string
+	AmountKobo     int64
+	Currency       string
 }
 
-// QueryTransaction returns the current status of a transfer initiated with the
-// given reference (the payout Request.Reference passed as transferCode).
-func (c *Client) QueryTransaction(ctx context.Context, transferCode string) (TransactionStatus, error) {
+// QueryTransaction returns the current status of a transfer by requestRef.
+func (c *Client) QueryTransaction(ctx context.Context, requestRef string) (TransactionStatus, error) {
 	var data struct {
 		RequestReference        string `json:"requestReference"`
 		Status                  string `json:"status"`
@@ -322,58 +305,68 @@ func (c *Client) QueryTransaction(ctx context.Context, transferCode string) (Tra
 		Amount                  string `json:"amount"`
 		CurrencyCode            string `json:"currencyCode"`
 	}
-	endpoint := queryPath + "?" + url.Values{"requestRef": {strings.TrimSpace(transferCode)}}.Encode()
+	endpoint := queryPath + "?" + url.Values{"requestRef": {strings.TrimSpace(requestRef)}}.Encode()
 	if err := c.doAuthorizedOn(ctx, c.transferBaseURL, http.MethodGet, endpoint, nil, &data); err != nil {
 		return TransactionStatus{}, err
 	}
-	amountKobo, _ := strconv.ParseInt(data.Amount, 10, 64)
+	amountKobo, _ := strconv.ParseInt(strings.TrimSpace(data.Amount), 10, 64)
 	return TransactionStatus{
-		Reference:      data.RequestReference,
-		Status:         data.Status,
-		TransactionRef: data.TransactionRef,
-		ResponseCode:   data.TransactionResponseCode,
+		Reference:      strings.TrimSpace(data.RequestReference),
+		Status:         strings.TrimSpace(data.Status),
+		TransactionRef: strings.TrimSpace(data.TransactionRef),
+		ResponseCode:   strings.TrimSpace(data.TransactionResponseCode),
 		AmountKobo:     amountKobo,
-		Currency:       data.CurrencyCode,
+		Currency:       strings.TrimSpace(data.CurrencyCode),
 	}, nil
 }
 
-// FundTransferBank is one entry from the v5 fundstransferbanks directory.
+// FundTransferBank is one entry from the funds-transfer bank directory.
 type FundTransferBank struct {
-	ID       string
-	CBNCode  string
-	BankName string
-	BankCode string
+	ID       string `json:"id"`
+	CBNCode  string `json:"cbnCode"`
+	BankName string `json:"bankName"`
+	BankCode string `json:"bankCode"`
 }
 
-// GetBankCodes returns the bank directory (CBN code + Interswitch bank code)
-// used on the transfer rail.
+// GetBankCodes returns the bank directory used on the transfer rail.
+// Per the provided doc, this endpoint is served on the API host with legacy
+// InterswitchAuth request signing.
 func (c *Client) GetBankCodes(ctx context.Context) ([]FundTransferBank, error) {
-	var data struct {
-		Banks []struct {
-			ID       string `json:"id"`
-			CBNCode  string `json:"cbnCode"`
-			BankName string `json:"bankName"`
-			BankCode string `json:"bankCode"`
-		} `json:"banks"`
-	}
-	if err := c.doAuthorizedOn(ctx, c.transferBaseURL, http.MethodGet, bankCodesPath, nil, &data); err != nil {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+bankCodesPath, nil)
+	if err != nil {
 		return nil, err
 	}
-	banks := make([]FundTransferBank, 0, len(data.Banks))
-	for _, b := range data.Banks {
-		banks = append(banks, FundTransferBank{
-			ID:       b.ID,
-			CBNCode:  b.CBNCode,
-			BankName: b.BankName,
-			BankCode: b.BankCode,
-		})
+	nonce, err := randomNonce()
+	if err != nil {
+		return nil, err
 	}
-	return banks, nil
+	now := time.Now().Unix()
+	applyInterswitchAuthHeaders(req, c.clientID, c.clientSecret, http.MethodGet, bankCodesPath, now, nonce)
+	if terminalID := c.terminalID(); terminalID != "" {
+		req.Header.Set("TerminalID", terminalID)
+	}
+	req.Header.Set("accept", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("interswitch bank codes: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("interswitch bank codes returned %s: %s", resp.Status, truncate(string(raw)))
+	}
+	var data struct {
+		Banks []FundTransferBank `json:"banks"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, fmt.Errorf("decode interswitch bank codes: %w", err)
+	}
+	return data.Banks, nil
 }
 
-// splitName splits a full name into lastname + othernames the way the v5 rail
-// wants: the last token is the lastname, everything before it the othernames.
-// A single token becomes the lastname with no othernames.
 func splitName(full string) (lastname, othernames string) {
 	parts := strings.Fields(full)
 	if len(parts) == 0 {
